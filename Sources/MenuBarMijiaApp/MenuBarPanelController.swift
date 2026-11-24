@@ -67,6 +67,10 @@ final class MenuBarPanelController: NSObject {
     /// enough that an ordinary slow click toggles the panel instead of dictating.
     private static let holdThreshold: TimeInterval = 0.5
     private static let holdTick: TimeInterval = 0.03
+    /// Delay after hiding before releasing the heavy SwiftUI hosting tree (P0-7 warm unload).
+    static let warmUnloadDelay: TimeInterval = 45.0
+    /// Top-edge anchored height resize animation duration (P0-7).
+    static let heightResizeDuration: TimeInterval = 0.2
 
     private(set) var statusItem: NSStatusItem?
     private(set) var panelWindow: NSPanel?
@@ -126,6 +130,13 @@ final class MenuBarPanelController: NSObject {
     var isModalConfirmationActiveProvider: () -> Bool = {
         ManualControlConfirmationPresenter.isPresenting || NSApp.modalWindow != nil
     }
+    /// Injectable timer scheduler for the 45 s warm-unload grace period so tests can drive it
+    /// deterministically without sleeping.
+    var warmUnloadScheduler: (TimeInterval, DispatchWorkItem) -> Void = { delay, work in
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+    }
+    /// Duration used by the most recent frame resize pass (`nil` when applied without animation).
+    var lastAppliedFrameAnimationDuration: TimeInterval?
 
     private func traceStatusItem(_ message: @autoclosure () -> String) {
         let line = message()
@@ -197,6 +208,13 @@ final class MenuBarPanelController: NSObject {
     /// A context menu waiting for the out-of-process menu bar to finish its own handling of the
     /// same secondary click (see `requestStatusContextMenu`).
     private var pendingContextMenu: DispatchWorkItem?
+    /// Pending 45 s warm-unload work item armed when the panel finishes hiding.
+    private var pendingWarmUnloadWork: DispatchWorkItem?
+    private(set) var warmUnloadScheduledAt: TimeInterval?
+    var isWarmUnloadPending: Bool {
+        pendingWarmUnloadWork?.isCancelled == false
+    }
+    private var memoryPressureSource: DispatchSourceMemoryPressure?
     private var contextMenuDismissalEventNumber: Int?
     private var acceptsStandalonePostMenuMouseUp = false
     /// What the status button currently shows; kept after a sync so diagnostics and tests can read it.
@@ -256,6 +274,7 @@ final class MenuBarPanelController: NSObject {
             }
         })
         installObservers()
+        installMemoryPressureMonitor()
         observationGeneration &+= 1
         observeStatusItemState(generation: observationGeneration)
     }
@@ -295,6 +314,9 @@ final class MenuBarPanelController: NSObject {
         lastSeenPreferences = nil
         pendingContextMenu?.cancel()
         pendingContextMenu = nil
+        cancelWarmUnload()
+        stopMemoryPressureMonitor()
+        lastAppliedFrameAnimationDuration = nil
         stopPressTimer()
         pressTriggered = false
         suppressReleaseUntil = 0
@@ -1012,7 +1034,15 @@ final class MenuBarPanelController: NSObject {
 
     func refreshPanelContent(theme: PanelTheme) {
         guard let panel = panelWindow, let store else { return }
-        guard panel.contentView == nil || hostedPanelTheme != theme else { return }
+        if let hosting = panel.contentView, hostedPanelTheme == theme {
+            // Warm reuse within the 45 s grace window: restore first responder so keyboard and
+            // search focus behave identically to a freshly built hosting tree (#474).
+            panel.initialFirstResponder = hosting
+            if panel.firstResponder !== hosting {
+                _ = panel.makeFirstResponder(hosting)
+            }
+            return
+        }
         if hostedPanelTheme == .liquidGlass {
             hideBackdropShadow()
         }
@@ -1045,6 +1075,7 @@ final class MenuBarPanelController: NSObject {
     }
 
     func dropPanelContent() {
+        cancelWarmUnload()
         hideBackdropShadow()
         isApplyingPanelGeometry = false
         isEntranceAnimating = false
@@ -1055,6 +1086,62 @@ final class MenuBarPanelController: NSObject {
         panelWindow?.contentMinSize = .zero
         panelWindow?.contentMaxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         hostedPanelTheme = nil
+    }
+
+    /// Arms a 45 s grace timer after hiding so rapid re-opens stay instant, while long idle periods
+    /// release the SwiftUI hosting tree to keep background memory low (P0-7).
+    func scheduleWarmUnload() {
+        cancelWarmUnload()
+        guard panelWindow?.contentView != nil else { return }
+        warmUnloadScheduledAt = statusItemUptime()
+        weak var weakWork: DispatchWorkItem?
+        let work = DispatchWorkItem { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, weakWork?.isCancelled == false else { return }
+                self.pendingWarmUnloadWork = nil
+                self.warmUnloadScheduledAt = nil
+                guard !self.isPanelVisible, !self.isClosing else { return }
+                self.dropPanelContent()
+            }
+        }
+        weakWork = work
+        pendingWarmUnloadWork = work
+        warmUnloadScheduler(Self.warmUnloadDelay, work)
+    }
+
+    func cancelWarmUnload() {
+        pendingWarmUnloadWork?.cancel()
+        pendingWarmUnloadWork = nil
+        warmUnloadScheduledAt = nil
+    }
+
+    /// Unloads the warm hosting tree immediately when macOS signals `.warning` or `.critical`
+    /// memory pressure while the panel is hidden. Never tears down a visible panel.
+    func handleMemoryPressure(eventMask: DispatchSource.MemoryPressureEvent) {
+        guard eventMask.contains(.warning) || eventMask.contains(.critical) else { return }
+        guard !isPanelVisible, !isClosing else { return }
+        dropPanelContent()
+    }
+
+    private func installMemoryPressureMonitor() {
+        guard memoryPressureSource == nil else { return }
+        let source = DispatchSource.makeMemoryPressureSource(
+            eventMask: [.warning, .critical],
+            queue: .main
+        )
+        source.setEventHandler { [weak self, weak source] in
+            let event = source?.data ?? []
+            MainActor.assumeIsolated {
+                self?.handleMemoryPressure(eventMask: event)
+            }
+        }
+        source.resume()
+        memoryPressureSource = source
+    }
+
+    private func stopMemoryPressureMonitor() {
+        memoryPressureSource?.cancel()
+        memoryPressureSource = nil
     }
 
     private static func panelRoot(
@@ -1692,6 +1779,7 @@ final class MenuBarPanelController: NSObject {
     /// and status-item clicks.
     func handlePanelDidResignKey() {
         PanelTransientUIState.shared.cancelAllOffHold()
+        PanelTransientUIState.shared.cancelDeviceControlGesture()
         let now = statusItemUptime()
         let context = PanelResignKeyDecision.Context(
             isPanelVisible: isPanelVisible,

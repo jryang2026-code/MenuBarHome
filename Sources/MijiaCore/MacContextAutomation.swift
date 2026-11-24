@@ -35,6 +35,8 @@ public struct CalendarMeeting: Codable, Identifiable, Equatable, Sendable {
 public struct MacContextSnapshot: Equatable, Sendable {
     public var cameraInUse: Bool
     public var microphoneInUse: Bool
+    public var isCameraUsageAvailable: Bool
+    public var isMicrophoneUsageAvailable: Bool
     public var powerSource: MacPowerSource
     public var batteryPercent: Int?
     public var wifiSSID: String?
@@ -56,10 +58,14 @@ public struct MacContextSnapshot: Equatable, Sendable {
         isFocusActive: Bool? = nil,
         focusModeName: String? = nil,
         isUserPresent: Bool = true,
-        meetings: [CalendarMeeting] = []
+        meetings: [CalendarMeeting] = [],
+        isCameraUsageAvailable: Bool = true,
+        isMicrophoneUsageAvailable: Bool = true
     ) {
         self.cameraInUse = cameraInUse
         self.microphoneInUse = microphoneInUse
+        self.isCameraUsageAvailable = isCameraUsageAvailable
+        self.isMicrophoneUsageAvailable = isMicrophoneUsageAvailable
         self.powerSource = powerSource
         self.batteryPercent = batteryPercent
         self.wifiSSID = wifiSSID
@@ -101,10 +107,24 @@ public enum MacContextAutomation {
         at now: Date,
         calendar: Calendar = .current
     ) -> [AutomationTriggerEvent] {
-        guard rule.isEnabled else { return [] }
+        guard rule.isEnabled, rule.trigger.isSupportedOnMacOS else { return [] }
         let options = rule.triggerOptions
 
         switch rule.trigger {
+        case .scheduledTime:
+            var wallClock = Calendar(identifier: .gregorian)
+            wallClock.timeZone = calendar.timeZone
+            let local = wallClock.dateComponents([.year, .month, .day, .weekday, .hour, .minute], from: now)
+            guard let schedule = options.scheduledTime, local.hour == schedule.hour,
+                  local.minute == schedule.minute, let weekday = local.weekday,
+                  let year = local.year, let month = local.month, let day = local.day else { return [] }
+            if let weekdays = schedule.weekdays, !weekdays.isEmpty, !weekdays.contains(weekday - 1) { return [] }
+            let key = String(format: "%04d-%02d-%02d:%02d:%02d", year, month, day, schedule.hour, schedule.minute)
+            return [AutomationTriggerEvent(
+                trigger: rule.trigger,
+                dedupeKey: "sched:\(rule.id.uuidString):\(key)",
+                cooldown: AutomationPolicy.nightlyCooldown
+            )]
         case .away, .back, .externalDisplayConnected, .externalDisplayDisconnected,
              .screenLocked, .lidClosedSleep, .systemSleep:
             // Notification-driven, including the three precise away triggers. `AwayArbitrator`
@@ -112,16 +132,32 @@ public enum MacContextAutomation {
             return []
 
         case .cameraInUse:
-            guard let previous, !previous.cameraInUse, current.cameraInUse else { return [] }
+            guard let previous,
+                  previous.isCameraUsageAvailable,
+                  current.isCameraUsageAvailable,
+                  !previous.cameraInUse,
+                  current.cameraInUse else { return [] }
             return [transitionEvent(rule)]
         case .cameraNotInUse:
-            guard let previous, previous.cameraInUse, !current.cameraInUse else { return [] }
+            guard let previous,
+                  previous.isCameraUsageAvailable,
+                  current.isCameraUsageAvailable,
+                  previous.cameraInUse,
+                  !current.cameraInUse else { return [] }
             return [transitionEvent(rule)]
         case .microphoneInUse:
-            guard let previous, !previous.microphoneInUse, current.microphoneInUse else { return [] }
+            guard let previous,
+                  previous.isMicrophoneUsageAvailable,
+                  current.isMicrophoneUsageAvailable,
+                  !previous.microphoneInUse,
+                  current.microphoneInUse else { return [] }
             return [transitionEvent(rule)]
         case .microphoneNotInUse:
-            guard let previous, previous.microphoneInUse, !current.microphoneInUse else { return [] }
+            guard let previous,
+                  previous.isMicrophoneUsageAvailable,
+                  current.isMicrophoneUsageAvailable,
+                  previous.microphoneInUse,
+                  !current.microphoneInUse else { return [] }
             return [transitionEvent(rule)]
 
         case .powerConnected:
@@ -136,12 +172,14 @@ public enum MacContextAutomation {
             return [transitionEvent(rule)]
         case .batteryBelowThreshold:
             guard let previous,
+                  previous.powerSource != .unknown,
                   current.powerSource == .battery,
                   let percent = current.batteryPercent,
                   percent < options.batteryThresholdPercent else { return [] }
-            let wasAlreadyBelow = previous.powerSource == .battery
-                && (previous.batteryPercent ?? Int.max) < options.batteryThresholdPercent
-            guard !wasAlreadyBelow else { return [] }
+            if previous.powerSource == .battery {
+                guard let previousPercent = previous.batteryPercent,
+                      previousPercent >= options.batteryThresholdPercent else { return [] }
+            }
             return [transitionEvent(rule)]
 
         case .wifiNetworkJoined:

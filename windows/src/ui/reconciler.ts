@@ -1244,7 +1244,9 @@ export class PanelRenderPipeline {
       activeSheet: host.activeSheet,
       expandedDeviceId: host.expandedDeviceId,
       isCameraOpen:
-        host.cameraLive.activeLiveCameraId !== null && !host.cameraLive.liveCameraHidden,
+        host.cameraLive.activeLiveCameraId !== null &&
+        !host.cameraLive.liveCameraHidden &&
+        !host.cameraLive.isDetachedPipActive,
       cameraDeviceId: host.cameraLive.activeLiveCameraId,
       isMenuOpen: host.isHomeMenuOpen || host.ctxMenu !== null,
       isPromptOpen: host.prompt !== null,

@@ -2197,6 +2197,15 @@ public actor MiCloudProvider: HomeProvider {
         quality: XiaomiCameraStreamQuality,
         channel: Int
     ) async throws -> CameraStreamSource {
+        try await resolveCameraStream(for: device, quality: quality, channel: channel, audioEnabled: false)
+    }
+
+    public func resolveCameraStream(
+        for device: SmartDevice,
+        quality: XiaomiCameraStreamQuality,
+        channel: Int,
+        audioEnabled: Bool
+    ) async throws -> CameraStreamSource {
         guard case .camera(let cameraSpec) = device.kind else {
             throw MiotCommandError.unsupported("camera")
         }
@@ -2317,7 +2326,8 @@ public actor MiCloudProvider: HomeProvider {
                             uid: vendor.p2pId,
                             quality: quality,
                             channel: channel,
-                            subdid: subdid
+                            subdid: subdid,
+                            audioEnabled: audioEnabled
                         )
                     } catch {
                         if Task.isCancelled || error is CancellationError {
@@ -2372,7 +2382,7 @@ public actor MiCloudProvider: HomeProvider {
         }
 
         try Task.checkCancellation()
-        if let localURL = await probeLocalGo2RTC(for: device) {
+        if let localURL = await probeLocalGo2RTC(for: device, audioEnabled: audioEnabled) {
             try Task.checkCancellation()
             return .hls(localURL)
         }
@@ -2491,7 +2501,7 @@ public actor MiCloudProvider: HomeProvider {
         }
     }
 
-    private func probeLocalGo2RTC(for device: SmartDevice) async -> URL? {
-        await cameraBridge.probeRegisteredStream(candidates: [device.id, device.name, device.model])
+    private func probeLocalGo2RTC(for device: SmartDevice, audioEnabled: Bool = false) async -> URL? {
+        await cameraBridge.probeRegisteredStream(candidates: [device.id, device.name, device.model], audioEnabled: audioEnabled)
     }
 }

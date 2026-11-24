@@ -27,11 +27,12 @@ final class CameraLivePlayback {
     var maxReconnectAttempts = 6
 
     var onFirstFrame: (@MainActor () -> Void)?
+    var onAudioAvailabilityChanged: (@MainActor (Bool) -> Void)?
     var onFallback: (@MainActor (URL) -> Void)?
     var onFailure: (@MainActor (String?) -> Void)?
     var onWatchdogTick: (@MainActor () -> Void)?
 
-    init?(deviceID: String, lensID: String, source: CameraStreamSource) {
+    init?(deviceID: String, lensID: String, source: CameraStreamSource, isMuted: Bool = true) {
         guard case .liveMP4(let url, let mjpegFallback, _) = source else { return nil }
         self.deviceID = deviceID
         self.lensID = lensID
@@ -39,10 +40,15 @@ final class CameraLivePlayback {
         self.url = url
         self.mjpegFallback = mjpegFallback
         self.player = CameraLiveVideoPlayer()
+        self.player.setMuted(isMuted)
         player.onFirstFrame = { [weak self] in
             guard let self, self.task != nil else { return }
             self.hasFrame = true
             self.onFirstFrame?()
+        }
+        player.onAudioAvailabilityChanged = { [weak self] available in
+            guard let self, self.task != nil else { return }
+            self.onAudioAvailabilityChanged?(available)
         }
         player.onPlaybackPauseChanged = { [weak self] paused in
             guard let self, self.task != nil else { return }

@@ -74,6 +74,11 @@ enum FacetDragApproval: Sendable, Equatable, Hashable {
     case unknownStartTemperature
 }
 
+package enum PanelConfirmationLevel: Hashable {
+    case hold
+    case slide
+}
+
 /// Safety rules for controls the user triggers directly (card tap, detail drawer, URL, App Intent,
 /// assistant). The hazard table itself stays in `ModelActionPolicy`, so manual and AI actions cannot
 /// drift apart (#143).
@@ -107,6 +112,21 @@ public enum ManualControlPolicy {
             DeviceIntent(targetId: device.id, operation: operation),
             devices: [device]
         )
+    }
+
+    package static func panelConfirmationLevel(
+        _ operation: IntentOperation,
+        for device: SmartDevice,
+        markedLightIds: Set<String>? = nil
+    ) -> PanelConfirmationLevel? {
+        guard requiresConfirmation(operation, for: device, markedLightIds: markedLightIds) else { return nil }
+        return panelConfirmationLevel(for: device)
+    }
+
+    static func panelConfirmationLevel(for device: SmartDevice) -> PanelConfirmationLevel {
+        if IntentDeviceCategory(device) == .valve { return .slide }
+        if case .cover(let spec) = device.kind, spec.subtype == .garageDoor { return .slide }
+        return .hold
     }
 
     /// #104: the mark never widens. It only silences primary power on a device the existing

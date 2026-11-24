@@ -304,6 +304,9 @@ public struct ClassicDeviceCardView: View {
                     : canAdjust
                         ? DeviceTileActionLayout.adjustTooltip(isExpanded: isExpanded)
                         : device.name)
+            .panelControlGesture(for: device, store: store, ringAlignment: .leading,
+                                 ringDiameter: 38, slideAlignment: .trailing, slideWidth: 72, reserveSlideSpace: true,
+                                 opensCameraLive: true, label: device.name)
 
             // Quick Index Pill + Favorite Star + Drawer Chevron
             HStack(spacing: 2) {
@@ -646,6 +649,7 @@ public struct ClassicDeviceCardView: View {
                 }
                 .buttonStyle(PressableCardButtonStyle())
                 .accessibilityLabel(Text(L10n.tr("降低目标温度", "Lower target temperature")))
+                .panelControlGesture(.temperatureStep(-L10n.celsiusStep(spec.step)), for: device, store: store)
                 .disabled(!device.isOnline)
 
                 Spacer()
@@ -677,6 +681,7 @@ public struct ClassicDeviceCardView: View {
                 }
                 .buttonStyle(PressableCardButtonStyle())
                 .accessibilityLabel(Text(L10n.tr("升高目标温度", "Raise target temperature")))
+                .panelControlGesture(.temperatureStep(L10n.celsiusStep(spec.step)), for: device, store: store)
                 .disabled(!device.isOnline)
             }
             .padding(.horizontal, 8)
@@ -693,6 +698,7 @@ public struct ClassicDeviceCardView: View {
                                 store.setClimateMode(device.id, mode: mode)
                             }
                             .buttonStyle(ClassicPillActionButtonStyle(isSelected: selected, tintColor: accent))
+                            .panelControlGesture(.mode(mode), for: device, store: store)
                             .disabled(!device.isOnline)
                         }
                     }

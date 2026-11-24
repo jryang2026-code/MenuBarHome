@@ -53,7 +53,7 @@ extension HomeStore {
         )
     }
 
-    private enum ConfirmedPrimaryAction {
+    private enum ConfirmedPrimaryAction: Equatable {
         case lightPower(entityId: String, isOn: Bool)
         case climatePower(entityId: String, isOn: Bool)
         case fanPower(entityId: String, isOn: Bool)
@@ -70,26 +70,10 @@ extension HomeStore {
         case valvePower(entityId: String, open: Bool)
     }
 
-    @discardableResult
-    public func togglePrimary(_ device: SmartDevice, offersSwitchLightMark: Bool = true) -> Task<Bool, Never>? {
-        if rejectDeviceWriteIfCapabilityDisabled(deviceId: device.id) != nil { return nil }
-        // A tap on an LG TV is answered over the LAN, so the expired Mi session does not refuse it.
-        guard !rejectWritesBlockedByMiSession(needsMi: !lgClientServes(device)) else { return nil }
-        guard let idx = devices.firstIndex(where: { $0.id == device.id }) else { return nil }
-        let initial = devices[idx]
-        guard initial.isOnline else {
-            showToast(L10n.tr("\(initial.name) 当前离线（可能断电）", "\(initial.name) is offline (unplugged)"), isError: true)
-            return nil
-        }
-        guard device.isPrimaryToggleable else {
-            if hasDetailDrawer(for: device) { toggleExpanded(device.id) }
-            return nil
-        }
-        guard !rejectControlWhileLocked() else { return nil }
-
+    private func primaryPlan(for device: SmartDevice) -> (ConfirmedPrimaryAction, IntentOperation?)? {
         let planned: ConfirmedPrimaryAction
         let promptOperation: IntentOperation?
-        switch initial.kind {
+        switch device.kind {
         case .light(let s):
             let nextOn = !s.isOn
             planned = .lightPower(entityId: s.entityId, isOn: nextOn)
@@ -136,7 +120,6 @@ extension HomeStore {
                 planned = .coverMove(entityId: s.entityId, shouldOpen: shouldOpen)
                 promptOperation = .power(shouldOpen)
             } else {
-                toggleExpanded(device.id)
                 return nil
             }
         case .appliance(let s):
@@ -147,7 +130,6 @@ extension HomeStore {
             guard let control = s.powerControl,
                   let target = control.target,
                   case .property = target else {
-                toggleExpanded(device.id)
                 return nil
             }
             let nextOn = !s.isOn
@@ -163,6 +145,37 @@ extension HomeStore {
             planned = .valvePower(entityId: s.entityId, open: opening)
             promptOperation = .power(opening)
         case .speaker, .fridge, .sensor:
+            return nil
+        }
+
+        return (planned, promptOperation)
+    }
+
+    @discardableResult
+    public func togglePrimary(_ device: SmartDevice, offersSwitchLightMark: Bool = true) -> Task<Bool, Never>? {
+        togglePrimary(device, offersSwitchLightMark: offersSwitchLightMark, panelConfirmed: false)
+    }
+
+    private func togglePrimary(
+        _ device: SmartDevice, offersSwitchLightMark: Bool, panelConfirmed: Bool
+    ) -> Task<Bool, Never>? {
+        if rejectDeviceWriteIfCapabilityDisabled(deviceId: device.id) != nil { return nil }
+        // A tap on an LG TV is answered over the LAN, so the expired Mi session does not refuse it.
+        guard !rejectWritesBlockedByMiSession(needsMi: !lgClientServes(device)) else { return nil }
+        guard let idx = devices.firstIndex(where: { $0.id == device.id }) else { return nil }
+        let initial = devices[idx]
+        guard initial.isOnline else {
+            showToast(L10n.tr("\(initial.name) 当前离线（可能断电）", "\(initial.name) is offline (unplugged)"), isError: true)
+            return nil
+        }
+        guard device.isPrimaryToggleable else {
+            if hasDetailDrawer(for: device) { toggleExpanded(device.id) }
+            return nil
+        }
+        guard !rejectControlWhileLocked() else { return nil }
+
+        guard let (planned, promptOperation) = primaryPlan(for: initial) else {
+            if case .valve = initial.kind { return nil }
             toggleExpanded(device.id)
             return nil
         }
@@ -174,7 +187,7 @@ extension HomeStore {
             if ManualControlPolicy.requiresConfirmation(promptOperation, for: initial, markedLightIds: marks) {
                 didPresentModal = true
             }
-            guard allowManualControl(promptOperation, for: initial, offersMarkAsLight: offersSwitchLightMark) else { return nil }
+            guard panelConfirmed || allowManualControl(promptOperation, for: initial, offersMarkAsLight: offersSwitchLightMark) else { return nil }
         }
 
         let current: SmartDevice
@@ -654,12 +667,17 @@ extension HomeStore {
     }
 
     public func stepClimateTemperature(_ deviceId: String, delta: Double) {
+        stepClimateTemperature(deviceId, delta: delta, panelConfirmed: false)
+    }
+
+    private func stepClimateTemperature(_ deviceId: String, delta: Double, panelConfirmed: Bool) {
         guard let initial = controllableDevice(deviceId),
               case .climate(let initialSpec) = initial.kind,
               initialSpec.temperatureWritable else { return }
         let nextTemp = max(initialSpec.minTemp, min(initialSpec.maxTemp, initialSpec.targetTemperature + delta))
         guard let confirmed = confirmAndResolveManualControl(
-            .targetTemperature(nextTemp), for: initial, requireOnline: true, showOfflineToast: true
+            .targetTemperature(nextTemp), for: initial, requireOnline: true, showOfflineToast: true,
+            panelConfirmed: panelConfirmed
         ) else { return }
         guard case .climate(var s) = confirmed.device.kind,
               s.entityId == initialSpec.entityId,
@@ -685,9 +703,13 @@ extension HomeStore {
     }
 
     public func setClimateMode(_ deviceId: String, mode: String) {
+        setClimateMode(deviceId, mode: mode, panelConfirmed: false)
+    }
+
+    private func setClimateMode(_ deviceId: String, mode: String, panelConfirmed: Bool) {
         guard let initial = controllableDevice(deviceId),
               case .climate(let initialSpec) = initial.kind else { return }
-        guard let confirmed = confirmAndResolveManualControl(.hvacMode(mode), for: initial),
+        guard let confirmed = confirmAndResolveManualControl(.hvacMode(mode), for: initial, panelConfirmed: panelConfirmed),
               case .climate(var s) = confirmed.device.kind,
               s.entityId == initialSpec.entityId else { return }
         let previous = confirmed.device
@@ -714,6 +736,10 @@ extension HomeStore {
     /// Appliance writes record no habit: appliances are not assistant-controllable yet, so a
     /// learned appliance habit would surface a suggestion that cannot run (#300).
     public func setApplianceMode(_ deviceId: String, mode: String) {
+        setApplianceMode(deviceId, mode: mode, panelConfirmed: false)
+    }
+
+    private func setApplianceMode(_ deviceId: String, mode: String, panelConfirmed: Bool) {
         guard let initial = controllableDevice(deviceId),
               case .appliance(let initialSpec) = initial.kind,
               initialSpec.modeWritable, initialSpec.availableModes.contains(mode) else { return }
@@ -723,7 +749,7 @@ extension HomeStore {
         // as the power button. Idle/off modes and appliances without heat stay direct (#4).
         if initialSpec.heats, !initialSpec.isOn, ApplianceSpec.modeStartsHeating(mode) {
             didPresentModal = ManualControlPolicy.requiresConfirmation(.power(true), for: initial)
-            guard allowManualControl(.power(true), for: initial) else { return }
+            guard panelConfirmed || allowManualControl(.power(true), for: initial) else { return }
         }
         guard let previous = resolvePostModalDevice(modalContext),
               case .appliance(var s) = previous.kind,
@@ -753,22 +779,30 @@ extension HomeStore {
         )
     }
 
+    private static func applianceStepTarget(_ spec: ApplianceSpec, target: Double, delta: Double) -> Double {
+        let step = spec.step > 0 ? spec.step : 1
+        let raw = max(spec.minTemp, min(spec.maxTemp, target + delta))
+        // A Fahrenheit tap is 5/9 °C, smaller than a coarse step. Round to the nearest step so a
+        // small decimal step keeps its adjacent value, then move one step when that is the target.
+        var units = ((raw - spec.minTemp) / step).rounded()
+        if spec.minTemp + units * step == target {
+            units += delta > 0 ? 1 : -1
+        }
+        let stepped = spec.minTemp + units * step
+        return max(spec.minTemp, min(spec.maxTemp, stepped))
+    }
+
     public func stepApplianceTemperature(_ deviceId: String, delta: Double) {
+        stepApplianceTemperature(deviceId, delta: delta, panelConfirmed: false)
+    }
+
+    private func stepApplianceTemperature(_ deviceId: String, delta: Double, panelConfirmed: Bool) {
         guard let initial = controllableDevice(deviceId),
               case .appliance(let initialSpec) = initial.kind,
               initialSpec.temperatureWritable, let target = initialSpec.targetTemperature else { return }
-        let step = initialSpec.step > 0 ? initialSpec.step : 1
-        let raw = max(initialSpec.minTemp, min(initialSpec.maxTemp, target + delta))
-        // A Fahrenheit tap is 5/9 °C, smaller than a coarse step. Round to the nearest step so a
-        // small decimal step keeps its adjacent value, then move one step when that is the target.
-        var units = ((raw - initialSpec.minTemp) / step).rounded()
-        if initialSpec.minTemp + units * step == target {
-            units += delta > 0 ? 1 : -1
-        }
-        let stepped = initialSpec.minTemp + units * step
-        let nextTemp = max(initialSpec.minTemp, min(initialSpec.maxTemp, stepped))
+        let nextTemp = Self.applianceStepTarget(initialSpec, target: target, delta: delta)
         guard nextTemp != target,
-              let confirmed = confirmAndResolveManualControl(.targetTemperature(nextTemp), for: initial),
+              let confirmed = confirmAndResolveManualControl(.targetTemperature(nextTemp), for: initial, panelConfirmed: panelConfirmed),
               case .appliance(var s) = confirmed.device.kind,
               s.temperatureEntityId == initialSpec.temperatureEntityId,
               s.temperatureWritable else { return }
@@ -830,11 +864,15 @@ extension HomeStore {
     }
 
     public func runApplianceAction(_ deviceId: String, action: ApplianceAction) {
+        runApplianceAction(deviceId, action: action, panelConfirmed: false)
+    }
+
+    private func runApplianceAction(_ deviceId: String, action: ApplianceAction, panelConfirmed: Bool) {
         guard let initial = controllableDevice(deviceId), case .appliance(let initialSpec) = initial.kind,
               initialSpec.startAction == action || initialSpec.pauseAction == action || initialSpec.stopAction == action else { return }
         // Starting a cycle is the hazardous direction; pausing and stopping wind it down.
         let operation: IntentOperation = action.kind == .start ? .power(true) : .power(false)
-        guard let confirmed = confirmAndResolveManualControl(operation, for: initial),
+        guard let confirmed = confirmAndResolveManualControl(operation, for: initial, panelConfirmed: panelConfirmed),
               case .appliance(let s) = confirmed.device.kind,
               s.startAction == action || s.pauseAction == action || s.stopAction == action else { return }
         // The program state is reported by the device; nothing is shown ahead of it.
@@ -982,6 +1020,10 @@ extension HomeStore {
     }
 
     public func setCoverMotor(_ deviceId: String, description: String) {
+        setCoverMotor(deviceId, description: description, panelConfirmed: false)
+    }
+
+    private func setCoverMotor(_ deviceId: String, description: String, panelConfirmed: Bool) {
         guard let check = controllableDevice(deviceId), case .cover(let checkSpec) = check.kind else { return }
         let opening = checkSpec.openDescription.map { description.caseInsensitiveCompare($0) == .orderedSame } ?? false
         let closing = checkSpec.closeDescription.map { description.caseInsensitiveCompare($0) == .orderedSame } ?? false
@@ -992,7 +1034,7 @@ extension HomeStore {
         var didPresentModal = false
         if let motorOperation {
             didPresentModal = ManualControlPolicy.requiresConfirmation(motorOperation, for: check)
-            guard allowManualControl(motorOperation, for: check) else { return }
+            guard panelConfirmed || allowManualControl(motorOperation, for: check) else { return }
         }
         guard let resolvedBeforeCancel = resolvePostModalDevice(
             modalContext, requireOnline: didPresentModal, showOfflineToast: true
@@ -1099,6 +1141,10 @@ extension HomeStore {
     /// dangerous (garage door, gate) asks before the row moves. The drag's first tick carries the
     /// answer for the rest of that drag, the same way a facet slider rides on its first prompt.
     public func setCoverPosition(_ deviceId: String, percent: Int) {
+        setCoverPosition(deviceId, percent: percent, panelConfirmed: false)
+    }
+
+    private func setCoverPosition(_ deviceId: String, percent: Int, panelConfirmed: Bool) {
         guard let initial = controllableDevice(deviceId),
               case .cover(let initialSpec) = initial.kind,
               initialSpec.positionWritable else { return }
@@ -1144,9 +1190,9 @@ extension HomeStore {
         if let promptDirection, !confirmedDrag,
            ManualControlPolicy.requiresConfirmation(.power(promptDirection), for: initial) {
             if preStartIsUnknown {
-                guard allowUnknownStartCoverControl(for: initial) else { return }
+                guard panelConfirmed || allowUnknownStartCoverControl(for: initial) else { return }
             } else {
-                guard allowManualControl(.power(promptDirection), for: initial) else { return }
+                guard panelConfirmed || allowManualControl(.power(promptDirection), for: initial) else { return }
             }
             answeredPrompt = true
         }
@@ -1540,6 +1586,10 @@ extension HomeStore {
     /// Fires a 更多设置 button. A feeding action takes `portion`, the amount the drawer picked;
     /// other inputs fall back to the profile default (an enum input prefers the app/remote source).
     public func runFacetAction(_ deviceId: String, controlId: String, portion: Int? = nil) {
+        runFacetAction(deviceId, controlId: controlId, portion: portion, panelConfirmed: false)
+    }
+
+    private func runFacetAction(_ deviceId: String, controlId: String, portion: Int?, panelConfirmed: Bool) {
         guard let device = controllableDevice(deviceId), device.isOnline,
               let control = deviceFacets[deviceId]?.first(where: { $0.id == controlId }) else { return }
         if let target = control.target,
@@ -1562,7 +1612,7 @@ extension HomeStore {
             portion: portion,
             for: device
         ) != nil
-        guard allowManualControl(facet: control, value: nil, portion: portion, for: device),
+        guard panelConfirmed || allowManualControl(facet: control, value: nil, portion: portion, for: device),
               let currentDevice = resolvePostModalDevice(modalContext, requireOnline: true, showOfflineToast: true),
               let currentControl = deviceFacets[deviceId]?.first(where: { $0.id == controlId }),
               facetWriteAllowed(currentControl),
@@ -2355,7 +2405,7 @@ extension HomeStore {
 
     public var supportsCustomCameraStreams: Bool { !(provider is DemoHomeProvider) }
 
-    public func resolveCameraStream(for deviceId: String, channel: Int = 0) async throws -> CameraStreamSource {
+    public func resolveCameraStream(for deviceId: String, channel: Int = 0, audioEnabled: Bool = false) async throws -> CameraStreamSource {
         if let reason = capabilityWriteRejection(forDeviceId: deviceId) {
             throw CapabilityControlBlockedError(reason: reason)
         }
@@ -2392,10 +2442,10 @@ extension HomeStore {
                 explicitlyDisabledBackends.insert(.xiaomiCloud)
             }
             return try await dual.resolveCameraStream(
-                for: device, quality: quality, channel: channel, explicitlyDisabledBackends: explicitlyDisabledBackends
+                for: device, quality: quality, channel: channel, audioEnabled: audioEnabled, explicitlyDisabledBackends: explicitlyDisabledBackends
             )
         }
-        return try await provider.resolveCameraStream(for: device, quality: quality, channel: channel)
+        return try await provider.resolveCameraStream(for: device, quality: quality, channel: channel, audioEnabled: audioEnabled)
     }
 
     public func stopCameraStream(for deviceId: String) async {
@@ -2406,5 +2456,153 @@ extension HomeStore {
     /// Releases a stream for a card that may already have left `devices` (a closed camera type).
     public func stopCameraStream(device: SmartDevice) async {
         await provider.stopCameraStream(for: device)
+    }
+}
+
+package enum PanelControlAction: Equatable {
+    case primary
+    case coverMotor(String)
+    case coverPosition(Int)
+    case temperatureStep(Double)
+    case mode(String)
+    case applianceAction(ApplianceAction)
+    case facetAction(FacetControl, portion: Int?)
+}
+
+@MainActor
+package final class PanelControlConfirmation {
+    fileprivate let device: SmartDevice
+    fileprivate let context: ModalDeviceContext
+    fileprivate let action: PanelControlAction
+    package let level: PanelConfirmationLevel
+    fileprivate var consumed = false
+
+    fileprivate init(
+        device: SmartDevice, context: ModalDeviceContext, action: PanelControlAction, level: PanelConfirmationLevel
+    ) {
+        self.device = device
+        self.context = context
+        self.action = action
+        self.level = level
+    }
+}
+
+extension HomeStore {
+    package func panelConfirmationLevel(for device: SmartDevice, action: PanelControlAction) -> PanelConfirmationLevel? {
+        guard device.isOnline else { return nil }
+        let operation: IntentOperation
+        switch action {
+        case .primary:
+            guard device.isPrimaryToggleable, let plannedOperation = primaryPlan(for: device)?.1 else { return nil }
+            operation = plannedOperation
+        case .coverMotor(let description):
+            guard case .cover(let spec) = device.kind else { return nil }
+            if spec.openDescription?.caseInsensitiveCompare(description) == .orderedSame {
+                operation = .power(true)
+            } else if spec.closeDescription?.caseInsensitiveCompare(description) == .orderedSame {
+                operation = .power(false)
+            } else {
+                return nil
+            }
+        case .coverPosition(let target):
+            guard case .cover(let spec) = device.kind, spec.positionWritable else { return nil }
+            let reported = lastCoverPositions[device.id] ?? spec.reportedPositionPercent
+            let direction = reported == nil
+                ? true
+                : Self.coverDragDirection(from: reported, to: target)
+                    ?? Self.coverDragDirection(from: spec.positionPercent, to: target)
+            guard let direction else { return nil }
+            operation = .power(direction)
+        case .temperatureStep(let delta):
+            switch device.kind {
+            case .climate(let spec) where spec.temperatureWritable:
+                operation = .targetTemperature(max(spec.minTemp, min(spec.maxTemp, spec.targetTemperature + delta)))
+            case .appliance(let spec) where spec.temperatureWritable:
+                guard let target = spec.targetTemperature else { return nil }
+                operation = .targetTemperature(Self.applianceStepTarget(spec, target: target, delta: delta))
+            default: return nil
+            }
+        case .mode(let mode):
+            switch device.kind {
+            case .climate: operation = .hvacMode(mode)
+            case .appliance(let spec) where spec.heats && !spec.isOn && ApplianceSpec.modeStartsHeating(mode):
+                operation = .power(true)
+            default: return nil
+            }
+        case .applianceAction(let action):
+            guard case .appliance(let spec) = device.kind, spec.startAction == action else { return nil }
+            operation = .power(true)
+        case .facetAction(let control, _):
+            guard ManualControlPolicy.facetRequiresConfirmation(control, value: nil, for: device) else { return nil }
+            return ManualControlPolicy.panelConfirmationLevel(for: device)
+        }
+        return ManualControlPolicy.panelConfirmationLevel(
+            operation, for: device, markedLightIds: SwitchLightMarks.load(defaults: userDefaults)
+        )
+    }
+
+    package func beginPanelConfirmation(
+        for device: SmartDevice, action: PanelControlAction, level: PanelConfirmationLevel
+    ) -> PanelControlConfirmation? {
+        let context = captureModalDeviceContext(for: device)
+        guard let live = resolvePostModalDevice(context, requireOnline: true),
+              panelConfirmationMatches(device, live, action: action),
+              panelConfirmationLevel(for: live, action: action) == level else { return nil }
+        return PanelControlConfirmation(device: live, context: context, action: action, level: level)
+    }
+
+    @discardableResult
+    package func performPanelConfirmation(_ confirmation: PanelControlConfirmation) -> Task<Bool, Never>? {
+        guard !confirmation.consumed else { return nil }
+        confirmation.consumed = true
+        guard let live = resolvePostModalDevice(confirmation.context, requireOnline: true),
+              panelConfirmationMatches(confirmation.device, live, action: confirmation.action),
+              panelConfirmationLevel(for: live, action: confirmation.action) == confirmation.level else { return nil }
+        switch confirmation.action {
+        case .primary:
+            return togglePrimary(live, offersSwitchLightMark: false, panelConfirmed: true)
+        case .coverMotor(let description):
+            setCoverMotor(live.id, description: description, panelConfirmed: true)
+        case .coverPosition(let target):
+            setCoverPosition(live.id, percent: target, panelConfirmed: true)
+        case .temperatureStep(let delta):
+            if case .appliance = live.kind {
+                stepApplianceTemperature(live.id, delta: delta, panelConfirmed: true)
+            } else {
+                stepClimateTemperature(live.id, delta: delta, panelConfirmed: true)
+            }
+        case .mode(let mode):
+            if case .appliance = live.kind {
+                setApplianceMode(live.id, mode: mode, panelConfirmed: true)
+            } else {
+                setClimateMode(live.id, mode: mode, panelConfirmed: true)
+            }
+        case .applianceAction(let action):
+            runApplianceAction(live.id, action: action, panelConfirmed: true)
+        case .facetAction(let control, let portion):
+            runFacetAction(live.id, controlId: control.id, portion: portion, panelConfirmed: true)
+        }
+        return nil
+    }
+
+    private func panelConfirmationMatches(_ captured: SmartDevice, _ live: SmartDevice, action: PanelControlAction) -> Bool {
+        guard captured.accountId == live.accountId,
+              ManualControlHazardProfile(captured) == ManualControlHazardProfile(live) else { return false }
+        switch action {
+        case .primary:
+            return primaryPlan(for: captured)?.0 == primaryPlan(for: live)?.0
+        case .coverMotor:
+            guard case .cover(let before) = captured.kind, case .cover(let after) = live.kind else { return false }
+            return before.entityId == after.entityId
+                && before.openDescription == after.openDescription
+                && before.closeDescription == after.closeDescription
+        case .coverPosition, .temperatureStep, .mode:
+            return captured.kind == live.kind
+        case .applianceAction(let action):
+            guard case .appliance(let after) = live.kind else { return false }
+            return after.startAction == action
+        case .facetAction(let control, _):
+            return deviceFacets[live.id]?.first(where: { $0.id == control.id }) == control
+        }
     }
 }

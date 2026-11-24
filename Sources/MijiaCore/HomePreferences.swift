@@ -84,6 +84,8 @@ public enum HomePreferences {
     public static let doorbellAutoPopup = HomePreference.flag("doorbell_auto_popup", default: false)
     public static let doorbellChime = HomePreference.flag("doorbell_chime", default: false)
     public static let doorbellPopupSeconds = HomePreference.integer("doorbell_popup_seconds", default: HomeStore.defaultDoorbellPopupSeconds)
+    /// Per-camera opt-in for auto-opening PiP on doorbell/alarm events (P1-2). Off by default.
+    public static let cameraPipAutoOpenIds = HomePreference.idSet("camera_pip_auto_open_ids_v1")
     /// On by default (#143): only external paths can still fire while the screen is locked.
     public static let blockControlWhileLocked = HomePreference.flag("block_control_while_locked", default: true)
     public static let sensorAlertsOnlyWhenAway = HomePreference.flag("safety_alert_only_when_away_v1", default: false)

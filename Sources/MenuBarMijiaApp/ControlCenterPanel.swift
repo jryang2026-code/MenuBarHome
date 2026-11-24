@@ -33,8 +33,8 @@ public struct ControlCenterPanel: View {
     @FocusState private var isSearchFieldFocused: Bool
     /// The assistant requests already acted on, so a panel built after one still replays it once.
     @State private var lastHandledVoiceRequest = 0
-    /// The pointer is over the scene/suggestion drawer; the drawer stays open so a click can land.
-    @State private var isDrawerHovered = false
+    /// Persisted fold state for the unified Quick Actions & "For You" suggestions drawer.
+    @State var quickDrawerState = PanelQuickDrawerState.shared
     @Bindable private var speech = SpeechInputController.shared
     @Environment(\.effectiveReduceMotion) var reduceMotion
     @Environment(\.effectiveReduceTransparency) var reduceTransparency
@@ -284,6 +284,9 @@ public struct ControlCenterPanel: View {
         SettingsWindowOpener.shared.open = { openSettings() }
         prioritySnapshot = .capture(from: store)
         registerTransientUIHandlers()
+        if quickDrawerState.isExpanded {
+            store.refreshProactiveSuggestionCacheIfStale()
+        }
         syncAdaptiveMaximumHeight(notify: false)
     }
 
@@ -297,7 +300,6 @@ public struct ControlCenterPanel: View {
         search.end()
         isSearchFieldFocused = false
         isSearchRevealed = false
-        isDrawerHovered = false
     }
 
     private struct HomeContextSignature: Equatable {
@@ -370,16 +372,10 @@ public struct ControlCenterPanel: View {
                     .padding(.bottom, 10)
 
                 if showsOmnibar, !isRoomOrdering {
-                    VStack(alignment: .leading, spacing: 8) {
-                        omnibar
-                        if showsInputDrawer {
-                            inputDrawer
-                                .transition(AppleMotion.drawerTransition(reduceMotion: reduceMotion))
-                        }
-                    }
-                    .padding(.horizontal, Self.columnInset)
-                    .padding(.bottom, 10)
-                    .transition(.opacity.combined(with: .offset(y: -6)))
+                    omnibar
+                        .padding(.horizontal, Self.columnInset)
+                        .padding(.bottom, 10)
+                        .transition(.opacity.combined(with: .offset(y: -6)))
                 }
 
                 if store.isShowingAssistantBar || speech.errorMessage != nil {
@@ -398,9 +394,16 @@ public struct ControlCenterPanel: View {
                     } else if showsGroupingBar {
                         groupingBar
                             .padding(.horizontal, Self.columnInset)
-                            .padding(.bottom, 12)
+                            .padding(.bottom, showsQuickDrawer ? 8 : 12)
                             .transition(.opacity)
                     }
+                }
+
+                if showsQuickDrawer {
+                    quickDrawer
+                        .padding(.horizontal, Self.columnInset)
+                        .padding(.bottom, 10)
+                        .transition(AppleMotion.drawerTransition(reduceMotion: reduceMotion))
                 }
             }
             .adaptiveHeightSlice(.topChrome)
@@ -434,12 +437,12 @@ public struct ControlCenterPanel: View {
         .animation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion), value: store.isShowingAssistantBar)
         .animation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion), value: layoutUI.editMode)
         .animation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion), value: showsOmnibar)
+        .animation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion), value: quickDrawerState.isExpanded)
         // Typing, ⌘F, "/" and dictation all ask for the field; it unfolds before it takes focus.
         .onChange(of: search.focusRequest) { _, _ in revealSearch() }
         .onChange(of: store.assistantFocusRequest) { _, _ in revealSearch() }
         .onChange(of: store.assistantVoiceRequest) { _, _ in if store.enableVoiceInput { revealSearch() } }
         .onChange(of: isSearchFieldFocused) { _, focused in if !focused { foldSearchIfIdle() } }
-        .onChange(of: isDrawerHovered) { _, hovered in if !hovered, !isSearchFieldFocused { foldSearchIfIdle() } }
         // A device reached by keyboard, the status line or the assistant opens its stack first.
         .onChange(of: store.focusedDeviceId) { _, id in openStack(containing: id) }
         .onChange(of: store.expandedDeviceId) { _, id in openStack(containing: id) }
@@ -463,10 +466,10 @@ public struct ControlCenterPanel: View {
         withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) { isSearchRevealed = true }
     }
 
-    /// Leaving an empty field folds it back; the drawer under the pointer keeps it until its click lands.
+    /// Leaving an empty field folds it back.
     private func foldSearchIfIdle() {
         guard search.query.isEmpty, !speech.isListening, !speech.isHoldToTalk,
-              !isDrawerHovered, !store.isShowingAssistantBar else { return }
+              !store.isShowingAssistantBar else { return }
         withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) { isSearchRevealed = false }
     }
 
@@ -622,21 +625,47 @@ public struct ControlCenterPanel: View {
         search.results(store: store)
     }
 
-    /// Scenes and suggestions appear while the input is focused and empty, then fold away.
-    private var showsInputDrawer: Bool {
-        (isSearchFieldFocused || isDrawerHovered) && !search.isSearching && !speech.isListening
+    var hasQuickDrawerContent: Bool {
+        PanelQuickDrawerPolicy.hasContent(
+            showQuickActionsBar: store.showQuickActionsBar,
+            hasScenes: !store.scenes.isEmpty,
+            proactiveEnabled: store.proactiveSuggestionsEnabled,
+            suggestionCount: store.assistantSuggestions.count
+        )
     }
 
-    private var inputDrawer: some View {
+    /// Unified Quick Actions / Scenes and "For You" suggestions drawer; folded by default and
+    /// remembered per user so the first screen stays at ≤3 stacked layers.
+    private var showsQuickDrawer: Bool {
+        PanelQuickDrawerPolicy.shouldShowDrawer(
+            isExpanded: quickDrawerState.isExpanded,
+            hasContent: hasQuickDrawerContent,
+            isSearching: search.isSearching,
+            isEditing: isEditing,
+            isListening: speech.isListening
+        )
+    }
+
+    func toggleQuickDrawer() {
+        withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) {
+            let expanded = quickDrawerState.toggle()
+            if expanded {
+                store.refreshProactiveSuggestionCacheIfStale()
+            }
+        }
+    }
+
+    private var quickDrawer: some View {
         VStack(alignment: .leading, spacing: 7) {
             if store.showQuickActionsBar {
                 quickActionsAndScenesBar
             }
-            AssistantSuggestionsRow(store: store)
+            if store.proactiveSuggestionsEnabled || !store.assistantSuggestions.isEmpty {
+                AssistantSuggestionsRow(store: store)
+            }
         }
         .tahoeHoverHitTarget()
-        .onHover { isDrawerHovered = $0 }
-        .onDisappear { isDrawerHovered = false }
+        .accessibilityIdentifier("panel-quick-drawer")
     }
 
     /// The single input: typing filters devices, a sentence plus Return runs as an instruction, the

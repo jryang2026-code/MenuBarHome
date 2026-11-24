@@ -15,6 +15,26 @@ final class PanelTransientUIState {
     private var cancelActiveHoldHandler: (() -> Void)?
     private var suppressTapUntilUptime: TimeInterval = 0
 
+    private var deviceControlGesture: (id: UUID, cancel: () -> Void)?
+    var isConfirmationGestureActive: Bool { isAllOffHoldActive || deviceControlGesture != nil }
+
+    func beginDeviceControlGesture(onCancel: @escaping () -> Void) -> UUID {
+        cancelDeviceControlGesture()
+        let id = UUID()
+        deviceControlGesture = (id, onCancel)
+        return id
+    }
+
+    func endDeviceControlGesture(_ id: UUID?) {
+        if deviceControlGesture?.id == id { deviceControlGesture = nil }
+    }
+
+    func cancelDeviceControlGesture() {
+        let gesture = deviceControlGesture
+        deviceControlGesture = nil
+        gesture?.cancel()
+    }
+
     var hasExpandedReminders = false
     var hasExpandedOfflineDrawer = false
     var collapseRemindersHandler: (() -> Void)?
@@ -85,6 +105,7 @@ final class PanelTransientUIState {
     /// the panel hides or loses focus (`ui.md` §4 `全关` & `键盘`).
     func resetOnPanelHide(store: HomeStore?) {
         cancelAllOffHold()
+        cancelDeviceControlGesture()
         if store?.pendingCloudConsent != nil {
             store?.declinePendingCloudRequest()
         }
@@ -100,6 +121,7 @@ final class PanelTransientUIState {
     }
 
     func resetForTesting() {
+        cancelDeviceControlGesture()
         activeHoldSessionId = nil
         isAllOffHoldActive = false
         cancelActiveHoldHandler = nil
@@ -171,6 +193,7 @@ enum PanelKeyRouter {
         case roomOrder(HotkeyAndNotificationManager.RoomOrderKeyAction)
         case endDeviceLayoutEditing
         case presentAssistant(voice: Bool)
+        case toggleQuickDrawer
         case moveFocus(Int)
         case adjustFocusedDevice(Int)
         case toggleFocusedDevice
@@ -190,6 +213,17 @@ enum PanelKeyRouter {
     /// Keys decided before search sees them. nil means search goes next.
     static func beforeSearch(_ key: Key, _ context: Context) -> Action? {
         if key.code == kVK_ANSI_Comma, key.command { return .openSettings }
+        if key.code == kVK_ANSI_K,
+           key.command, !key.shift, !key.option, !key.control,
+           context.isPanelWindow,
+           !context.isShowingOnboarding,
+           !context.isShowingMiReauth,
+           !context.hasActivePrompt,
+           !context.isShowingConnectionDetail,
+           !context.isFormFieldFocused,
+           context.editMode == .none {
+            return .toggleQuickDrawer
+        }
         if let consumes = HotkeyAndNotificationManager.miReauthKeyDownResult(
             keyCode: key.code,
             isShowingMiReauth: context.isShowingMiReauth,

@@ -36,8 +36,8 @@ public struct ClassicControlCenterPanel: View {
     @FocusState private var isSearchFieldFocused: Bool
     /// The assistant requests already acted on, so a panel built after one still replays it once.
     @State private var lastHandledVoiceRequest = 0
-    /// The pointer is over the scene/suggestion drawer; the drawer stays open so a click can land.
-    @State private var isDrawerHovered = false
+    /// Persisted fold state for the unified Quick Actions & "For You" suggestions drawer.
+    @State var quickDrawerState = PanelQuickDrawerState.shared
     @Bindable private var speech = SpeechInputController.shared
     @Environment(\.effectiveReduceMotion) var reduceMotion
     @Environment(\.effectiveReduceTransparency) var reduceTransparency
@@ -281,6 +281,9 @@ public struct ClassicControlCenterPanel: View {
         syncMenuBarWindowSize()
         prioritySnapshot = .capture(from: store)
         isPresented = true
+        if quickDrawerState.isExpanded {
+            store.refreshProactiveSuggestionCacheIfStale()
+        }
         registerTransientUIHandlers()
     }
 
@@ -299,7 +302,6 @@ public struct ClassicControlCenterPanel: View {
         layoutUI.dismissActivePrompt()
         search.end()
         isSearchFieldFocused = false
-        isDrawerHovered = false
     }
 
     private struct HomeContextSignature: Equatable {
@@ -382,12 +384,21 @@ public struct ClassicControlCenterPanel: View {
             }
 
             if !isRoomOrdering {
-                omnibar
-                    .padding(.horizontal, 14)
-                    .padding(.bottom, 4)
+                HStack(spacing: 6) {
+                    omnibar
+                    if hasQuickDrawerContent, !search.isSearching, !isEditing {
+                        PanelQuickDrawerToggleButton(
+                            isExpanded: quickDrawerState.isExpanded,
+                            theme: .classic,
+                            action: toggleQuickDrawer
+                        )
+                    }
+                }
+                .padding(.horizontal, 14)
+                .padding(.bottom, 4)
 
-                if showsInputDrawer {
-                    inputDrawer
+                if showsQuickDrawer {
+                    quickDrawer
                         .padding(.horizontal, 14)
                         .padding(.bottom, 8)
                         .transition(AppleMotion.drawerTransition(reduceMotion: reduceMotion))
@@ -443,6 +454,7 @@ public struct ClassicControlCenterPanel: View {
         .animation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion), value: store.isShowingAssistantBar)
         .animation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion), value: layoutUI.editMode)
         .animation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion), value: kindChipsRevealed)
+        .animation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion), value: quickDrawerState.isExpanded)
         .onChange(of: roomScrollTrigger) { _, value in handleAllPillReselect(value) }
         .onChange(of: store.focusedDeviceId) { _, id in revealClassicDeviceIfNeeded(id) }
         .onChange(of: store.expandedDeviceId) { _, id in revealClassicDeviceIfNeeded(id) }
@@ -679,21 +691,47 @@ public struct ClassicControlCenterPanel: View {
         search.results(store: store)
     }
 
-    /// Scenes and suggestions appear while the input is focused and empty, then fold away.
-    private var showsInputDrawer: Bool {
-        (isSearchFieldFocused || isDrawerHovered) && !search.isSearching && !speech.isListening
+    var hasQuickDrawerContent: Bool {
+        PanelQuickDrawerPolicy.hasContent(
+            showQuickActionsBar: store.showQuickActionsBar,
+            hasScenes: !store.scenes.isEmpty,
+            proactiveEnabled: store.proactiveSuggestionsEnabled,
+            suggestionCount: store.assistantSuggestions.count
+        )
     }
 
-    private var inputDrawer: some View {
+    /// Unified Quick Actions / Scenes and "For You" suggestions drawer; folded by default and
+    /// remembered per user so the first screen stays at ≤3 stacked layers.
+    private var showsQuickDrawer: Bool {
+        PanelQuickDrawerPolicy.shouldShowDrawer(
+            isExpanded: quickDrawerState.isExpanded,
+            hasContent: hasQuickDrawerContent,
+            isSearching: search.isSearching,
+            isEditing: isEditing,
+            isListening: speech.isListening
+        )
+    }
+
+    func toggleQuickDrawer() {
+        withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) {
+            let expanded = quickDrawerState.toggle()
+            if expanded {
+                store.refreshProactiveSuggestionCacheIfStale()
+            }
+        }
+    }
+
+    private var quickDrawer: some View {
         VStack(alignment: .leading, spacing: 7) {
             if store.showQuickActionsBar {
                 quickActionsAndScenesBar
             }
-            AssistantSuggestionsRow(store: store)
+            if store.proactiveSuggestionsEnabled || !store.assistantSuggestions.isEmpty {
+                AssistantSuggestionsRow(store: store)
+            }
         }
         .tahoeHoverHitTarget()
-        .onHover { isDrawerHovered = $0 }
-        .onDisappear { isDrawerHovered = false }
+        .accessibilityIdentifier("panel-quick-drawer")
     }
 
     /// The single input: typing filters devices, a sentence plus Return runs as an instruction, the

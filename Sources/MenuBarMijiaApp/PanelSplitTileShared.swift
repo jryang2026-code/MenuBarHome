@@ -152,6 +152,9 @@ struct SplitDeviceTileHeader<Orb: View, Badge: View, QuickBadge: View>: View {
                     _ = DeviceTileActionLayout.performPrimary(for: device, store: store)
                 }
             }
+            .panelControlGesture(for: device, store: store, ringAlignment: .leading, ringDiameter: 54,
+                                 slideAlignment: .trailing, slideWidth: 64, reserveSlideSpace: true,
+                                 opensCameraLive: true, label: device.name)
         case .adjustOnly:
             singleActionButton(
                 hint: L10n.tr("展开详细控制", "Expand controls"),
@@ -191,6 +194,9 @@ struct SplitDeviceTileHeader<Orb: View, Badge: View, QuickBadge: View>: View {
             .accessibilityLabel(Text(accessibilitySummary))
             .accessibilityHint(Text(DeviceTileActionLayout.primaryHint(for: device, kind: primary)))
             .panelHelp(DeviceTileActionLayout.primaryTooltip(for: device, kind: primary))
+            .panelControlGesture(for: device, store: store, ringAlignment: .leading, ringDiameter: 54,
+                                 slideAlignment: .trailing, slideWidth: 64, reserveSlideSpace: true,
+                                 opensCameraLive: true, label: device.name)
 
             Rectangle()
                 .fill(Color.primary.opacity(colorScheme == .dark ? 0.14 : 0.09))

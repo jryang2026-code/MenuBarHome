@@ -55,6 +55,7 @@ struct MacContextAutomationTests {
 
         #expect(rule.trigger == .away)
         #expect(rule.triggerOptions == AutomationTriggerOptions())
+        #expect(rule.conditions.lastingMinutes == nil)
     }
 
     @Test("Trigger options round-trip and clamp out-of-range values")
@@ -85,6 +86,50 @@ struct MacContextAutomationTests {
         #expect(decoded == options)
     }
 
+    @Test("A lasting condition round-trips without changing existing condition keys")
+    func lastingPayload() throws {
+        let payload = Data(#"{"lastingMinutes":5,"wifi":{"kind":"inAny","ssids":["Home"]}}"#.utf8)
+        let conditions = try JSONDecoder().decode(AutomationConditions.self, from: payload)
+        #expect(conditions.lastingMinutes == 5)
+        #expect(conditions.wifi == .inAny(["Home"]))
+        #expect(conditions.timeWindow == .anytime)
+        let encoded = try JSONEncoder().encode(conditions)
+        let roundTrip = try JSONDecoder().decode(AutomationConditions.self, from: encoded)
+        #expect(roundTrip == conditions)
+    }
+
+    @Test("Schedule JSON uses the Windows keys and omitted or empty weekdays mean daily")
+    func scheduledPayload() throws {
+        let payload = Data(#"{"scheduledTime":{"hour":0,"minute":15,"weekdays":[]}}"#.utf8)
+        let options = try JSONDecoder().decode(AutomationTriggerOptions.self, from: payload)
+        #expect(options.scheduledTime == ScheduledTime(hour: 0, minute: 15, weekdays: []))
+        let encoded = try JSONEncoder().encode(options)
+        let dictionary = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        let schedule = try #require(dictionary["scheduledTime"] as? [String: Any])
+        #expect(schedule["hour"] as? Int == 0)
+        #expect(schedule["minute"] as? Int == 15)
+        #expect(schedule["weekdays"] as? [Int] == [])
+        #expect(event(.scheduledTime, previous: nil, current: MacContextSnapshot(), options: options, at: date(0, 15)) != nil)
+        let daily = AutomationTriggerOptions(scheduledTime: ScheduledTime(hour: 0, minute: 15))
+        #expect(event(.scheduledTime, previous: nil, current: MacContextSnapshot(), options: daily, at: date(0, 15)) != nil)
+    }
+
+    @Test("A spring-forward gap does not replay the missing minute and timezone changes move the schedule")
+    func scheduledSpringForwardAndTimeZone() throws {
+        var pacific = utcCalendar
+        pacific.timeZone = try #require(TimeZone(identifier: "America/Los_Angeles"))
+        let formatter = ISO8601DateFormatter()
+        let before = try #require(formatter.date(from: "2026-03-08T09:59:00Z"))
+        let after = before.addingTimeInterval(60)
+        let options = AutomationTriggerOptions(scheduledTime: ScheduledTime(hour: 2, minute: 30))
+        let snapshot = MacContextSnapshot()
+        #expect(event(.scheduledTime, previous: nil, current: snapshot, options: options, at: before, calendar: pacific) == nil)
+        #expect(event(.scheduledTime, previous: nil, current: snapshot, options: options, at: after, calendar: pacific) == nil)
+        let utcMatch = date(2, 30)
+        #expect(event(.scheduledTime, previous: nil, current: snapshot, options: options, at: utcMatch, calendar: utcCalendar) != nil)
+        #expect(event(.scheduledTime, previous: nil, current: snapshot, options: options, at: utcMatch, calendar: pacific) == nil)
+    }
+
     @Test("A disabled rule never produces an event")
     func disabledRuleProducesNoEvent() {
         let rule = AutomationRule(
@@ -99,6 +144,21 @@ struct MacContextAutomationTests {
             current: current,
             at: date(12)
         ).isEmpty)
+    }
+
+    @Test("Scheduled rules use local wall time and weekday mapping")
+    func scheduledRulesUseLocalWallTimeAndWeekdays() {
+        let rule = AutomationRule(
+            trigger: .scheduledTime,
+            action: .quickAction(.lightsOff),
+            triggerOptions: AutomationTriggerOptions(
+                scheduledTime: ScheduledTime(hour: 12, minute: 0, weekdays: [1])
+            )
+        )
+        let monday = date(12, day: 15)
+        let tuesday = date(12, day: 16)
+        #expect(MacContextAutomation.events(for: rule, previous: nil, current: MacContextSnapshot(), at: monday, calendar: utcCalendar).count == 1)
+        #expect(MacContextAutomation.events(for: rule, previous: nil, current: MacContextSnapshot(), at: tuesday, calendar: utcCalendar).isEmpty)
     }
 
     @Test("Camera and microphone fire only on the matching transition")
@@ -345,5 +405,56 @@ struct MacContextAutomationTests {
         #expect(!deduper.shouldFire("calendar.1", at: start.addingTimeInterval(300), cooldown: 600))
         #expect(deduper.shouldFire("calendar.1", at: start.addingTimeInterval(600), cooldown: 600))
         #expect(deduper.shouldFire("calendar.2", at: start.addingTimeInterval(10), cooldown: 600))
+    }
+
+    @Test("macOS trigger source registry exhaustively maps every supported trigger including scheduledTime")
+    func macOSTriggerRegistryExhaustive() {
+        #expect(!AutomationTrigger.macOSSupportedTriggers.isEmpty)
+        #expect(Set(AutomationTrigger.macOSSupportedTriggers).count == AutomationTrigger.macOSSupportedTriggers.count)
+        #expect(Set(AutomationTrigger.macOSSupportedTriggers) == Set(AutomationTrigger.allCases))
+        #expect(Set(AutomationTrigger.macOSTriggerSources.keys) == Set(AutomationTrigger.macOSSupportedTriggers))
+
+        for trigger in AutomationTrigger.macOSSupportedTriggers {
+            let sources = AutomationTrigger.macOSTriggerSources[trigger] ?? []
+            #expect(!sources.isEmpty)
+            #expect(Set(sources).count == sources.count)
+            #expect(trigger.isSupportedOnMacOS)
+        }
+
+        #expect(AutomationTrigger.scheduledTime.macOSSources == [.macContextObserver])
+        #expect(AutomationTrigger.scheduledTime.usesMacContextObserver)
+        #expect(AutomationTrigger.away.macOSSources == [
+            .workspaceWillSleep, .workspaceScreensDidSleep, .distributedScreenLocked
+        ])
+        #expect(AutomationTrigger.back.macOSSources == [
+            .workspaceDidWake, .workspaceScreensDidWake, .distributedScreenUnlocked
+        ])
+        #expect(AutomationTrigger.screenLocked.macOSSources == [.distributedScreenLocked, .awayArbitrator])
+        #expect(AutomationTrigger.lidClosedSleep.macOSSources == [.workspaceWillSleep, .awayArbitrator])
+        #expect(AutomationTrigger.systemSleep.macOSSources == [.workspaceWillSleep, .awayArbitrator])
+        #expect(AutomationTrigger.externalDisplayConnected.macOSSources == [.screenParametersChanged])
+        #expect(AutomationTrigger.externalDisplayDisconnected.macOSSources == [.screenParametersChanged])
+    }
+
+    @Test("Unavailable camera, microphone, or unknown power/battery readings never fabricate transitions")
+    func unavailableSignalsBlockTransitions() {
+        let camUnavailable = MacContextSnapshot(cameraInUse: false, isCameraUsageAvailable: false)
+        let camActive = MacContextSnapshot(cameraInUse: true, isCameraUsageAvailable: true)
+        #expect(event(.cameraInUse, previous: camUnavailable, current: camActive) == nil)
+        #expect(event(.cameraNotInUse, previous: camActive, current: camUnavailable) == nil)
+
+        let micUnavailable = MacContextSnapshot(microphoneInUse: false, isMicrophoneUsageAvailable: false)
+        let micActive = MacContextSnapshot(microphoneInUse: true, isMicrophoneUsageAvailable: true)
+        #expect(event(.microphoneInUse, previous: micUnavailable, current: micActive) == nil)
+        #expect(event(.microphoneNotInUse, previous: micActive, current: micUnavailable) == nil)
+
+        let unknownPower = MacContextSnapshot(powerSource: .unknown, batteryPercent: nil)
+        let batteryMissingPercent = MacContextSnapshot(powerSource: .battery, batteryPercent: nil)
+        let batteryLow = MacContextSnapshot(powerSource: .battery, batteryPercent: 10)
+        let ac = MacContextSnapshot(powerSource: .ac, batteryPercent: 80)
+        #expect(event(.powerConnected, previous: unknownPower, current: ac) == nil)
+        #expect(event(.powerDisconnected, previous: unknownPower, current: batteryLow) == nil)
+        #expect(event(.batteryBelowThreshold, previous: unknownPower, current: batteryLow) == nil)
+        #expect(event(.batteryBelowThreshold, previous: batteryMissingPercent, current: batteryLow) == nil)
     }
 }

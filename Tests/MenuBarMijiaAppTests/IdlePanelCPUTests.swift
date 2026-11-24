@@ -33,7 +33,7 @@ struct IdlePanelCPUTests {
         }
     }
 
-    @Test("Hiding the panel unmounts NSHostingView and removes mouse monitors in both themes", arguments: [
+    @Test("Hiding the panel removes mouse monitors immediately and unmounts NSHostingView after warm-unload expiry in both themes", arguments: [
         PanelTheme.liquidGlass,
         PanelTheme.classic,
     ])
@@ -44,6 +44,10 @@ struct IdlePanelCPUTests {
         let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         let controller = MenuBarPanelController(statusItem: statusItem, userDefaults: defaults)
         controller.presentsActively = false
+        var scheduledUnloads: [(delay: TimeInterval, work: DispatchWorkItem)] = []
+        controller.warmUnloadScheduler = { delay, work in
+            scheduledUnloads.append((delay, work))
+        }
         controller.install(with: store)
         defer { controller.uninstall() }
 
@@ -64,19 +68,27 @@ struct IdlePanelCPUTests {
             Self.pumpMainRunLoop(seconds: 0.03)
 
             #expect(panel.isVisible == false, "cycle \(cycle): panel must be ordered out after hidePanel")
-            #expect(panel.contentView == nil, "cycle \(cycle): contentView must be nil when hidden")
-            #expect(controller.hostedPanelTheme == nil)
             #expect(!controller.hasActiveMouseMonitors)
             #expect(store.pollingContext.panelVisible == false)
+            #expect(panel.contentView != nil, "cycle \(cycle): hosting stays warm until 45 s timer fires")
+            #expect(controller.isWarmUnloadPending)
+
+            let unload = try #require(scheduledUnloads.last)
+            #expect(unload.delay == MenuBarPanelController.warmUnloadDelay)
+            unload.work.perform()
+
+            #expect(panel.contentView == nil, "cycle \(cycle): contentView must be nil after warm unload")
+            #expect(controller.hostedPanelTheme == nil)
 
             controller.showPanel()
             let rebuiltHosting = try #require(panel.contentView)
             #expect(rebuiltHosting !== previousHosting)
             controller.hidePanel(animated: false)
+            scheduledUnloads.last?.work.perform()
         }
     }
 
-    @Test("Animated Liquid Glass close tears down contentView and mouse monitors on completion")
+    @Test("Animated Liquid Glass close removes monitors on completion and unmounts after warm-unload expiry")
     func animatedLiquidGlassCloseUnmountsOnCompletion() async throws {
         _ = NSApplication.shared
         let (store, defaults) = try await Self.makeStore(theme: .liquidGlass)
@@ -85,6 +97,10 @@ struct IdlePanelCPUTests {
         let controller = MenuBarPanelController(statusItem: statusItem, userDefaults: defaults)
         controller.presentsActively = true
         controller.shouldReduceMotion = { true }
+        var scheduledUnloads: [(delay: TimeInterval, work: DispatchWorkItem)] = []
+        controller.warmUnloadScheduler = { delay, work in
+            scheduledUnloads.append((delay, work))
+        }
         controller.install(with: store)
         defer { controller.uninstall() }
 
@@ -106,9 +122,16 @@ struct IdlePanelCPUTests {
         }
         #expect(controller.isClosing == false)
         #expect(panel.isVisible == false)
+        #expect(!controller.hasActiveMouseMonitors)
+        #expect(controller.isWarmUnloadPending)
+        #expect(panel.contentView != nil)
+
+        let unload = try #require(scheduledUnloads.last)
+        #expect(unload.delay == MenuBarPanelController.warmUnloadDelay)
+        unload.work.perform()
+
         #expect(panel.contentView == nil)
         #expect(controller.hostedPanelTheme == nil)
-        #expect(!controller.hasActiveMouseMonitors)
     }
 
     @Test("Reopening during an animated close cancels teardown and keeps the panel mounted")

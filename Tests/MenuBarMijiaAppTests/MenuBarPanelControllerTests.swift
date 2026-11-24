@@ -1276,10 +1276,14 @@ struct MenuBarPanelControllerTests {
         }
     }
 
-    @Test("Hiding orders the window out, unmounts the SwiftUI tree, removes mouse monitors, and posts the hide notification")
+    @Test("Hiding orders the window out, removes mouse monitors, posts hide, and unmounts after the 45 s warm-unload grace")
     func hidePanelUnmountsContent() async throws {
         let (store, _) = try await makeStore()
         let controller = makeController(store: store)
+        var scheduledUnloads: [(delay: TimeInterval, work: DispatchWorkItem)] = []
+        controller.warmUnloadScheduler = { delay, work in
+            scheduledUnloads.append((delay, work))
+        }
         defer { controller.uninstall() }
 
         #expect(!controller.hasActiveMouseMonitors)
@@ -1303,10 +1307,15 @@ struct MenuBarPanelControllerTests {
         #expect(didHide)
         #expect(controller.isPanelVisible == false)
         #expect(panel.isVisible == false)
-        #expect(panel.contentView == nil)
-        #expect(controller.hostedPanelTheme == nil)
         #expect(!controller.hasActiveMouseMonitors)
         #expect(controller.panelWindow === panel, "the window is reused, not recreated")
+        #expect(panel.contentView != nil, "hosting tree stays warm during the 45 s grace window")
+        #expect(scheduledUnloads.count == 1)
+        #expect(scheduledUnloads.first?.delay == MenuBarPanelController.warmUnloadDelay)
+
+        scheduledUnloads.first?.work.perform()
+        #expect(panel.contentView == nil)
+        #expect(controller.hostedPanelTheme == nil)
     }
 
     @Test("Scanning from the Settings toast opens the panel that owns the QR view")

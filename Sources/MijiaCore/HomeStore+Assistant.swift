@@ -13,6 +13,8 @@ enum AssistantAutoResetTiming: Sendable {
     case production
     /// Replaces both production delays.
     case fixed(Duration)
+    /// Lets a test release the sleep for the requested delay.
+    case controlledSleep(@Sendable (Duration) async -> Void)
     /// Keeps the reply (and its receipt) until something else changes the state.
     case never
 }
@@ -2410,28 +2412,30 @@ extension HomeStore {
         assistantResetTask = nil
         switch state {
         case .done, .failed, .awaitingChoice:
-            guard let delay = assistantResetDelay(for: state) else { return }
+            let timing = assistantAutoResetTiming
+            if case .never = timing { return }
+            let productionDelay: Duration = if case .awaitingChoice = state { .seconds(8) } else { .seconds(3.2) }
+            let delay: Duration
+            switch timing {
+            case .production, .controlledSleep:
+                delay = productionDelay
+            case .fixed(let fixedDelay):
+                delay = fixedDelay
+            case .never:
+                return
+            }
             assistantResetTask = Task { [weak self] in
-                try? await Task.sleep(for: delay)
+                if case .controlledSleep(let sleep) = timing {
+                    await sleep(delay)
+                } else {
+                    try? await Task.sleep(for: delay)
+                }
                 guard !Task.isCancelled, let self, self.assistantState == state else { return }
                 self.assistantState = .idle
                 self.lastAssistantReceipt = nil
             }
         case .idle, .thinking:
             break
-        }
-    }
-
-    /// A "tap a suggestion" hint stays longer so it can be read next to the chips.
-    private func assistantResetDelay(for state: AssistantState) -> Duration? {
-        switch assistantAutoResetTiming {
-        case .production:
-            if case .awaitingChoice = state { return .seconds(8) }
-            return .seconds(3.2)
-        case .fixed(let delay):
-            return delay
-        case .never:
-            return nil
         }
     }
 }

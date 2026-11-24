@@ -1014,8 +1014,9 @@ describe("MiotSynthesizer & MiotCommandMapper", () => {
     };
     let networkUp = false;
     let fetches = 0;
-    const resolver = new MiotSpecResolver(async () => {
-      fetches += 1;
+    const resolver = new MiotSpecResolver(async (req) => {
+      // Official multiLanguage is fetched alongside a successful spec; count spec fetches only.
+      if (req.url.includes("/instance?type=")) fetches += 1;
       if (!networkUp) throw new Error("network down");
       return { status: 200, headers: {}, body: JSON.stringify(released) };
     });

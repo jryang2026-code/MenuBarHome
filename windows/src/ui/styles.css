@@ -292,6 +292,35 @@ body {
     0 1px 4px rgba(0, 0, 0, 0.08);
 }
 
+/* Native Win11 Classic transient Acrylic (Build >= 22621): remove 16px CSS drop-shadow padding
+   and hand outer shadow + rounding over to DWM (DWMWCP_ROUND + DWMSBT_TRANSIENTWINDOW). */
+#app[data-panel-theme="classic"][data-native-backdrop="acrylic"] {
+  --panel-inset: 0px;
+  padding: 0;
+}
+
+#app[data-panel-theme="classic"][data-native-backdrop="acrylic"] > .cc-popover,
+#app[data-panel-theme="classic"][data-native-backdrop="acrylic"] .cc-popover.is-unified-popover {
+  --r-flyout: 8px;
+  width: 100%;
+  max-height: 100vh;
+  border-radius: 8px;
+  box-shadow: none;
+  background: linear-gradient(
+    180deg,
+    rgba(32, 33, 38, clamp(0.48, calc(var(--panel-opacity, 0.88) * 0.68), 0.82)) 0%,
+    rgba(24, 25, 30, clamp(0.54, calc(var(--panel-opacity, 0.88) * 0.74), 0.86)) 100%
+  );
+}
+
+#app[data-panel-theme="classic"][data-native-backdrop="acrylic"] .cc-popover.is-unified-popover.scheme-light {
+  background: linear-gradient(
+    180deg,
+    rgba(246, 246, 248, clamp(0.56, calc(var(--panel-opacity, 0.90) * 0.72), 0.86)) 0%,
+    rgba(238, 240, 244, clamp(0.62, calc(var(--panel-opacity, 0.90) * 0.78), 0.88)) 100%
+  );
+}
+
 .win-island {
   border-radius: var(--r-flyout);
   background: rgba(var(--win-island-rgb), var(--panel-alpha));
@@ -1187,6 +1216,55 @@ details.win-notif-card-ghost > :not(summary) {
   display: none;
 }
 
+/* W2A-9b / P1-3: the single 快捷 capsule folds the strip and the For You cards as one layer. */
+.cc-quick-drawer-toggle {
+  height: 27px;
+  padding: 0 8px;
+  border-radius: 999px;
+  border: 1px solid var(--win-control-stroke);
+  background: var(--win-control-bg);
+  color: var(--text-primary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  flex-shrink: 0;
+  white-space: nowrap;
+  cursor: pointer;
+  font-family: "Segoe UI Variable Small", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-size: 12px;
+  line-height: 16px;
+  transition:
+    background-color var(--dur-fast) var(--ease-standard),
+    border-color var(--dur-fast) var(--ease-standard);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .cc-quick-drawer-toggle:hover:not([aria-expanded="true"]) {
+    background: var(--win-control-hover);
+  }
+}
+
+.cc-quick-drawer-toggle svg {
+  width: 12px;
+  height: 12px;
+}
+
+.cc-quick-drawer-toggle[aria-expanded="true"] {
+  background: var(--win-accent);
+  border-color: var(--win-accent);
+  color: #ffffff;
+}
+
+.cc-quick-drawer-toggle:focus-visible {
+  outline: 2px solid var(--win-accent);
+  outline-offset: 2px;
+}
+
+#app[data-quick-drawer="collapsed"] [data-quick-drawer-item] {
+  display: none;
+}
+
 .cc-quick-pill {
   height: 27px;
   padding: 0 7px;
@@ -2038,6 +2116,64 @@ details.win-notif-card-ghost > :not(summary) {
 .cc-tile.is-subpage .cc-tile-drawer,
 .is-subpage-ghost .cc-tile-drawer {
   border-top: none;
+}
+
+.cc-camera-still-wall {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.cc-camera-still-tile {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-height: 74px;
+  max-height: 110px;
+  aspect-ratio: 16 / 9;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.18);
+  overflow: hidden;
+  cursor: pointer;
+}
+
+.cc-camera-still-tile:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.cc-camera-still-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.cc-camera-still-placeholder {
+  color: var(--text-secondary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.cc-camera-still-label {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  max-width: 100%;
+  padding: 3px 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.55);
+  border-top-right-radius: 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .cc-facet-section {
@@ -3796,10 +3932,126 @@ button.cc-footer-label.is-action { color: var(--win-critical); text-decoration: 
 .cc-camera-stage > img,
 .cc-camera-stage > video {
   display: block;
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
   transform-origin: center center;
   transition: transform var(--dur-fast) var(--ease-decelerate);
 }
 
+.cc-camera-stage.is-portrait {
+  aspect-ratio: 3 / 4;
+  max-height: 440px;
+  width: auto;
+  margin-inline: auto;
+}
+
+html.is-camera-pip-window,
+html.is-camera-pip-window body,
+html.is-camera-pip-window #app {
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  margin: 0;
+  overflow: hidden;
+  background: transparent;
+}
+
+.cc-pip-shell {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  box-sizing: border-box;
+  border-radius: var(--r-flyout);
+  background: var(--win-sheet-bg);
+  border: 1px solid var(--win-island-stroke);
+  box-shadow: inset 0 1px 0 var(--win-island-catchlight), var(--win-island-shadow);
+  overflow: hidden;
+}
+
+.cc-pip-drag-handle {
+  cursor: grab;
+  user-select: none;
+}
+
+.cc-pip-drag-handle:active {
+  cursor: grabbing;
+}
+
+.cc-pip-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.cc-pip-header-actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+html.is-camera-pip-window .cc-camera-stage {
+  flex: 1 1 auto;
+  min-height: 120px;
+  width: 100%;
+}
+
+html.is-camera-pip-window .cc-camera-stage.is-portrait {
+  max-height: none;
+  width: 100%;
+}
+
+.cc-pip-footer {
+  flex-shrink: 0;
+}
+
+.cc-pip-countdown {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  background: rgba(249, 115, 22, 0.24);
+  border: 1px solid rgba(249, 115, 22, 0.45);
+  color: var(--text-primary);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.cc-pip-watch-config {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: var(--r-card);
+  background: var(--win-card-bg);
+  border: 1px solid var(--win-card-stroke);
+  font-size: 12px;
+}
+
+.cc-pip-config-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+
+.cc-pip-pin-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.cc-pip-pinned-switches {
+  flex-shrink: 0;
+}
 .cc-rotate-btn {
   width: auto;
   min-width: 28px;
@@ -4676,6 +4928,32 @@ html.is-settings-window .cc-settings-sheet {
 
 html.is-settings-window #btn-close-settings {
   display: none;
+}
+
+/* Native Win11 Mica backdrop for the standalone settings window (Build >= 22621). */
+html.is-settings-window[data-native-backdrop="mica"],
+html.is-settings-window[data-native-backdrop="mica"] body,
+html.is-settings-window[data-native-backdrop="mica"] #app,
+html.is-settings-window[data-native-backdrop="mica"] .cc-popover,
+html.is-settings-window[data-native-backdrop="mica"] .cc-sheet-backdrop,
+html.is-settings-window[data-native-backdrop="mica"] .cc-settings-sheet {
+  background: transparent !important;
+}
+
+html.is-settings-window[data-native-backdrop="mica"] .cc-settings-sidebar {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+html.is-settings-window[data-native-backdrop="mica"] .cc-popover.scheme-light .cc-settings-sidebar {
+  background: rgba(255, 255, 255, 0.36);
+}
+
+html.is-settings-window[data-native-backdrop="mica"] .cc-settings-main {
+  background: rgba(28, 28, 30, 0.42);
+}
+
+html.is-settings-window[data-native-backdrop="mica"] .cc-popover.scheme-light .cc-settings-main {
+  background: rgba(255, 255, 255, 0.54);
 }
 
 .cc-btn,
@@ -5896,6 +6174,7 @@ html.is-settings-window #btn-close-settings {
   font-weight: 500;
 }
 #app[data-panel-theme="classic"] .cc-room-tools { display: flex; align-items: center; gap: 5px; flex-shrink: 0; }
+#app[data-panel-theme="classic"] .cc-quick-drawer-toggle { height: 28px; }
 #app[data-panel-theme="classic"] .cc-room-tools .cc-circle-btn.is-small {
   width: 28px;
   height: 28px;
