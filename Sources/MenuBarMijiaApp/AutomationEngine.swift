@@ -787,6 +787,9 @@ final class AutomationEngine {
                     L10n.tr("上下文还原需要确认，已跳过", "Context restore requires confirmation and was skipped"),
                     isError: true
                 )
+                // The safety gate must not leave a pending frame that can later turn the device on
+                // without a fresh, explicit decision. Drop the whole plan without issuing writes.
+                contextStack.commitRestore(plan, restoredDeviceIDs: Set(intents.map(\.targetId)))
                 continue
             }
             let outcome = await store.runAutomation(

@@ -71,6 +71,22 @@ public enum AutomationTrigger: String, CaseIterable, Codable, Identifiable, Send
 
     public var id: String { rawValue }
 
+    /// The natural end signal for a lasting context. One-shot and asymmetric triggers have no
+    /// paired exit, so Settings does not offer context restoration for them.
+    public var pairedContextTrigger: AutomationTrigger? {
+        switch self {
+        case .cameraInUse: return .cameraNotInUse
+        case .cameraNotInUse: return .cameraInUse
+        case .focusModeEnabled: return .focusModeDisabled
+        case .focusModeDisabled: return .focusModeEnabled
+        case .microphoneInUse: return .microphoneNotInUse
+        case .microphoneNotInUse: return .microphoneInUse
+        case .powerConnected: return .powerDisconnected
+        case .powerDisconnected: return .powerConnected
+        default: return nil
+        }
+    }
+
     public var title: String {
         switch self {
         case .scheduledTime:
