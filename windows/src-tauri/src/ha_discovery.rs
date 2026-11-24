@@ -583,11 +583,9 @@ async fn run_mdns_discovery_inner(timeout: Duration) -> Result<Vec<HaDiscoveredI
 
         let packet_len = match &mcast_listener {
             Some(mcast) => {
-                let recv_pair = select(
-                    pin!(ephemeral.recv_from(&mut buf_ephemeral)),
-                    pin!(mcast.recv_from(&mut buf_mcast)),
-                );
-                match tokio::time::timeout(wait_for, recv_pair).await {
+                let eph_fut = pin!(ephemeral.recv_from(&mut buf_ephemeral));
+                let mcast_fut = pin!(mcast.recv_from(&mut buf_mcast));
+                match tokio::time::timeout(wait_for, select(eph_fut, mcast_fut)).await {
                     Ok(Either::Left((Ok((n, _)), _))) => Some((true, n)),
                     Ok(Either::Right((Ok((n, _)), _))) => Some((false, n)),
                     _ => None,
