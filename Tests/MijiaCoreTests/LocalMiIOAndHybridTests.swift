@@ -4549,6 +4549,122 @@ struct HybridProviderAndDoorbellTests {
 
         await provider.shutdown()
     }
+
+    @Test("Shared miio_protocol_golden.json: packet encode/decode, HELLO verdicts, tokens, RFC1918, firmware JSON")
+    func miioProtocolGoldenCorpusMatchesSwiftImplementation() throws {
+        struct PacketVector: Decodable {
+            let name: String
+            let deviceId: UInt32
+            let stamp: UInt32
+            let unknown: UInt32
+            let token: String
+            let key: String
+            let iv: String
+            let payload: String
+            let checksum: String
+            let packet: String
+        }
+        struct HelloCase: Decodable {
+            let name: String
+            let token: String
+            let packet: String
+            let verdict: String
+        }
+        struct TokenCase: Decodable {
+            let raw: String
+            let valid: Bool
+        }
+        struct PrivateIPCase: Decodable {
+            let ip: String
+            let valid: Bool
+        }
+        struct MalformedJSONCase: Decodable {
+            let name: String
+            let input: String
+            let expected: String
+        }
+        struct GoldenCorpus: Decodable {
+            let helloPacket: String
+            let packetVectors: [PacketVector]
+            let helloChecksumCases: [HelloCase]
+            let tokenCases: [TokenCase]
+            let privateIpCases: [PrivateIPCase]
+            let malformedJsonCases: [MalformedJSONCase]
+        }
+
+        func hexEncode(_ data: Data) -> String {
+            data.map { String(format: "%02x", $0) }.joined()
+        }
+        func hexDecode(_ hex: String) -> Data {
+            var bytes: [UInt8] = []
+            bytes.reserveCapacity(hex.count / 2)
+            var idx = hex.startIndex
+            while idx < hex.endIndex {
+                let next = hex.index(idx, offsetBy: 2)
+                bytes.append(UInt8(hex[idx..<next], radix: 16)!)
+                idx = next
+            }
+            return Data(bytes)
+        }
+
+        let fixtureURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Fixtures/miio_protocol_golden.json")
+        let corpus = try JSONDecoder().decode(GoldenCorpus.self, from: Data(contentsOf: fixtureURL))
+
+        #expect(hexEncode(MiIOPacket.helloPacket) == corpus.helloPacket)
+
+        for vector in corpus.packetVectors {
+            let token = try #require(MiIOPacket.validateToken(vector.token), "\(vector.name)")
+            let (key, iv) = try MiIOCrypto.deriveKeyAndIV(token: token)
+            #expect(hexEncode(key) == vector.key, "\(vector.name) key")
+            #expect(hexEncode(iv) == vector.iv, "\(vector.name) iv")
+
+            let payloadData = Data(vector.payload.utf8)
+            let encoded = try MiIOPacket.encode(
+                deviceId: vector.deviceId,
+                stamp: vector.stamp,
+                token: token,
+                payload: payloadData,
+                unknown: vector.unknown
+            )
+            #expect(hexEncode(encoded) == vector.packet, "\(vector.name) encode")
+
+            let (header, decoded) = try MiIOPacket.decode(encoded, token: token)
+            #expect(header.deviceId == vector.deviceId, "\(vector.name) deviceId")
+            #expect(header.stamp == vector.stamp, "\(vector.name) stamp")
+            #expect(header.unknown == vector.unknown, "\(vector.name) unknown")
+            #expect(hexEncode(header.checksum) == vector.checksum, "\(vector.name) checksum")
+            #expect(decoded == payloadData, "\(vector.name) decode")
+        }
+
+        for item in corpus.helloChecksumCases {
+            let token = try #require(MiIOPacket.validateToken(item.token), "\(item.name)")
+            let packet = hexDecode(item.packet)
+            let expected: MiIOPacket.HelloChecksumVerdict
+            switch item.verdict {
+            case "md5Match": expected = .md5Match
+            case "tokenEcho": expected = .tokenEcho
+            case "inconclusive": expected = .inconclusive
+            case "mismatch": expected = .mismatch
+            default: Issue.record("Unknown verdict \(item.verdict)"); continue
+            }
+            #expect(MiIOPacket.helloChecksumVerdict(packet, token: token) == expected, "\(item.name)")
+        }
+
+        for item in corpus.tokenCases {
+            #expect((MiIOPacket.validateToken(item.raw) != nil) == item.valid, "\(item.raw)")
+        }
+
+        for item in corpus.privateIpCases {
+            #expect(LocalMiIOClient.isPrivateRFC1918IPv4(item.ip) == item.valid, "\(item.ip)")
+        }
+
+        for item in corpus.malformedJsonCases {
+            #expect(cleanMalformedFirmwareJSON(item.input) == item.expected, "\(item.name)")
+        }
+    }
 }
 
 func lightBrightness(_ device: SmartDevice?) -> Int? {

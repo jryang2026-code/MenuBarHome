@@ -6,6 +6,7 @@ mod companion;
 mod desktop_shell;
 mod job_object;
 mod credentials;
+mod miio_crypto;
 mod network;
 mod placement;
 mod system_events;

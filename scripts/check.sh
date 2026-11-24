@@ -149,7 +149,7 @@ check_secret_leaks() {
             echo "❌ 检测到疑似 JWT Token，请移除后再提交！"
             return 1
         fi
-        lan_ip_hits="$(printf '%s\n' "$combined_hits" | grep -E '10\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}' | grep -Ev '^Tests[/\\]+Fixtures[/\\]+local_network_endpoint_golden\.json:|^scripts[/\\]+hooks[/\\]+pre-push:' || true)"
+        lan_ip_hits="$(printf '%s\n' "$combined_hits" | grep -E '10\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}' | grep -Ev '^Tests[/\\]+Fixtures[/\\]+(local_network_endpoint|miio_protocol)_golden\.json:|^scripts[/\\]+hooks[/\\]+pre-push:' || true)"
         debug_port_hits="$(printf '%s\n' "$combined_hits" | grep -F 'localhost:3425' | grep -Ev '^Tests[/\\]+MijiaCoreTests[/\\]+AssistantTests\.swift:|^scripts[/\\]+check\.sh:' || true)"
         if [ -n "$lan_ip_hits" ] || [ -n "$debug_port_hits" ]; then
             [ -n "$lan_ip_hits" ] && printf '%s\n' "$lan_ip_hits"
