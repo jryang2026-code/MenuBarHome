@@ -21,6 +21,25 @@ import { deviceEnvironmentReading, environmentReadingPriority, type ConnectionSt
 import type { CapabilityIndexedDevice, SafetySignalKind } from "./capabilityReferenceVerdict.js";
 import type { HaTypePruneOptions } from "./haTypePruning.js";
 import { defaultStorage } from "./pollingPolicy.js";
+import { classifyControlFailure } from "./controlFailure.js";
+
+const SOURCE_FALLBACK_GRACE_MS = 15_000;
+
+async function awakeTimeMs(): Promise<number | null> {
+  const native = typeof window === "undefined" ? undefined : window.__TAURI_INTERNALS__;
+  if (!native?.invoke) return performance.now();
+  try {
+    const now = await native.invoke<number | null>("awake_time_ms");
+    return typeof now === "number" && Number.isFinite(now) ? now : null;
+  } catch {
+    return null;
+  }
+}
+
+function isAuthenticationFailure(error: unknown): boolean {
+  const kind = classifyControlFailure(error)?.kind;
+  return kind === "sessionExpired" || kind === "tokenRejected" || kind === "signedOut";
+}
 
 export const PINNED_DEVICE_SOURCES_STORAGE_KEY = "menumijia.windows.pinnedDeviceSources.v1";
 export const CANONICAL_DEVICE_REGISTRY_STORAGE_KEY = "menumijia.windows.canonicalDeviceIds.v1";
@@ -361,6 +380,7 @@ export class DeviceSourcePinStorage { private readonly box: DeviceSourcePinBox;
 }
 
 export interface DualSourceInputSnapshot { readonly home: SynthesizedHome;
+  readonly pollCapturedEpoch?: number;
   readonly identity?: string | null;
   readonly identities?: Readonly<Record<string, DeviceSourceIdentity>>;
   readonly lightGroupOwners?: ReadonlyMap<string, string> | Readonly<Record<string, string>>;
@@ -395,6 +415,7 @@ export interface MergedSmartDevice extends AccountScopedSmartDevice { readonly s
 export interface DeviceMergeResult {
   readonly home: Omit<SynthesizedHome, "devices"> & { readonly devices: MergedSmartDevice[] };
   readonly routes: Readonly<Record<string, DeviceMergeRoute>>;
+  readonly pollCapturedEpochs?: Readonly<Record<string, number>>;
   readonly deviceBackends: Readonly<Record<string, HomeBackend>>;
   readonly pairedDeviceIds: ReadonlySet<string>;
   readonly activeBackends: ReadonlySet<HomeBackend>;
@@ -988,6 +1009,10 @@ export const DeviceDeduplicator = {
         ...(Object.keys(mergedFacets).length > 0 ? { deviceFacets: mergedFacets } : {}),
       },
       routes,
+      pollCapturedEpochs: Object.fromEntries(Object.entries(routes).flatMap(([id, route]) => {
+        const captured = (route.backend === "homeAssistant" ? haInput : miInput)?.pollCapturedEpoch;
+        return captured === undefined ? [] : [[id, captured]];
+      })),
       deviceBackends,
       pairedDeviceIds,
       activeBackends,
@@ -1072,13 +1097,18 @@ export class DualSourceCoordinator { public canonical: CanonicalDeviceRegistry;
   private lastKnownPrefIds: ReadonlySet<string> = new Set();
   private lastMerged: DeviceMergeResult | null = null;
   private mutationEpoch = 0;
+  private readonly dropDeadlines: Partial<Record<HomeBackend, number>> = {};
+  private fallbackTimer: ReturnType<typeof setTimeout> | undefined;
+  private fallbackGeneration = 0;
   private sourceStatuses: Record<HomeBackend, ConnectionStatus> = {
     homeAssistant: { kind: "connecting" },
     xiaomiCloud: { kind: "connecting" },
   };
 
   constructor(private readonly storage: Storage | null = defaultStorage(),
-    options: { readonly onRecompute?: (merged: DeviceMergeResult) => void;
+    private readonly options: {
+      readonly onRecompute?: (merged: DeviceMergeResult) => void;
+      readonly awakeTimeMs?: () => number | null | Promise<number | null>;
     } = {}) { this.canonical = CanonicalDeviceRegistry.load(storage);
     this.rooms = RoomIdentityRegistry.load(storage);
     this.pinStorage = new DeviceSourcePinStorage(storage, {
@@ -1102,6 +1132,9 @@ export class DualSourceCoordinator { public canonical: CanonicalDeviceRegistry;
     this.mutationEpoch += 1;
     this.lastHA = null;
     this.lastMi = null;
+    delete this.dropDeadlines.homeAssistant;
+    delete this.dropDeadlines.xiaomiCloud;
+    this.scheduleFallbackRecheck(null);
     this.lastMerged = null;
     this.sourceStatuses = {
       homeAssistant: { kind: "connecting" },
@@ -1124,6 +1157,10 @@ export class DualSourceCoordinator { public canonical: CanonicalDeviceRegistry;
       options.fetchMi(),
     ]);
 
+    const now = (haSettled.status === "rejected" || miSettled.status === "rejected" ||
+      (miSettled.status === "fulfilled" && Object.values(miSettled.value?.accountStatuses ?? {}).some(s => s.kind === "disconnected")))
+      ? await this.readAwakeTime() : null;
+
     if (this.mutationEpoch !== epochAtStart || (options.shouldCommit && !options.shouldCommit())) {
       return {
         merged: this.lastMerged ?? DeviceDeduplicator.merge({}),
@@ -1144,12 +1181,14 @@ export class DualSourceCoordinator { public canonical: CanonicalDeviceRegistry;
       (haSettled.status === "fulfilled" && haSettled.value === null) ||
       (haSettled.status === "rejected" && isHaBlockedRequestError(haSettled.reason));
     if (haWasTurnedOff) {
+      delete this.dropDeadlines.homeAssistant;
       this.lastHA = null;
       this.sourceStatuses.homeAssistant = {
         kind: "disconnected",
         reason: haDisabledReason,
       };
     } else if (haSettled.status === "fulfilled") {
+      delete this.dropDeadlines.homeAssistant;
       this.lastHA = haSettled.value;
       this.sourceStatuses.homeAssistant = { kind: "connected" };
     } else {
@@ -1157,7 +1196,7 @@ export class DualSourceCoordinator { public canonical: CanonicalDeviceRegistry;
         haSettled.reason instanceof Error
           ? haSettled.reason.message
           : String(haSettled.reason);
-      this.lastHA = null;
+      this.lastHA = this.keepWithinGrace("homeAssistant", this.lastHA, now, isAuthenticationFailure(haSettled.reason));
       this.sourceStatuses.homeAssistant = {
         kind: "disconnected",
         reason: haError,
@@ -1167,6 +1206,7 @@ export class DualSourceCoordinator { public canonical: CanonicalDeviceRegistry;
     const miWasTurnedOff = miSettled.status === "fulfilled" && miSettled.value === null;
     if (miSettled.status === "fulfilled") {
       if (miSettled.value === null) {
+        delete this.dropDeadlines.xiaomiCloud;
         this.lastMi = null;
         this.sourceStatuses.xiaomiCloud = {
           kind: "disconnected",
@@ -1180,12 +1220,15 @@ export class DualSourceCoordinator { public canonical: CanonicalDeviceRegistry;
             (s): s is Extract<ConnectionStatus, { readonly kind: "disconnected" }> => s.kind === "disconnected",
           );
           miError = firstDisc?.reason ?? "Xiaomi Cloud disconnected";
-          this.lastMi = null;
+          this.lastMi = this.keepWithinGrace(
+            "xiaomiCloud", this.lastMi, now, statuses.some(s => s.kind === "disconnected" && isAuthenticationFailure(s.reason)),
+          );
           this.sourceStatuses.xiaomiCloud = {
             kind: "disconnected",
             reason: miError,
           };
         } else {
+          delete this.dropDeadlines.xiaomiCloud;
           this.lastMi = miSettled.value;
           this.sourceStatuses.xiaomiCloud = { kind: "connected" };
         }
@@ -1194,12 +1237,14 @@ export class DualSourceCoordinator { public canonical: CanonicalDeviceRegistry;
         miSettled.reason instanceof Error
           ? miSettled.reason.message
           : String(miSettled.reason);
-      this.lastMi = null;
+      this.lastMi = this.keepWithinGrace("xiaomiCloud", this.lastMi, now, isAuthenticationFailure(miSettled.reason));
       this.sourceStatuses.xiaomiCloud = {
         kind: "disconnected",
         reason: miError,
       };
     }
+
+    if (now !== null || Object.keys(this.dropDeadlines).length === 0) this.scheduleFallbackRecheck(now, options.languagePreference);
 
     if (!this.lastHA && !this.lastMi) {
       if (haWasTurnedOff && miWasTurnedOff) {
@@ -1229,6 +1274,51 @@ export class DualSourceCoordinator { public canonical: CanonicalDeviceRegistry;
     };
   }
 
+  private readAwakeTime(): number | null | Promise<number | null> {
+    return (this.options.awakeTimeMs ?? awakeTimeMs)();
+  }
+
+  private keepWithinGrace(
+    backend: HomeBackend,
+    snapshot: DualSourceInputSnapshot | null,
+    now: number | null,
+    immediate: boolean,
+  ): DualSourceInputSnapshot | null {
+    if (snapshot && !immediate && now !== null) {
+      const deadline = this.dropDeadlines[backend] ?? now + SOURCE_FALLBACK_GRACE_MS;
+      if (now < deadline) {
+        this.dropDeadlines[backend] = deadline;
+        return snapshot;
+      }
+    }
+    delete this.dropDeadlines[backend];
+    return null;
+  }
+
+  private scheduleFallbackRecheck(now: number | null, languagePreference?: LanguagePreference): void {
+    const generation = ++this.fallbackGeneration;
+    if (this.fallbackTimer !== undefined) clearTimeout(this.fallbackTimer);
+    this.fallbackTimer = undefined;
+    const deadline = Math.min(...Object.values(this.dropDeadlines));
+    if (now === null || !Number.isFinite(deadline) || !this.options.onRecompute) return;
+
+    this.fallbackTimer = setTimeout(async () => {
+      const awake = await this.readAwakeTime();
+      if (generation !== this.fallbackGeneration) return;
+      let changed = false;
+      for (const backend of ["homeAssistant", "xiaomiCloud"] as const) {
+        const expires = this.dropDeadlines[backend];
+        if (expires === undefined || (awake !== null && awake < expires)) continue;
+        delete this.dropDeadlines[backend];
+        if (backend === "homeAssistant") this.lastHA = null;
+        else this.lastMi = null;
+        changed = true;
+      }
+      this.scheduleFallbackRecheck(awake, languagePreference);
+      if (changed) this.options.onRecompute?.(this.mergeCurrent(languagePreference));
+    }, Math.max(1, deadline - now));
+  }
+
   recompute(languagePreference?: LanguagePreference): DeviceMergeResult | null {
     if (!this.lastHA && !this.lastMi) return null;
     return this.mergeCurrent(languagePreference);
@@ -1239,6 +1329,7 @@ export class DualSourceCoordinator { public canonical: CanonicalDeviceRegistry;
     options: { readonly reason?: "disabled" | "disconnected" } = {},
   ): DeviceMergeResult | null {
     this.mutationEpoch += 1;
+    delete this.dropDeadlines.homeAssistant;
     this.lastHA = null;
     this.sourceStatuses.homeAssistant = {
       kind: "disconnected",

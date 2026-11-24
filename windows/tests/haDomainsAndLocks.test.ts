@@ -1024,6 +1024,32 @@ describe("Per-device optimistic write locks & 800ms delayed read-back", () => {
     assert.equal(ticket.isCancelled(), true);
   });
 
+  it("keeps only a written field when a pre-write read arrives after its lease expires", () => {
+    const original: SmartDevice = {
+      id: "lamp",
+      name: "lamp",
+      roomId: "living",
+      roomName: "Living room",
+      model: "yeelink.light",
+      isOnline: true,
+      kind: {
+        kind: "light", entityId: "light.lamp", isOn: false, brightnessPercent: 60,
+        colorTempKelvin: 4000, minKelvin: 2700, maxKelvin: 6500, currentEffect: null, availableEffects: [],
+      },
+    };
+    assert.equal(original.kind.kind, "light");
+    const written = { ...original, kind: { ...original.kind, isOn: true } };
+    const host = { sourceRevision: 1, devices: [written] };
+    lockOptimistic(host, original.id, 3_000, { nowMs: 100, writeEpoch: 1, baselineDevice: original });
+
+    const reported = { ...original, kind: { ...original.kind, brightnessPercent: 25 } };
+    const beforeWrite = mergeHomeSnapshotRespectingLocks(host, [reported], undefined, 3_101, undefined, 0);
+    assert.deepEqual(beforeWrite.devices[0]?.kind, { ...reported.kind, isOn: true });
+
+    const afterWrite = mergeHomeSnapshotRespectingLocks(host, [reported], undefined, 3_102, undefined, 1);
+    assert.deepEqual(afterWrite.devices[0]?.kind, reported.kind);
+  });
+
   it("holds cover locks across stale pre-command origin and mid-travel until target reached or stopped post-travel", () => {
     const makeCover = (positionPercent: number, motion: CoverSpec["motion"]): SmartDevice => ({
       id: "curtain-1",

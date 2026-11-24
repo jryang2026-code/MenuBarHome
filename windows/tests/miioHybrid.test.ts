@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { MiCloudClient, type MiDeviceRecord, type MiRoom } from "../src/core/miCloud/client.js";
-import { MiIOUnconfirmedWriteError } from "../src/core/miCloud/localMiIO.js";
+import { MiIOUnconfirmedWriteError, resetLocalMiIOHealth } from "../src/core/miCloud/localMiIO.js";
 import { MiCloudError } from "../src/core/miCloud/session.js";
 
 const token = "0123456789abcdef0123456789abcdef";
@@ -125,5 +125,28 @@ describe("Xiaomi LAN-first routing", () => {
       [{ id: "shared", name: "shared", dids: [power.did], isSharedHome: true }]);
     await client.action(action);
     assert.deepEqual(lan, []);
+  });
+
+  it("clears LAN cooldown immediately on resetLocalMiIOHealth", async () => {
+    let failLan = true;
+    const { client, lan } = fixture(() => {
+      if (failLan) throw { code: "timeout" };
+      return { values: [{ ...power, value: true }] };
+    });
+    // 3 consecutive failures enter the 30s LAN cooldown.
+    await client.getProps([power]);
+    await client.getProps([power]);
+    await client.getProps([power]);
+    assert.equal(lan.length, 3);
+
+    // During cooldown, LAN is skipped.
+    failLan = false;
+    await client.getProps([power]);
+    assert.equal(lan.length, 3);
+
+    // Network change / resume resets cooldown so LAN is retried immediately.
+    resetLocalMiIOHealth();
+    assert.deepEqual(await client.getProps([power]), new Map([["1001.2.1", true]]));
+    assert.equal(lan.length, 4);
   });
 });
