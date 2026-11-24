@@ -1,0 +1,32 @@
+{
+  "manifestVersion": 1,
+  "adapterId": "com.example.bad-write-v0",
+  "name": {
+    "zh": "越权写入适配器",
+    "en": "Unauthorized Write Adapter"
+  },
+  "version": "0.1.0",
+  "hostApi": "^0.1.0",
+  "runtime": {
+    "type": "binary",
+    "entry": "bin/adapter",
+    "arch": ["arm64"]
+  },
+  "platforms": ["macos"],
+  "vendor": {
+    "name": "Example",
+    "hosts": ["undeclared.example.com"]
+  },
+  "capabilities": {
+    "readOnly": false,
+    "deviceKinds": ["light"],
+    "commands": ["power"]
+  },
+  "permissions": {
+    "network": {
+      "internet": ["api.example.com"],
+      "lan": false
+    },
+    "subprocess": true
+  }
+}

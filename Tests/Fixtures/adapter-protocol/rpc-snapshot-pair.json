@@ -1,0 +1,83 @@
+{
+  "description": "v0 stdio JSON-RPC 2.0 snapshot request/response with factual safetySignals (no severity) and AdapterErrorCode error sample",
+  "sourceScope": "adapter:com.example.aqara-lan-readonly",
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 2,
+    "method": "snapshot",
+    "params": {}
+  },
+  "response": {
+    "jsonrpc": "2.0",
+    "id": 2,
+    "result": {
+      "capturedAt": "2026-11-24T05:00:00Z",
+      "cursor": "rev-42",
+      "rooms": [
+        { "nativeId": "room-kitchen", "name": "厨房" },
+        { "nativeId": "room-living", "name": "客厅" }
+      ],
+      "devices": [
+        {
+          "nativeId": "lumi.158d0001a2b3c4",
+          "identity": {
+            "dids": ["lumi.158d0001a2b3c4"],
+            "macAddresses": ["AA:BB:CC:DD:EE:01"],
+            "uniqueIds": ["aqara:leak:kitchen"]
+          },
+          "name": "厨房水浸传感器",
+          "roomNativeId": "room-kitchen",
+          "kind": "sensor",
+          "model": "lumi.sensor_wleak.aq1",
+          "online": true,
+          "readings": [
+            { "key": "battery", "value": 92, "unit": "%" }
+          ],
+          "safetySignals": [
+            {
+              "kind": "leak",
+              "active": true,
+              "evidence": { "waterDetected": true },
+              "ts": "2026-11-24T04:59:58Z"
+            }
+          ]
+        },
+        {
+          "nativeId": "lumi.158d0001a2b3c5",
+          "identity": {
+            "dids": ["lumi.158d0001a2b3c5"],
+            "macAddresses": ["AA:BB:CC:DD:EE:02"],
+            "uniqueIds": ["aqara:smoke:kitchen"]
+          },
+          "name": "厨房烟雾报警器",
+          "roomNativeId": "room-kitchen",
+          "kind": "sensor",
+          "model": "lumi.sensor_smoke",
+          "online": true,
+          "readings": [
+            { "key": "battery", "value": 88, "unit": "%" }
+          ],
+          "safetySignals": [
+            {
+              "kind": "smoke",
+              "active": false,
+              "ts": "2026-11-24T05:00:00Z"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "errorResponseExample": {
+    "jsonrpc": "2.0",
+    "id": 3,
+    "error": {
+      "code": -32004,
+      "message": "Write methods are unsupported in adapter protocol v0",
+      "data": {
+        "adapterCode": "unsupported",
+        "retryable": false
+      }
+    }
+  }
+}

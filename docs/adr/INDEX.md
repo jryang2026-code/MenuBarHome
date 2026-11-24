@@ -27,4 +27,5 @@
 | [0021](0021-lan-first-hybrid-miio.md) | 2026-11-15 | 已接受 | macOS 落地 miIO UDP 54321 局域网优先混合读写与云端自动回退（取代 ADR-0007）。 |
 | [0022](0022-github-hosted-snapshot-baselines.md) | 2026-11-17 | 已接受 | UI 快照基准改为 GitHub 托管 `macos-26-intel`，不再用维护者的 Mac（取代 ADR-0018 第 5 条）。 |
 | [0023](0023-host-owned-builtin-capabilities.md) | 2026-11-18 | 已接受 | 宿主统一持有内置能力选择、生命周期、引用判决与写入门，保留 ADR-0020 封闭后端并排除第三方代码插件。 |
+| [0024](0024-out-of-process-adapter-protocol.md) | 2026-11-24 | Proposed | 进程外适配器协议 v0 契约（stdio JSON-RPC 2.0、只读方法集、manifest Schema、短期凭据租约与宿主安全不变量，不含运行时代码）。 |
 | [0025](0025-mi-lan-push.md) | 2026-11-24 | Proposed | 仅记录 `miIO.sub` 局域网推送的发现与待确认问题，本阶段不实现。 |
