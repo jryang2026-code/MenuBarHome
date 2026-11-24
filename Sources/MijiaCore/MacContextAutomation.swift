@@ -105,6 +105,19 @@ public enum MacContextAutomation {
         let options = rule.triggerOptions
 
         switch rule.trigger {
+        case .scheduledTime:
+            guard let schedule = options.scheduledTime,
+                  calendar.component(.hour, from: now) == schedule.hour,
+                  calendar.component(.minute, from: now) == schedule.minute else { return [] }
+            let weekday = calendar.component(.weekday, from: now) - 1
+            if let weekdays = schedule.weekdays, !weekdays.contains(weekday) { return [] }
+            let day = calendar.dateComponents([.year, .month, .day], from: now)
+            let key = String(format: "%04d-%02d-%02d-%02d:%02d", day.year ?? 0, day.month ?? 0, day.day ?? 0, schedule.hour, schedule.minute)
+            return [AutomationTriggerEvent(
+                trigger: rule.trigger,
+                dedupeKey: "scheduled.\(rule.id.uuidString).\(key)",
+                cooldown: AutomationPolicy.nightlyCooldown
+            )]
         case .away, .back, .externalDisplayConnected, .externalDisplayDisconnected,
              .screenLocked, .lidClosedSleep, .systemSleep:
             // Notification-driven, including the three precise away triggers. `AwayArbitrator`

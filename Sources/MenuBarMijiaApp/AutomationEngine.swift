@@ -71,6 +71,7 @@ final class AutomationEngine {
     private var lastExternalDisplayCount = 0
     private var activeContextProvider: (any MacContextProviding)?
     private var lastContext: MacContextSnapshot?
+    private var lastingSince: [UUID: Date] = [:]
     /// Away/back notifications drive this so a locked or sleeping Mac does not count as “still
     /// using the computer” for late-night rules; launch-time session state seeds the initial value.
     private var isUserPresent: Bool
@@ -183,6 +184,8 @@ final class AutomationEngine {
             guard rule.isEnabled else { return false }
             if rule.conditions.wifi.isNetworkSpecific { return true }
             switch rule.trigger {
+            case .scheduledTime:
+                return true
             case .away, .back, .screenLocked, .lidClosedSleep, .systemSleep,
                  .externalDisplayConnected, .externalDisplayDisconnected:
                 return false
@@ -259,6 +262,7 @@ final class AutomationEngine {
         activeContextProvider?.stop()
         activeContextProvider = nil
         lastContext = nil
+        lastingSince.removeAll()
         lastKnownWiFi = nil
     }
 
@@ -349,6 +353,8 @@ final class AutomationEngine {
         let previous = lastContext
         lastContext = effective
         let rules = ruleStore.load()
+        let liveRuleIDs = Set(rules.map(\.id))
+        lastingSince = lastingSince.filter { liveRuleIDs.contains($0.key) }
         if let resumedAt {
             // Capture the baseline once so later snapshots cannot suppress newly added events.
             for rule in rules {
@@ -368,7 +374,20 @@ final class AutomationEngine {
             let events = MacContextAutomation.events(
                 for: rule, previous: previous, current: effective, at: now, calendar: calendar
             )
-            guard !events.isEmpty else { continue }
+            let active = Self.isActive(rule: rule, context: effective)
+            if let minutes = rule.conditions.lastingMinutes {
+                if !events.isEmpty { lastingSince[rule.id] = now }
+                if !active {
+                    lastingSince[rule.id] = nil
+                    continue
+                }
+                guard let since = lastingSince[rule.id], now.timeIntervalSince(since) >= TimeInterval(minutes * 60) else {
+                    continue
+                }
+                lastingSince[rule.id] = nil
+            } else {
+                guard !events.isEmpty else { continue }
+            }
             let conditionSSID = rule.trigger == .wifiNetworkLeft
                 ? (previous?.wifiSSID ?? context.wifiSSID)
                 : context.wifiSSID
@@ -384,6 +403,29 @@ final class AutomationEngine {
                         && self.deduper.shouldFire($0.dedupeKey, at: now, cooldown: $0.cooldown)
                 }
             })
+        }
+    }
+
+    private static func isActive(rule: AutomationRule, context: MacContextSnapshot) -> Bool {
+        switch rule.trigger {
+        case .scheduledTime: return true
+        case .cameraInUse: return context.cameraInUse
+        case .cameraNotInUse: return !context.cameraInUse
+        case .microphoneInUse: return context.microphoneInUse
+        case .microphoneNotInUse: return !context.microphoneInUse
+        case .powerConnected: return context.powerSource == .ac
+        case .powerDisconnected: return context.powerSource == .battery
+        case .focusModeEnabled: return context.isFocusActive == true
+        case .focusModeDisabled: return context.isFocusActive == false
+        case .wifiNetworkJoined, .wifiNetworkLeft: return context.wifiSSID != nil
+        case .batteryBelowThreshold:
+            guard let percent = context.batteryPercent else { return false }
+            return context.powerSource == .battery && percent < rule.triggerOptions.batteryThresholdPercent
+        case .calendarMeetingStartingSoon: return !context.meetings.isEmpty
+        case .lateNightUsage: return context.isUserPresent
+        case .away, .back, .screenLocked, .lidClosedSleep, .systemSleep,
+             .externalDisplayConnected, .externalDisplayDisconnected:
+            return false
         }
     }
 

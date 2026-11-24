@@ -65,6 +65,9 @@ struct AutomationSettingsSection: View {
     @State private var newLateNightStart = 23
     @State private var newLateNightEnd = 6
     @State private var newCalendarLeadMinutes = 1
+    @State private var newScheduleHour = 8
+    @State private var newScheduleMinute = 0
+    @State private var newScheduleWeekdays: Set<Int> = []
 
     // Conditions. Kept separate from the trigger parameters above: they apply to every trigger,
     // not just the Wi-Fi one.
@@ -76,6 +79,7 @@ struct AutomationSettingsSection: View {
     @State private var newTimeWindowEnabled = false
     @State private var newTimeStartHour = 22
     @State private var newTimeEndHour = 7
+    @State private var newLastingMinutes = 0
 
     private enum WiFiConditionMode: String, CaseIterable, Identifiable {
         case any, only, exclude
@@ -493,6 +497,11 @@ struct AutomationSettingsSection: View {
     private func triggerParameterDetail(_ rule: AutomationRule) -> String? {
         let options = rule.triggerOptions
         switch rule.trigger {
+        case .scheduledTime:
+            guard let schedule = options.scheduledTime else { return nil }
+            let days = schedule.weekdays?.count == 7 ? L10n.tr("每天", "Every day") : (schedule.weekdays?.map(String.init).joined(separator: ",") ?? L10n.tr("每天", "Every day"))
+            let time = String(format: "%02d:%02d", schedule.hour, schedule.minute)
+            return L10n.format("%@（%@）", "%@ (%@)", time, days)
         case .batteryBelowThreshold:
             return L10n.format(
                 "电量低于 %@%",
@@ -597,6 +606,25 @@ struct AutomationSettingsSection: View {
             .labelsHidden()
             .frame(maxWidth: 170)
             .controlSize(.regular)
+        }
+
+        HStack(spacing: 6) {
+            Toggle(isOn: Binding(
+                get: { newLastingMinutes > 0 },
+                set: { if !$0 { newLastingMinutes = 0 } else if newLastingMinutes == 0 { newLastingMinutes = 5 } }
+            )) {
+                Text(L10n.tr("持续", "For at least"))
+                    .font(.system(size: DesignTokens.TypeSize.caption))
+                    .foregroundStyle(.secondary)
+            }
+            .toggleStyle(.checkbox)
+            if newLastingMinutes > 0 {
+                Stepper(value: $newLastingMinutes, in: 1...1440) {
+                    Text(L10n.format("%@ 分钟", "%@ min", String(newLastingMinutes)))
+                        .font(.system(size: DesignTokens.TypeSize.caption))
+                }
+                .fixedSize()
+            }
         }
 
         HStack(spacing: 6) {
@@ -731,6 +759,26 @@ struct AutomationSettingsSection: View {
                         .font(.system(size: DesignTokens.TypeSize.caption))
                 }
                 .fixedSize()
+            }
+        case .scheduledTime:
+            HStack(spacing: 6) {
+                Text(L10n.tr("时间", "Time")).font(.system(size: DesignTokens.TypeSize.caption)).foregroundStyle(DesignTokens.secondaryText)
+                Stepper(value: $newScheduleHour, in: 0...23) { Text(String(format: "%02d", newScheduleHour)) }
+                    .fixedSize()
+                Text(":")
+                Stepper(value: $newScheduleMinute, in: 0...59) { Text(String(format: "%02d", newScheduleMinute)) }
+                    .fixedSize()
+            }
+            HStack(spacing: 4) {
+                Text(L10n.tr("工作日", "Weekdays")).font(.system(size: DesignTokens.TypeSize.caption)).foregroundStyle(DesignTokens.secondaryText)
+                ForEach(0..<7, id: \.self) { day in
+                    Toggle(String(day), isOn: Binding(
+                        get: { newScheduleWeekdays.contains(day) },
+                        set: { selected in
+                            if selected { newScheduleWeekdays.insert(day) } else { newScheduleWeekdays.remove(day) }
+                        }
+                    )).toggleStyle(.checkbox).labelsHidden()
+                }
             }
         case .wifiNetworkJoined, .wifiNetworkLeft:
             TextField(
@@ -930,7 +978,10 @@ struct AutomationSettingsSection: View {
             wifiSSID: newWiFiSSID,
             lateNightStartHour: newLateNightStart,
             lateNightEndHour: newLateNightEnd,
-            calendarLeadMinutes: newCalendarLeadMinutes
+            calendarLeadMinutes: newCalendarLeadMinutes,
+            scheduledTime: newTrigger == .scheduledTime
+                ? ScheduledTime(hour: newScheduleHour, minute: newScheduleMinute, weekdays: newScheduleWeekdays.isEmpty ? nil : Array(newScheduleWeekdays).sorted())
+                : nil
         )
         let wifi: AutomationWiFiCondition
         switch newWiFiMode {
@@ -948,7 +999,8 @@ struct AutomationSettingsSection: View {
                     isEnabled: newTimeWindowEnabled,
                     startMinute: newTimeStartHour * 60,
                     endMinute: newTimeEndHour * 60
-                )
+                ),
+                lastingMinutes: newLastingMinutes > 0 ? newLastingMinutes : nil
             )
         )
         if let confirmation = rule.highRiskConfirmation(devices: store.devices) {

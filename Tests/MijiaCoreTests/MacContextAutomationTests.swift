@@ -101,6 +101,21 @@ struct MacContextAutomationTests {
         ).isEmpty)
     }
 
+    @Test("Scheduled rules use local wall time and weekday mapping")
+    func scheduledRulesUseLocalWallTimeAndWeekdays() {
+        let rule = AutomationRule(
+            trigger: .scheduledTime,
+            action: .quickAction(.lightsOff),
+            triggerOptions: AutomationTriggerOptions(
+                scheduledTime: ScheduledTime(hour: 12, minute: 0, weekdays: [1])
+            )
+        )
+        let monday = date(12, day: 15)
+        let tuesday = date(12, day: 16)
+        #expect(MacContextAutomation.events(for: rule, previous: nil, current: MacContextSnapshot(), at: monday, calendar: utcCalendar).count == 1)
+        #expect(MacContextAutomation.events(for: rule, previous: nil, current: MacContextSnapshot(), at: tuesday, calendar: utcCalendar).isEmpty)
+    }
+
     @Test("Camera and microphone fire only on the matching transition")
     func cameraAndMicrophoneTransitions() {
         let idle = MacContextSnapshot()
