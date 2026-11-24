@@ -37,17 +37,18 @@
 
 | ID | 关联已有Issue | 模型分派 | 前置依赖 | 通道 | 状态 | PR/SHA | 交接备注 |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| W1-1 D-1 发版文档同步纪律 | — | Hydrogen High | 无 | 快车道main | TODO | | 发版 Checklist 加 README/platform-matrix/GLOSSARY 核对门禁 |
-| W1-2 P0-7 macOS 面板零抢焦 | — | Neon Mid | 无 | PR | TODO | | `.nonactivatingPanel` + 5 护栏；完整 check.sh |
-| W1-3 P0-6 Win 托盘 5 处硬伤 | — | Neon Mid | 无 | PR | TODO | | window.rs / main.rs / companion.rs / desktop_shell.rs；Rust 测试靠云端 |
-| W1-4 P0-3a Win Rust 连接池 + 持久 HA WebSocket | — | Codex sol6.2 | 无 | PR | TODO | | network.rs / home_assistant.rs |
-| W1-5 #443 专注模式名过滤 | #443 | Hydrogen High | W1-1 | PR | TODO | | |
-| W1-6 P0-3b macOS HA subscribe_entities | — | Codex sol6.2 | W1-4 | PR | TODO | | HomeProvider.swift，与 W1-7 macOS 部分串行 |
-| W1-7 P0-4 休眠/网络切换半开 TCP 斩杀 | — | Neon Mid（Win network_monitor.rs）+ Codex sol6.2（macOS） | W1-3、W1-6 | PR | TODO | | 双端拆两个 PR |
-| W1-8 P0-5a Win 米家局域网 Part 2 + 写确认 | #457 | Codex sol6.2 | W1-4 | PR | TODO | | TS 混合路由 |
-| W1-9 P0-5b status=all + Shared/specPatches.json | — | Neon Mid | W1-8 | PR | TODO | | 跨端契约 |
-| W1-10 P0-8 Per-Field writeEpoch 零回弹 | — | Codex sol6.2 | W1-8 | PR | TODO | | 控制写入 + 黄金语料；datasource:1 真机部分 HUMAN_GATE（#411） |
-| W1-11 #424/#446 摄像机桥接监督与 go2rtc 收敛 | #424 #446 | Neon Mid | W1-3 | PR | TODO | | 可延至 Wave 2A 的 P1-2 |
+| W1-1 D-1 发版文档同步纪律 | — | Hydrogen High | 无 | 快车道main | DONE | main 187b6743 | 发版 Checklist 加 README/platform-matrix/GLOSSARY 核对门禁 |
+| W1-2 P0-7 macOS 面板零抢焦 | — | Neon Mid | 无 | PR | DONE | #474 已合 | `.nonactivatingPanel` + 5 护栏；完整 check.sh ；45s 温热卸载 + 200ms 伸缩动画未做（留 Wave 2A P1-3） |
+| W1-3 P0-6 Win 托盘 5 处硬伤 | — | Neon Mid | 无 | PR | DONE | #472 已合 | window.rs / main.rs / companion.rs / desktop_shell.rs；Rust 测试靠云端 |
+| W1-4 P0-3a Win Rust 连接池 + 持久 HA WebSocket | — | Codex sol6.2 | 无 | PR | DONE | #471 + #473 已合 | network.rs / home_assistant.rs |
+| W1-5 #443 专注模式名过滤 | #443 | Hydrogen High | W1-1 | PR | DONE | #475 已合 | |
+| W1-6 P0-3b macOS HA subscribe_entities | — | Codex sol6.2 | W1-4 | PR | DONE | #477 → main d19785d | HomeProvider.swift，与 W1-7 macOS 部分串行 |
+| W1-7 P0-4 休眠/网络切换半开 TCP 斩杀 | — | Neon Mid（Win network_monitor.rs）+ Codex sol6.2（macOS） | W1-3、W1-6 | PR | IN_PROGRESS | W1-7a Neon(Win) + W1-7b Codex(mac) | 双端拆两个 PR |
+| W1-8 P0-5a Win 米家局域网 Part 2 + 写确认 | #457 | Codex sol6.2 | W1-4 | PR | DONE | #478 → main 27a8dfc | TS 混合路由 |
+| W1-9 P0-5b status=all + Shared/specPatches.json | — | Neon Mid | W1-8 | PR | IN_PROGRESS | | 跨端契约 |
+| W1-10 P0-8 Per-Field writeEpoch 零回弹 | — | Codex sol6.2 | W1-8 | PR | IN_PROGRESS | | 控制写入 + 黄金语料；datasource:1 真机部分 HUMAN_GATE（#411） |
+| W1-11 #424/#446 摄像机桥接监督与 go2rtc 收敛 | #424 #446 | Neon Mid | W1-3 | PR | DONE | #476 已合（#424） | 可延至 Wave 2A 的 P1-2 ；#424 已做（+1736 行，内聚未拆）；#446 go2rtc CS2 补丁 + 打包链路未做，需独立 PR |
+| W1-12 #446 go2rtc CS2 补丁与配置收敛 | #446 | Neon Mid | W1-11 | PR | IN_PROGRESS | | 打包链路高风险，配置收敛可拆 |
 
 ## Wave 2A：P1 桌面护城河与手感
 

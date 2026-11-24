@@ -114,6 +114,18 @@ final class MenuBarPanelController: NSObject {
     var statusItemEventNumber: () -> Int? = {
         MenuBarPanelController.statusEventNumber(for: NSApplication.shared.currentEvent)
     }
+    /// On-demand activation hooks for text input (CJK IME / Emoji / ⌘C/⌘V) while the panel stays
+    /// non-activating by default. Injectable so tests can assert activation without stealing focus.
+    var isApplicationActiveProvider: () -> Bool = {
+        NSApp.isActive
+    }
+    var activateApplicationForTextInput: () -> Void = {
+        NSApp.activate()
+    }
+    /// Injectable seam for tests to simulate an active modal confirmation alert without `runModal()`.
+    var isModalConfirmationActiveProvider: () -> Bool = {
+        ManualControlConfirmationPresenter.isPresenting || NSApp.modalWindow != nil
+    }
 
     private func traceStatusItem(_ message: @autoclosure () -> String) {
         let line = message()
@@ -975,9 +987,27 @@ final class MenuBarPanelController: NSObject {
     func ensurePanelWindow(theme: PanelTheme) -> NSPanel {
         if let panelWindow { return panelWindow }
         let panel = Self.makePanel(theme: theme)
+        if let menuBarPanel = panel as? MenuBarPanel {
+            menuBarPanel.onTextInputFocused = { [weak self] in
+                self?.activateForTextInputIfNeeded()
+            }
+        }
         panelWindow = panel
         installPanelGeometryObservers(for: panel)
         return panel
+    }
+
+    /// Escalates a non-activating panel session to active app status only when a text input
+    /// (`TextField` / `NSTextView`) takes focus, keeping CJK IME candidates, Emoji picker, and
+    /// standard clipboard shortcuts reliable while leaving ordinary clicks non-activating.
+    func activateForTextInputIfNeeded() {
+        guard presentsActively, isPanelVisible, let panel = panelWindow else { return }
+        if !isApplicationActiveProvider() {
+            activateApplicationForTextInput()
+        }
+        if !panel.isKeyWindow {
+            panel.makeKey()
+        }
     }
 
     func refreshPanelContent(theme: PanelTheme) {
@@ -989,7 +1019,7 @@ final class MenuBarPanelController: NSObject {
         panel.contentView = nil
         panel.contentMinSize = .zero
         panel.contentMaxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
-        let hosting = NSHostingView(
+        let hosting = PanelHostingView(
             rootView: Self.panelRoot(
                 store: store,
                 theme: theme,
@@ -1392,8 +1422,8 @@ final class MenuBarPanelController: NSObject {
         })
         observers.append(NotificationCenter.default.addObserver(
             forName: NSWindow.didResignKeyNotification, object: panel, queue: .main
-        ) { _ in
-            MainActor.assumeIsolated { PanelTransientUIState.shared.cancelAllOffHold() }
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.handlePanelDidResignKey() }
         })
         observers.append(NotificationCenter.default.addObserver(
             forName: NSWindow.willCloseNotification, object: panel, queue: .main
@@ -1453,15 +1483,17 @@ final class MenuBarPanelController: NSObject {
         handlePreferencesChanged()
     }
 
-    /// Another window of ours (Settings, an alert) took key status: the panel closes, like the extra
-    /// did when the user moved to the Settings scene. The status item's own window and anything the
-    /// panel spawned (sheet, popover, context menu) are exempt.
+    /// Another window of ours (Settings, etc.) took key status: the panel closes, like the extra
+    /// did when the user moved to the Settings scene. The status item's own window, modal high-risk
+    /// confirmation alerts, the camera window, and anything the panel spawned (sheet, popover,
+    /// context menu) are exempt.
     func handleOtherWindowBecameKey(_ window: NSWindow?) {
         guard isPanelVisible, let window else { return }
         guard window !== backdropWindow else { return }
         guard !isPanelWindow(window) else { return }
         guard window !== statusItem?.button?.window else { return }
         guard window !== CameraLivePanelController.shared.panelWindow else { return }
+        guard !isModalConfirmationActiveProvider(), NSApp.modalWindow !== window else { return }
         hidePanel()
     }
 
@@ -1626,19 +1658,68 @@ final class MenuBarPanelController: NSObject {
         return false
     }
 
+    private var isVoiceOrPressInteractionActive: Bool {
+        SpeechInputController.shared.isListening
+            || SpeechInputController.shared.isHoldToTalk
+            || pressTriggered
+            || pressTimer != nil
+            || HotkeyAndNotificationManager.shared.isHotkeyPhysicallyDown
+    }
+
+    private func hasVisiblePanelOwnedTransientWindow() -> Bool {
+        guard let panel = panelWindow else { return false }
+        if panel.attachedSheet?.isVisible == true { return true }
+        if panel.childWindows?.contains(where: { $0 !== backdropWindow && $0.isVisible }) == true {
+            return true
+        }
+        return NSApp.windows.contains { $0.isVisible && $0.level == .popUpMenu }
+    }
+
+    private func isCameraWindowTakingFocus() -> Bool {
+        guard let cameraWindow = CameraLivePanelController.shared.panelWindow else { return false }
+        if NSApp.keyWindow === cameraWindow || cameraWindow.isKeyWindow { return true }
+        if cameraWindow.isVisible,
+           (NSEvent.pressedMouseButtons & 0x7) != 0,
+           cameraWindow.frame.contains(NSEvent.mouseLocation) {
+            return true
+        }
+        return false
+    }
+
+    /// Non-activating panels do not trigger `didResignActive` when the user switches apps or clicks
+    /// away, so `NSWindow.didResignKeyNotification` drives dismissal with explicit exemptions for
+    /// dictation/hold, modal high-risk alerts, panel-owned popovers/menus/sheets, camera window,
+    /// and status-item clicks.
+    func handlePanelDidResignKey() {
+        PanelTransientUIState.shared.cancelAllOffHold()
+        let now = statusItemUptime()
+        let context = PanelResignKeyDecision.Context(
+            isPanelVisible: isPanelVisible,
+            isVoiceOrPressActive: isVoiceOrPressInteractionActive,
+            isModalConfirmationActive: isModalConfirmationActiveProvider(),
+            newKeyWindowIsPanelOwned: isPanelWindow(NSApp.keyWindow),
+            hasVisiblePanelOwnedTransientWindow: hasVisiblePanelOwnedTransientWindow(),
+            isCameraWindowActive: isCameraWindowTakingFocus(),
+            isStatusItemInteraction: now < suppressResignActiveHideUntil || isStatusItemMouseDownAtCurrentLocation()
+        )
+        guard PanelResignKeyDecision.decide(context) == .hide else { return }
+        if hostsStatusItemOutOfProcess {
+            resignActiveAwaitingMonitorMouseDown = true
+            noteImplicitDismissalForStatusItemReopenGuard(now: now)
+        }
+        hidePanel()
+    }
+
     func handleApplicationResignActive() {
         guard isPanelVisible else { return }
         let now = statusItemUptime()
         // A TCC prompt (microphone/speech) deactivates the app mid-dictation; keep the panel.
         // An out-of-process menu bar (macOS 26+ MenuBarAgent) also deactivates the app on
         // mouse-down ~60–90 ms before delivering `NSMenuBarNavigateAction` to the status item.
-        if SpeechInputController.shared.isListening
-            || SpeechInputController.shared.isHoldToTalk
-            || pressTriggered
-            || pressTimer != nil
+        if isVoiceOrPressInteractionActive
+            || isModalConfirmationActiveProvider()
             || now < suppressResignActiveHideUntil
-            || isStatusItemMouseDownAtCurrentLocation()
-            || HotkeyAndNotificationManager.shared.isHotkeyPhysicallyDown { return }
+            || isStatusItemMouseDownAtCurrentLocation() { return }
         if hostsStatusItemOutOfProcess {
             resignActiveAwaitingMonitorMouseDown = true
             noteImplicitDismissalForStatusItemReopenGuard(now: now)
