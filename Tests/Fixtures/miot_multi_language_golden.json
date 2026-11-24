@@ -1,0 +1,136 @@
+{
+  "urn": "urn:miot-spec-v2:device:air-conditioner:0000A004:acme-multilang:1",
+  "model": "acme.multilang.ac1",
+  "spec": {
+    "type": "urn:miot-spec-v2:device:air-conditioner:0000A004:acme-multilang:1",
+    "description": "Air Conditioner Fixture",
+    "services": [
+      {
+        "iid": 1,
+        "type": "urn:miot-spec-v2:service:device-information:00007801:acme-multilang:1",
+        "description": "Device Information",
+        "properties": [
+          {
+            "iid": 1,
+            "type": "urn:miot-spec-v2:property:manufacturer:00000010:acme-multilang:1",
+            "description": "Device Manufacturer",
+            "format": "string",
+            "access": ["read"]
+          }
+        ],
+        "actions": []
+      },
+      {
+        "iid": 2,
+        "type": "urn:miot-spec-v2:service:air-conditioner:0000780F:acme-multilang:1",
+        "description": "Air Conditioner",
+        "properties": [
+          {
+            "iid": 1,
+            "type": "urn:miot-spec-v2:property:on:00000006:acme-multilang:1",
+            "description": "Switch Status",
+            "format": "bool",
+            "access": ["read", "write", "notify"]
+          },
+          {
+            "iid": 2,
+            "type": "urn:miot-spec-v2:property:mode:00000008:acme-multilang:1",
+            "description": "Mode",
+            "format": "uint8",
+            "access": ["read", "write", "notify"],
+            "value-list": [
+              { "value": 2, "description": "Cool" },
+              { "value": 3, "description": "Dry" },
+              { "value": 5, "description": "Heat" }
+            ]
+          },
+          {
+            "iid": 4,
+            "type": "urn:miot-spec-v2:property:target-temperature:00000021:acme-multilang:1",
+            "description": "Target Temperature",
+            "format": "float",
+            "access": ["read", "write"],
+            "value-range": [16, 31, 0.5],
+            "unit": "celsius"
+          }
+        ],
+        "actions": []
+      }
+    ]
+  },
+  "multiLanguage": {
+    "data": {
+      "en": {
+        "service:002": "Air Conditioner",
+        "service:002:property:001": "Power",
+        "service:002:property:002": "Mode",
+        "service:002:property:002:valuelist:000": "Cooling",
+        "service:002:property:002:valuelist:001": "Dehumidify",
+        "service:002:property:002:valuelist:002": "Heating",
+        "service:002:property:004": "Target Temp"
+      },
+      "zh_cn": {
+        "service:002": "空调",
+        "service:002:property:001": "开关",
+        "service:002:property:002": "模式",
+        "service:002:property:002:valuelist:000": "制冷",
+        "service:002:property:002:valuelist:001": "除湿",
+        "service:002:property:002:valuelist:002": "制热",
+        "service:002:property:004": "设定温度"
+      },
+      "zh_tw": {
+        "service:002": "空調",
+        "service:002:property:001": "開關",
+        "service:002:property:002:valuelist:000": "製冷",
+        "service:002:property:004": "設定溫度"
+      }
+    },
+    "timestamp": "1560824592"
+  },
+  "expected": {
+    "zh-Hans": {
+      "service:001": "Device Information",
+      "service:001:property:001": "Device Manufacturer",
+      "service:002": "空调",
+      "service:002:property:001": "开关",
+      "service:002:property:002": "模式",
+      "service:002:property:002:valuelist:000": "制冷",
+      "service:002:property:002:valuelist:001": "除湿",
+      "service:002:property:002:valuelist:002": "制热",
+      "service:002:property:004": "设定温度"
+    },
+    "zh-Hant": {
+      "service:001": "Device Information",
+      "service:001:property:001": "Device Manufacturer",
+      "service:002": "空調",
+      "service:002:property:001": "開關",
+      "service:002:property:002": "模式",
+      "service:002:property:002:valuelist:000": "製冷",
+      "service:002:property:002:valuelist:001": "除湿",
+      "service:002:property:002:valuelist:002": "制热",
+      "service:002:property:004": "設定溫度"
+    },
+    "en": {
+      "service:001": "Device Information",
+      "service:001:property:001": "Device Manufacturer",
+      "service:002": "Air Conditioner",
+      "service:002:property:001": "Power",
+      "service:002:property:002": "Mode",
+      "service:002:property:002:valuelist:000": "Cooling",
+      "service:002:property:002:valuelist:001": "Dehumidify",
+      "service:002:property:002:valuelist:002": "Heating",
+      "service:002:property:004": "Target Temp"
+    }
+  },
+  "patches": {
+    "schemaVersion": 1,
+    "models": {
+      "acme.multilang.ac1": {
+        "properties": [
+          { "siid": 2, "piid": 1, "description": "Patched Switch" }
+        ]
+      }
+    }
+  },
+  "patchedLabel": "Patched Switch"
+}
