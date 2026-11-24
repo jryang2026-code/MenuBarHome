@@ -12,6 +12,7 @@ import {
   UPDATE_STORAGE_KEY,
   checkForUpdate,
   isNewerVersion,
+  loadOrCreateUpdateInstallId,
   parseUpdateState,
   serializeUpdateState,
 } from "../core/updateChecker.js";
@@ -644,6 +645,7 @@ export async function checkForAppUpdate(host: MenuMijiaWindowsApp, manual: boole
       lastCheckedAtMs: host.updateState.lastCheckedAtMs,
       nowMs: Date.now(),
       force: manual,
+      installId: loadOrCreateUpdateInstallId(typeof localStorage !== "undefined" ? localStorage : null),
       requestLatest: () =>
         host.transport({
           url: UPDATE_RELEASES_URL,

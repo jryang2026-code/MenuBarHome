@@ -11,7 +11,7 @@
 - **安全边界与凭据**：`Sources/MijiaCore/KeychainAndPrefs.swift`、`Sources/MijiaCore/CredentialVault.swift`、`Sources/MijiaCore/ConnectionRemovalStore.swift`、`Sources/MijiaCore/SafetyMonitor.swift`、`Sources/MijiaCore/ScreenLockPolicy.swift`、`Sources/MijiaCore/ManualControlPolicy.swift`
 - **语音/自然语言/自动化**：`Sources/MijiaCore/CommandIntent.swift`、`Sources/MijiaCore/LocalIntentParser.swift`、`Sources/MijiaCore/AssistantConfig.swift`、`Sources/MijiaCore/AssistantSchedule.swift`、`Sources/MijiaCore/AutomationRule.swift`、`Sources/MijiaCore/AppURLCommand.swift`、`Sources/MijiaCore/UserHabitMemory.swift`
 - **摄像机与云台**：`Sources/MijiaCore/CameraPTZ.swift`、`Sources/MijiaCore/CameraPTZClient.swift`、`Sources/MijiaCore/CameraLiveHandoff.swift`、`Sources/MijiaCore/MiCloud/XiaomiCameraBridge.swift`、`Sources/MijiaCore/MiCloud/CameraHubCatalog.swift`、`Sources/MijiaCore/MiCloud/CameraLensCatalog.swift`
-- **应用内更新与验签**：`Sources/MijiaCore/UpdateChecker.swift`、`Sources/MijiaCore/UpdateManifest.swift`、`Sources/MijiaCore/UpdateSignature.swift`
+- **应用内更新与验签**：`Sources/MijiaCore/UpdateChecker.swift`、`Sources/MijiaCore/UpdateManifest.swift`、`Sources/MijiaCore/UpdateSignature.swift`、`Sources/MijiaCore/UpdateRollout.swift`、`Sources/MijiaCore/UpdateScheduler.swift`
 
 ## macOS 桌面端界面（`Sources/MenuBarMijiaApp/`）
 
