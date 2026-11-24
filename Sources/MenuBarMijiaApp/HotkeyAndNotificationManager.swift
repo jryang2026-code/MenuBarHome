@@ -29,8 +29,7 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
     private var applicationBecomeActiveObserver: NSObjectProtocol?
     private var safetyWakeObservers: [(NotificationCenter, NSObjectProtocol)] = []
     private var safetyWakeTask: Task<Void, Never>?
-    private var automaticUpdateTask: Task<Void, Never>?
-    private var automaticUpdateRetryAt: Date?
+    private var backgroundUpdateScheduler: BackgroundUpdateScheduler?
     /// The alert and the connection scope it was delivered in. Home Assistant entity ids repeat across
     /// servers (`light.heater`), so the device id alone does not identify the home the alert was about.
     private struct PendingAlert {
@@ -85,6 +84,7 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
         MenuBarPanelController.shared.install(with: store)
         setupLocalKeyboardMonitors()
         setupNotificationsIfBundled()
+        configureBackgroundUpdateScheduler(for: store)
         observeSafetyWakeEvents()
         observeSafetyWakeInputs(store)
         // The status item exists as soon as `install` returns, but the first launch has no window to
@@ -753,6 +753,15 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
         }
     }
 
+    private func configureBackgroundUpdateScheduler(for store: HomeStore) {
+        backgroundUpdateScheduler?.stop()
+        let scheduler = BackgroundUpdateScheduler { [weak store] in
+            await store?.checkForUpdatesIfNeeded()
+        }
+        backgroundUpdateScheduler = scheduler
+        scheduler.setEnabled(store.automaticallyChecksForUpdates)
+    }
+
     private func observeSafetyWakeInputs(_ store: HomeStore) {
         withObservationTracking {
             _ = store.nextSafetyAlertCheck(now: Date())
@@ -762,12 +771,13 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
                 _ = store.sensorAlertsOnlyWhenAway
             }
             _ = store.enableWeeklyHealthReport
-            _ = store.nextAutomaticUpdateCheck(now: Date())
+            _ = store.automaticallyChecksForUpdates
             _ = store.scheduledCommands
             _ = store.pollingContext.panelVisible
         } onChange: { [weak self, weak store] in
             Task { @MainActor in
                 guard let self, let store, self.store === store else { return }
+                self.backgroundUpdateScheduler?.setEnabled(store.automaticallyChecksForUpdates)
                 self.runSafetyWake()
                 self.observeSafetyWakeInputs(store)
             }
@@ -778,7 +788,6 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
         guard let store else { return }
         let now = Date()
         if let event {
-            if event == .clockChanged { automaticUpdateRetryAt = nil }
             store.reevaluateScheduledCommands(after: event)
         }
         for alert in store.evaluateSafetyAlerts(now: now) {
@@ -787,22 +796,7 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
         if let report = store.takeDueWeeklyHealthReport(now: now) {
             deliverWeeklyHealthReport(report)
         }
-        if nextUpdateWake(store: store, now: now) == now {
-            automaticUpdateTask = Task { [weak self, weak store] in
-                await store?.checkForUpdatesIfNeeded()
-                guard let self else { return }
-                self.automaticUpdateTask = nil
-                // A failed automatic check leaves the last successful date unchanged.
-                self.automaticUpdateRetryAt = Date().addingTimeInterval(60)
-                self.scheduleSafetyWake()
-            }
-        }
         scheduleSafetyWake()
-    }
-
-    private func nextUpdateWake(store: HomeStore, now: Date) -> Date? {
-        guard automaticUpdateTask == nil, let due = store.nextAutomaticUpdateCheck(now: now) else { return nil }
-        return max(due, automaticUpdateRetryAt ?? now)
     }
 
     private func scheduleSafetyWake(after event: SafetyWakeEvent? = nil) {
@@ -814,7 +808,7 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
         guard let wake = nextSafetyWake(
             now: now, alertCheck: alertCheck,
             weeklyReport: store.nextWeeklyHealthReportCheck(now: now),
-            updateCheck: nextUpdateWake(store: store, now: now), event: event
+            updateCheck: nil, event: event
         ) else { return }
         if wake == now, let event {
             runSafetyWake(after: event)
