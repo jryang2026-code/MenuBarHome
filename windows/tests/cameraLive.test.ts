@@ -10,10 +10,12 @@ import { MiCloudClient } from "../src/core/miCloudClient.js";
 import { MenuMijiaWindowsApp } from "../src/ui/app.js";
 import { STORAGE_KEY } from "../src/ui/appConstants.js";
 import {
+  buildGo2RtcStreamUrl,
   CameraLiveController,
   formatGo2RtcSupervisorDiagnostics,
   isGo2RtcBackingOffError,
   isGo2RtcCircuitOpenError,
+  withGo2RtcAudioQuery,
 } from "../src/ui/cameraLive.js";
 
 import { DEVICE_CATEGORY_IDS } from "../src/core/capabilityManifest.js";
@@ -1210,6 +1212,84 @@ describe("CameraLiveController dual-lens, gateway, manual IP, rotation & multi-c
     await waitFor(() => ctrl.liveCameraMode === "mjpeg" && attempts >= 5);
     assert.equal(ctrl.liveCameraError, null);
     ctrl.closeCameraLiveView();
+  });
+
+  it("builds go2rtc stream URLs with audio=0 when muted and requests audio only when listen-only is enabled", () => {
+    assert.equal(
+      buildGo2RtcStreamUrl("http://127.0.0.1:43123", "cam_raw_1", { format: "mp4", audioEnabled: false }),
+      "http://127.0.0.1:43123/api/stream.mp4?src=cam_raw_1&mp4&audio=0",
+    );
+    assert.equal(
+      buildGo2RtcStreamUrl("http://127.0.0.1:43123", "cam_raw_1", { format: "mp4", audioEnabled: true }),
+      "http://127.0.0.1:43123/api/stream.mp4?src=cam_raw_1&mp4=all",
+    );
+    assert.equal(
+      buildGo2RtcStreamUrl("http://127.0.0.1:43123", "cam_raw_1", { format: "m3u8", audioEnabled: false }),
+      "http://127.0.0.1:43123/api/stream.m3u8?src=cam_raw_1&video=all&audio=0",
+    );
+    assert.equal(
+      buildGo2RtcStreamUrl("http://127.0.0.1:43123", "cam_raw_1", { format: "m3u8", audioEnabled: true }),
+      "http://127.0.0.1:43123/api/stream.m3u8?src=cam_raw_1",
+    );
+
+    const mutedXiaomi = withGo2RtcAudioQuery("xiaomi://127.0.0.1:41234?transport=udp&subtype=hd", false);
+    assert.match(mutedXiaomi, /[?&]audio=0(&|$)/);
+    const unmutedXiaomi = withGo2RtcAudioQuery(mutedXiaomi, true);
+    assert.match(unmutedXiaomi, /[?&]audio=1(&|$)/);
+    assert.doesNotMatch(unmutedXiaomi, /[?&]audio=0(&|$)/);
+
+    const unmutedHls = withGo2RtcAudioQuery("http://127.0.0.1:43123/api/stream.m3u8?src=cam_raw_1&video=all&audio=0", true);
+    assert.equal(unmutedHls, "http://127.0.0.1:43123/api/stream.m3u8?src=cam_raw_1");
+  });
+
+  it("passes audioEnabled=false on muted cloud P2P bridge start and detects video-only <video> tracks without extra requests", async () => {
+    const ctx = await mountCloudCameraApp({
+      devices: [
+        {
+          did: "cam-audio",
+          name: "客厅摄像机",
+          model: "isa.camera.hlc7",
+          roomName: "客厅",
+          localip: "192.168.1.50",
+        },
+      ],
+    });
+    await waitFor(() => document.querySelector('[data-body-device="cam-audio"]') !== null);
+    await click('[data-body-device="cam-audio"]');
+    await waitFor(() => ctx.bridgeCalls.length === 1);
+    assert.equal(ctx.bridgeCalls[0]?.["audioEnabled"], false);
+    ctx.app.cameraLive.closeCameraLiveView();
+
+    // Switch to a video URL whose metadata reports 0 audio tracks -> HUD falls back to video-only badge
+    await click('[data-body-device="cam-audio"]');
+    await click("#btn-toggle-camera-url");
+    element<HTMLInputElement>("#camera-stream-url-input").value = "https://example.com/silent.mp4";
+    await click("#btn-save-camera-url");
+    const video = element<HTMLVideoElement>("#cc-camera-video");
+    Object.defineProperty(video, "audioTracks", { configurable: true, value: { length: 0 } });
+    video.dispatchEvent(new window.Event("loadedmetadata"));
+    await setImmediate();
+    assert.equal(ctx.app.cameraLive.liveCameraHasAudioTrack, false);
+    assert.equal(element("#cc-camera-audio-badge").getAttribute("data-video-only-reason"), "video-only-track");
+    assertMissing(document.querySelector("#cc-camera-mute"));
+    ctx.app.cameraLive.closeCameraLiveView();
+
+    // Default WebView2 fallback without audioTracks: unmuted playback with 0 decoded audio bytes falls back to video-only
+    await click('[data-body-device="cam-audio"]');
+    await click("#btn-toggle-camera-url");
+    element<HTMLInputElement>("#camera-stream-url-input").value = "https://example.com/silent-fallback.mp4";
+    await click("#btn-save-camera-url");
+    await click("#cc-camera-mute");
+    const fallbackVideo = element<HTMLVideoElement>("#cc-camera-video");
+    Object.defineProperty(fallbackVideo, "webkitAudioDecodedByteCount", { configurable: true, value: 0 });
+    Object.defineProperty(fallbackVideo, "webkitVideoDecodedByteCount", { configurable: true, value: 4096 });
+    Object.defineProperty(fallbackVideo, "currentTime", { configurable: true, value: 1.0 });
+    fallbackVideo.dispatchEvent(new window.Event("timeupdate"));
+    await setImmediate();
+    assert.equal(ctx.app.cameraLive.liveCameraHasAudioTrack, false);
+    assert.equal(element("#cc-camera-audio-badge").getAttribute("data-video-only-reason"), "video-only-track");
+    assertMissing(document.querySelector("#cc-camera-mute"));
+    ctx.app.cameraLive.closeCameraLiveView();
   });
 
 });

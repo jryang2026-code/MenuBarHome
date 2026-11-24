@@ -1163,7 +1163,7 @@ final class RelayPortAllocator: @unchecked Sendable {
 }
 
 actor StubXiaomiCameraBridge: XiaomiCameraBridging {
-    private(set) var startCalls: [(did: String, model: String, localIP: String, vendor: String, uid: String?, quality: XiaomiCameraStreamQuality, channel: Int, subdid: String?)] = []
+    private(set) var startCalls: [(did: String, model: String, localIP: String, vendor: String, uid: String?, quality: XiaomiCameraStreamQuality, channel: Int, subdid: String?, audioEnabled: Bool)] = []
     private(set) var stopCalls: [String] = []
     private(set) var stopSubdidCalls: [(did: String, subdid: String?)] = []
     var startDelay: Duration?
@@ -1190,9 +1190,10 @@ actor StubXiaomiCameraBridge: XiaomiCameraBridging {
         uid: String?,
         quality: XiaomiCameraStreamQuality,
         channel: Int,
-        subdid: String?
+        subdid: String?,
+        audioEnabled: Bool
     ) async throws -> XiaomiCameraStreamEndpoints {
-        startCalls.append((did: did, model: model, localIP: localIP, vendor: vendor, uid: uid, quality: quality, channel: channel, subdid: subdid))
+        startCalls.append((did: did, model: model, localIP: localIP, vendor: vendor, uid: uid, quality: quality, channel: channel, subdid: subdid, audioEnabled: audioEnabled))
         onStartEntered?()
         if let startDelay {
             try? await Task.sleep(for: startDelay)
@@ -1597,6 +1598,7 @@ struct MiCloudProviderTests {
         #expect(starts.first?.uid == "TICK-123456-ABCDE")
         #expect(starts.first?.quality == .sd)
         #expect(starts.first?.channel == 0)
+        #expect(starts.first?.audioEnabled == false)
 
         let secondLens = try await provider.resolveCameraStream(for: cameraDevice, quality: .sd, channel: 1)
         guard case .liveMP4(_, _, let secondLensPTZ) = secondLens else {
@@ -1614,6 +1616,9 @@ struct MiCloudProviderTests {
         let actionsAfterStop = await api.callActionCalls
         #expect(actionsAfterStop.count == 5)
         #expect(actionsAfterStop.last == MiotActionCall(did: "1105610385", siid: 9, aiid: 2, inputs: []))
+
+        _ = try await provider.resolveCameraStream(for: cameraDevice, quality: .sd, channel: 0, audioEnabled: true)
+        #expect((await bridge.startCalls).last?.audioEnabled == true)
         await provider.shutdown()
     }
 

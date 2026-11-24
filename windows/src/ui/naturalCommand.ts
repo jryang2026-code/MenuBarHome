@@ -511,7 +511,7 @@ export function confirmDelayedSuggestion(
   );
 }
 
-export async function runScheduledCommand(host: MenuMijiaWindowsApp, item: ScheduledCommand): Promise<void> {
+export async function runScheduledCommand(host: MenuMijiaWindowsApp, item: ScheduledCommand, userInitiated = false): Promise<void> {
   if (item.intents && item.intents.length > 0) {
     const gateFailure =
       host.settings.connectionMode !== "demo" || isDualSourceEnabled(host)
@@ -573,6 +573,7 @@ export async function runScheduledCommand(host: MenuMijiaWindowsApp, item: Sched
       t("定时任务"),
       {
         recordHabits: false,
+        userInitiated,
         canContinue: () => isScheduledCommandsEnabled(host.settings) && scheduledCommandsGeneration(host) === generation,
       },
     );

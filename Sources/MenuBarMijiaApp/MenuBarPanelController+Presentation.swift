@@ -30,6 +30,7 @@ extension MenuBarPanelController {
 
     func showPanel() {
         guard let store else { return }
+        cancelWarmUnload()
         let theme = currentPanelTheme
         let panel = ensurePanelWindow(theme: theme)
         panel.appearance = Self.preferredAppearance(from: userDefaults)
@@ -167,7 +168,7 @@ extension MenuBarPanelController {
         }
         removeMouseMonitors()
         panel.orderOut(nil)
-        dropPanelContent()
+        scheduleWarmUnload()
     }
 
     /// Retarget the current window position, keeping the full shadow in the same animation group.
@@ -204,6 +205,71 @@ extension MenuBarPanelController {
 
     // MARK: - Frame
 
+    /// Computes a top-edge-anchored frame when resizing `current` to `targetHeight`, keeping `maxY`
+    /// fixed (`newOrigin.y = current.origin.y + (current.height - targetHeight)`), clamped to `minY`.
+    static func topAnchoredFrame(
+        from current: NSRect,
+        targetWidth: CGFloat? = nil,
+        targetHeight: CGFloat,
+        minY: CGFloat? = nil
+    ) -> NSRect {
+        let width = (targetWidth ?? current.width).rounded()
+        let height = targetHeight.rounded()
+        var originY = current.origin.y + (current.height - height)
+        if let minY {
+            originY = max(originY, minY)
+        }
+        return NSRect(x: current.origin.x, y: originY.rounded(), width: width, height: height)
+    }
+
+    /// Returns `heightResizeDuration` (~200 ms) for visible height changes when motion is allowed,
+    /// and `nil` when Reduce Motion is active or the window is hidden/closing.
+    static func heightResizeAnimationDuration(
+        presentsActively: Bool,
+        isVisible: Bool,
+        isClosing: Bool,
+        reduceMotion: Bool,
+        from current: NSRect,
+        to target: NSRect
+    ) -> TimeInterval? {
+        guard presentsActively, isVisible, !isClosing, !reduceMotion else { return nil }
+        guard abs(current.height - target.height) > 0.5 else { return nil }
+        return Self.heightResizeDuration
+    }
+
+    /// Applies a new frame to the panel, animating height changes anchored to the top edge over
+    /// ~200 ms unless Reduce Motion is enabled.
+    func applyPanelFrame(_ target: NSRect, on panel: NSPanel, theme: PanelTheme, animated: Bool) {
+        let duration = animated
+            ? Self.heightResizeAnimationDuration(
+                presentsActively: presentsActively,
+                isVisible: panel.isVisible,
+                isClosing: isClosing,
+                reduceMotion: shouldReduceMotion(),
+                from: panel.frame,
+                to: target
+            )
+            : nil
+        lastAppliedFrameAnimationDuration = duration
+        if let duration {
+            let backdropTarget = target.insetBy(dx: -Self.backdropBleed, dy: -Self.backdropBleed)
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = duration
+                context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                context.allowsImplicitAnimation = true
+                panel.animator().setFrame(target, display: true)
+                if theme == .liquidGlass, let backdrop = backdropWindow, backdrop.isVisible {
+                    backdrop.animator().setFrame(backdropTarget, display: true)
+                }
+            }
+        } else {
+            panel.setFrame(target, display: true)
+            if presentsActively, theme == .liquidGlass {
+                presentBackdropShadow(around: target, under: panel)
+            }
+        }
+    }
+
     /// Sizing hook for `ClassicControlCenterPanel`: 376 pt wide, the requested height, top edge kept
     /// under the item and clamped to the item's screen. No-op for the Liquid Glass pilot column,
     /// whose geometry is serially managed by `applySerialPanelGeometry()`.
@@ -216,7 +282,7 @@ extension MenuBarPanelController {
             theme: .classic
         )
         if panel.frame != target {
-            panel.setFrame(target, display: true)
+            applyPanelFrame(target, on: panel, theme: .classic, animated: true)
         }
     }
 
@@ -343,9 +409,8 @@ extension MenuBarPanelController {
             let target = columnFrame(for: theme)
             if panel.frame != target {
                 serialGeometryApplyCount &+= 1
-                panel.setFrame(target, display: true)
-            }
-            if presentsActively, theme == .liquidGlass {
+                applyPanelFrame(target, on: panel, theme: theme, animated: true)
+            } else if presentsActively, theme == .liquidGlass {
                 presentBackdropShadow(around: target, under: panel)
             }
         } while hasPendingGeometryPass && iterations < 4

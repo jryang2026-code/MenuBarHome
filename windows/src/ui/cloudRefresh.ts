@@ -522,10 +522,10 @@ export function foldGrouped(host: MenuMijiaWindowsApp, devices: readonly SmartDe
       : [...devices];
   }
 
-export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false): Promise<void> {
+export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false, userInitiated = false): Promise<void> {
     if (!isHostAttachedToActiveWindow(host)) return;
-    if (isDualSourceEnabled(host)) return refreshDualSourceDevices(host, silent);
-    if (host.settings.connectionMode === "homeAssistant") return refreshHADevices(host, silent);
+    if (isDualSourceEnabled(host)) return refreshDualSourceDevices(host, silent, userInitiated);
+    if (host.settings.connectionMode === "homeAssistant") return refreshHADevices(host, silent, userInitiated);
     if (host.settings.connectionMode === "xiaomiCloud") {
       // The store's first load of this window enumerates the credential slots; later loads read
       // the assembled list. This replaces the old "only multi-account indexes hydrate" gate (#228).
@@ -900,7 +900,7 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
     }
   }
 
-export async function refreshHADevices(host: MenuMijiaWindowsApp, silent = false): Promise<void> {
+export async function refreshHADevices(host: MenuMijiaWindowsApp, silent = false, userInitiated = false): Promise<void> {
     if (
       !isHostAttachedToActiveWindow(host) ||
       host.settings.connectionMode !== "homeAssistant" ||
@@ -938,7 +938,7 @@ export async function refreshHADevices(host: MenuMijiaWindowsApp, silent = false
       const haClient = new HomeAssistantClient(endpoint, token, host.haInvokeOverride ?? undefined);
       const prune = hostHaTypePruneOptions(host);
       const { pollCapturedEpoch } = host.sourceEpoch.capture();
-      const synthesized = await haClient.snapshotWithPrune(prune);
+      const synthesized = await haClient.snapshotWithPrune(prune, userInitiated);
       const home = synthesized.home;
       const identity = homeAssistantIdentity(endpoint, token);
       if (!identity) throw new Error("Invalid Home Assistant URL");
@@ -1835,7 +1835,8 @@ function applyDualSourceMergeToHost(host: MenuMijiaWindowsApp, merged: DeviceMer
 
 async function refreshDualSourceDevices(
   host: MenuMijiaWindowsApp,
-  silent = false,
+  silent: boolean,
+  userInitiated: boolean,
 ): Promise<void> {
   if (!isHostAttachedToActiveWindow(host) || host.isSyncingCloud) return;
   const stateToken = host.sourceEpoch.capture();
@@ -1922,7 +1923,7 @@ async function refreshDualSourceDevices(
         ? async (): Promise<DualSourceInputSnapshot> => {
             const haPrune = hostHaTypePruneOptions(host);
             const { pollCapturedEpoch } = host.sourceEpoch.capture();
-            const res = await fetchHASnapshotWithIdentities(endpoint, token, haInvoke, haPrune);
+            const res = await fetchHASnapshotWithIdentities(endpoint, token, haInvoke, haPrune, userInitiated);
             haRawSnapshot = res.rawSnapshot;
             return {
               home: res.home,
