@@ -4,9 +4,11 @@
 
 ## 当前交接快照
 
-- 更新时间：2026-11-24 18:40 CST（Wave 0 启动）
-- `main`：`7c4272b2`，CI 绿
+- 更新时间：2026-11-24 20:50 CST（Wave 0 收口，Wave 1 启动）
+- `main`：`0b9e9498`，CI 绿
+- Wave 0：8/8 DONE（#463 #464 #465 #466 #467 #468 #469 + main 1682695f）
 - 已完成不再派活：`#453`、`#461`（Windows Rust miIO 原生层）、`#460`（WidgetKit 签名可行性 spike）、`#462`（调研总纲）
+- main 红一次（#467 新增 TV 撤销测试抖动）已由 2caf7730 修绿
 - 需作者拍板：`v1.5.0` 发版、`#12` SignPath 申请启动
 
 ## 模型分派约定
@@ -25,23 +27,27 @@
 | W0-1 P0-1 文案去自黑 | — | Hydrogen High | 无 | 快车道main | DONE | main 1682695f | README / README.zh-CN / GLOSSARY / platform-matrix；Win11 GIF 需实机录制→HUMAN_GATE |
 | W0-2 #305 只读共享账号写入过滤 | #305 | Codex sol6.2 | 无 | PR | DONE | #463 → main dd95812 | 控制写入高风险面；主控审出 P1（共享设备不可控、冷启动硬拦），第 1 轮已修为“确认归属优先 + 权限拒绝转下一账号” |
 | W0-3 #314 间歇失败用例收敛 | #314 | Neon Mid | 无 | PR | DONE | #464 → main d94aa56 | 与 W0-2 同触 `DualSourceFallbackGraceTests.swift`，合入时 `git merge origin/main` |
-| W0-4 macOS 小收口 | #420 #429 #397 | Flash (pi) | 无 | PR | IN_PROGRESS | | 菜单栏宽度磁滞、AppleMotion 测试覆写、暂停分组收尾 |
-| W0-5 双端小收口 | #428 #451 | Flash (opencode) | W0-2 合入后（同触 `MiCloudProvider.swift`） | PR | IN_PROGRESS | | 助手温度单位、无 uid 自有家庭场景；含语料用例 |
-| W0-6 macOS buildTV | #442 | Hydrogen High | 无 | PR | IN_PROGRESS | | 黄金语料语义变更；`WINDOWS_DIVERGENCE_BUDGET` 收紧到 0 |
+| W0-4 macOS 小收口 | #420 #429 #397 | Flash (pi) | 无 | PR | DONE | #466 → main 46cfc4f | 菜单栏宽度磁滞、AppleMotion 测试覆写、暂停分组收尾；#397 第 3 条只清无可恢复目标的旧标记（全量清扫会复活 HA 移除暂停的分组，违背 #389） |
+| W0-5 双端小收口 | #428 #451 | Flash (opencode) | W0-2 合入后（同触 `MiCloudProvider.swift`） | PR | DONE | #468 → main d9e7f8e7 | 助手温度单位、无 uid 自有家庭场景；含语料用例 |
+| W0-6 macOS buildTV | #442 | Hydrogen High | 无 | PR | DONE | #467 → main 4ea541e | 黄金语料语义变更；`WINDOWS_DIVERGENCE_BUDGET` 收紧到 0 |
 | W0-7 更新调度节拍对齐 | #455 | Codex sol6.2 | W0-2 完成后（同一通道串行） | PR | DONE | #465 → main c895091 | 自动更新高风险面 |
-| W0-8 Windows 引导无障碍与水合 | #293 | Flash (opencode) | 无 | PR | IN_PROGRESS | | Windows 前端 |
+| W0-8 Windows 引导无障碍与水合 | #293 | Flash (opencode) | 无 | PR | DONE | #469 → main 0b9e9498 | Windows 前端 |
 
 ## Wave 1：P0 内核止血（传输、焦点、零回弹）
 
 | ID | 关联已有Issue | 模型分派 | 前置依赖 | 通道 | 状态 | PR/SHA | 交接备注 |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| P0-3 Win 连接池 + HA subscribe_entities | — | Codex sol6.2 | Wave 0 | PR | TODO | | 网络传输边界 |
-| P0-4 休眠/网络切换半开 TCP 斩杀 | — | Codex sol6.2 | P0-3 | PR | TODO | | 双端 |
-| P0-5 Win 米家局域网 Part 2 + status=all/specPatch | #457 | Codex sol6.2 | #461 已合 | PR | TODO | | #457 写入确认并入 |
-| P0-6 Win 托盘 tao/tray-icon 5 处硬伤 | #424 #446 | Neon Mid | Wave 0 | PR | TODO | | #424/#446 摄像机桥接监督可拆独立 PR |
-| P0-7 macOS nonactivatingPanel 零抢焦 | #443 | Neon Mid | Wave 0 | PR | TODO | | 5 护栏；#443 专注模式顺带 |
-| P0-8 Per-Field writeEpoch 零回弹 | — | Codex sol6.2 | P0-5 | PR | TODO | | 控制写入 + 黄金语料 |
-| D-1 发版文档同步纪律 | — | Hydrogen High | 无 | 快车道main | TODO | | |
+| W1-1 D-1 发版文档同步纪律 | — | Hydrogen High | 无 | 快车道main | TODO | | 发版 Checklist 加 README/platform-matrix/GLOSSARY 核对门禁 |
+| W1-2 P0-7 macOS 面板零抢焦 | — | Neon Mid | 无 | PR | TODO | | `.nonactivatingPanel` + 5 护栏；完整 check.sh |
+| W1-3 P0-6 Win 托盘 5 处硬伤 | — | Neon Mid | 无 | PR | TODO | | window.rs / main.rs / companion.rs / desktop_shell.rs；Rust 测试靠云端 |
+| W1-4 P0-3a Win Rust 连接池 + 持久 HA WebSocket | — | Codex sol6.2 | 无 | PR | TODO | | network.rs / home_assistant.rs |
+| W1-5 #443 专注模式名过滤 | #443 | Hydrogen High | W1-1 | PR | TODO | | |
+| W1-6 P0-3b macOS HA subscribe_entities | — | Codex sol6.2 | W1-4 | PR | TODO | | HomeProvider.swift，与 W1-7 macOS 部分串行 |
+| W1-7 P0-4 休眠/网络切换半开 TCP 斩杀 | — | Neon Mid（Win network_monitor.rs）+ Codex sol6.2（macOS） | W1-3、W1-6 | PR | TODO | | 双端拆两个 PR |
+| W1-8 P0-5a Win 米家局域网 Part 2 + 写确认 | #457 | Codex sol6.2 | W1-4 | PR | TODO | | TS 混合路由 |
+| W1-9 P0-5b status=all + Shared/specPatches.json | — | Neon Mid | W1-8 | PR | TODO | | 跨端契约 |
+| W1-10 P0-8 Per-Field writeEpoch 零回弹 | — | Codex sol6.2 | W1-8 | PR | TODO | | 控制写入 + 黄金语料；datasource:1 真机部分 HUMAN_GATE（#411） |
+| W1-11 #424/#446 摄像机桥接监督与 go2rtc 收敛 | #424 #446 | Neon Mid | W1-3 | PR | TODO | | 可延至 Wave 2A 的 P1-2 |
 
 ## Wave 2A：P1 桌面护城河与手感
 
