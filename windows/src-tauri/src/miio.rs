@@ -60,7 +60,7 @@ impl MiIOUdpTransport for TokioMiIOUdpTransport {
                 Ok(Ok(n)) if n == packet.len() => {}
                 _ => return Err(MiIOError::SendFailed),
             }
-            let mut buf = vec![0u8; 4096];
+            let mut buf = vec![0u8; u16::MAX as usize];
             match tokio::time::timeout(timeout, sock.recv(&mut buf)).await {
                 Ok(Ok(0)) => Err(MiIOError::MalformedPacket),
                 Ok(Ok(n)) => { buf.truncate(n); Ok(buf) }
