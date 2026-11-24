@@ -347,6 +347,10 @@ struct AutomationContextEngineTests {
         await provider.emit(MacContextSnapshot(), at: start.addingTimeInterval(20))
         #expect(await mock.executedCommands == [onCommand(), offCommand()])
         #expect(AutomationContextStack(defaults: defaults, now: start.addingTimeInterval(20)).isEmpty)
+
+        // A duplicate exit delivered through the trigger observer must not restore again.
+        await engine.handle(trigger: .cameraNotInUse, at: start.addingTimeInterval(21))
+        #expect(await mock.executedCommands == [onCommand(), offCommand()])
     }
 
     @Test("Focus context restoration runs from the context exit signal")

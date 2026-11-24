@@ -57,7 +57,6 @@ struct AutomationSettingsSection: View {
     @State private var newSceneId: String?
     @State private var newDeviceIds: Set<String> = []
     @State private var newDeviceTurnOn = false
-    @State private var newRestoreWhenContextEnds = false
 
     // #174: per-trigger parameters. They stay at safe defaults unless the selected trigger uses
     // them, and are copied into the rule when it is added.
@@ -67,6 +66,8 @@ struct AutomationSettingsSection: View {
     @State private var newLateNightEnd = 6
     @State private var newCalendarLeadMinutes = 1
     @State private var newSchedule = ScheduledTime(hour: 8, minute: 0)
+    @State private var newFrontmostAppBundleID = AutomationRuleTemplate.FrontmostAppPreset.iina.bundleID
+    @State private var newRestoreWhenContextEnds = false
 
     // Conditions. Kept separate from the trigger parameters above: they apply to every trigger,
     // not just the Wi-Fi one.
@@ -204,6 +205,9 @@ struct AutomationSettingsSection: View {
             if !pausedQuickActions.isEmpty {
                 pausedQuickActionsBlock
             }
+
+            Divider().overlay(Color.primary.opacity(0.06))
+            quickTemplatesBar
 
             Divider().overlay(Color.primary.opacity(0.06))
             newRuleBuilder
@@ -370,8 +374,51 @@ struct AutomationSettingsSection: View {
                     .foregroundStyle(DesignTokens.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
                 }
-                if rule.trigger == .scheduledTime || rule.trigger.supportsLasting {
-                    DisclosureGroup(L10n.tr("编辑触发设置", "Edit trigger settings")) {
+                if !rule.canEnable && !rule.isEnabled {
+                    Text(L10n.tr(
+                        "请先展开下方「编辑规则」选择设备后再启用",
+                        "Expand “Edit rule” below to pick devices before enabling"
+                    ))
+                    .font(.system(size: DesignTokens.TypeSize.caption))
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+                }
+                if supportsRuleEditor(rule) {
+                    DisclosureGroup(L10n.tr("编辑规则", "Edit rule")) {
+                        if rule.trigger == .frontmostAppBecame || rule.trigger == .frontmostAppLeft {
+                            frontmostAppEditor(Binding(
+                                get: { rule.triggerOptions.frontmostAppBundleID ?? "" },
+                                set: { bundleID in
+                                    guard var current = store.automationRuleStore.load().first(where: { $0.id == rule.id }) else { return }
+                                    let trimmed = bundleID.trimmingCharacters(in: .whitespacesAndNewlines)
+                                    current.triggerOptions.frontmostAppBundleID = trimmed.isEmpty ? nil : trimmed
+                                    if !current.canEnable { current.isEnabled = false }
+                                    update(current)
+                                }
+                            ))
+                        }
+                        if case .devices(let ids, let isOn) = rule.action {
+                            ruleDevicesEditor(rule: rule, selectedIDs: Set(ids), isOn: isOn)
+                        }
+                        if let defaultRestore = rule.trigger.defaultRestoreTrigger,
+                           case .devices = rule.action {
+                            Toggle(L10n.tr("情境结束时还原状态", "Restore state when context ends"), isOn: Binding(
+                                get: { rule.restoreWhenContextEnds },
+                                set: { enabled in
+                                    guard var current = store.automationRuleStore.load().first(where: { $0.id == rule.id }) else { return }
+                                    current.restoreWhenContextEnds = enabled
+                                    current.restoreTrigger = enabled ? defaultRestore : nil
+                                    if current.isEnabled, enabled,
+                                       let confirmation = current.highRiskConfirmation(devices: store.devices),
+                                       !current.highRiskApproved {
+                                        guard confirmHighRiskRule(confirmation) else { return }
+                                        current.highRiskApproved = true
+                                    }
+                                    update(current)
+                                }
+                            ))
+                            .toggleStyle(.checkbox)
+                        }
                         if rule.trigger == .scheduledTime {
                             scheduleEditor(Binding(
                                 get: { rule.triggerOptions.scheduledTime ?? ScheduledTime(hour: 8, minute: 0) },
@@ -433,6 +480,7 @@ struct AutomationSettingsSection: View {
                 .glassLabelHidden()
                 .toggleStyle(.glass)
                 .controlSize(.regular)
+                .disabled(!rule.canEnable && !rule.isEnabled)
 
             Button {
                 delete(rule)
@@ -482,12 +530,156 @@ struct AutomationSettingsSection: View {
         pausedQuickActions = store.pausedQuickActionsRequiringManualResume
     }
 
+    private var quickTemplatesBar: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(L10n.tr("开箱模板", "Quick Templates"))
+                .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
+                .foregroundStyle(DesignTokens.secondaryText)
+
+            HStack(spacing: 8) {
+                ForEach(AutomationRuleTemplate.allCases) { template in
+                    Button {
+                        addTemplate(template)
+                    } label: {
+                        Label(template.title, systemImage: template.symbolName)
+                            .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
+                    }
+                    .buttonStyle(PillActionButtonStyle())
+                    .help(template.detail)
+                }
+            }
+
+            Text(L10n.tr(
+                "一键添加默认关闭的模板（不预选设备），选好设备后再启用；情境结束时自动还原状态。",
+                "Adds disabled starter rules with no pre-selected devices. Pick devices before enabling; state restores when the context ends."
+            ))
+            .font(.system(size: DesignTokens.TypeSize.caption))
+            .foregroundStyle(DesignTokens.secondaryText)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func addTemplate(_ template: AutomationRuleTemplate) {
+        var stored = store.automationRuleStore.load()
+        stored.append(contentsOf: template.makeRules())
+        store.automationRuleStore.save(stored)
+        rules = stored
+        store.onAutomationRulesChanged?()
+    }
+
+    private func supportsRuleEditor(_ rule: AutomationRule) -> Bool {
+        if rule.trigger == .scheduledTime || rule.trigger.supportsLasting
+            || rule.trigger == .frontmostAppBecame || rule.trigger == .frontmostAppLeft {
+            return true
+        }
+        if case .devices = rule.action { return true }
+        return false
+    }
+
+    @ViewBuilder
+    private func frontmostAppEditor(_ bundleID: Binding<String>) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                Menu(L10n.tr("常用播放器", "Player presets")) {
+                    ForEach(AutomationRuleTemplate.FrontmostAppPreset.mediaPlayers) { preset in
+                        Button("\(preset.name) (\(preset.bundleID))") {
+                            bundleID.wrappedValue = preset.bundleID
+                        }
+                    }
+                }
+                .controlSize(.small)
+                .fixedSize()
+
+                TextField(
+                    L10n.tr("应用 Bundle ID（如 com.colliderli.iina）", "App Bundle ID (e.g. com.colliderli.iina)"),
+                    text: bundleID
+                )
+                .textFieldStyle(.roundedBorder)
+                .frame(maxWidth: 260)
+                .controlSize(.regular)
+            }
+            Text(L10n.tr(
+                "仅保存你选择的 Bundle ID，不记录或日志输出其他应用。",
+                "Stores only the bundle ID you pick; other apps are never recorded or logged."
+            ))
+            .font(.system(size: DesignTokens.TypeSize.caption))
+            .foregroundStyle(DesignTokens.secondaryText)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    @ViewBuilder
+    private func ruleDevicesEditor(rule: AutomationRule, selectedIDs: Set<String>, isOn: Bool) -> some View {
+        let selectable = store.controllableDevices
+        if selectable.isEmpty {
+            Text(L10n.tr(
+                "当前没有可控设备，连接数据源后再选择。",
+                "No controllable devices available. Connect a data source first."
+            ))
+            .foregroundStyle(DesignTokens.secondaryText)
+        } else {
+            ScrollView(.vertical, showsIndicators: true) {
+                VStack(alignment: .leading, spacing: 3) {
+                    ForEach(selectable) { device in
+                        Toggle(isOn: Binding(
+                            get: { selectedIDs.contains(device.id) },
+                            set: { checked in
+                                guard var current = store.automationRuleStore.load().first(where: { $0.id == rule.id }),
+                                      case .devices(let existing, let turnOn) = current.action else { return }
+                                var next = Set(existing)
+                                if checked { next.insert(device.id) } else { next.remove(device.id) }
+                                current.action = .devices(ids: next.sorted(), isOn: turnOn)
+                                current.highRiskApproved = false
+                                if !current.canEnable {
+                                    current.isEnabled = false
+                                } else if current.isEnabled,
+                                          let confirmation = current.highRiskConfirmation(devices: store.devices) {
+                                    guard confirmHighRiskRule(confirmation) else { return }
+                                    current.highRiskApproved = true
+                                }
+                                update(current)
+                            }
+                        )) {
+                            Text("\(device.name) · \(L10n.displayRoomName(device.roomName))")
+                        }
+                        .toggleStyle(.checkbox)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(maxHeight: 96)
+
+            Picker("", selection: Binding(
+                get: { isOn },
+                set: { turnOn in
+                    guard var current = store.automationRuleStore.load().first(where: { $0.id == rule.id }),
+                          case .devices(let existing, _) = current.action else { return }
+                    current.action = .devices(ids: existing, isOn: turnOn)
+                    current.highRiskApproved = false
+                    if current.isEnabled,
+                       let confirmation = current.highRiskConfirmation(devices: store.devices) {
+                        guard confirmHighRiskRule(confirmation) else { return }
+                        current.highRiskApproved = true
+                    }
+                    update(current)
+                }
+            )) {
+                Text(L10n.tr("打开", "Turn on")).tag(true)
+                Text(L10n.tr("关闭", "Turn off")).tag(false)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(width: 150)
+        }
+    }
+
     private func enabledBinding(for rule: AutomationRule) -> Binding<Bool> {
         Binding(
             get: { rules.first(where: { $0.id == rule.id })?.isEnabled ?? rule.isEnabled },
             set: { enabled in
                 guard let index = rules.firstIndex(where: { $0.id == rule.id }) else { return }
                 var updated = rules[index]
+                if enabled, !updated.canEnable { return }
                 if enabled, !updated.isEnabled,
                    let confirmation = updated.highRiskConfirmation(devices: store.devices) {
                     guard confirmHighRiskRule(confirmation) else { return }
@@ -526,12 +718,19 @@ struct AutomationSettingsSection: View {
         store.onAutomationRulesChanged?()
     }
 
-    /// One line under the action summary: the trigger's own parameter, then the conditions.
+    /// One line under the action summary: the trigger's own parameter, restore flag, then conditions.
     private func triggerDetail(_ rule: AutomationRule) -> String? {
-        let triggerPart = triggerParameterDetail(rule)
-        guard let conditionPart = rule.conditions.summary() else { return triggerPart }
-        guard let triggerPart else { return conditionPart }
-        return triggerPart + " · " + conditionPart
+        var parts: [String] = []
+        if let triggerPart = triggerParameterDetail(rule) {
+            parts.append(triggerPart)
+        }
+        if rule.restoreWhenContextEnds {
+            parts.append(L10n.tr("结束时还原", "Restore when ended"))
+        }
+        if let conditionPart = rule.conditions.summary() {
+            parts.append(conditionPart)
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
     private func triggerParameterDetail(_ rule: AutomationRule) -> String? {
@@ -569,6 +768,11 @@ struct AutomationSettingsSection: View {
                 "%@ min before",
                 String(options.calendarLeadMinutes)
             )
+        case .frontmostAppBecame, .frontmostAppLeft:
+            if let bundleID = options.frontmostAppBundleID {
+                return AutomationRuleTemplate.FrontmostAppPreset.displayLabel(for: bundleID)
+            }
+            return L10n.tr("未选择应用", "No app selected")
         default:
             return nil
         }
@@ -839,8 +1043,16 @@ struct AutomationSettingsSection: View {
             }
         case .scheduledTime:
             scheduleEditor($newSchedule)
+        case .frontmostAppBecame, .frontmostAppLeft:
+            frontmostAppEditor($newFrontmostAppBundleID)
         default:
             EmptyView()
+        }
+
+        if newTrigger.defaultRestoreTrigger != nil && newActionKind == .devices {
+            Toggle(L10n.tr("情境结束时还原状态", "Restore state when context ends"), isOn: $newRestoreWhenContextEnds)
+                .toggleStyle(.checkbox)
+                .font(.system(size: DesignTokens.TypeSize.caption))
         }
 
         if let permission = newTrigger.requiredPermission {
@@ -1039,6 +1251,10 @@ struct AutomationSettingsSection: View {
         // Equal ends mean "all day" in the model but "never" for the late-night trigger; refuse the
         // ambiguous window rather than store a rule the user reads the other way.
         if newTimeWindowEnabled, newTimeStartHour == newTimeEndHour { return false }
+        if (newTrigger == .frontmostAppBecame || newTrigger == .frontmostAppLeft),
+           newFrontmostAppBundleID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return false
+        }
         switch newActionKind {
         case .quickAction:
             return true
@@ -1061,13 +1277,15 @@ struct AutomationSettingsSection: View {
             guard !newDeviceIds.isEmpty else { return }
             action = .devices(ids: newDeviceIds.sorted(), isOn: newDeviceTurnOn)
         }
+        let isFrontmostApp = newTrigger == .frontmostAppBecame || newTrigger == .frontmostAppLeft
         let options = AutomationTriggerOptions(
             batteryThresholdPercent: newBatteryThreshold,
             wifiSSID: newWiFiSSID,
             lateNightStartHour: newLateNightStart,
             lateNightEndHour: newLateNightEnd,
             calendarLeadMinutes: newCalendarLeadMinutes,
-            scheduledTime: newTrigger == .scheduledTime ? newSchedule : nil
+            scheduledTime: newTrigger == .scheduledTime ? newSchedule : nil,
+            frontmostAppBundleID: isFrontmostApp ? newFrontmostAppBundleID : nil
         )
         let wifi: AutomationWiFiCondition
         switch newWiFiMode {
@@ -1075,6 +1293,9 @@ struct AutomationSettingsSection: View {
         case .only: wifi = .inAny(parsedSSIDs)
         case .exclude: wifi = .notIn(parsedSSIDs)
         }
+        let restoreTrigger = newRestoreWhenContextEnds && newActionKind == .devices
+            ? newTrigger.defaultRestoreTrigger
+            : nil
         var rule = AutomationRule(
             trigger: newTrigger,
             action: action,
@@ -1088,8 +1309,8 @@ struct AutomationSettingsSection: View {
                 ),
                 lastingMinutes: newTrigger.supportsLasting && newLastingMinutes > 0 ? newLastingMinutes : nil
             ),
-            restoreWhenContextEnds: newRestoreWhenContextEnds,
-            restoreTrigger: newRestoreWhenContextEnds ? newTrigger.pairedContextTrigger : nil
+            restoreWhenContextEnds: restoreTrigger != nil,
+            restoreTrigger: restoreTrigger
         )
         if let confirmation = rule.highRiskConfirmation(devices: store.devices) {
             guard confirmHighRiskRule(confirmation) else { return }
