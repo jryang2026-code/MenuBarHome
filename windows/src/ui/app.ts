@@ -798,8 +798,14 @@ export class MenuMijiaWindowsApp {
       if (!this.root.isConnected) return;
       const parsed = parseWinThemeSnapshot((event as CustomEvent<unknown>).detail);
       if (!parsed) return;
+      const backdropChanged =
+        Boolean(this.winThemeSnapshot?.supportsSystemBackdrop) !== parsed.supportsSystemBackdrop;
       this.winThemeSnapshot = parsed;
       this.applyNativeWinTheme();
+      if (backdropChanged && !this.isStandaloneSettingsWindow) {
+        this.lastAppliedPanelHeightKey = null;
+        this.syncPanelGeometry();
+      }
       this.render();
     };
     window.addEventListener("menumijia:open-update", onOpenUpdate);
@@ -817,8 +823,14 @@ export class MenuMijiaWindowsApp {
           if (!this.root.isConnected) return;
           const parsed = parseWinThemeSnapshot(raw);
           if (!parsed) return;
+          const backdropChanged =
+            Boolean(this.winThemeSnapshot?.supportsSystemBackdrop) !== parsed.supportsSystemBackdrop;
           this.winThemeSnapshot = parsed;
           this.applyNativeWinTheme();
+          if (backdropChanged && !this.isStandaloneSettingsWindow) {
+            this.lastAppliedPanelHeightKey = null;
+            this.syncPanelGeometry();
+          }
           this.render();
         })
         .catch(() => undefined);
@@ -2626,7 +2638,8 @@ export class MenuMijiaWindowsApp {
     const theme = normalizePanelTheme(this.settings.panelTheme);
     const h = PANEL_HEIGHTS.find((item) => item.id === this.settings.panelHeight) ?? PANEL_HEIGHTS[1]!;
     this.panelGeometryUpdates = this.panelGeometryUpdates.then(async () => {
-      const key = `${theme}:${h.px}:${this.panelMonitorGeometryKey()}`;
+      const backdropFlag = this.winThemeSnapshot?.supportsSystemBackdrop ? "1" : "0";
+      const key = `${theme}:${backdropFlag}:${h.px}:${this.panelMonitorGeometryKey()}`;
       if (this.lastAppliedPanelHeightKey === key) return;
       this.lastAppliedPanelHeightKey = key;
       try {

@@ -467,6 +467,9 @@ fn broadcast_theme_change(app: &AppHandle) {
         if let Some(main_win) = app_clone.get_webview_window("main") {
             let visible = main_win.is_visible().unwrap_or(false);
             crate::window::sync_main_window_chrome(&main_win, visible);
+            if next_for_ui.supports_system_backdrop != prev.supports_system_backdrop && visible {
+                let _ = crate::window::position_popover(&main_win, None, None);
+            }
         }
         if let Some(settings_win) = app_clone.get_webview_window("settings") {
             crate::window::sync_settings_window_chrome(&settings_win);
