@@ -2170,6 +2170,50 @@ struct MiCloudClientTests {
         #expect(config.contains("allow_paths:"))
         #expect(config.contains(XiaomiCameraBridge.yamlDoubleQuoted(ffmpeg)))
         #expect(config.contains("webrtc:\n  listen: \"\""))
+        #expect(config.contains("app:\n  modules:\n    - api\n"))
+        #expect(config.contains("    - exec\n"))
+        #expect(!config.contains("    - echo\n"))
+        #expect(!config.contains("    - expr\n"))
+        #expect(!config.contains("    - debug\n"))
+    }
+
+    @Test("ProcessSupervisor.Go2RTCConfig matches Shared/go2rtcConfig.json and keeps paths free of credentials")
+    func go2rtcConfigMatchesSharedContract() throws {
+        struct SharedSpec: Decodable {
+            struct RelativeFiles: Decodable {
+                let config: String
+                let owner: String
+                let pid: String
+                let log: String
+            }
+            let schemaVersion: Int
+            let relativeFiles: RelativeFiles
+            let forbiddenPorts: [UInt16]
+            let allowedModules: [String]
+        }
+
+        var repoRoot = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        for _ in 0..<8 where !FileManager.default.fileExists(atPath: repoRoot.appendingPathComponent("Shared/go2rtcConfig.json").path) {
+            repoRoot.deleteLastPathComponent()
+        }
+        let sharedURL = repoRoot.appendingPathComponent("Shared/go2rtcConfig.json")
+        let data = try Data(contentsOf: sharedURL)
+        let spec = try JSONDecoder().decode(SharedSpec.self, from: data)
+
+        #expect(spec.schemaVersion == 1)
+        #expect(ProcessSupervisor.Go2RTCConfig.configFileName == spec.relativeFiles.config)
+        #expect(ProcessSupervisor.Go2RTCConfig.ownerFileName == spec.relativeFiles.owner)
+        #expect(ProcessSupervisor.Go2RTCConfig.pidFileName == spec.relativeFiles.pid)
+        #expect(ProcessSupervisor.Go2RTCConfig.logFileName == spec.relativeFiles.log)
+        #expect(ProcessSupervisor.Go2RTCConfig.forbiddenListenPorts == Set(spec.forbiddenPorts))
+        #expect(ProcessSupervisor.Go2RTCConfig.allowedModules == spec.allowedModules)
+
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("mbm-go2rtc-paths-\(UUID().uuidString)", isDirectory: true)
+        let paths = ProcessSupervisor.Go2RTCConfig.Paths(binDirectory: dir)
+        #expect(paths.configFile.lastPathComponent == spec.relativeFiles.config)
+        #expect(paths.ownerFile.lastPathComponent == spec.relativeFiles.owner)
+        #expect(paths.pidFile.lastPathComponent == spec.relativeFiles.pid)
+        #expect(paths.logFile.lastPathComponent == spec.relativeFiles.log)
     }
 
     @Test("go2rtc reuse accepts only a live process that answers with our nonce")
