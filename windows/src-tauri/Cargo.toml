@@ -33,7 +33,7 @@ tokio-rustls = { version = "0.26", default-features = false, features = ["ring",
 # Windows Credential Manager for tokens and API keys (#28).
 [target.'cfg(windows)'.dependencies]
 keyring = { version = "3", features = ["windows-native"] }
-windows = { version = "0.62", features = ["Data_Xml_Dom", "UI_Notifications", "Win32_System_WinRT"] }
+windows = { version = "0.62", features = ["Data_Xml_Dom", "UI", "UI_Notifications", "UI_ViewManagement", "Win32_System_WinRT"] }
 windows-sys = { version = "0.59", features = [
     "Win32_Devices_Display",
     "Win32_Foundation",
@@ -50,6 +50,7 @@ windows-sys = { version = "0.59", features = [
     "Win32_System_Threading",
     "Win32_System_WindowsProgramming",
     "Win32_UI_Accessibility",
+    "Win32_UI_Controls",
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }

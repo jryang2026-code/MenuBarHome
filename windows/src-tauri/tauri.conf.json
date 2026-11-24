@@ -25,6 +25,7 @@
         "focus": false,
         "visible": false,
         "center": false,
+        "scrollBarStyle": "fluentOverlay",
         "backgroundThrottling": "disabled"
       }
     ],

@@ -292,6 +292,35 @@ body {
     0 1px 4px rgba(0, 0, 0, 0.08);
 }
 
+/* Native Win11 Classic transient Acrylic (Build >= 22621): remove 16px CSS drop-shadow padding
+   and hand outer shadow + rounding over to DWM (DWMWCP_ROUND + DWMSBT_TRANSIENTWINDOW). */
+#app[data-panel-theme="classic"][data-native-backdrop="acrylic"] {
+  --panel-inset: 0px;
+  padding: 0;
+}
+
+#app[data-panel-theme="classic"][data-native-backdrop="acrylic"] > .cc-popover,
+#app[data-panel-theme="classic"][data-native-backdrop="acrylic"] .cc-popover.is-unified-popover {
+  --r-flyout: 8px;
+  width: 100%;
+  max-height: 100vh;
+  border-radius: 8px;
+  box-shadow: none;
+  background: linear-gradient(
+    180deg,
+    rgba(32, 33, 38, clamp(0.48, calc(var(--panel-opacity, 0.88) * 0.68), 0.82)) 0%,
+    rgba(24, 25, 30, clamp(0.54, calc(var(--panel-opacity, 0.88) * 0.74), 0.86)) 100%
+  );
+}
+
+#app[data-panel-theme="classic"][data-native-backdrop="acrylic"] .cc-popover.is-unified-popover.scheme-light {
+  background: linear-gradient(
+    180deg,
+    rgba(246, 246, 248, clamp(0.56, calc(var(--panel-opacity, 0.90) * 0.72), 0.86)) 0%,
+    rgba(238, 240, 244, clamp(0.62, calc(var(--panel-opacity, 0.90) * 0.78), 0.88)) 100%
+  );
+}
+
 .win-island {
   border-radius: var(--r-flyout);
   background: rgba(var(--win-island-rgb), var(--panel-alpha));
@@ -4734,6 +4763,32 @@ html.is-settings-window .cc-settings-sheet {
 
 html.is-settings-window #btn-close-settings {
   display: none;
+}
+
+/* Native Win11 Mica backdrop for the standalone settings window (Build >= 22621). */
+html.is-settings-window[data-native-backdrop="mica"],
+html.is-settings-window[data-native-backdrop="mica"] body,
+html.is-settings-window[data-native-backdrop="mica"] #app,
+html.is-settings-window[data-native-backdrop="mica"] .cc-popover,
+html.is-settings-window[data-native-backdrop="mica"] .cc-sheet-backdrop,
+html.is-settings-window[data-native-backdrop="mica"] .cc-settings-sheet {
+  background: transparent !important;
+}
+
+html.is-settings-window[data-native-backdrop="mica"] .cc-settings-sidebar {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+html.is-settings-window[data-native-backdrop="mica"] .cc-popover.scheme-light .cc-settings-sidebar {
+  background: rgba(255, 255, 255, 0.36);
+}
+
+html.is-settings-window[data-native-backdrop="mica"] .cc-settings-main {
+  background: rgba(28, 28, 30, 0.42);
+}
+
+html.is-settings-window[data-native-backdrop="mica"] .cc-popover.scheme-light .cc-settings-main {
+  background: rgba(255, 255, 255, 0.54);
 }
 
 .cc-btn,
