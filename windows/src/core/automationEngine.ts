@@ -52,12 +52,15 @@ export type SystemContextEventKind = SystemContextEvent["kind"];
  * `tickSafetyHealthAndAutomation` 周期派发 `tick`；`pollSystemContextSignals` 每 10 秒采样
  * 电源/电量与外接显示器数量，变化时派发 `powerChanged`、`externalDisplayChanged`；
  * `system_events.rs` 的电源回调推送 `systemSleep` / `systemWake` / `displayPowerChanged`
- * （`notifySystemSleep` / `notifySystemWake` / `notifyDisplayPowerChanged`）；Wi-Fi 轮询读数
- * 变化派发 `wifiChanged`（SSID 由 `windows/src-tauri/src/wifi.rs` 的 `wifi_current` 命令经
- * WLAN API 读取）。
+ * （`notifySystemSleep` / `notifySystemWake` / `notifyDisplayPowerChanged`）；摄像头/麦克风通过
+ * `CapabilityAccessManager\ConsentStore` 注册表变更监听推送 `mediaCaptureChanged`
+ * （`notifyMediaCaptureChanged`）；全屏/演示/勿扰状态通过 `SHQueryUserNotificationState` 配合
+ * `SetWinEventHook(EVENT_SYSTEM_FOREGROUND)` 与 10 秒兜底采样推送 `focusModeChanged`
+ * （`notifyFocusModeChanged`）；Wi-Fi 轮询读数变化派发 `wifiChanged`（SSID 由
+ * `windows/src-tauri/src/wifi.rs` 的 `wifi_current` 命令经 WLAN API 读取）。
  *
- * 仍未接入的触发器（摄像头/麦克风、专注模式、日历、合盖休眠）没有事件源，规则永远等不到
- * 触发，因此留在本集合之外，设置界面也不会提供。
+ * 仍未接入的触发器（日历、合盖休眠、节电模式变化）没有事件源，规则永远等不到触发，因此留在本
+ * 集合之外，设置界面也不会提供。
  */
 export const WINDOWS_SUPPORTED_TRIGGERS = [
   "away",
@@ -71,8 +74,14 @@ export const WINDOWS_SUPPORTED_TRIGGERS = [
   "powerConnected",
   "powerDisconnected",
   "batteryBelowThreshold",
+  "cameraInUse",
+  "cameraNotInUse",
+  "microphoneInUse",
+  "microphoneNotInUse",
   "externalDisplayConnected",
   "externalDisplayDisconnected",
+  "focusModeEnabled",
+  "focusModeDisabled",
   "lateNightUsage",
   "scheduledTime",
   "sensorThreshold",
@@ -102,8 +111,14 @@ export const WINDOWS_TRIGGER_SOURCES: Readonly<Record<WindowsSupportedTrigger, r
   powerConnected: ["powerChanged"],
   powerDisconnected: ["powerChanged"],
   batteryBelowThreshold: ["powerChanged"],
+  cameraInUse: ["mediaCaptureChanged"],
+  cameraNotInUse: ["mediaCaptureChanged"],
+  microphoneInUse: ["mediaCaptureChanged"],
+  microphoneNotInUse: ["mediaCaptureChanged"],
   externalDisplayConnected: ["externalDisplayChanged"],
   externalDisplayDisconnected: ["externalDisplayChanged"],
+  focusModeEnabled: ["focusModeChanged"],
+  focusModeDisabled: ["focusModeChanged"],
   lateNightUsage: ["panelWake", "tick"],
   scheduledTime: ["tick"],
   sensorThreshold: ["tick"],
@@ -1344,7 +1359,18 @@ export class AutomationEngine {
   }
 
   public resetTransientState(resetContext = false): void {
-    if (resetContext) this.context = { ...this.context, wifiSSID: null, wifiAuthorized: false, isSystemAsleep: false, isDisplayAsleep: false };
+    if (resetContext) {
+      this.context = {
+        ...this.context,
+        wifiSSID: null,
+        wifiAuthorized: false,
+        isSystemAsleep: false,
+        isDisplayAsleep: false,
+        cameraInUse: false,
+        microphoneInUse: false,
+        focusModeEnabled: false,
+      };
+    }
     this.arbitrator.reset();
     this.hasLockBaseline = false;
     this.sensorConditionEdge.clear();
@@ -1380,6 +1406,16 @@ export class AutomationEngine {
       ...this.context,
       externalDisplayCount: Math.max(0, Math.trunc(externalDisplayCount)),
     };
+  }
+
+  /** Seeds camera/microphone capture state so an already-open meeting at startup does not fire. */
+  public primeMediaCaptureBaseline(cameraInUse: boolean, microphoneInUse: boolean): void {
+    this.context = { ...this.context, cameraInUse, microphoneInUse };
+  }
+
+  /** Seeds fullscreen/focus state so starting while already in fullscreen/quiet hours does not fire. */
+  public primeFocusModeBaseline(enabled: boolean): void {
+    this.context = { ...this.context, focusModeEnabled: enabled };
   }
 
   public async runRule(
