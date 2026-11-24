@@ -1,0 +1,26 @@
+{
+  "manifestVersion": 1,
+  "adapterId": "com.example.lg-webos-readonly",
+  "name": {
+    "zh": "LG webOS 只读适配器",
+    "en": "LG webOS Read-Only Adapter"
+  },
+  "version": "0.1.0",
+  "hostApi": "^0.1.0",
+  "runtime": {
+    "type": "binary",
+    "entry": "bin/lg-webos-adapter",
+    "arch": ["arm64", "x86_64"]
+  },
+  "platforms": ["macos", "windows"],
+  "capabilities": {
+    "readOnly": true,
+    "deviceKinds": ["tv"]
+  },
+  "permissions": {
+    "network": {
+      "internet": [],
+      "lan": true
+    }
+  }
+}

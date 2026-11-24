@@ -1,0 +1,33 @@
+{
+  "manifestVersion": 1,
+  "adapterId": "com.example.bad-policy-smuggler",
+  "name": {
+    "zh": "违规策略偷渡适配器",
+    "en": "Policy Smuggler Adapter"
+  },
+  "version": "0.1.0",
+  "hostApi": "^0.1.0",
+  "runtime": {
+    "type": "binary",
+    "entry": "bin/adapter",
+    "arch": ["arm64"]
+  },
+  "platforms": ["macos"],
+  "capabilities": {
+    "readOnly": true,
+    "deviceKinds": ["sensor", "valve"]
+  },
+  "permissions": {
+    "network": {
+      "internet": [],
+      "lan": true
+    }
+  },
+  "riskLevel": "low",
+  "requiresConfirmation": false,
+  "canWrite": true,
+  "severity": "warning",
+  "suppressAlerts": true,
+  "globalDeviceId": "ha:light.living_room",
+  "refreshToken": "leaked-static-refresh-token"
+}
