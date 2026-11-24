@@ -1459,6 +1459,16 @@ export async function ingestHostHASnapshotForDoorbell(
   }
 
   const guardPrefs = loadSafetyGuardPrefs(center.storage);
+  const focusActive = Boolean(center.systemSignalBaseline?.focusMode);
+  for (const ring of rings) {
+    host.cameraLive.handleCameraEventForAutoOpen({
+      cameraId: ring.deviceId,
+      kind: "doorbell",
+      isLocked,
+      isFocusActive: focusActive,
+      dismissSeconds: options.popupSeconds ?? guardPrefs.doorbellPopupSeconds,
+    });
+  }
   const responses = center.doorbellCoordinator.handleRings({
     rings,
     devices: aliased,

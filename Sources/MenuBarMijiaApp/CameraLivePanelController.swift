@@ -11,6 +11,7 @@ import SwiftUI
 /// Borderless, resizable floating `NSPanel` that stays visible across Spaces and full-screen apps.
 final class CameraFloatingPanel: NSPanel {
     var onCancel: (() -> Void)?
+    var onUserInteraction: (() -> Void)?
 
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
@@ -22,8 +23,11 @@ final class CameraFloatingPanel: NSPanel {
     /// A nonactivating panel ignores the click that would make it key, so the first click on
     /// the close button never reached the SwiftUI action.
     override func sendEvent(_ event: NSEvent) {
-        if event.type == .leftMouseDown, !isKeyWindow {
-            makeKey()
+        if event.type == .leftMouseDown {
+            onUserInteraction?()
+            if !isKeyWindow {
+                makeKey()
+            }
         }
         super.sendEvent(event)
     }
@@ -175,6 +179,8 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
     /// The ring still owns this window's closing; the user taking it over (moving, resizing, PiP,
     /// interacting, reopening) ends that.
     private(set) var doorbellOwnsClose = false
+    /// Visible countdown (in seconds) before an auto-opened PiP closes itself; nil when not armed.
+    public private(set) var autoCloseRemainingSeconds: Int?
     var hasPendingDoorbellAutoDismiss: Bool { doorbellDismissTask != nil && doorbellOwnsClose }
     private var isClosing = false
     private let mjpegSessionLock = OSAllocatedUnfairLock<URLSession?>(initialState: nil)
@@ -336,10 +342,31 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
 
     private func scheduleDoorbellDismiss(_ deviceId: String, after delay: Duration) {
         doorbellDismissTask?.cancel()
+        if delay < .seconds(1) {
+            autoCloseRemainingSeconds = 1
+            doorbellDismissTask = Task { @MainActor [weak self] in
+                try? await Task.sleep(for: delay)
+                guard !Task.isCancelled, let self else { return }
+                self.doorbellDismissTask = nil
+                self.autoCloseRemainingSeconds = nil
+                guard self.isVisible, self.doorbellOwnsClose, self.activeDeviceId == deviceId, !self.isPictureInPictureActive else { return }
+                self.closePanel()
+            }
+            return
+        }
+        let totalSeconds = max(1, Int(delay.components.seconds))
+        autoCloseRemainingSeconds = totalSeconds
         doorbellDismissTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: delay)
+            var remaining = totalSeconds
+            while remaining > 0 {
+                try? await Task.sleep(for: .seconds(1))
+                guard !Task.isCancelled, let self else { return }
+                remaining -= 1
+                self.autoCloseRemainingSeconds = remaining > 0 ? remaining : nil
+            }
             guard !Task.isCancelled, let self else { return }
             self.doorbellDismissTask = nil
+            self.autoCloseRemainingSeconds = nil
             guard self.isVisible, self.doorbellOwnsClose, self.activeDeviceId == deviceId, !self.isPictureInPictureActive else { return }
             self.closePanel()
         }
@@ -349,6 +376,7 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
         doorbellDismissTask?.cancel()
         doorbellDismissTask = nil
         doorbellOwnsClose = false
+        autoCloseRemainingSeconds = nil
         if claimsPlacement {
             isDoorbellPlacement = false
         }
@@ -442,6 +470,7 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
         doorbellDismissTask = nil
         isDoorbellPlacement = false
         doorbellOwnsClose = false
+        autoCloseRemainingSeconds = nil
         if isPictureInPictureActive {
             pictureInPicture?.stop()
         }
@@ -564,6 +593,7 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
         frameBeforeMaximize = nil
         isDoorbellPlacement = false
         doorbellOwnsClose = false
+        autoCloseRemainingSeconds = nil
         closeReleaseGeneration &+= 1
         let releaseGeneration = closeReleaseGeneration
         let closingDeviceId = activeDeviceId
@@ -1427,6 +1457,9 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
         panel.onCancel = { [weak self] in
             self?.closePanel()
         }
+        panel.onUserInteraction = { [weak self] in
+            self?.claimDoorbellWindowForUser(claimsPlacement: false)
+        }
         return panel
     }
 
@@ -1919,6 +1952,13 @@ struct CameraLivePanelView: View {
                 cameraSwitcherRail
             }
 
+            if let activeId = device?.id {
+                let pinned = store.pinnedSwitchDevices(forCamera: activeId)
+                if !pinned.isEmpty {
+                    pinnedSwitchesBar(pinned)
+                }
+            }
+
             if let spec = cameraSpec {
                 bottomControlsBar(spec: spec)
             }
@@ -1960,6 +2000,26 @@ struct CameraLivePanelView: View {
 
             cameraTitle
                 .layoutPriority(1)
+
+            if let remaining = controller.autoCloseRemainingSeconds, remaining > 0 {
+                Button {
+                    controller.claimDoorbellWindowForUser(claimsPlacement: false)
+                } label: {
+                    HStack(spacing: 3) {
+                        Image(systemName: "timer")
+                            .font(.system(size: 11, weight: .semibold))
+                        Text("\(remaining)s")
+                            .font(.system(size: 11, weight: .semibold).monospacedDigit())
+                    }
+                    .foregroundStyle(.white.opacity(0.92))
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Capsule().fill(Color.orange.opacity(0.35)))
+                    .overlay(Capsule().strokeBorder(Color.orange.opacity(0.55), lineWidth: 0.75))
+                }
+                .buttonStyle(.plain)
+                .help(L10n.tr("点击取消自动关闭并保持窗口打开", "Click to cancel auto-close and keep open"))
+            }
 
             if controller.isExpandedSize, let room = device?.roomName, !room.isEmpty {
                 Text(L10n.displayRoomName(room))
@@ -2096,6 +2156,34 @@ struct CameraLivePanelView: View {
             } label: {
                 Label(L10n.tr("重新连接", "Reconnect"), systemImage: "arrow.clockwise")
             }
+            if let activeCameraId = device?.id {
+                Divider()
+                let autoOpenOn = store.isCameraPipAutoOpenEnabled(for: activeCameraId)
+                Button {
+                    store.setCameraPipAutoOpen(!autoOpenOn, for: activeCameraId)
+                } label: {
+                    Label(
+                        L10n.tr("门铃/告警时自动弹出小窗", "Auto-open on doorbell/alarm"),
+                        systemImage: autoOpenOn ? "checkmark.circle.fill" : "circle"
+                    )
+                }
+                let pinnable = store.pinnableSwitchDevices(excludingCamera: activeCameraId)
+                if !pinnable.isEmpty {
+                    let selectedIds = Set(store.cameraPipPinnedSwitchIds[activeCameraId] ?? [])
+                    Menu(L10n.tr("钉选关联开关（最多 2 个）", "Pin related switches (max 2)")) {
+                        ForEach(pinnable) { sw in
+                            Button {
+                                store.toggleCameraPipPinnedSwitch(sw.id, forCamera: activeCameraId)
+                            } label: {
+                                Label(
+                                    sw.name,
+                                    systemImage: selectedIds.contains(sw.id) ? "checkmark" : "power"
+                                )
+                            }
+                        }
+                    }
+                }
+            }
         } label: {
             CameraHUDGlyph(symbol: "ellipsis")
         }
@@ -2125,6 +2213,47 @@ struct CameraLivePanelView: View {
                 .foregroundStyle(.white)
                 .lineLimit(1)
         }
+    }
+
+    private func pinnedSwitchesBar(_ switches: [SmartDevice]) -> some View {
+        HStack(spacing: 6) {
+            ForEach(switches) { sw in
+                let isOn = CameraPipWatchPolicy.isSwitchOn(sw)
+                Button {
+                    controller.claimDoorbellWindowForUser(claimsPlacement: false)
+                    _ = store.togglePrimary(sw)
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: isOn ? "power.circle.fill" : "power.circle")
+                            .font(.system(size: 11, weight: .semibold))
+                        Text(sw.name)
+                            .font(.system(size: 11, weight: .semibold))
+                            .lineLimit(1)
+                    }
+                    .foregroundStyle(isOn ? Color.white : Color.white.opacity(0.78))
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 5)
+                    .background(
+                        Capsule().fill(
+                            isOn ? Color.accentColor.opacity(0.75) : Color.white.opacity(0.10)
+                        )
+                    )
+                    .overlay(
+                        Capsule().strokeBorder(
+                            isOn ? Color.white.opacity(0.28) : Color.white.opacity(0.14),
+                            lineWidth: 0.75
+                        )
+                    )
+                }
+                .buttonStyle(.plain)
+                .disabled(!sw.isOnline)
+                .help(L10n.tr("切换关联开关", "Toggle pinned switch"))
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(Color.black.opacity(0.32))
     }
 
     private var cameraSwitcherRail: some View {
