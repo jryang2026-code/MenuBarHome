@@ -15,6 +15,11 @@ extension HomeStore {
     /// it, and the ringing device has an online camera card (#308).
     func handleDoorbellRing(_ ring: DoorbellRing) {
         guard !recentDoorbellRings.contains(where: { $0.key == ring.key }) else { return }
+        cameraEventStore.record(
+            cameraID: ring.deviceId,
+            kind: .doorbell,
+            timestamp: ring.firedAtDate ?? Date()
+        )
         recentDoorbellRings.insert(ring, at: 0)
         if recentDoorbellRings.count > Self.recentDoorbellRingLimit {
             recentDoorbellRings.removeLast(recentDoorbellRings.count - Self.recentDoorbellRingLimit)

@@ -430,6 +430,8 @@ public final class HomeStore {
     /// Cleared by `invalidateUndoContext`; a press whose card leaves the home drops out of
     /// `panelActivities`.
     public internal(set) var recentDoorbellRings: [DoorbellRing] = []
+    /// Local camera activity history. It contains event metadata and relative snapshot filenames only.
+    public let cameraEventStore: CameraEventStore
     /// Safety alerts the panel's activity stack shows, newest first, at most
     /// `recentSafetyAlertLimit`. Written by the snapshot path in `HomeStore+Backend.swift`, which is
     /// also where the notification handler fires, so the panel keeps its copy when no handler is
@@ -1303,7 +1305,13 @@ public final class HomeStore {
         defaults: UserDefaults? = nil
     ) {
         let ud = defaults ?? defaultsSuiteName.flatMap { UserDefaults(suiteName: $0) } ?? .standard
+        let testEnvironment = (provider != nil || dualSource != nil || defaultsSuiteName != nil || defaults != nil)
         self.userDefaults = ud
+        self.cameraEventStore = CameraEventStore(
+            directory: testEnvironment
+                ? FileManager.default.temporaryDirectory.appendingPathComponent("CameraEvents-\(UUID().uuidString)", isDirectory: true)
+                : nil
+        )
         self.usesInjectedProvider = (provider != nil || dualSource != nil)
         self.credentialVault = credentialVault
         self.miAccountsProviderFactory = miAccountsProviderFactory
@@ -1312,7 +1320,7 @@ public final class HomeStore {
         let initialPins = DeviceSourcePinStorage.load(defaults: ud)
         self.pinnedDeviceSourcesBox = DeviceSourcePinBox(initialPins)
         self.pinnedDeviceSources = initialPins
-        let isTestEnvironment = (provider != nil || dualSource != nil || defaultsSuiteName != nil || defaults != nil)
+        let isTestEnvironment = testEnvironment
         self.isTestEnvironment = isTestEnvironment
         self.updater = updater ?? AppUpdater()
         self.energyHistory = EnergyHistory(defaults: ud)
