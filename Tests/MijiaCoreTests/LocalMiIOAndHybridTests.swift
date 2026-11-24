@@ -582,10 +582,23 @@ struct MiIOPacketAndCryptoTests {
 
 // MARK: - LocalMiIOClient Tests
 
-@Suite("LocalMiIOClient UDP Protocol")
+@Suite("LocalMiIOClient UDP Protocol", .timeLimit(.minutes(2)))
 struct LocalMiIOClientTests {
     private let validTokenHex = "00112233445566778899aabbccddeeff"
     private let testEndpoint = MiIODeviceEndpoint(did: "12345678", ip: "192.168.1.10", token: "00112233445566778899aabbccddeeff")
+
+    private static func frozenDiscoveryClock(
+        now: LockedBox<ContinuousClock.Instant> = LockedBox(ContinuousClock.now)
+    ) -> LocalMiIOClient.DiscoveryClock {
+        LocalMiIOClient.DiscoveryClock(
+            now: { now.withValue { $0 } },
+            sleep: { _ in
+                let (stream, continuation) = AsyncStream<Void>.makeStream()
+                defer { continuation.finish() }
+                for await _ in stream {}
+            }
+        )
+    }
 
     @Test("Handshake tracks stamp skew + monotonic increments, encodes integer JSON values, and chunks >12 props")
     func handshakePropsChunkingAndCompactJSON() async throws {
@@ -828,11 +841,14 @@ struct LocalMiIOClientTests {
                 MiIOBroadcastReply(sourceIP: "192.168.1.103", packet: makeHelloResponse(deviceId: 0x0F0E_0D0C, stamp: 500)),
             ]
         }
-        let discovered = try await client.discoverEndpoints(for: [
-            MiIODeviceCandidate(did: did64String, token: token1Hex),
-            MiIODeviceCandidate(did: "lumi.gateway.v3", token: token2Hex),
-            MiIODeviceCandidate(did: "blt.cold.start", token: token3Hex),
-        ])
+        let discovered = try await client.discoverEndpoints(
+            for: [
+                MiIODeviceCandidate(did: did64String, token: token1Hex),
+                MiIODeviceCandidate(did: "lumi.gateway.v3", token: token2Hex),
+                MiIODeviceCandidate(did: "blt.cold.start", token: token3Hex),
+            ],
+            discoveryClock: Self.frozenDiscoveryClock()
+        )
         #expect(discovered == [did64String: "192.168.1.101", "lumi.gateway.v3": "192.168.1.102", "blt.cold.start": "192.168.1.103"])
         await client.shutdown()
     }
@@ -877,10 +893,13 @@ struct LocalMiIOClientTests {
                 MiIOBroadcastReply(sourceIP: "192.168.1.103", packet: makeHelloResponse(deviceId: 0x0F0E_0D0C, stamp: 83)),
             ]
         }
-        let discovered = try await client.discoverEndpoints(for: [
-            MiIODeviceCandidate(did: "lumi.gateway.v3", token: tokenKnownHex),
-            MiIODeviceCandidate(did: "blt.cold.reassigned", token: tokenColdHex),
-        ])
+        let discovered = try await client.discoverEndpoints(
+            for: [
+                MiIODeviceCandidate(did: "lumi.gateway.v3", token: tokenKnownHex),
+                MiIODeviceCandidate(did: "blt.cold.reassigned", token: tokenColdHex),
+            ],
+            discoveryClock: Self.frozenDiscoveryClock()
+        )
         #expect(discovered == ["lumi.gateway.v3": "192.168.1.102", "blt.cold.reassigned": "192.168.1.103"])
         await client.shutdown()
     }
@@ -908,18 +927,13 @@ struct LocalMiIOClientTests {
                 MiIOBroadcastReply(sourceIP: "192.168.1.92", packet: makeHelloResponse64(unknown: UInt32.max, deviceId: sharedLow32, stamp: 12)),
             ]
         }
-        // A synchronous mock transport answers on the same thread, so nothing here measures the
-        // clock; the generous budget only keeps a loaded CI runner from reordering the probe waves
-        // when the cooperative pool queues a continuation past the 1 s / 2.5 s defaults.
-        let client = LocalMiIOClient(
-            transport: transport,
-            handshakeTimeout: .seconds(5),
-            maxRetries: 0,
-            maxDiscoveryDuration: .seconds(25)
+        let client = LocalMiIOClient(transport: transport, maxRetries: 0)
+        let discovered = try await client.discoverEndpoints(
+            for: [
+                MiIODeviceCandidate(did: didA, token: tokenAHex), MiIODeviceCandidate(did: didB, token: tokenBHex), MiIODeviceCandidate(did: didUnmatched, token: tokenUnmatchedHex),
+            ],
+            discoveryClock: Self.frozenDiscoveryClock()
         )
-        let discovered = try await client.discoverEndpoints(for: [
-            MiIODeviceCandidate(did: didA, token: tokenAHex), MiIODeviceCandidate(did: didB, token: tokenBHex), MiIODeviceCandidate(did: didUnmatched, token: tokenUnmatchedHex),
-        ])
         #expect(discovered == [didA: "192.168.1.92", didB: "192.168.1.91"])
         await client.shutdown()
     }
@@ -940,13 +954,11 @@ struct LocalMiIOClientTests {
                 MiIOBroadcastReply(sourceIP: "192.168.1.95", packet: legacyHello),
             ]
         }
-        let client = LocalMiIOClient(
-            transport: transport,
-            handshakeTimeout: .seconds(5),
-            maxRetries: 0,
-            maxDiscoveryDuration: .seconds(25)
+        let client = LocalMiIOClient(transport: transport, maxRetries: 0)
+        let discovered = try await client.discoverEndpoints(
+            for: [MiIODeviceCandidate(did: "501", token: validTokenHex), MiIODeviceCandidate(did: "502", token: validTokenHex)],
+            discoveryClock: Self.frozenDiscoveryClock()
         )
-        let discovered = try await client.discoverEndpoints(for: [MiIODeviceCandidate(did: "501", token: validTokenHex), MiIODeviceCandidate(did: "502", token: validTokenHex)])
         #expect(discovered == ["501": "192.168.1.95"])
         await client.shutdown()
     }
@@ -984,29 +996,28 @@ struct LocalMiIOClientTests {
             return replies
         }
 
-        // The flood-protection budget below is what this test asserts; the discovery half only needs
-        // the crowded broadcast answered, which a loaded runner may not schedule inside 80 ms.
-        let client = LocalMiIOClient(
-            transport: transport,
-            handshakeTimeout: .seconds(5),
-            maxRetries: 0,
-            maxDiscoveryDuration: .seconds(25)
+        let client = LocalMiIOClient(transport: transport, maxRetries: 0)
+        let discovered = try await client.discoverEndpoints(
+            for: [
+                MiIODeviceCandidate(did: "lumi.curtain.v1", token: tokenLumiHex),
+                MiIODeviceCandidate(did: "blt.3.sensor", token: tokenBltHex),
+            ],
+            discoveryClock: Self.frozenDiscoveryClock()
         )
-        let discovered = try await client.discoverEndpoints(for: [
-            MiIODeviceCandidate(did: "lumi.curtain.v1", token: tokenLumiHex),
-            MiIODeviceCandidate(did: "blt.3.sensor", token: tokenBltHex),
-        ])
         #expect(discovered == [
             "lumi.curtain.v1": "192.168.1.180",
             "blt.3.sensor": "192.168.1.181",
         ])
         await client.shutdown()
 
-        // Also verify flood protection: 90 slow unresponsive replies must hit both probe-count cap and total-duration cap.
+        // Also verify flood protection: 90 slow unresponsive replies must hit the duration budget
+        // without exceeding the probe-count cap, driven by an injected virtual clock instead of sleeps.
+        let floodStart = ContinuousClock.now
+        let floodTime = LockedBox(floodStart)
         let floodProbes = LockedBox(0)
         let floodTransport = MockUDPTransport { _, _, _ in
             floodProbes.withValue { $0 += 1 }
-            try await Task.sleep(for: .milliseconds(120))
+            floodTime.withValue { $0 = $0.advanced(by: .milliseconds(120)) }
             throw MiIOError.timeout
         }
         await floodTransport.setBroadcastHandler { _, _, _ in
@@ -1015,14 +1026,16 @@ struct LocalMiIOClientTests {
             }
         }
         let floodClient = LocalMiIOClient(transport: floodTransport, handshakeTimeout: .milliseconds(500), maxRetries: 0)
-        let floodStart = ContinuousClock.now
-        let floodResult = try await floodClient.discoverEndpoints(for: [
-            MiIODeviceCandidate(did: "lumi.flood.1", token: tokenLumiHex),
-            MiIODeviceCandidate(did: "blt.flood.2", token: tokenBltHex),
-        ])
-        let floodElapsed = ContinuousClock.now - floodStart
+        let floodResult = try await floodClient.discoverEndpoints(
+            for: [
+                MiIODeviceCandidate(did: "lumi.flood.1", token: tokenLumiHex),
+                MiIODeviceCandidate(did: "blt.flood.2", token: tokenBltHex),
+            ],
+            discoveryClock: Self.frozenDiscoveryClock(now: floodTime)
+        )
+        let floodElapsed = floodTime.withValue { $0 } - floodStart
         #expect(floodResult.isEmpty)
-        #expect(floodProbes.withValue { $0 } <= 64)
+        #expect(floodProbes.withValue { $0 } > 0 && floodProbes.withValue { $0 } <= 64)
         #expect(floodElapsed < .seconds(4))
         await floodClient.shutdown()
     }
@@ -1037,9 +1050,24 @@ struct LocalMiIOClientTests {
         // timer cancels probes the cooperative pool has merely not scheduled yet, which is how a loaded
         // runner used to lose a device that had already answered. A reply that arrives after the client's
         // `handshakeTimeout` but inside the discovery budget therefore still binds.
+        let probeTime = LockedBox(ContinuousClock.now)
+        let waveSleepBudgets = LockedBox<[Duration]>([])
+        let sleepStarted = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        let probeClock = LocalMiIOClient.DiscoveryClock(
+            now: { probeTime.withValue { $0 } },
+            sleep: { budget in
+                waveSleepBudgets.withValue { $0.append(budget) }
+                sleepStarted.continuation.yield(())
+                let (stream, continuation) = AsyncStream<Void>.makeStream()
+                defer { continuation.finish() }
+                for await _ in stream {}
+            }
+        )
         let transport = MockUDPTransport { packet, host, _ in
             guard host == "192.168.1.180" else { throw MiIOError.timeout }
-            try await Task.sleep(for: .milliseconds(150))
+            var started = sleepStarted.stream.makeAsyncIterator()
+            _ = await started.next()
+            probeTime.withValue { $0 = $0.advanced(by: .milliseconds(150)) }
             return try self.encodeRPCReply(
                 packet,
                 token: token,
@@ -1054,10 +1082,14 @@ struct LocalMiIOClientTests {
         }
 
         let client = LocalMiIOClient(transport: transport, handshakeTimeout: .milliseconds(60), maxRetries: 0)
-        let discovered = try await client.discoverEndpoints(for: [
-            MiIODeviceCandidate(did: "lumi.curtain.v1", token: tokenHex),
-        ])
+        let discovered = try await client.discoverEndpoints(
+            for: [
+                MiIODeviceCandidate(did: "lumi.curtain.v1", token: tokenHex),
+            ],
+            discoveryClock: probeClock
+        )
         #expect(discovered == ["lumi.curtain.v1": "192.168.1.180"])
+        #expect(waveSleepBudgets.withValue { !$0.isEmpty && $0.allSatisfy { $0 > .milliseconds(60) } })
         await client.shutdown()
     }
 
@@ -1109,7 +1141,8 @@ struct LocalMiIOClientTests {
                 MiIODeviceCandidate(did: "104", token: tokenHexes[3]),
                 MiIODeviceCandidate(did: "lumi.sensor.v1", token: tokenLumiHex),
             ],
-            broadcastTimeout: .milliseconds(20)
+            broadcastTimeout: .milliseconds(20),
+            discoveryClock: Self.frozenDiscoveryClock()
         )
 
         #expect(discovered["lumi.sensor.v1"] == "192.168.1.45")
@@ -1149,7 +1182,10 @@ struct LocalMiIOClientTests {
             maxRetries: 0,
             maxUnclaimedProbesPerCandidate: 2
         )
-        let discovered = try await client.discoverEndpoints(for: [MiIODeviceCandidate(did: "lumi.sensor.v1", token: tokenLumiHex)])
+        let discovered = try await client.discoverEndpoints(
+            for: [MiIODeviceCandidate(did: "lumi.sensor.v1", token: tokenLumiHex)],
+            discoveryClock: Self.frozenDiscoveryClock()
+        )
         #expect(discovered == ["lumi.sensor.v1": "192.168.1.77"])
         #expect(probedHosts.withValue { $0.contains("192.168.1.77") })
         await client.shutdown()
@@ -1222,14 +1258,7 @@ struct LocalMiIOClientTests {
         }
 
         let discoveryTime = LockedBox(ContinuousClock.now)
-        let discoveryClock = LocalMiIOClient.DiscoveryClock(
-            now: { discoveryTime.withValue { $0 } },
-            sleep: { _ in
-                let (stream, continuation) = AsyncStream<Void>.makeStream()
-                defer { continuation.finish() }
-                for await _ in stream {}
-            }
-        )
+        let discoveryClock = Self.frozenDiscoveryClock(now: discoveryTime)
         let client = LocalMiIOClient(
             transport: transport,
             handshakeTimeout: .milliseconds(200),
