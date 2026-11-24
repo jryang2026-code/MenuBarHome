@@ -1,4 +1,5 @@
 import { normalizeSearch, panelQueryKind } from "../core/panelSearch.js";
+import { togglePanelQuickDrawer } from "./panelQuickDrawer.js";
 import { collapseActivityStackOnHide, classicStackForcedExpanded } from "./activityStackView.js";
 import type { MenuMijiaWindowsApp } from "./app.js";
 import { closeConnectionsAndDiagModal, isConnectionsAndDiagModalOpen } from "./connectionsAndDiagView.js";
@@ -467,6 +468,19 @@ export function handlePanelKey(host: MenuMijiaWindowsApp, event: KeyboardEvent):
     host.expandedDeviceId = null;
     host.render();
     host.root.querySelector<HTMLInputElement>("#command-input")?.focus();
+    return true;
+  }
+  // Mirrors macOS PR #491's ⌘K: Ctrl+K folds/unfolds the Quick drawer. Form fields keep the
+  // keystroke so typing is never stolen, matching PanelKeyRouter's `!isFormFieldFocused` guard.
+  if (
+    (event.ctrlKey || event.metaKey) &&
+    !event.altKey &&
+    !event.shiftKey &&
+    event.key.toLowerCase() === "k"
+  ) {
+    if (isEditable) return false;
+    event.preventDefault();
+    if (!event.repeat) togglePanelQuickDrawer(host);
     return true;
   }
   if (

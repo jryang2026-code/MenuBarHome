@@ -78,7 +78,8 @@ struct AutomationContextEngineTests {
         lightOn: Bool = true,
         scenes: [HomeScene] = [],
         calendar: Calendar = .current,
-        environment: AutomationEnvironmentProbe = Self.unlockedEnvironment
+        environment: AutomationEnvironmentProbe = Self.unlockedEnvironment,
+        elapsedTime: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
     ) async throws -> (AutomationEngine, HomeStore, MockHomeProvider, FakeMacContextProvider) {
         let (store, mock) = try await makeStore(lightOn: lightOn, scenes: scenes)
         let ruleStore = AutomationRuleStore(defaults: defaults)
@@ -90,7 +91,8 @@ struct AutomationContextEngineTests {
             defaults: defaults,
             contextProvider: provider,
             calendar: calendar,
-            environment: environment
+            environment: environment,
+            elapsedTime: elapsedTime
         )
         engine.attach(store: store)
         engine.startContextObservation()
@@ -104,6 +106,137 @@ struct AutomationContextEngineTests {
 
     private func onCommand() -> DeviceCommand {
         .setLightPower(entityId: "light.study", isOn: true)
+    }
+
+    @Test("A sleep-missed schedule is skipped, and a repeated DST minute fires only once")
+    func scheduledSleepAndRepeatedMinute() async throws {
+        let defaults = InMemoryUserDefaults()
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try #require(TimeZone(identifier: "America/Los_Angeles"))
+        let rule = AutomationRule(
+            trigger: .scheduledTime,
+            action: .devices(ids: [Self.lightId], isOn: false),
+            triggerOptions: AutomationTriggerOptions(scheduledTime: ScheduledTime(hour: 1, minute: 30))
+        )
+        let (engine, store, mock, provider) = try await makeEngine(rules: [rule], defaults: defaults, calendar: calendar)
+        defer { store.stop() }
+        let formatter = ISO8601DateFormatter()
+        let missed = try #require(formatter.date(from: "2026-10-31T08:30:00Z"))
+        engine.setSystemSleeping(true)
+        await provider.emit(MacContextSnapshot(), at: missed)
+        engine.setSystemSleeping(false)
+        await provider.emit(MacContextSnapshot(), at: missed.addingTimeInterval(120))
+        #expect(await mock.executedCommands.isEmpty)
+
+        let first = try #require(formatter.date(from: "2026-11-01T08:30:00Z"))
+        let second = first.addingTimeInterval(3600)
+        await provider.emit(MacContextSnapshot(), at: first.addingTimeInterval(5))
+        await provider.emit(MacContextSnapshot(), at: second)
+        await provider.emit(MacContextSnapshot(), at: first)
+        #expect(await mock.executedCommands == [offCommand()])
+        let runs = store.automationRunHistory.filter { $0.ruleId == rule.id }
+        #expect(runs.map(\.reason) == [.cooldown, .cooldown, nil])
+
+        let (relaunched, secondStore, secondMock, secondProvider) = try await makeEngine(
+            rules: [rule], defaults: defaults, calendar: calendar
+        )
+        defer { withExtendedLifetime(relaunched) { secondStore.stop() } }
+        await secondProvider.emit(MacContextSnapshot(), at: second)
+        #expect(await secondMock.executedCommands.isEmpty)
+        #expect(secondStore.automationRunHistory.first?.reason == .cooldown)
+    }
+
+    @Test("Wake in the scheduled minute runs once and locked schedules log a skip")
+    func scheduledWakeInMinuteAndLockGate() async throws {
+        let rule = AutomationRule(
+            trigger: .scheduledTime,
+            action: .devices(ids: [Self.lightId], isOn: false),
+            triggerOptions: AutomationTriggerOptions(scheduledTime: ScheduledTime(hour: 0, minute: 0))
+        )
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = .gmt
+        let instant = Date(timeIntervalSince1970: 0)
+        let (engine, store, mock, provider) = try await makeEngine(
+            rules: [rule], defaults: InMemoryUserDefaults(), calendar: calendar
+        )
+        defer { store.stop() }
+        engine.setSystemSleeping(true)
+        await provider.emit(MacContextSnapshot(), at: instant)
+        engine.setSystemSleeping(false)
+        await provider.emit(MacContextSnapshot(), at: instant.addingTimeInterval(10))
+        await provider.emit(MacContextSnapshot(), at: instant.addingTimeInterval(20))
+        #expect(await mock.executedCommands == [offCommand()])
+
+        let (lockedEngine, lockedStore, lockedMock, lockedProvider) = try await makeEngine(
+            rules: [rule], defaults: InMemoryUserDefaults(), calendar: calendar, environment: Self.lockedEnvironment
+        )
+        defer { withExtendedLifetime(lockedEngine) { lockedStore.stop() } }
+        await lockedProvider.emit(MacContextSnapshot(), at: instant)
+        #expect(await lockedMock.executedCommands.isEmpty)
+        #expect(lockedStore.automationRunHistory.first?.reason == .screenLocked)
+    }
+
+    @Test("Five-minute state resets on interruption, fires exactly on the boundary and fires only once")
+    func lastingResetsAndFiresOnce() async throws {
+        let rule = AutomationRule(
+            trigger: .cameraInUse,
+            action: .devices(ids: [Self.lightId], isOn: false),
+            conditions: AutomationConditions(lastingMinutes: 5)
+        )
+        var elapsed: TimeInterval = 0
+        let (engine, store, mock, provider) = try await makeEngine(
+            rules: [rule], defaults: InMemoryUserDefaults(), elapsedTime: { elapsed }
+        )
+        defer { withExtendedLifetime(engine) { store.stop() } }
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        func emit(_ seconds: Int, active: Bool = true, available: Bool = true) async {
+            elapsed = TimeInterval(seconds)
+            let snapshot = MacContextSnapshot(cameraInUse: active, isCameraUsageAvailable: available)
+            await provider.emit(snapshot, at: now.addingTimeInterval(elapsed))
+        }
+        for second in stride(from: 0, to: 240, by: 10) { await emit(second) }
+        await emit(240, active: false)
+        #expect(store.automationRunHistory.first?.reason == .conditionFalse)
+        for second in stride(from: 250, to: 550, by: 10) { await emit(second) }
+        await emit(549, available: false)
+        #expect(store.automationRunHistory.first?.reason == .conditionFalse)
+        for second in stride(from: 550, to: 850, by: 10) { await emit(second) }
+        await emit(849)
+        #expect(await mock.executedCommands.isEmpty)
+        await emit(850)
+        await emit(860)
+        #expect(await mock.executedCommands == [offCommand()])
+        #expect(store.automationRunHistory.filter { $0.ruleId == rule.id && $0.reason == nil }.count == 1)
+    }
+
+    @Test("A gap or sleep clears the observation interval, while a night can span midnight")
+    func lastingNightAcrossMidnightAndGap() async throws {
+        let rule = AutomationRule(
+            trigger: .lateNightUsage,
+            action: .devices(ids: [Self.lightId], isOn: false),
+            conditions: AutomationConditions(lastingMinutes: 5)
+        )
+        var elapsed: TimeInterval = 0
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = .gmt
+        let (engine, store, mock, provider) = try await makeEngine(
+            rules: [rule], defaults: InMemoryUserDefaults(), calendar: calendar, elapsedTime: { elapsed }
+        )
+        defer { store.stop() }
+        let midnight = Date(timeIntervalSince1970: 86_400)
+        func emit(_ seconds: Int) async {
+            elapsed = TimeInterval(seconds)
+            await provider.emit(MacContextSnapshot(), at: midnight.addingTimeInterval(elapsed - 450))
+        }
+        await emit(0)
+        for second in stride(from: 60, through: 300, by: 10) { await emit(second) }
+        #expect(await mock.executedCommands.isEmpty)
+        engine.setSystemSleeping(true)
+        engine.setSystemSleeping(false)
+        for second in stride(from: 310, through: 600, by: 10) { await emit(second) }
+        #expect(await mock.executedCommands.isEmpty)
+        await emit(610)
+        #expect(await mock.executedCommands == [offCommand()])
     }
 
     @Test("No rules means every Mac context signal stays inert")

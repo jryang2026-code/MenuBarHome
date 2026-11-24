@@ -50,7 +50,7 @@ final class MacContextObserver: MacContextProviding {
     private let focusActiveProvider: @MainActor () -> Bool?
     private let focusFilterReader: @MainActor () async -> FocusFilterQueryResult
     private let focusFilterDefaults: UserDefaults
-    private static let refreshInterval: TimeInterval = 10
+    static let refreshInterval: TimeInterval = 10
     private static let calendarQueryInterval: TimeInterval = 30
     private static let calendarLookahead: TimeInterval = 60 * 60
 
@@ -128,9 +128,11 @@ final class MacContextObserver: MacContextProviding {
             currentFilter: { await self.focusFilterReader() },
             defaults: focusFilterDefaults
         )
+        let cameraInUse = Self.cameraInUse()
+        let microphoneInUse = Self.microphoneInUse()
         return MacContextSnapshot(
-            cameraInUse: Self.cameraInUse(),
-            microphoneInUse: Self.microphoneInUse(),
+            cameraInUse: cameraInUse ?? false,
+            microphoneInUse: microphoneInUse ?? false,
             powerSource: powerSource,
             batteryPercent: batteryPercent,
             wifiSSID: wifiSSID(),
@@ -138,7 +140,9 @@ final class MacContextObserver: MacContextProviding {
             isFocusActive: focusActive,
             focusModeName: focusActive == true ? focusProfile.activeFocusModeName : nil,
             isUserPresent: Self.isUserPresent(),
-            meetings: calendarMeetings(now: now)
+            meetings: calendarMeetings(now: now),
+            isCameraUsageAvailable: cameraInUse != nil,
+            isMicrophoneUsageAvailable: microphoneInUse != nil
         )
     }
 
@@ -187,7 +191,7 @@ final class MacContextObserver: MacContextProviding {
 
     // MARK: - Camera (CoreMediaIO)
 
-    private static func cameraInUse() -> Bool {
+    private static func cameraInUse() -> Bool? {
         var address = CMIOObjectPropertyAddress(
             mSelector: CMIOObjectPropertySelector(kCMIOHardwarePropertyDevices),
             mScope: CMIOObjectPropertyScope(kCMIOObjectPropertyScopeGlobal),
@@ -200,9 +204,9 @@ final class MacContextObserver: MacContextProviding {
             0,
             nil,
             &size
-        ) == noErr else { return false }
+        ) == noErr else { return nil }
         let capacity = Int(size) / MemoryLayout<CMIOObjectID>.size
-        guard capacity > 0 else { return false }
+        guard capacity > 0 else { return nil }
 
         var devices = [CMIOObjectID](repeating: 0, count: capacity)
         var used: UInt32 = 0
@@ -217,14 +221,14 @@ final class MacContextObserver: MacContextProviding {
                 buffer.baseAddress
             )
         }
-        guard status == noErr else { return false }
+        guard status == noErr else { return nil }
         let count = min(capacity, Int(used) / MemoryLayout<CMIOObjectID>.size)
-        return devices.prefix(count).contains { isRunningSomewhere($0) }
+        return observedUsage(devices.prefix(count).map(isRunningSomewhere))
     }
 
     /// `kCMIODevicePropertyDeviceIsRunningSomewhere` is true when any process (including this one)
     /// has the device open, which is exactly the “camera in use” signal. It needs no TCC grant.
-    private static func isRunningSomewhere(_ device: CMIOObjectID) -> Bool {
+    private static func isRunningSomewhere(_ device: CMIOObjectID) -> Bool? {
         var address = CMIOObjectPropertyAddress(
             mSelector: CMIOObjectPropertySelector(kCMIODevicePropertyDeviceIsRunningSomewhere),
             mScope: CMIOObjectPropertyScope(kCMIOObjectPropertyScopeGlobal),
@@ -232,13 +236,13 @@ final class MacContextObserver: MacContextProviding {
         )
         var running: UInt32 = 0
         var size = UInt32(MemoryLayout<UInt32>.size)
-        return CMIOObjectGetPropertyData(device, &address, 0, nil, size, &size, &running) == noErr
-            && running != 0
+        guard CMIOObjectGetPropertyData(device, &address, 0, nil, size, &size, &running) == noErr else { return nil }
+        return running != 0
     }
 
     // MARK: - Microphone (CoreAudio)
 
-    private static func microphoneInUse() -> Bool {
+    private static func microphoneInUse() -> Bool? {
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioHardwarePropertyDevices,
             mScope: kAudioObjectPropertyScopeGlobal,
@@ -251,9 +255,9 @@ final class MacContextObserver: MacContextProviding {
             0,
             nil,
             &size
-        ) == noErr else { return false }
+        ) == noErr else { return nil }
         let capacity = Int(size) / MemoryLayout<AudioDeviceID>.size
-        guard capacity > 0 else { return false }
+        guard capacity > 0 else { return nil }
 
         var devices = [AudioDeviceID](repeating: 0, count: capacity)
         guard AudioObjectGetPropertyData(
@@ -263,28 +267,35 @@ final class MacContextObserver: MacContextProviding {
             nil,
             &size,
             &devices
-        ) == noErr else { return false }
-        return devices.contains { device in
-            hasInputChannels(device) && audioDeviceIsRunningSomewhere(device)
+        ) == noErr else { return nil }
+        var inputs: [Bool?] = []
+        for device in devices {
+            switch hasInputChannels(device) {
+            case true?: inputs.append(audioDeviceIsRunningSomewhere(device))
+            case false?: break
+            case nil: inputs.append(nil)
+            }
         }
+        return observedUsage(inputs)
     }
 
-    private static func hasInputChannels(_ device: AudioDeviceID) -> Bool {
+    private static func hasInputChannels(_ device: AudioDeviceID) -> Bool? {
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioDevicePropertyStreamConfiguration,
             mScope: kAudioDevicePropertyScopeInput,
             mElement: kAudioObjectPropertyElementMain
         )
         var size: UInt32 = 0
+        guard AudioObjectHasProperty(device, &address) else { return false }
         guard AudioObjectGetPropertyDataSize(device, &address, 0, nil, &size) == noErr,
-              size > 0 else { return false }
+              size > 0 else { return nil }
         let buffer = UnsafeMutableRawPointer.allocate(
             byteCount: Int(size),
             alignment: MemoryLayout<AudioBufferList>.alignment
         )
         defer { buffer.deallocate() }
         guard AudioObjectGetPropertyData(device, &address, 0, nil, &size, buffer) == noErr else {
-            return false
+            return nil
         }
         let list = UnsafeMutableAudioBufferListPointer(
             buffer.assumingMemoryBound(to: AudioBufferList.self)
@@ -292,7 +303,7 @@ final class MacContextObserver: MacContextProviding {
         return list.contains { $0.mNumberChannels > 0 }
     }
 
-    private static func audioDeviceIsRunningSomewhere(_ device: AudioDeviceID) -> Bool {
+    private static func audioDeviceIsRunningSomewhere(_ device: AudioDeviceID) -> Bool? {
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioDevicePropertyDeviceIsRunningSomewhere,
             mScope: kAudioObjectPropertyScopeGlobal,
@@ -300,8 +311,13 @@ final class MacContextObserver: MacContextProviding {
         )
         var running: UInt32 = 0
         var size = UInt32(MemoryLayout<UInt32>.size)
-        return AudioObjectGetPropertyData(device, &address, 0, nil, &size, &running) == noErr
-            && running != 0
+        guard AudioObjectGetPropertyData(device, &address, 0, nil, &size, &running) == noErr else { return nil }
+        return running != 0
+    }
+
+    private static func observedUsage(_ devices: [Bool?]) -> Bool? {
+        if devices.contains(true) { return true }
+        return !devices.isEmpty && devices.allSatisfy { $0 == false } ? false : nil
     }
 
     // MARK: - Wi-Fi (CoreWLAN)

@@ -47,6 +47,7 @@ export class CameraPipWindowApp {
   private pumpAbort: AbortController | null = null;
   private imgEl: HTMLImageElement | null = null;
   private reportedFirstFrameForSrc: string | null = null;
+  private showingWatchConfig = false;
   private readonly disposers: Array<() => void> = [];
 
   constructor(private readonly root: HTMLElement) {
@@ -307,18 +308,52 @@ export class CameraPipWindowApp {
         ? `<button type="button" class="cc-seg-pill ${!snap.muted ? "is-active" : ""}" id="cc-camera-mute" aria-pressed="${snap.muted}">${escapeHtml(muteLabel)}</button>`
         : `<span class="cc-pill-label" id="cc-camera-audio-badge">${t("仅画面")}</span>`;
 
+    const countdownBadge =
+      typeof snap.autoCloseRemainingSeconds === "number" && snap.autoCloseRemainingSeconds > 0
+        ? `<button type="button" class="cc-pip-countdown" id="btn-pip-cancel-countdown" title="${tr3("点击取消自动关闭并保持打开", "點擊取消自動關閉並保持開啟", "Click to cancel auto-close")}">${snap.autoCloseRemainingSeconds}s</button>`
+        : "";
+    const pinnedIdSet = new Set(snap.pinnedSwitches.map((sw) => sw.id));
+
     this.root.innerHTML = `
       <div class="cc-pip-shell${portraitClass}" role="dialog" aria-label="${escapeHtml(snap.name)} ${t("实时画面")}">
         <div class="cc-sheet-header cc-pip-drag-handle">
-          <strong class="cc-pip-title">${escapeHtml(snap.name)}</strong>
+          <div style="display:flex;align-items:center;gap:6px;min-width:0;">
+            <strong class="cc-pip-title">${escapeHtml(snap.name)}</strong>
+            ${countdownBadge}
+          </div>
           <div class="cc-pip-header-actions">
             ${audioControl}
             <button type="button" class="cc-circle-btn is-small cc-rotate-btn ${snap.rotation !== 0 ? "is-active" : ""}" id="btn-rotate-camera-live" data-rotation="${snap.rotation}" aria-pressed="${snap.rotation !== 0}">90°</button>
+            <button type="button" class="cc-circle-btn is-small ${this.showingWatchConfig ? "is-active" : ""}" id="btn-pip-watch-config" title="${tr3("弹窗与关联开关设置", "彈窗與關聯開關設定", "Auto-open & pinned switches")}" aria-label="${tr3("弹窗与关联开关设置", "彈窗與關聯開關設定", "Auto-open & pinned switches")}" aria-pressed="${this.showingWatchConfig}">${SF_ICONS.sliderHorizontal}</button>
             <button type="button" class="cc-circle-btn is-small" id="btn-reload-camera-live" title="${t("重新连接")}" aria-label="${t("重新连接")}">${SF_ICONS.arrowClockwise}</button>
             <button type="button" class="cc-circle-btn is-small" id="btn-toggle-camera-url" title="${t("配置流地址")}" aria-label="${t("配置流地址")}">${SF_ICONS.link}</button>
             <button type="button" class="cc-circle-btn is-small" id="btn-close-camera-live" title="${t("关闭画面")}" aria-label="${t("关闭画面")}">${SF_ICONS.xmark}</button>
           </div>
         </div>
+        ${
+          this.showingWatchConfig
+            ? `<div class="cc-pip-watch-config">
+                <label class="cc-pip-config-row">
+                  <input type="checkbox" id="chk-pip-auto-open" ${snap.autoOpenOnEvent ? "checked" : ""} />
+                  <span>${tr3("门铃/告警时自动在右上角弹出小窗", "門鈴/告警時自動在右上角彈出小窗", "Auto-open at top-right on doorbell/alarm")}</span>
+                </label>
+                ${
+                  snap.availablePinSwitches.length > 0
+                    ? `<div class="cc-pip-pin-picker">
+                        <span class="cc-pill-label">${tr3("钉选关联开关（最多 2 个）", "釘選關聯開關（最多 2 個）", "Pin switches (max 2)")}</span>
+                        <div class="cc-segmented-pills">
+                          ${snap.availablePinSwitches
+                            .map(
+                              (sw) => `<button type="button" class="cc-seg-pill ${pinnedIdSet.has(sw.id) ? "is-active" : ""}" data-pip-pin-select="${escapeHtml(sw.id)}" aria-pressed="${pinnedIdSet.has(sw.id)}">${escapeHtml(sw.name)}</button>`,
+                            )
+                            .join("")}
+                        </div>
+                      </div>`
+                    : ""
+                }
+              </div>`
+            : ""
+        }
         ${
           snap.playableCameras.length >= 2
             ? `<div class="cc-camera-switcher" role="tablist" aria-label="${tr3("切换摄像机", "切換攝影機", "Switch camera")}">
@@ -371,6 +406,17 @@ export class CameraPipWindowApp {
               </div>`
             : ""
         }
+        ${
+          snap.pinnedSwitches.length > 0
+            ? `<div class="cc-segmented-pills cc-pip-pinned-switches">
+                ${snap.pinnedSwitches
+                  .map(
+                    (sw) => `<button type="button" class="cc-seg-pill ${sw.isOn ? "is-active" : ""}" data-pip-pinned-switch="${escapeHtml(sw.id)}" aria-pressed="${sw.isOn}" ${sw.isOnline ? "" : "disabled"}>${escapeHtml(sw.name)}</button>`,
+                  )
+                  .join("")}
+              </div>`
+            : ""
+        }
         <div class="cc-segmented-pills cc-pip-footer">
           ${snap.powerWritable ? `<button type="button" class="cc-seg-pill ${!snap.isOn ? "is-active" : ""}" data-pip-power="${id}" aria-pressed="${!snap.isOn}">${snap.isOn ? t("镜头休眠") : t("唤醒镜头")}</button>` : ""}
           ${snap.motionDetectionEntityId ? `<button type="button" class="cc-seg-pill ${snap.isMotionDetectionOn ? "is-active" : ""}" data-pip-motion="${id}" aria-pressed="${snap.isMotionDetectionOn}">${snap.isMotionDetectionOn ? t("移动侦测：开") : t("移动侦测：关")}</button>` : ""}
@@ -386,6 +432,35 @@ export class CameraPipWindowApp {
   }
 
   private bindEvents(): void {
+    this.root.querySelector<HTMLElement>(".cc-pip-shell")?.addEventListener("mousedown", () => {
+      if (this.snapshot?.autoCloseRemainingSeconds != null) {
+        this.sendAction({ type: "interact" });
+      }
+    });
+    this.root.querySelector("#btn-pip-cancel-countdown")?.addEventListener("click", () => {
+      this.sendAction({ type: "interact" });
+    });
+    this.root.querySelector("#btn-pip-watch-config")?.addEventListener("click", () => {
+      this.showingWatchConfig = !this.showingWatchConfig;
+      this.render();
+      this.attachPersistentMedia();
+    });
+    this.root.querySelector<HTMLInputElement>("#chk-pip-auto-open")?.addEventListener("change", (event) => {
+      const checked = (event.target as HTMLInputElement).checked;
+      this.sendAction({ type: "setAutoOpen", enabled: checked });
+    });
+    this.root.querySelectorAll<HTMLElement>("[data-pip-pin-select]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const deviceId = btn.dataset.pipPinSelect ?? "";
+        if (deviceId) this.sendAction({ type: "togglePinSelection", deviceId });
+      });
+    });
+    this.root.querySelectorAll<HTMLElement>("[data-pip-pinned-switch]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const deviceId = btn.dataset.pipPinnedSwitch ?? "";
+        if (deviceId) this.sendAction({ type: "togglePinnedSwitch", deviceId });
+      });
+    });
     this.root.querySelector<HTMLElement>(".cc-pip-drag-handle")?.addEventListener("mousedown", (event) => {
       if (event.button !== 0) return;
       const target = event.target as HTMLElement | null;

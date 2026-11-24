@@ -1459,6 +1459,16 @@ export async function ingestHostHASnapshotForDoorbell(
   }
 
   const guardPrefs = loadSafetyGuardPrefs(center.storage);
+  const focusActive = Boolean(center.systemSignalBaseline?.focusMode);
+  for (const ring of rings) {
+    host.cameraLive.handleCameraEventForAutoOpen({
+      cameraId: ring.deviceId,
+      kind: "doorbell",
+      isLocked,
+      isFocusActive: focusActive,
+      dismissSeconds: options.popupSeconds ?? guardPrefs.doorbellPopupSeconds,
+    });
+  }
   const responses = center.doorbellCoordinator.handleRings({
     rings,
     devices: aliased,
@@ -2665,14 +2675,14 @@ function buildUpperCardFactories(host: MenuMijiaWindowsApp, nowMs = Date.now()):
     else factories.push(replyFactory);
   }
   if (host.pendingSuggestions.length > 0) {
-    factories.push(wrapCard("suggestions:pending", "suggestions", true, "cc-feedback-card", (btns) => `<div class="cc-feedback-row"><div class="cc-suggestion-row" style="flex:1;">${host.pendingSuggestions.map((item) => `<button class="cc-inline-pill" data-suggestion-id="${host.escapeHtml(item.id)}">${host.escapeHtml(item.title)}${item.confidencePercent !== null ? ` · ${item.confidencePercent}%` : ""}</button>`).join("")}</div>${btns}</div>`));
+    factories.push(wrapCard("suggestions:pending", "suggestions", true, "cc-feedback-card", (btns) => `<div class="cc-feedback-row"><div class="cc-suggestion-row" style="flex:1;">${host.pendingSuggestions.map((item) => `<button class="cc-inline-pill" data-suggestion-id="${host.escapeHtml(item.id)}">${host.escapeHtml(item.title)}${item.confidencePercent !== null ? ` · ${item.confidencePercent}%` : ""}</button>`).join("")}</div>${btns}</div>`, " data-quick-drawer-item"));
   }
   if (host.pendingSuggestions.length === 0) {
     const items = host.currentProactiveSuggestions();
     if (items.length > 0) {
       const sig = `${proactiveSignature(host)}:${items.map((item) => item.id).join(",")}`;
       if (center.dismissedProactiveSignature !== sig) {
-        factories.push(wrapCard("proactive:suggestions", "proactive", true, "cc-feedback-card", (btns) => `<div class="cc-feedback-row"><span class="cc-feedback-badge">${SF_ICONS.sparkles} ${t("猜你想控")}</span><div class="cc-suggestion-row" data-proactive-bar style="flex:1;">${items.map((item) => renderProactiveInlinePill(host, item)).join("")}</div>${btns}</div>`, ' data-notif-card="proactive"'));
+        factories.push(wrapCard("proactive:suggestions", "proactive", true, "cc-feedback-card", (btns) => `<div class="cc-feedback-row"><span class="cc-feedback-badge">${SF_ICONS.sparkles} ${t("猜你想控")}</span><div class="cc-suggestion-row" data-proactive-bar style="flex:1;">${items.map((item) => renderProactiveInlinePill(host, item)).join("")}</div>${btns}</div>`, ' data-quick-drawer-item data-notif-card="proactive"'));
       }
     }
   }

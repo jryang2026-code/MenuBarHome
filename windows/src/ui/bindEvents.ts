@@ -20,6 +20,7 @@ import {
   normalizePanelOpacity, normalizeTileSize, scopedKey, withAliases,
 } from "./panelPrefs.js";
 import { nextSizeForTheme } from "./panelTheme.js";
+import { togglePanelQuickDrawer } from "./panelQuickDrawer.js";
 import { t } from "../core/i18n.js";
 import { formatTemperature, stepCelsius, toCelsius } from "../core/temperature.js";
 import { finishMiSceneConfirmation } from "./sceneConfirmation.js";
@@ -248,6 +249,9 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
       });
     });
     bindPanelInput(host);
+    host.root.querySelector("#btn-quick-drawer-toggle")?.addEventListener("click", () => {
+      togglePanelQuickDrawer(host);
+    });
     const micBtn = host.root.querySelector<HTMLButtonElement>("#btn-mic");
     micBtn?.addEventListener("click", () => {
       host.toggleVoiceInput();
