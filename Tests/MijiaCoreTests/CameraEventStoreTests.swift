@@ -1,4 +1,5 @@
 import Foundation
+import PreferencesTestSupport
 import Testing
 @testable import MijiaCore
 
@@ -33,5 +34,31 @@ struct CameraEventStoreTests {
         let event = store.record(cameraID: "cam", kind: .doorbell, snapshotData: Data([9]))
         #expect(event.snapshotFile?.contains("://") == false)
         #expect(event.snapshotFile?.contains("/") == false)
+    }
+
+    private static func camera(_ id: String) -> SmartDevice {
+        SmartDevice(
+            id: id, name: id, roomId: "door", roomName: "门口",
+            model: "chuangmi.camera.061a01", isOnline: true,
+            kind: .camera(CameraSpec(entityId: "miot:\(id):2", isOn: true))
+        )
+    }
+
+    /// #455: the still wall reads the same list the panel does, so a hidden camera never shows a
+    /// still, and a camera that already recorded an event keeps its tile ahead of a quiet one.
+    @Test("The still wall keeps a hidden camera out and orders eventful cameras first")
+    @MainActor
+    func stillWallUsesVisibleEventfulCameras() async throws {
+        let cameras = ["cam-a", "cam-b", "cam-c", "cam-d", "cam-e", "cam-f", "cam-g"].map(Self.camera)
+        let mock = MockHomeProvider(snapshot: SynthesizedHome(devices: cameras))
+        let store = HomeStore(provider: mock, defaults: InMemoryUserDefaults())
+        try await store.waitForTestSnapshot()
+        store.hiddenDeviceIds = ["cam-a", "cam-b"]
+        store.cameraEventStore.record(cameraID: "cam-e", kind: .motion)
+        store.cameraEventStore.record(cameraID: "cam-d", kind: .doorbell)
+
+        // The hidden pair never shows, the two with a still lead in list order, and cam-g falls off
+        // the 2x2 wall.
+        #expect(store.cameraStillWallCameras().map(\.id) == ["cam-d", "cam-e", "cam-c", "cam-f"])
     }
 }

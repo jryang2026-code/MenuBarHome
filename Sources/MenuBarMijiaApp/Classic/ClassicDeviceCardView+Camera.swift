@@ -80,7 +80,7 @@ extension ClassicDeviceCardView {
 private struct ClassicCameraStillWall: View {
     let store: HomeStore
     private var cameras: [SmartDevice] {
-        store.visibleDevices.filter { if case .camera = $0.kind { return true }; return false }.prefix(4).map { $0 }
+        store.cameraStillWallCameras()
     }
     var body: some View {
         let _ = store.cameraEventRevision
