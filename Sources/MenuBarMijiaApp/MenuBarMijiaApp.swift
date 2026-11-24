@@ -48,7 +48,13 @@ struct MenuBarMijiaApp: App {
 /// button, so a stray Return cannot approve a heater or plug action.
 @MainActor
 enum ManualControlConfirmationPresenter {
+    /// True while a high-risk confirmation alert is running its modal loop so the non-activating
+    /// panel does not dismiss itself behind the alert.
+    static private(set) var isPresenting = false
+
     static func present(_ prompt: ManualControlConfirmation) -> Bool {
+        isPresenting = true
+        defer { isPresenting = false }
         NSApp.activate(ignoringOtherApps: true)
         let answer = makeAlert(prompt).runModal()
         return applyModalResponse(answer, for: prompt, in: HomeStore.shared)

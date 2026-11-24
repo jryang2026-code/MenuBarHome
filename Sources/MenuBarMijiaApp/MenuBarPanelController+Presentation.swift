@@ -68,12 +68,10 @@ extension MenuBarPanelController {
                 panel.setFrame(target, display: true)
                 panel.alphaValue = 1
                 panel.hasShadow = true
-                // Order the window in first: cooperative activation only succeeds once the app has
-                // a window to become active for, and this agent app owns none at that moment.
-                panel.makeKeyAndOrderFront(nil)
-                if !NSApp.isActive {
-                    NSApp.activate()
-                }
+                // Non-activating panel: order in front and take key status for keyboard/Esc
+                // navigation without activating the app or dimming the frontmost window.
+                panel.orderFrontRegardless()
+                panel.makeKey()
             case .liquidGlass:
                 if !wasVisible, !wasOnScreen {
                     let reduced = shouldReduceMotion()
@@ -85,9 +83,10 @@ extension MenuBarPanelController {
                 }
                 panel.hasShadow = false
                 presentBackdropShadow(around: panel.frame, under: panel)
-                // Agent activation is asynchronous; the hosting root also keeps glass active on frame one.
-                NSApp.activate(ignoringOtherApps: true)
-                panel.makeKeyAndOrderFront(nil)
+                // Non-activating panel: the hosting root pins `appearsActive = true` so Liquid
+                // Glass stays active on frame one without activating the app.
+                panel.orderFrontRegardless()
+                panel.makeKey()
             }
         } else {
             panel.setFrame(target, display: true)
@@ -355,7 +354,7 @@ extension MenuBarPanelController {
     static func makePanel(theme: PanelTheme) -> NSPanel {
         let panel = MenuBarPanel(
             contentRect: NSRect(origin: .zero, size: preferredContentSize(screen: nil, theme: theme)),
-            styleMask: [.borderless],
+            styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
         )
@@ -364,6 +363,7 @@ extension MenuBarPanelController {
         panel.hidesOnDeactivate = false
         panel.isReleasedWhenClosed = false
         panel.becomesKeyOnlyIfNeeded = false
+        panel.allowsToolTipsWhenApplicationIsInactive = true
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = theme == .classic
@@ -649,11 +649,79 @@ extension MenuBarPanelController {
     }
 }
 
-/// Borderless panels are not key windows by default; the control center needs key status for arrow
-/// keys, Esc, ⌘, and its text fields, as the `MenuBarExtra` window had.
+/// Borderless non-activating panel that still accepts key focus for arrow keys, Esc, shortcuts,
+/// and text fields. Mirrors `CameraFloatingPanel`'s first-click `makeKey()` guard and escalates
+/// app activation only when a text input responder takes focus (for CJK IME / Emoji / ⌘C/⌘V).
 final class MenuBarPanel: NSPanel {
+    var onTextInputFocused: (() -> Void)?
+
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
+
+    /// A nonactivating panel can otherwise swallow the first click that makes it key before
+    /// SwiftUI controls receive the action (same precedent as `CameraFloatingPanel`).
+    override func sendEvent(_ event: NSEvent) {
+        if event.type == .leftMouseDown, !isKeyWindow {
+            makeKey()
+        }
+        super.sendEvent(event)
+    }
+
+    override func makeFirstResponder(_ responder: NSResponder?) -> Bool {
+        let accepted = super.makeFirstResponder(responder)
+        if accepted, Self.isTextInputResponder(responder) {
+            onTextInputFocused?()
+        }
+        return accepted
+    }
+
+    static func isTextInputResponder(_ responder: NSResponder?) -> Bool {
+        responder is NSTextView || responder is NSTextField
+    }
+}
+
+/// Hosting view that delivers the very first click even while the app is inactive.
+final class PanelHostingView<Content: View>: NSHostingView<Content> {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+}
+
+/// Pure decision for whether losing key status on the control-center panel should dismiss it.
+struct PanelResignKeyDecision: Equatable, Sendable {
+    enum Exemption: Equatable, Sendable {
+        case panelNotVisible
+        case voiceOrPressActive
+        case modalConfirmationActive
+        case panelOwnedWindowOrMenu
+        case cameraWindowActive
+        case statusItemInteraction
+    }
+
+    enum Outcome: Equatable, Sendable {
+        case hide
+        case keepOpen(Exemption)
+    }
+
+    struct Context: Equatable, Sendable {
+        var isPanelVisible: Bool
+        var isVoiceOrPressActive: Bool = false
+        var isModalConfirmationActive: Bool = false
+        var newKeyWindowIsPanelOwned: Bool = false
+        var hasVisiblePanelOwnedTransientWindow: Bool = false
+        var isCameraWindowActive: Bool = false
+        var isStatusItemInteraction: Bool = false
+    }
+
+    static func decide(_ context: Context) -> Outcome {
+        guard context.isPanelVisible else { return .keepOpen(.panelNotVisible) }
+        if context.isVoiceOrPressActive { return .keepOpen(.voiceOrPressActive) }
+        if context.isModalConfirmationActive { return .keepOpen(.modalConfirmationActive) }
+        if context.newKeyWindowIsPanelOwned || context.hasVisiblePanelOwnedTransientWindow {
+            return .keepOpen(.panelOwnedWindowOrMenu)
+        }
+        if context.isCameraWindowActive { return .keepOpen(.cameraWindowActive) }
+        if context.isStatusItemInteraction { return .keepOpen(.statusItemInteraction) }
+        return .hide
+    }
 }
 
 private struct ControlCenterReadabilityBackdrop: View {

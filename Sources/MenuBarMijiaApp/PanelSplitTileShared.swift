@@ -217,6 +217,7 @@ struct SplitDeviceTileHeader<Orb: View, Badge: View, QuickBadge: View>: View {
                 .background(
                     Color.primary.opacity(isAdjustHovered && !isEditingLayout ? (colorScheme == .dark ? 0.09 : 0.05) : 0)
                 )
+                .tahoeHoverHitTarget()
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
