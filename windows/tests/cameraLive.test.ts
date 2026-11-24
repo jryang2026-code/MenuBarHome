@@ -1274,21 +1274,26 @@ describe("CameraLiveController dual-lens, gateway, manual IP, rotation & multi-c
     assertMissing(document.querySelector("#cc-camera-mute"));
     ctx.app.cameraLive.closeCameraLiveView();
 
-    // Default WebView2 fallback without audioTracks: unmuted playback with 0 decoded audio bytes falls back to video-only
+    // Default WebView2 fallback without audioTracks: delayed audio (0 bytes while unmuted) must not clear user's unmute choice,
+    // while positive decoded audio bytes confirms an audio track.
     await click('[data-body-device="cam-audio"]');
     await click("#btn-toggle-camera-url");
-    element<HTMLInputElement>("#camera-stream-url-input").value = "https://example.com/silent-fallback.mp4";
+    element<HTMLInputElement>("#camera-stream-url-input").value = "https://example.com/delayed-audio.mp4";
     await click("#btn-save-camera-url");
     await click("#cc-camera-mute");
     const fallbackVideo = element<HTMLVideoElement>("#cc-camera-video");
-    Object.defineProperty(fallbackVideo, "webkitAudioDecodedByteCount", { configurable: true, value: 0 });
+    Object.defineProperty(fallbackVideo, "webkitAudioDecodedByteCount", { configurable: true, writable: true, value: 0 });
     Object.defineProperty(fallbackVideo, "webkitVideoDecodedByteCount", { configurable: true, value: 4096 });
     Object.defineProperty(fallbackVideo, "currentTime", { configurable: true, value: 1.0 });
     fallbackVideo.dispatchEvent(new window.Event("timeupdate"));
     await setImmediate();
-    assert.equal(ctx.app.cameraLive.liveCameraHasAudioTrack, false);
-    assert.equal(element("#cc-camera-audio-badge").getAttribute("data-video-only-reason"), "video-only-track");
-    assertMissing(document.querySelector("#cc-camera-mute"));
+    assert.equal(ctx.app.cameraLive.liveCameraHasAudioTrack, null);
+    assert.equal(ctx.app.cameraLive.liveCameraMuted, false);
+    assert.ok(document.querySelector("#cc-camera-mute"));
+    Object.defineProperty(fallbackVideo, "webkitAudioDecodedByteCount", { configurable: true, value: 256 });
+    fallbackVideo.dispatchEvent(new window.Event("timeupdate"));
+    await setImmediate();
+    assert.equal(ctx.app.cameraLive.liveCameraHasAudioTrack, true);
     ctx.app.cameraLive.closeCameraLiveView();
   });
 

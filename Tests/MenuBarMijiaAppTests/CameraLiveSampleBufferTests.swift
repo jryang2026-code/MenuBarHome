@@ -91,6 +91,22 @@ struct CameraLiveSampleBufferTests {
         let flacDur = CMSampleBufferGetDuration(flacBuf)
         #expect(abs(CMTimeGetSeconds(flacDur) - 0.02) < 0.001)
 
+        // Variable-length 40 ms Opus packet (config=2 -> 1920 frames @ 48 kHz = 40 ms)
+        let opusTrack = FMP4AudioTrack(
+            trackID: 5,
+            codec: .opus,
+            timescale: 48_000,
+            sampleRate: 48_000,
+            channelCount: 1,
+            bitsPerSample: 16
+        )
+        let opusFormat = try #require(CameraLiveVideoPlayer.makeAudioFormatDescription(for: opusTrack))
+        let opusData = Data([0x10, 0x01, 0x02])
+        let opusSample = FMP4AudioSample(trackID: 5, data: opusData, decodeTime: 0, duration: 1920)
+        let opusBuf = try #require(CameraLiveVideoPlayer.makeAudioSampleBuffer(sample: opusSample, format: opusFormat, track: opusTrack))
+        let opusDur = CMSampleBufferGetOutputDuration(opusBuf)
+        #expect(abs(CMTimeGetSeconds(opusDur) - 0.04) < 0.001)
+
         let player = CameraLiveVideoPlayer()
         let videoTrack = FMP4VideoTrack(
             trackID: 1,
