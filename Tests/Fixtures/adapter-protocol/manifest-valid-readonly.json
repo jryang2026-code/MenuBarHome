@@ -1,0 +1,90 @@
+{
+  "manifestVersion": 1,
+  "adapterId": "com.example.aqara-lan-readonly",
+  "name": {
+    "zh": "Aqara 局域网只读适配器",
+    "en": "Aqara LAN Read-Only Adapter"
+  },
+  "version": "0.1.0",
+  "hostApi": "^0.1.0",
+  "runtime": {
+    "type": "binary",
+    "entry": "bin/aqara-lan-adapter",
+    "arch": ["arm64", "x86_64"],
+    "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+  },
+  "platforms": ["macos", "windows"],
+  "vendor": {
+    "name": "Aqara",
+    "docs": "https://docs.example.com/aqara-lan-adapter",
+    "hosts": ["api.aqara.example.com"]
+  },
+  "auth": [
+    {
+      "id": "lan-key",
+      "type": "apiKey",
+      "label": {
+        "zh": "局域网密钥",
+        "en": "LAN Access Key"
+      },
+      "prompts": [
+        {
+          "key": "lanKey",
+          "inputType": "secret",
+          "writeOnly": true
+        }
+      ]
+    }
+  ],
+  "discovery": {
+    "modes": ["lanMdns", "lanUdp"],
+    "mdns": ["_aqara._tcp"],
+    "udpPorts": [9898]
+  },
+  "capabilities": {
+    "readOnly": true,
+    "deviceKinds": ["sensor", "light", "plug"],
+    "commands": [],
+    "readings": ["temperature", "humidity", "battery", "illuminance"],
+    "alerts": ["leak", "smoke", "gas", "contact", "motion"],
+    "pushEvents": true,
+    "history": false
+  },
+  "limits": {
+    "maxDevices": 200,
+    "maxConcurrentCalls": 4,
+    "requestsPerMinute": 60
+  },
+  "permissions": {
+    "network": {
+      "internet": ["api.aqara.example.com"],
+      "lan": true
+    },
+    "files": {
+      "read": [],
+      "write": ["cache"]
+    },
+    "subprocess": false
+  },
+  "health": {
+    "intervalSec": 60,
+    "timeoutMs": 5000
+  },
+  "ui": {
+    "icon": "assets/icon.png",
+    "configSchema": {
+      "type": "object",
+      "properties": {
+        "gatewayHost": {
+          "type": "string",
+          "title": "Gateway IP"
+        },
+        "lanKey": {
+          "type": "string",
+          "title": "LAN Key",
+          "writeOnly": true
+        }
+      }
+    }
+  }
+}
