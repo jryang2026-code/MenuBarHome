@@ -2,6 +2,7 @@
 
 mod home_assistant;
 mod camera;
+mod camera_events;
 mod companion;
 mod desktop_shell;
 mod job_object;
@@ -14,10 +15,13 @@ mod network_monitor;
 mod placement;
 mod system_events;
 mod update;
+mod webview_lifecycle;
 mod wifi;
+mod win_theme;
 mod window;
 mod update_manifest;
 use camera::*;
+use camera_events::*;
 use companion::*;
 use credentials::*;
 use desktop_shell::*;
@@ -292,6 +296,9 @@ fn main() {
             system_power_status,
             awake_time_ms,
             external_display_count,
+            media_capture_status,
+            focus_mode_status,
+            set_system_event_watchers,
             wifi_current,
             set_tray_tooltip, send_desktop_notification,
             set_companion_integration,
@@ -310,11 +317,20 @@ fn main() {
             stop_camera_runtime,
             resume_camera_runtime,
             go2rtc_jpeg_frame,
-            go2rtc_supervisor_status
+            go2rtc_supervisor_status,
+            win_theme::win_theme_state,
+            webview_lifecycle::panel_ready,
+            webview_lifecycle::settings_keepalive,
+            camera_events_load,
+            camera_events_record,
+            camera_events_attach_snapshot,
+            camera_events_read_snapshot,
+            camera_events_clear
         ])
         .setup(move |app| {
             sweep_stale_update_installers();
             scrub_stale_camera_config_on_startup();
+            let initial_theme = win_theme::init_win_theme(app.handle().clone());
             let _ = install_power_notifications(app.handle().clone());
             let _ = network_monitor::install_network_monitor(app.handle().clone());
             start_companion_runtime(app.handle().clone());
@@ -327,8 +343,10 @@ fn main() {
             load_panel_placement();
             if let Some(main_win) = app.get_webview_window("main") {
                 apply_tool_window_style(&main_win);
+                sync_main_window_chrome(&main_win, false);
                 set_window_cloaked(&main_win, true);
                 let _ = position_popover(&main_win, None, None);
+                webview_lifecycle::schedule_panel_low_memory(app.handle());
                 let app_for_events = app.handle().clone();
                 let main_win_for_events = main_win.clone();
                 main_win.on_window_event(move |event| match event {
@@ -379,6 +397,7 @@ fn main() {
                         }
                     }
                     "quit" => {
+                        shutdown_system_event_watchers();
                         shutdown_companion_runtime();
                         shutdown_camera_daemons();
                         app.exit(0);
@@ -386,6 +405,9 @@ fn main() {
                     _ => {}
                 })
                 .on_tray_icon_event(|tray, event| match event {
+                    TrayIconEvent::Enter { .. } => {
+                        webview_lifecycle::warm_panel_on_tray_hover(tray.app_handle());
+                    }
                     TrayIconEvent::Click {
                         button: MouseButton::Left,
                         button_state: MouseButtonState::Down,
@@ -408,7 +430,11 @@ fn main() {
                 });
 
             if let Some(icon) = app.default_window_icon() {
-                tray_builder = tray_builder.icon(icon.clone());
+                let adapted =
+                    win_theme::adapt_tray_icon_rgba(icon.rgba(), initial_theme.system_uses_light_theme);
+                let themed_icon =
+                    tauri::image::Image::new_owned(adapted, icon.width(), icon.height());
+                tray_builder = tray_builder.icon(themed_icon);
             }
 
             let _tray = tray_builder.build(app)?;
@@ -418,6 +444,7 @@ fn main() {
         .expect("error while building MenuBarHome Windows application")
         .run(|_app, event| {
             if matches!(event, tauri::RunEvent::Exit) {
+                shutdown_system_event_watchers();
                 shutdown_companion_runtime();
                 shutdown_camera_daemons();
             }

@@ -833,9 +833,9 @@ describe("Wave 4 · Weekly Home Health Report Preview, Clipboard Copy & Search A
   it("flags saved legacy rules with unsupported triggers without touching their stored data, and treats legacy Wi-Fi conditions as supported again", async () => {
     const legacyRules = [
       {
-        id: "legacy-cam",
+        id: "legacy-cal",
         isEnabled: true,
-        trigger: "cameraInUse",
+        trigger: "calendarMeetingStartingSoon",
         action: { kind: "quickAction", quickAction: "lightsOff" },
         triggerOptions: { batteryThresholdPercent: 20, lateNightStartHour: 23, lateNightEndHour: 6, calendarLeadMinutes: 1 },
         conditions: { wifi: { kind: "any" }, timeWindow: { isEnabled: false, startMinute: 1320, endMinute: 420 } },
@@ -873,7 +873,7 @@ describe("Wave 4 · Weekly Home Health Report Preview, Clipboard Copy & Search A
 
     app.openSettingsSheet("safety");
     assert.equal(document.querySelectorAll("[data-auto-rule-row]").length, 3);
-    // 只剩 cameraInUse 不受支持：batteryBelowThreshold 已接入电源事件，Wi-Fi 条件在 Windows 上已接线。
+    // 只剩 calendarMeetingStartingSoon 不受支持：batteryBelowThreshold、Wi-Fi 条件、摄像头/麦克风与专注模式在 Windows 上均已接线。
     assert.equal(document.querySelectorAll("[data-auto-rule-unsupported]").length, 1);
     assert.equal(document.querySelector('[data-auto-rule-unsupported="legacy-battery"]'), null);
     assert.equal(document.querySelector('[data-auto-rule-unsupported="legacy-wifi"]'), null);
@@ -888,7 +888,7 @@ describe("Wave 4 · Weekly Home Health Report Preview, Clipboard Copy & Search A
 
     // 开关切换只写 isEnabled，其余字段保持字节级一致。
     const before = JSON.parse(localStorage.getItem(AutomationRuleStore.storageKey) ?? "[]") as Array<Record<string, unknown>>;
-    toggleCheck('[data-auto-rule-toggle="legacy-cam"]', false);
+    toggleCheck('[data-auto-rule-toggle="legacy-cal"]', false);
     const afterDisable = JSON.parse(localStorage.getItem(AutomationRuleStore.storageKey) ?? "[]") as Array<Record<string, unknown>>;
     assert.equal(afterDisable.length, 3);
     assert.equal(afterDisable[0]?.isEnabled, false);
@@ -901,7 +901,7 @@ describe("Wave 4 · Weekly Home Health Report Preview, Clipboard Copy & Search A
     });
     assert.deepEqual(afterDisable.map(project), before.map(project));
 
-    toggleCheck('[data-auto-rule-toggle="legacy-cam"]', true);
+    toggleCheck('[data-auto-rule-toggle="legacy-cal"]', true);
     const afterEnable = JSON.parse(localStorage.getItem(AutomationRuleStore.storageKey) ?? "[]") as Array<Record<string, unknown>>;
     assert.equal(afterEnable[0]?.isEnabled, true);
     assert.deepEqual(afterEnable.map(project), before.map(project));
