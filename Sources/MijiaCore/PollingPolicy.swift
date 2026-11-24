@@ -8,6 +8,8 @@ public struct PollingContext: Equatable, Sendable, CustomStringConvertible {
     public var systemActive: Bool
     /// macOS Low Power Mode is on.
     public var lowPower: Bool
+    package var haTransportSuspended = false
+    package var haTransportRevision: UInt64 = 0
     /// When the user last touched the panel: opening it, closing it, or running a control from it
     /// while it was closed. `nil` means "not tracked", which keeps the closed-panel interval flat.
     public var lastPanelInteractionAt: Date?

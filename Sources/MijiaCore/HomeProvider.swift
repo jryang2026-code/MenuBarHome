@@ -25,6 +25,20 @@ public enum ConnectionStatus: Equatable, Sendable {
     }
 }
 
+/// Retry delays used while Home Assistant is away. The final segment is deliberately long so a
+/// laptop that is off-site does not spend its battery reconnecting every few seconds.
+struct HAReconnectBackoff: Sendable {
+    private static let segments: [Duration] = [.milliseconds(800), .seconds(2), .seconds(4), .seconds(8), .seconds(30), .seconds(60), .seconds(120), .seconds(300)]
+    private(set) var failures = 0
+
+    mutating func reset() { failures = 0 }
+    mutating func next(localEndpoint: Bool = true) -> Duration {
+        let delay = Self.segments[failures]
+        failures = min(failures + 1, Self.segments.count - 1)
+        return localEndpoint ? delay : min(delay, .seconds(10))
+    }
+}
+
 /// What a provider can say after a power write.
 ///
 /// `published` means a snapshot with the device's own properties was emitted.
@@ -246,7 +260,7 @@ public actor HAWebSocketProvider: HomeProvider {
     private var initialPollCapturedEpochs: [Int: ContinuousClock.Instant] = [:]
     private var pendingStreamRequests: [Int: CheckedContinuation<String?, Never>] = [:]
     private var startupReplies: [Int: [String: JSONValue]] = [:]
-    private var startupWaiters: [Int: CheckedContinuation<[String: JSONValue], Error>] = [:]
+    private var startupWaiters: [Int: (UUID, CheckedContinuation<[String: JSONValue], Error>)] = [:]
     private var startupFailure: Error?
     private var legacyInitialStatesID: Int?
     private var legacySubscriptionID: Int?
@@ -282,6 +296,8 @@ public actor HAWebSocketProvider: HomeProvider {
     private let onPlaintextConsentNeeded: (@Sendable (String) -> Void)?
     private let isNetworkSatisfied: @Sendable () async -> Bool
     private var isLocalNetworkDenied = false
+    private var pendingPingID: Int?
+    private var pongTimeoutTask: Task<Void, Never>?
 
     enum ConnectTestOutcome: Sendable {
         case failedBeforeAuth(any Error)
@@ -293,6 +309,7 @@ public actor HAWebSocketProvider: HomeProvider {
     private var connectOverride: (@Sendable () async throws -> ConnectTestOutcome)?
     private var webSocketFactoryOverride: (@Sendable (URL) -> any HAWebSocketConnection)?
     private var reconnectSleep: @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
+    private var transportSleep: @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
     private var streamRequestTimeout: @Sendable () async -> Void = {
         try? await Task.sleep(for: .milliseconds(3500))
     }
@@ -301,13 +318,15 @@ public actor HAWebSocketProvider: HomeProvider {
         connectOverride: (@Sendable () async throws -> ConnectTestOutcome)?,
         reconnectSleep: (@Sendable (Duration) async throws -> Void)? = nil,
         webSocketFactory: (@Sendable (URL) -> any HAWebSocketConnection)? = nil,
-        streamRequestTimeout: (@Sendable () async -> Void)? = nil
+        streamRequestTimeout: (@Sendable () async -> Void)? = nil,
+        transportSleep: (@Sendable (Duration) async throws -> Void)? = nil
     ) {
         self.connectOverride = connectOverride
         if let reconnectSleep {
             self.reconnectSleep = reconnectSleep
         }
         self.webSocketFactoryOverride = webSocketFactory
+        if let transportSleep { self.transportSleep = transportSleep }
         if let streamRequestTimeout {
             self.streamRequestTimeout = streamRequestTimeout
         }
@@ -407,7 +426,21 @@ public actor HAWebSocketProvider: HomeProvider {
         guard !isShutDown else { return }
         let becameVisible = context.panelVisible && !pollingContext.panelVisible
         let becameActive = context.systemActive && !pollingContext.systemActive
+        let resumed = !context.haTransportSuspended && pollingContext.haTransportSuspended
+        let topologyChanged = context.haTransportRevision != pollingContext.haTransportRevision
         pollingContext = context
+        if context.haTransportSuspended {
+            stopPingLoop()
+            if activeWebSocket == nil {
+                stopConnectionLoop()
+            }
+        } else if topologyChanged || ((resumed || becameActive || becameVisible) && activeWebSocket == nil && handshakingWebSocket == nil) {
+            if emitEvent != nil { restartLoop() }
+        } else if !context.systemActive {
+            stopPingLoop()
+        } else if (resumed || becameActive), let ws = activeWebSocket {
+            startPingLoop(ws: ws, probeImmediately: true)
+        }
         if (becameVisible || becameActive), hasPendingCoalescedSynthesis {
             flushPendingCoalescedSynthesis()
         }
@@ -415,21 +448,7 @@ public actor HAWebSocketProvider: HomeProvider {
 
     public func shutdown() async {
         isShutDown = true
-        coalesceTask?.cancel()
-        coalesceTask = nil
-        hasPendingCoalescedSynthesis = false
-        loopTask?.cancel()
-        loopTask = nil
-        pingTask?.cancel()
-        pingTask = nil
-        receiveTask?.cancel()
-        receiveTask = nil
-        handshakingWebSocket?.cancel()
-        handshakingWebSocket = nil
-        activeWebSocket?.cancel()
-        activeWebSocket = nil
-        failPendingStartupReplies(with: CancellationError())
-        failPendingStreamRequests()
+        stopConnectionLoop()
         invalidateSession()
         finishEvents?()
         emitEvent = nil
@@ -451,9 +470,56 @@ public actor HAWebSocketProvider: HomeProvider {
     }
 
     private func sendWebSocketPing(ws: any HAWebSocketConnection) async {
-        guard (activeWebSocket as AnyObject?) === (ws as AnyObject) else { return }
-        let pingId = allocateWebSocketMessageId()
-        try? await sendJSON(ws: ws, ["id": pingId, "type": "ping"])
+        guard !Task.isCancelled, activeWebSocket === ws else { return }
+        let id = allocateWebSocketMessageId()
+        pongTimeoutTask?.cancel()
+        pendingPingID = id
+        pongTimeoutTask = Task { [weak self, transportSleep] in
+            do {
+                try await transportSleep(.milliseconds(2500))
+                try Task.checkCancellation()
+                await self?.handlePongTimeout(ws: ws, id: id)
+            } catch {}
+        }
+        do {
+            try await sendJSON(ws: ws, ["id": id, "type": "ping"])
+        } catch {
+            handlePongTimeout(ws: ws, id: id)
+        }
+    }
+
+    private func handlePong(ws: any HAWebSocketConnection, id: Int) {
+        guard activeWebSocket === ws, id == pendingPingID else { return }
+        pendingPingID = nil
+        pongTimeoutTask?.cancel()
+        pongTimeoutTask = nil
+    }
+
+    private func handlePongTimeout(ws: any HAWebSocketConnection, id: Int) {
+        guard pendingPingID == id, activeWebSocket === ws else { return }
+        restartLoop()
+    }
+
+    private func stopPingLoop() {
+        pingTask?.cancel()
+        pingTask = nil
+        pongTimeoutTask?.cancel()
+        pongTimeoutTask = nil
+        pendingPingID = nil
+    }
+
+    private func startPingLoop(ws: any HAWebSocketConnection, probeImmediately: Bool = false) {
+        stopPingLoop()
+        pingTask = Task { [weak self, transportSleep] in
+            if probeImmediately { await self?.sendWebSocketPing(ws: ws) }
+            while !Task.isCancelled {
+                do {
+                    try await transportSleep(.seconds(25))
+                    try Task.checkCancellation()
+                    await self?.sendWebSocketPing(ws: ws)
+                } catch { break }
+            }
+        }
     }
 
     public nonisolated func events() -> AsyncStream<HomeProviderEvent> {
@@ -482,7 +548,7 @@ public actor HAWebSocketProvider: HomeProvider {
     }
 
     public func refreshNow() async {
-        guard !isShutDown else { return }
+        guard !isShutDown, !pollingContext.haTransportSuspended else { return }
         if let ws = activeWebSocket {
             let id = allocateWebSocketMessageId()
             pendingRefreshStateIds[id] = .now
@@ -496,14 +562,13 @@ public actor HAWebSocketProvider: HomeProvider {
         }
     }
 
-    private func restartLoop() {
-        guard !isShutDown else { return }
+    private func stopConnectionLoop() {
         coalesceTask?.cancel()
         coalesceTask = nil
         hasPendingCoalescedSynthesis = false
         loopTask?.cancel()
-        pingTask?.cancel()
-        pingTask = nil
+        loopTask = nil
+        stopPingLoop()
         receiveTask?.cancel()
         receiveTask = nil
         handshakingWebSocket?.cancel()
@@ -511,7 +576,14 @@ public actor HAWebSocketProvider: HomeProvider {
         activeWebSocket?.cancel()
         activeWebSocket = nil
         failPendingStartupReplies(with: CancellationError())
+        failPendingStreamRequests()
+    }
+
+    private func restartLoop() {
+        guard !isShutDown else { return }
+        stopConnectionLoop()
         invalidateSession()
+        guard !pollingContext.haTransportSuspended else { return }
 
         loopTask = Task {
             await runConnectionLoop()
@@ -519,9 +591,9 @@ public actor HAWebSocketProvider: HomeProvider {
     }
 
     private func runConnectionLoop() async {
-        var backoffSeconds: Double = 0.8
+        var backoff = HAReconnectBackoff()
         var consecutiveFailures = 0
-        while !Task.isCancelled {
+        while !Task.isCancelled, !pollingContext.haTransportSuspended {
             if token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 updateLocalNetworkDenied(false)
                 emitEvent?(.statusChanged(.disconnected(L10n.tr("请在设置中配置访问令牌", "Configure your access token in Settings"))))
@@ -536,17 +608,19 @@ public actor HAWebSocketProvider: HomeProvider {
             emitEvent?(.statusChanged(.connecting))
             do {
                 if let connectOverride {
-                    switch try await connectOverride() {
+                    let outcome = try await connectOverride()
+                    try Task.checkCancellation()
+                    switch outcome {
                     case .failedBeforeAuth(let error):
                         throw error
                     case .authenticatedThenDisconnected(let error):
-                        backoffSeconds = 0.8
+                        backoff.reset()
                         consecutiveFailures = 0
                         updateLocalNetworkDenied(false)
                         emitEvent?(.statusChanged(.connected))
                         throw error
                     case .authenticatedStayConnected:
-                        backoffSeconds = 0.8
+                        backoff.reset()
                         consecutiveFailures = 0
                         updateLocalNetworkDenied(false)
                         emitEvent?(.statusChanged(.connected))
@@ -554,15 +628,16 @@ public actor HAWebSocketProvider: HomeProvider {
                     }
                 } else {
                     try await connectAndListen {
-                        backoffSeconds = 0.8
-                        consecutiveFailures = 0
+                    backoff.reset()
+                    consecutiveFailures = 0
                     }
                 }
-                backoffSeconds = 0.8
+                backoff.reset()
                 consecutiveFailures = 0
             } catch {
                 if Task.isCancelled { break }
                 let networkSatisfied = await isNetworkSatisfied()
+                guard !Task.isCancelled else { break }
                 let host = URL(string: Self.normalizeBaseURL(baseURLString))?.host?.lowercased()
                 if LocalNetworkPermissionClassifier.isDeniedConnectionError(
                     error, targetHost: host, isGeneralNetworkSatisfied: networkSatisfied
@@ -581,13 +656,14 @@ public actor HAWebSocketProvider: HomeProvider {
                 } else {
                     consecutiveFailures += 1
                     await suggestOtherAddressIfDue(consecutiveFailures: consecutiveFailures)
+                    guard !Task.isCancelled else { break }
                     let msg = Self.describeConnectionError(error, baseURLString: baseURLString, isGeneralNetworkSatisfied: networkSatisfied)
                     logger.error("WebSocket disconnected: \(msg, privacy: .public)")
                     publishStaleRetainedDevices()
                     emitEvent?(.statusChanged(.disconnected(msg)))
                 }
-                try? await reconnectSleep(.seconds(backoffSeconds))
-                backoffSeconds = min(backoffSeconds * 1.8, 10.0)
+                let localEndpoint = AssistantEndpoint(baseURLString)?.isLocalNetwork == true
+                try? await reconnectSleep(backoff.next(localEndpoint: localEndpoint))
             }
         }
     }
@@ -634,7 +710,8 @@ public actor HAWebSocketProvider: HomeProvider {
         if let last = lastRediscoveryAt, now.timeIntervalSince(last) < HAAddressPolicy.rediscoveryInterval { return }
         lastRediscoveryAt = now
         let current = baseURLString
-        guard let candidate = await rediscover(current).first(where: { Self.normalizeBaseURL($0.baseURL) != current }) else { return }
+        guard let candidate = await rediscover(current).first(where: { Self.normalizeBaseURL($0.baseURL) != current }),
+              !Task.isCancelled else { return }
         logger.info("Found another Home Assistant address; asking the user before switching: \(candidate.baseURL, privacy: .public)")
         onAddressSuggestion(candidate)
     }
@@ -659,49 +736,31 @@ public actor HAWebSocketProvider: HomeProvider {
         self.handshakingWebSocket = ws
         ws.resume()
 
-        var localPingTask: Task<Void, Never>?
-        var localReceiveTask: Task<Void, Error>?
         defer {
-            coalesceTask?.cancel()
-            coalesceTask = nil
-            hasPendingCoalescedSynthesis = false
-            localPingTask?.cancel()
-            localReceiveTask?.cancel()
-            if let localPingTask, self.pingTask == localPingTask {
-                self.pingTask = nil
-            }
-            if let localReceiveTask, self.receiveTask == localReceiveTask {
-                self.receiveTask = nil
-            }
             ws.cancel()
-            if (self.handshakingWebSocket as AnyObject?) === (ws as AnyObject) {
-                self.handshakingWebSocket = nil
+            if handshakingWebSocket === ws {
+                handshakingWebSocket = nil
             }
-            if (self.activeWebSocket as AnyObject?) === (ws as AnyObject) {
-                self.activeWebSocket = nil
+            if activeWebSocket === ws {
+                activeWebSocket = nil
+                coalesceTask?.cancel()
+                coalesceTask = nil
+                hasPendingCoalescedSynthesis = false
+                stopPingLoop()
+                receiveTask?.cancel()
+                receiveTask = nil
+                failPendingStartupReplies(with: CancellationError())
+                failPendingStreamRequests()
             }
-            failPendingStartupReplies(with: CancellationError())
-            failPendingStreamRequests()
             if let currentSession {
                 invalidateSession(ifMatching: currentSession)
             }
         }
 
-        let greeting = try await receiveJSON(ws: ws)
-        try Self.validateAuthGreeting(greeting)
-
-        try await sendJSON(ws: ws, [
-            "type": "auth",
-            "access_token": token
-        ])
-
-        let authResp = try await receiveJSON(ws: ws)
-        try Self.validateAuthResponse(authResp)
-
-        if (self.handshakingWebSocket as AnyObject?) === (ws as AnyObject) {
-            self.handshakingWebSocket = nil
-        }
-        self.activeWebSocket = ws
+        try await authenticate(ws: ws)
+        try Task.checkCancellation()
+        handshakingWebSocket = nil
+        activeWebSocket = ws
         onAuthenticated()
         snapshot.resetForReconnect()
         lastEmittedHome = nil
@@ -717,26 +776,47 @@ public actor HAWebSocketProvider: HomeProvider {
         updateLocalNetworkDenied(false)
         emitEvent?(.statusChanged(.connected))
 
-        let startedPingTask = Task { [weak self] in
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(25))
-                guard !Task.isCancelled else { break }
-                await self?.sendWebSocketPing(ws: ws)
-            }
+        if pollingContext.systemActive, !pollingContext.haTransportSuspended {
+            startPingLoop(ws: ws)
         }
-        localPingTask = startedPingTask
-        self.pingTask = startedPingTask
 
         let startedReceiveTask = Task { [weak self] () throws in
             guard let self else { return }
             try await self.runReceiveLoop(ws: ws)
         }
-        localReceiveTask = startedReceiveTask
         self.receiveTask = startedReceiveTask
 
         try await fetchInitialRegistries(ws: ws)
 
         try await startedReceiveTask.value
+    }
+
+    private func authenticate(ws: any HAWebSocketConnection) async throws {
+        let watchdog = Task { [transportSleep] in
+            do {
+                try await transportSleep(.seconds(10))
+                try Task.checkCancellation()
+                guard handshakingWebSocket === ws else { return false }
+                ws.cancel()
+                return true
+            } catch {
+                return false
+            }
+        }
+        defer { watchdog.cancel() }
+        do {
+            let greeting = try await receiveJSON(ws: ws)
+            try Task.checkCancellation()
+            try Self.validateAuthGreeting(greeting)
+            try await sendJSON(ws: ws, ["type": "auth", "access_token": token])
+            let response = try await receiveJSON(ws: ws)
+            try Task.checkCancellation()
+            try Self.validateAuthResponse(response)
+        } catch {
+            watchdog.cancel()
+            if await watchdog.value { throw URLError(.timedOut) }
+            throw error
+        }
     }
 
     static func validateAuthGreeting(_ message: [String: JSONValue]) throws {
@@ -766,7 +846,10 @@ public actor HAWebSocketProvider: HomeProvider {
             while !Task.isCancelled {
                 let msg = try await receiveJSON(ws: ws)
                 try Task.checkCancellation()
-                if msg["type"]?.stringValue == "result",
+                if msg["type"]?.stringValue == "pong" {
+                    if let id = msg["id"]?.intValue { handlePong(ws: ws, id: id) }
+                    continue
+                } else if msg["type"]?.stringValue == "result",
                    let id = msg["id"]?.intValue {
                     if let waiter = pendingStreamRequests.removeValue(forKey: id) {
                         waiter.resume(returning: msg["result"]?["url"]?.stringValue)
@@ -824,7 +907,7 @@ public actor HAWebSocketProvider: HomeProvider {
                 }
             }
         } catch {
-            failPendingStartupReplies(with: error)
+            if activeWebSocket === ws { failPendingStartupReplies(with: error) }
             throw error
         }
     }
@@ -941,7 +1024,7 @@ public actor HAWebSocketProvider: HomeProvider {
             failPendingStartupReplies(with: HAHomeSnapshot.ReadError.rejected)
             return
         }
-        if let waiter = startupWaiters.removeValue(forKey: id) {
+        if let (_, waiter) = startupWaiters.removeValue(forKey: id) {
             waiter.resume(returning: message)
         } else {
             startupReplies[id] = message
@@ -955,25 +1038,20 @@ public actor HAWebSocketProvider: HomeProvider {
         if let buffered = startupReplies.removeValue(forKey: id) {
             return buffered
         }
+        let request = UUID()
         return try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { continuation in
-                if let failure = self.startupFailure {
-                    continuation.resume(throwing: failure)
-                } else if let buffered = self.startupReplies.removeValue(forKey: id) {
-                    continuation.resume(returning: buffered)
-                } else {
-                    self.startupWaiters[id] = continuation
-                }
+            try Task.checkCancellation()
+            return try await withCheckedThrowingContinuation { continuation in
+                startupWaiters[id] = (request, continuation)
             }
         } onCancel: {
-            Task { await self.cancelStartupWaiter(id: id) }
+            Task { await self.cancelStartupWaiter(id: id, request: request) }
         }
     }
 
-    private func cancelStartupWaiter(id: Int) {
-        if let waiter = startupWaiters.removeValue(forKey: id) {
-            waiter.resume(throwing: CancellationError())
-        }
+    private func cancelStartupWaiter(id: Int, request: UUID) {
+        guard startupWaiters[id]?.0 == request else { return }
+        startupWaiters.removeValue(forKey: id)?.1.resume(throwing: CancellationError())
     }
 
     private func failPendingStartupReplies(with error: Error) {
@@ -982,7 +1060,7 @@ public actor HAWebSocketProvider: HomeProvider {
         }
         let waiters = startupWaiters.values
         startupWaiters.removeAll()
-        for waiter in waiters {
+        for (_, waiter) in waiters {
             waiter.resume(throwing: error)
         }
     }

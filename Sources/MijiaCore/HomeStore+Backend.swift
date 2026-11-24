@@ -252,6 +252,13 @@ extension HomeStore {
         updatePollingContext { $0.systemActive = active }
     }
 
+    public func setHATransportSuspended(_ suspended: Bool, topologyChanged: Bool) {
+        updatePollingContext {
+            $0.haTransportSuspended = suspended
+            if topologyChanged { $0.haTransportRevision &+= 1 }
+        }
+    }
+
     func finishPresenceSnapshot() {
         guard pollingContext.systemActive, awayGap.includesAway else { return }
         awayGap.includesAway = false
