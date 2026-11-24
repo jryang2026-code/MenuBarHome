@@ -36,7 +36,7 @@ ADAPTER_ERROR_CODES = {
     -32601: "unsupported",
 }
 
-ALLOWED_LEASE_KINDS = frozenset({"oauthAccess", "apiKey", "lanToken"})
+ALLOWED_LEASE_KINDS = frozenset({"oauthAccess", "lanToken"})
 FORBIDDEN_SIGNAL_KEYS = frozenset({"severity", "interruptionLevel", "suppress", "suppressAlerts", "mute", "muteAlerts"})
 FORBIDDEN_LEASE_KEYS = frozenset({"refreshToken", "passToken", "password", "cookie", "session"})
 
@@ -234,8 +234,10 @@ def validate_rpc_pair(fixture: Any, schema: dict[str, Any], name: str) -> list[s
                         if not isinstance(lease.get(lf), str) or not lease[lf]:
                             errs.append(f"{name}: leases[{idx}] 缺少非空字段 {lf!r}")
             caps = result.get("capabilities")
-            if not isinstance(caps, dict) or caps.get("readOnly") is not True:
-                errs.append(f"{name}: initialize.result.capabilities.readOnly 必须为 true")
+            caps_schema = schema["properties"]["capabilities"]
+            forbidden = frozenset(schema.get("x-forbiddenKeys", []))
+            errs.extend(validate_against_schema(caps, caps_schema, f"{name}.response.result.capabilities"))
+            errs.extend(find_forbidden_keys(caps, forbidden, f"{name}.response.result.capabilities"))
 
     if method == "snapshot":
         scope = fixture.get("sourceScope")
@@ -315,7 +317,11 @@ def run_check() -> list[str]:
 
     valid_manifests = sorted(FIXTURES_DIR.glob("manifest-valid-*.json"))
     invalid_manifests = sorted(FIXTURES_DIR.glob("manifest-invalid-*.json"))
-    rpc_pairs = sorted(FIXTURES_DIR.glob("rpc-*-pair.json"))
+    rpc_pairs = sorted(
+        p for p in FIXTURES_DIR.glob("rpc-*-pair.json")
+        if not p.name.startswith("rpc-invalid-")
+    )
+    invalid_rpc_fixtures = sorted(FIXTURES_DIR.glob("rpc-invalid-*.json"))
 
     if not valid_manifests:
         errs.append("缺少合法 manifest 夹具 (manifest-valid-*.json)")
@@ -323,6 +329,8 @@ def run_check() -> list[str]:
         errs.append("缺少非法 manifest 夹具 (manifest-invalid-*.json)")
     if len(rpc_pairs) < 2:
         errs.append("至少需要 initialize 与 snapshot 两组 RPC 夹具 (rpc-*-pair.json)")
+    if not invalid_rpc_fixtures:
+        errs.append("缺少非法 RPC 夹具 (rpc-invalid-*.json)")
 
     for path in valid_manifests:
         try:
@@ -351,6 +359,16 @@ def run_check() -> list[str]:
             errs.append(f"{path.name}: JSON 解析失败: {exc}")
             continue
         errs.extend(validate_rpc_pair(data, schema, path.name))
+
+    for path in invalid_rpc_fixtures:
+        try:
+            data = load_strict_json(path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            errs.append(f"{path.name}: JSON 解析失败: {exc}")
+            continue
+        r_errs = validate_rpc_pair(data, schema, path.name)
+        if not r_errs:
+            errs.append(f"{path.name} 应被拒绝但却通过了校验")
 
     return errs
 
@@ -387,14 +405,33 @@ def run_self_test() -> None:
     bad_snap["response"]["result"]["devices"][0]["safetySignals"][0]["severity"] = "warning"
     assert validate_rpc_pair(bad_snap, schema, "self-test-snap"), "severity in safetySignals must fail"
 
-    # 6. RPC initialize lease carrying refreshToken must fail
+    # 6. RPC initialize lease carrying refreshToken or static apiKey must fail
     init = load_strict_json((FIXTURES_DIR / "rpc-initialize-pair.json").read_text(encoding="utf-8"))
     assert validate_rpc_pair(init, schema, "self-test-init") == []
     bad_init = copy.deepcopy(init)
     bad_init["request"]["params"]["leases"][0]["refreshToken"] = "nope"
     assert validate_rpc_pair(bad_init, schema, "self-test-init"), "refreshToken in lease must fail"
+    bad_init_static_key = copy.deepcopy(init)
+    bad_init_static_key["request"]["params"]["leases"][0]["kind"] = "apiKey"
+    assert validate_rpc_pair(bad_init_static_key, schema, "self-test-init"), "static apiKey lease must fail"
 
-    # 7. Duplicate JSON keys must fail strict loader
+    # 7. RPC initialize response capabilities must validate full schema (including empty commands)
+    bad_init_caps = copy.deepcopy(init)
+    bad_init_caps["response"]["result"]["capabilities"]["commands"] = ["power"]
+    caps_errs = validate_rpc_pair(bad_init_caps, schema, "self-test-init-caps")
+    assert any("commands" in e for e in caps_errs), "non-empty commands in initialize response must fail"
+
+    bad_init_extra_cap = copy.deepcopy(init)
+    bad_init_extra_cap["response"]["result"]["capabilities"]["extraFlag"] = True
+    assert validate_rpc_pair(bad_init_extra_cap, schema, "self-test-init-extra"), "undeclared capability key must fail"
+
+    invalid_rpc = load_strict_json((FIXTURES_DIR / "rpc-invalid-initialize-write-caps.json").read_text(encoding="utf-8"))
+    assert any("commands" in e for e in validate_rpc_pair(invalid_rpc, schema, "rpc-invalid-initialize-write-caps.json")), (
+        "invalid initialize write-commands fixture must fail"
+    )
+    assert run_check() == [], "fixture suite check should pass"
+
+    # 8. Duplicate JSON keys must fail strict loader
     try:
         load_strict_json('{"a": 1, "a": 2}')
     except ValueError:

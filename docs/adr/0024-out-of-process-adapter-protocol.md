@@ -41,7 +41,7 @@
 
 1. **进程隔离启动**：宿主以最小环境白名单（禁止继承宿主完整环境变量，禁止通过命令行参数或环境变量传递任何凭据）启动适配器二进制，工作目录锁定在适配器私有缓存目录（macOS `~/Library/Application Support/MenuBarMijia/adapters/<adapterId>/data`，Windows `%LOCALAPPDATA%\MenuBarMijia\adapters\<adapterId>\data`）。
 2. **`initialize` 握手**（超时 `10s`）：
-   - 宿主发送 `initialize` 请求，携带 `protocolVersion`（当前 `"0.1"`）、`supportedProtocolVersions`（如 `["0.1"]`）、`hostVersion`、`locale`、`adapterId`、`dataDir`，以及非秘密配置与短期凭据租约（若有）。
+   - 宿主发送 `initialize` 请求，携带 `protocolVersion`（当前 `"0.1"`）、`supportedProtocolVersions`（如 `["0.1"]`）、`hostVersion`、`locale`、`adapterId`、`dataDir`，以及适配器配置（含标记 `writeOnly` 的静态配置项）与上游强制过期的短期凭据租约（若有）。
    - 适配器返回协商后的 `protocolVersion`、`adapterId`、`adapterVersion`、`manifestDigest`（`sha256:<64位小写hex>`）与运行时 `capabilities` 摘要。
    - **拒绝条件**：`protocolVersion` 不在宿主支持集合内、`adapterId` 与宿主预期不符、`manifestDigest` 与已安装的本地清单摘要不一致、或 10 秒内未响应——宿主立即终止子进程并标记启动失败。
 3. **向前兼容原则**：次版本升级仅允许增量添加字段；双方解析器必须忽略未知的附加字段（manifest 本身除外，manifest 校验严格执行 `additionalProperties: false`）。
@@ -141,7 +141,7 @@
 | `canWrite` / `writeAllowed` / `allowControl` / `autoExecute` | 防止适配器声明写权限绕过宿主写入门 | 宿主能力开关 + 写入门（v0 全量只读） |
 | `notificationChannel` / `severity` / `interruptionLevel` / `suppressAlerts` / `muteAlerts` | 防止适配器篡改告警分级、绕过或压制安全通知 | 宿主 `AlertSeverity` 表与通知投递管线 |
 | `globalDeviceId` / `canonicalId` | 防止适配器伪造全局设备 ID 劫持既有卡片或偏好 | 宿主 `DeviceDeduplicator` 按 `identity` 硬件键计算 |
-| `secret` / `secrets` / `token` / `accessToken` / `refreshToken` / `password` / `apiKey` / `cookie` / `session` / `credentials` | 防止明文凭据写死进静态清单并随包分发 | 宿主 `CredentialVault` / Windows `secureStore` + 短期租约注入 |
+| `secret` / `secrets` / `token` / `accessToken` / `refreshToken` / `password` / `apiKey` / `cookie` / `session` / `credentials` | 防止明文凭据写死进静态清单并随包分发 | 宿主 `CredentialVault` / Windows `secureStore` + 短期租约或 `writeOnly` 配置注入 |
 
 ---
 
@@ -162,11 +162,11 @@
 
 ---
 
-## 六、凭据边界（仅短期租约）
+## 六、凭据边界（上游强制过期租约与静态密钥隔离）
 
-1. **零长期秘密外泄**：宿主的米家 `CredentialVault`、`passToken`（[ADR-0004](0004-no-pass-token-storage.md)）、Home Assistant 长期令牌、AI API Key、伴生 `bridgeToken`（[ADR-0013](0013-raycast-companion-contract.md)）以及适配器自身的 `refreshToken`，**永远不离开宿主安全存储**（macOS Keychain / Windows `secureStore`）。
-2. **短期租约模型**：
-   - 宿主按适配器独立槽位（`adapter:<adapterId>:secret`）托管长期凭据，仅在 `initialize` 或响应 `host.auth.renew` 时通过 `stdin` JSON-RPC 下发短期租约：
+1. **零可刷新长期凭据外泄**：宿主的米家 `CredentialVault`、`passToken`（[ADR-0004](0004-no-pass-token-storage.md)）、Home Assistant 长期令牌、AI API Key、伴生 `bridgeToken`（[ADR-0013](0013-raycast-companion-contract.md)）以及适配器自身的 `refreshToken`，**永远不离开宿主安全存储**（macOS Keychain / Windows `secureStore`）。
+2. **短期租约模型（必须由上游强制过期）**：
+   - 宿主仅针对**过期时间由上游服务端或设备端实际强制执行（upstream-enforced expiry）**的凭据，在 `initialize` 或响应 `host.auth.renew` 时通过 `stdin` JSON-RPC 下发短期租约：
      ```json
      {
        "accountId": "acct-1",
@@ -176,9 +176,13 @@
        "expiresAt": "2026-11-24T06:00:00Z"
      }
      ```
-   - `kind` 仅允许 `oauthAccess`、`apiKey` 或 `lanToken`；**即使上游是静态 API Key，宿主也必须为其附加有限 `expiresAt`（建议 ≤ 1 小时）以支持随时撤销与轮换**。
-   - 适配器仅可在进程内存中持有 `value` 至 `expiresAt`，禁止写入磁盘、缓存或日志。
-3. **单飞续期**：租约将过期时，适配器发送 `host.auth.renew` 反向请求；宿主按 `(adapterId, accountId)` 单飞执行上游 refresh 或校验撤销状态，成功则返回新租约，拒绝时适配器必须立即停止该账户请求并发出 `events.authExpired`。
+   - `leases[].kind` 仅允许 `oauthAccess` 或由上游/网关签发且带服务端 TTL 的 `lanToken`。
+   - **静态 API Key 上游的 `expiresAt` 不是真实租约**：对于仅接受静态、永不过期 API Key 的上游，宿主在 JSON-RPC 信封上附加的 `expiresAt` **并不构成真正的租约或撤销边界**——上游不会在 `expiresAt` 到期时使密钥失效，适配器进程一旦拿到可复用的静态密钥，即便 `expiresAt` 已过或宿主拒绝 `host.auth.renew`，仍可继续直接向上游发起认证请求。因此 v0 明确禁止将静态 API Key 包装为带 `expiresAt` 的短期租约（`leases[].kind` 不接受 `apiKey`）。
+   - 适配器仅可在进程内存中持有租约 `value` 至 `expiresAt`，禁止写入磁盘、缓存或日志。
+3. **静态 API Key 适配器的 v0 规则**：
+   - **规则**：仅支持静态 API Key 的适配器**在 v0 中不适用凭据租约与 `host.auth.renew` 机制**。用户需在适配器自身的配置项中录入静态密钥（manifest 中 `auth[].prompts` 与 `ui.configSchema` 对应字段必须标记 `writeOnly: true`），由宿主加密写入钥匙串 / `secureStore`（`adapter:<adapterId>:secret`）且**永不在 UI、日志或读取接口中回显**，仅在启动该只读子进程时通过 `stdin` 的 `initialize.params.config` 注入。v0 明确承认：此类适配器收到的是长期有效密钥而非可自动失效的租约；若需撤销或轮换，用户必须在上游撤销/更换密钥，或由宿主停用/卸载该适配器。
+   - **取舍依据**：v0 选择「静态密钥不入租约、改走宿主托管的 `writeOnly` 配置注入」而不是在宿主侧构建通用请求转发代理（host-mediated request broker），是因为不同厂商静态 API Key 的认证头、HMAC 签名与长连接形态差异极大，若由宿主代签并代发所有网络请求会把大量厂商私有协议耦合重新拉回宿主进程，违背进程外隔离与 v0 纯只读最小契约原则；同时拒绝用宿主自造的 `expiresAt` 制造虚假撤销保证，确保上游强制过期令牌走真实租约、静态密钥走隔离只读进程与诚实信任边界，并将宿主请求代理留待未来确有高敏需求时再行扩展。
+4. **单飞续期**：针对适用租约模型的 `oauthAccess` / `lanToken`，租约将过期时适配器发送 `host.auth.renew` 反向请求；宿主按 `(adapterId, accountId)` 单飞执行上游 refresh 或校验撤销状态，成功则返回新租约，拒绝时适配器必须立即停止该账户请求并发出 `events.authExpired`。
 
 ---
 
