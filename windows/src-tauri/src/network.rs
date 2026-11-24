@@ -114,6 +114,15 @@ pub(crate) const MAX_HTTP_TIMEOUT_MS: u64 = 60_000;
 pub(crate) const DEFAULT_HTTP_TIMEOUT_MS: u64 = 15_000;
 pub(crate) const MAX_HTTP_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
 
+static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
+    reqwest::Client::builder()
+        // Redirect authorization depends on the request's configured origins and HA scope, so
+        // redirects are checked explicitly in `native_http_with_scope`.
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("shared native HTTP client must be constructible")
+});
+
 pub(crate) fn clamp_http_timeout_ms(timeout_ms: Option<u64>) -> u64 {
     timeout_ms
         .unwrap_or(DEFAULT_HTTP_TIMEOUT_MS)
@@ -169,44 +178,13 @@ pub(crate) async fn native_http_with_scope(
     }
 
     let follow = follow_redirects.unwrap_or(true);
-    let policy = if follow {
-        let redirect_origins = allowed_origins.clone();
-        let original_origin = url_origin(&parsed_url).expect("validated request origin");
-        reqwest::redirect::Policy::custom(move |attempt| {
-            if attempt.previous().len() >= 5 {
-                return attempt.stop();
-            }
-            // Even another configured origin must not receive this request's headers or body.
-            if redirect_allowed(&original_origin, attempt.url(), &redirect_origins)
-                && ha_scope.as_ref().is_none_or(|scope| in_ha_scope(attempt.url(), scope))
-            {
-                attempt.follow()
-            } else {
-                attempt.stop()
-            }
-        })
-    } else {
-        reqwest::redirect::Policy::none()
-    };
-
-    let client = reqwest::Client::builder()
-        .redirect(policy)
-        .timeout(Duration::from_millis(clamp_http_timeout_ms(timeout_ms)))
-        .build()
-        .map_err(|e| format_reqwest_error(&e))?;
-
     let verb = method.unwrap_or_else(|| "GET".to_string()).to_uppercase();
-    let mut req = match verb.as_str() {
-        "GET" => client.get(&url),
-        "POST" => client.post(&url),
-        "PUT" => client.put(&url),
-        "PATCH" => client.patch(&url),
-        "DELETE" => client.delete(&url),
-        other => return Err(format!("native_http 不支持的方法：{other}")),
-    };
+    if !matches!(verb.as_str(), "GET" | "POST" | "PUT" | "PATCH" | "DELETE") {
+        return Err(format!("native_http 不支持的方法：{verb}"));
+    }
 
+    let mut request_headers = HeaderMap::new();
     if let Some(hdrs) = headers {
-        let mut map = HeaderMap::new();
         for (k, v) in hdrs {
             // Request framing is owned by reqwest; letting the frontend set these
             // could smuggle a second request past the URL allowlist.
@@ -217,17 +195,56 @@ pub(crate) async fn native_http_with_scope(
                 continue;
             }
             if let (Ok(name), Ok(val)) = (HeaderName::from_str(&k), HeaderValue::from_str(&v)) {
-                map.insert(name, val);
+                request_headers.insert(name, val);
             }
         }
-        req = req.headers(map);
     }
 
-    if let Some(b) = body {
-        req = req.body(b);
-    }
-
-    let mut resp = req.send().await.map_err(|e| format_reqwest_error(&e))?;
+    let client = &*HTTP_CLIENT;
+    let original_origin = url_origin(&parsed_url).expect("validated request origin");
+    let timeout = Duration::from_millis(clamp_http_timeout_ms(timeout_ms));
+    let mut request_url = parsed_url;
+    let mut redirects = 0usize;
+    let mut resp = loop {
+        let mut req = match verb.as_str() {
+            "GET" => client.get(request_url.clone()),
+            "POST" => client.post(request_url.clone()),
+            "PUT" => client.put(request_url.clone()),
+            "PATCH" => client.patch(request_url.clone()),
+            "DELETE" => client.delete(request_url.clone()),
+            _ => unreachable!("HTTP method validated above"),
+        }
+        .timeout(timeout)
+        .headers(request_headers.clone());
+        if let Some(b) = body.clone() {
+            req = req.body(b);
+        }
+        let response = req.send().await.map_err(|e| format_reqwest_error(&e))?;
+        if !follow || !response.status().is_redirection() || response.status().as_u16() == 304 {
+            break response;
+        }
+        if redirects >= 5 {
+            return Err("native_http 拒绝跨来源或未授权重定向".to_string());
+        }
+        let location = response
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .and_then(|value| value.to_str().ok())
+            .ok_or_else(|| "native_http 拒绝跨来源或未授权重定向".to_string())?;
+        let next_url = request_url
+            .join(location)
+            .map_err(|_| "native_http 拒绝跨来源或未授权重定向".to_string())?;
+        // Even another configured origin must not receive this request's headers or body.
+        if !redirect_allowed(&original_origin, &next_url, &allowed_origins)
+            || ha_scope
+                .as_ref()
+                .is_some_and(|scope| !in_ha_scope(&next_url, scope))
+        {
+            return Err("native_http 拒绝跨来源或未授权重定向".to_string());
+        }
+        request_url = next_url;
+        redirects += 1;
+    };
     let status = resp.status().as_u16();
     // A stopped redirect comes back as a 3xx here; surfacing it as an error is
     // clearer than handing the frontend a response from a host it may not use.
