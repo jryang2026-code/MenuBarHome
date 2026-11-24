@@ -3,7 +3,12 @@ import { afterEach, beforeEach, describe, it } from "node:test";
 import { setImmediate } from "node:timers/promises";
 import type { Window } from "happy-dom";
 
-import { isPortraitDoorbellCamera, type CameraPipSnapshot } from "../src/core/cameraPip.js";
+import {
+  isPortraitDoorbellCamera,
+  sanitizePinnedSwitchIds,
+  shouldAutoOpenCameraPipOnEvent,
+  type CameraPipSnapshot,
+} from "../src/core/cameraPip.js";
 import type { SmartDevice } from "../src/core/models.js";
 import { MenuMijiaWindowsApp } from "../src/ui/app.js";
 import { CameraPipWindowApp } from "../src/ui/cameraPipWindow.js";
@@ -135,6 +140,10 @@ describe("Windows independent camera PiP window & 3:4 portrait doorbell (P1-2 PR
       lenses: [],
       activeLensChannel: 0,
       playableCameras: [],
+      autoCloseRemainingSeconds: 18,
+      autoOpenOnEvent: true,
+      pinnedSwitches: [{ id: "light.entry", name: "玄关灯", isOn: false, isOnline: true }],
+      availablePinSwitches: [{ id: "light.entry", name: "玄关灯", isOn: false, isOnline: true }],
     };
     let frameCount = 0;
     (globalThis.window as unknown as { __TAURI_INTERNALS__: { invoke: Function } }).__TAURI_INTERNALS__ = {
@@ -169,6 +178,166 @@ describe("Windows independent camera PiP window & 3:4 portrait doorbell (P1-2 PR
     );
     assert.ok(closeAction, "close button should send close action to main");
 
+    // Visible countdown badge & pinned switch button render and dispatch actions.
+    assert.ok(root.querySelector("#btn-pip-cancel-countdown")?.textContent?.includes("18s"));
+    root.querySelector<HTMLButtonElement>("[data-pip-pinned-switch='light.entry']")!.click();
+    assert.ok(
+      calls.some(
+        (c) =>
+          c.cmd === "camera_pip_action" &&
+          String(c.args?.actionJson).includes('"type":"togglePinnedSwitch"'),
+      ),
+      "clicking pinned switch should dispatch togglePinnedSwitch action",
+    );
+
     pipApp.dispose();
+  });
+
+  it("enforces OFF-by-default per-camera auto-open, Focus/DND policy (#475), non-focus-stealing countdown, and max-2 pinned switches", async () => {
+    // Pure policy checks: OFF by default, doorbell never suppressed by Focus, motion suppressed by Focus.
+    assert.equal(
+      shouldAutoOpenCameraPipOnEvent({
+        eventKind: "doorbell",
+        cameraOptIn: false,
+        isLocked: false,
+        isFocusActive: false,
+      }),
+      false,
+    );
+    assert.equal(
+      shouldAutoOpenCameraPipOnEvent({
+        eventKind: "doorbell",
+        cameraOptIn: true,
+        isLocked: false,
+        isFocusActive: true,
+      }),
+      true,
+    );
+    assert.equal(
+      shouldAutoOpenCameraPipOnEvent({
+        eventKind: "motion",
+        cameraOptIn: true,
+        isLocked: false,
+        isFocusActive: true,
+      }),
+      false,
+    );
+    assert.equal(
+      shouldAutoOpenCameraPipOnEvent({
+        eventKind: "doorbell",
+        cameraOptIn: true,
+        isLocked: true,
+        isFocusActive: false,
+      }),
+      false,
+    );
+    assert.deepEqual(sanitizePinnedSwitchIds(["a", "b", "c", "a"]), ["a", "b"]);
+
+    const calls: Array<{ cmd: string; args?: Record<string, unknown> }> = [];
+    (globalThis.window as unknown as { __TAURI_INTERNALS__: { invoke: Function } }).__TAURI_INTERNALS__ = {
+      invoke: async (cmd: string, args?: Record<string, unknown>) => {
+        calls.push({ cmd, args });
+        if (cmd === "open_camera_pip_window") return true;
+        return null;
+      },
+    };
+
+    const root = document.getElementById("app")!;
+    const app = new MenuMijiaWindowsApp(root);
+    const cam = makeCamera({ id: "cam.entry", name: "入户门铃", model: "xiaomi.doorbell.3s" });
+    const light1: SmartDevice = {
+      id: "light.entry",
+      name: "玄关灯",
+      roomId: "room.entry",
+      roomName: "玄关",
+      model: "yeelink.light.color",
+      isOnline: true,
+      kind: {
+        kind: "light",
+        entityId: "light.entry",
+        isOn: false,
+        brightnessPercent: 50,
+        colorTempKelvin: null,
+        minKelvin: 2700,
+        maxKelvin: 6500,
+        currentEffect: null,
+        availableEffects: [],
+      },
+    };
+    const plug1: SmartDevice = {
+      id: "plug.porch",
+      name: "门口插座",
+      roomId: "room.entry",
+      roomName: "玄关",
+      model: "cuco.plug.cp1",
+      isOnline: true,
+      kind: {
+        kind: "plug",
+        switchEntityId: "switch.porch",
+        isOn: false,
+        powerWatts: null,
+        childLockEntityId: null,
+        isChildLocked: false,
+      },
+    };
+    const light2: SmartDevice = {
+      ...light1,
+      id: "light.hall",
+      name: "过道灯",
+    };
+    app.devices = [cam, light1, plug1, light2];
+
+    // Default is OFF -> does not auto-open.
+    assert.equal(
+      app.cameraLive.handleCameraEventForAutoOpen({
+        cameraId: cam.id,
+        kind: "doorbell",
+        isLocked: false,
+        isFocusActive: false,
+      }),
+      false,
+    );
+
+    // Opt in per camera -> doorbell auto-opens even in Focus mode, top-right, without stealing focus.
+    app.cameraLive.setCameraAutoOpen(cam.id, true);
+    assert.equal(
+      app.cameraLive.handleCameraEventForAutoOpen({
+        cameraId: cam.id,
+        kind: "doorbell",
+        isLocked: false,
+        isFocusActive: true,
+        dismissSeconds: 20,
+      }),
+      true,
+    );
+    await setImmediate();
+    const openCall = calls.find((c) => c.cmd === "open_camera_pip_window");
+    assert.equal(openCall?.args?.forceTopRight, true);
+    assert.equal(openCall?.args?.stealFocus, false);
+    assert.equal(app.cameraLive.autoCloseRemainingSeconds, 20);
+
+    // Manual interaction cancels the auto-close countdown.
+    app.cameraLive.handlePipAction({ type: "interact" });
+    assert.equal(app.cameraLive.autoCloseRemainingSeconds, null);
+
+    // Pinning 3 switches caps at 2 (FIFO replacement) and routes toggles through app.toggleDevice.
+    app.cameraLive.toggleCameraPinnedSwitch(cam.id, light1.id);
+    app.cameraLive.toggleCameraPinnedSwitch(cam.id, plug1.id);
+    app.cameraLive.toggleCameraPinnedSwitch(cam.id, light2.id);
+    assert.deepEqual(
+      app.cameraLive.pinnedSwitchesForCamera(cam.id).map((d) => d.id),
+      [plug1.id, light2.id],
+    );
+
+    const toggled: string[] = [];
+    const origToggle = app.toggleDevice.bind(app);
+    app.toggleDevice = (dev: SmartDevice) => {
+      toggled.push(dev.id);
+      return origToggle(dev);
+    };
+    app.cameraLive.handlePipAction({ type: "togglePinnedSwitch", deviceId: light2.id });
+    assert.deepEqual(toggled, [light2.id]);
+
+    app.dispose();
   });
 });

@@ -102,7 +102,7 @@ import { CameraLiveController } from "./cameraLive.js";
 import { CameraPipWindowApp } from "./cameraPipWindow.js";
 import { renderDeviceTile as renderDeviceTileView, renderEnvironmentStrip as renderEnvironmentStripView } from "./deviceViews.js";
 import { renderContextMenu, renderHomeMenu, renderOnboardingModal, renderPrompt, renderSettingsModal } from "./menuViews.js";
-import { bindDeckEvents, bindEvents as bindEventsImpl } from "./bindEvents.js";
+import { bindDeckEvents, bindEvents as bindEventsImpl, toggleDeviceForHost } from "./bindEvents.js";
 import {
   partitionUndoStepsByHighRiskConfirmation,
   releaseActivityWindowLifecycle,
@@ -2709,6 +2709,10 @@ export class MenuMijiaWindowsApp {
     } else if (this.isKnownSavedKey(current)) {
       apiKeyEl.value = "";
     }
+  }
+
+  public toggleDevice(dev: SmartDevice): void {
+    toggleDeviceForHost(this, dev.id);
   }
 
   public escapeHtml(str: string): string {
