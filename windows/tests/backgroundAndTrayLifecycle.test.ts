@@ -1014,7 +1014,12 @@ describe("MenuMijiaWindowsApp integrated tray/resume lifecycle", () => {
     // 1) No optional consumers: demo mode, no AI key/consent, no power/display rules.
     assert.equal(proactiveHasConsumer(app), false);
     assert.equal(canRefreshDevicesInBackground(app), false);
-    assert.deepEqual(systemSignalNeed([]), { power: false, externalDisplayCount: false });
+    assert.deepEqual(systemSignalNeed([]), {
+      power: false,
+      externalDisplayCount: false,
+      mediaCapture: false,
+      focusMode: false,
+    });
 
     const stopLoop = startTimerLoop(app, { scheduler, intervalMs: 1000 });
     assert.equal(scheduler.activeIntervalCount, 1, "only the shared 1s interval is created");
@@ -1082,7 +1087,12 @@ describe("MenuMijiaWindowsApp integrated tray/resume lifecycle", () => {
 
     assert.equal(proactiveHasConsumer(app), true);
     assert.equal(canRefreshDevicesInBackground(app), true);
-    assert.deepEqual(systemSignalNeed([powerRule]), { power: true, externalDisplayCount: false });
+    assert.deepEqual(systemSignalNeed([powerRule]), {
+      power: true,
+      externalDisplayCount: false,
+      mediaCapture: false,
+      focusMode: false,
+    });
 
     // The poll reuses the tick's rules; only the engine's own dispatch may read the store again.
     storeLoadCalls = 0;

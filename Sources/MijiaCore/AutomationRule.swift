@@ -9,6 +9,8 @@ import Foundation
 /// `back`, because macOS posts several notifications for one lid close. `AutomationPolicy` then
 /// coalesces bursts of the same group.
 public enum AutomationTrigger: String, CaseIterable, Codable, Identifiable, Sendable {
+    /// Fires once at a local wall-clock time, optionally restricted to weekdays (0=Sunday).
+    case scheduledTime
     /// Screen locked, lid closed, or the Mac/display went to sleep.
     case away
     /// Screen unlocked, or the Mac/display woke up. No time-of-day condition yet.
@@ -56,10 +58,23 @@ public enum AutomationTrigger: String, CaseIterable, Codable, Identifiable, Send
     /// The Mac is awake and unlocked inside `AutomationTriggerOptions.lateNightWindow`.
     case lateNightUsage
 
+    public var supportsLasting: Bool {
+        switch self {
+        case .cameraInUse, .cameraNotInUse, .microphoneInUse, .microphoneNotInUse,
+             .powerConnected, .powerDisconnected, .batteryBelowThreshold,
+             .wifiNetworkJoined, .focusModeEnabled, .focusModeDisabled, .lateNightUsage:
+            return true
+        default:
+            return false
+        }
+    }
+
     public var id: String { rawValue }
 
     public var title: String {
         switch self {
+        case .scheduledTime:
+            return L10n.tr("定时触发", "Scheduled time")
         case .away:
             return L10n.tr("离开（锁屏 / 合盖 / 睡眠）", "Away (lock, lid, sleep)")
         case .back:
@@ -105,6 +120,7 @@ public enum AutomationTrigger: String, CaseIterable, Codable, Identifiable, Send
 
     public var symbolName: String {
         switch self {
+        case .scheduledTime: return "clock.fill"
         case .away: return "lock.fill"
         case .back: return "lock.open.fill"
         case .screenLocked: return "lock.rectangle"
@@ -283,6 +299,8 @@ extension AutomationAction: Codable {
 /// Optional parameters for the Mac-only triggers (#174). Rules that do not use them keep the
 /// defaults, and rules written before these fields existed decode with defaults too.
 public struct AutomationTriggerOptions: Codable, Equatable, Sendable {
+    /// Local wall-clock schedule shared with the Windows automation JSON contract.
+    public var scheduledTime: ScheduledTime?
     /// Battery percentage (1...100) below which `.batteryBelowThreshold` fires.
     public var batteryThresholdPercent: Int
     /// When set, Wi-Fi rules only react to this SSID. `nil` means any network change.
@@ -301,7 +319,8 @@ public struct AutomationTriggerOptions: Codable, Equatable, Sendable {
         focusModeName: String? = nil,
         lateNightStartHour: Int = 23,
         lateNightEndHour: Int = 6,
-        calendarLeadMinutes: Int = 1
+        calendarLeadMinutes: Int = 1,
+        scheduledTime: ScheduledTime? = nil
     ) {
         self.batteryThresholdPercent = min(100, max(1, batteryThresholdPercent))
         let trimmedSSID = wifiSSID?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -312,6 +331,7 @@ public struct AutomationTriggerOptions: Codable, Equatable, Sendable {
             endHour: lateNightEndHour
         )
         self.calendarLeadMinutes = min(60, max(1, calendarLeadMinutes))
+        self.scheduledTime = scheduledTime
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -321,6 +341,7 @@ public struct AutomationTriggerOptions: Codable, Equatable, Sendable {
         case lateNightStartHour
         case lateNightEndHour
         case calendarLeadMinutes
+        case scheduledTime
     }
 
     public init(from decoder: any Decoder) throws {
@@ -331,7 +352,8 @@ public struct AutomationTriggerOptions: Codable, Equatable, Sendable {
             focusModeName: try container.decodeIfPresent(String.self, forKey: .focusModeName),
             lateNightStartHour: try container.decodeIfPresent(Int.self, forKey: .lateNightStartHour) ?? 23,
             lateNightEndHour: try container.decodeIfPresent(Int.self, forKey: .lateNightEndHour) ?? 6,
-            calendarLeadMinutes: try container.decodeIfPresent(Int.self, forKey: .calendarLeadMinutes) ?? 1
+            calendarLeadMinutes: try container.decodeIfPresent(Int.self, forKey: .calendarLeadMinutes) ?? 1,
+            scheduledTime: try container.decodeIfPresent(ScheduledTime.self, forKey: .scheduledTime)
         )
     }
 
@@ -343,6 +365,33 @@ public struct AutomationTriggerOptions: Codable, Equatable, Sendable {
         try container.encode(lateNightWindow.startHour, forKey: .lateNightStartHour)
         try container.encode(lateNightWindow.endHour, forKey: .lateNightEndHour)
         try container.encode(calendarLeadMinutes, forKey: .calendarLeadMinutes)
+        try container.encodeIfPresent(scheduledTime, forKey: .scheduledTime)
+    }
+}
+
+/// A local wall-clock time. Weekdays use the cross-platform mapping 0=Sunday through 6=Saturday.
+public struct ScheduledTime: Codable, Equatable, Sendable {
+    public let hour: Int
+    public let minute: Int
+    public let weekdays: [Int]?
+
+    public init(hour: Int, minute: Int, weekdays: [Int]? = nil) {
+        self.hour = min(23, max(0, hour))
+        self.minute = min(59, max(0, minute))
+        self.weekdays = weekdays?.filter { (0...6).contains($0) }
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case hour, minute, weekdays
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            hour: try container.decode(Int.self, forKey: .hour),
+            minute: try container.decode(Int.self, forKey: .minute),
+            weekdays: try container.decodeIfPresent([Int].self, forKey: .weekdays)
+        )
     }
 }
 
@@ -606,26 +655,31 @@ public struct AutomationTimeWindow: Codable, Equatable, Sendable {
 public struct AutomationConditions: Codable, Equatable, Sendable {
     public var wifi: AutomationWiFiCondition
     public var timeWindow: AutomationTimeWindow
+    /// Delays the action until the matched state remains true for this many minutes.
+    public var lastingMinutes: Int?
 
-    public init(wifi: AutomationWiFiCondition = .any, timeWindow: AutomationTimeWindow = .anytime) {
+    public init(wifi: AutomationWiFiCondition = .any, timeWindow: AutomationTimeWindow = .anytime, lastingMinutes: Int? = nil) {
         self.wifi = wifi
         self.timeWindow = timeWindow
+        self.lastingMinutes = lastingMinutes.map { min(24 * 60, max(1, $0)) }
     }
 
     private enum CodingKeys: String, CodingKey {
-        case wifi, timeWindow
+        case wifi, timeWindow, lastingMinutes
     }
 
     public init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         wifi = try container.decodeIfPresent(AutomationWiFiCondition.self, forKey: .wifi) ?? .any
         timeWindow = try container.decodeIfPresent(AutomationTimeWindow.self, forKey: .timeWindow) ?? .anytime
+        lastingMinutes = try container.decodeIfPresent(Int.self, forKey: .lastingMinutes).map { min(24 * 60, max(1, $0)) }
     }
 
     public func encode(to encoder: any Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(wifi, forKey: .wifi)
         try container.encode(timeWindow, forKey: .timeWindow)
+        try container.encodeIfPresent(lastingMinutes, forKey: .lastingMinutes)
     }
 
     public func evaluate(wifiSSID: String?, isAuthorized: Bool) -> AutomationWiFiEvaluation {
@@ -655,6 +709,9 @@ public struct AutomationConditions: Codable, Equatable, Sendable {
         }
         if timeWindow.isEnabled {
             parts.append(L10n.format("时段 %@", "Between %@", timeWindow.summary))
+        }
+        if let lastingMinutes {
+            parts.append(L10n.format("持续 %@ 分钟", "For %@ min", String(lastingMinutes)))
         }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
@@ -848,6 +905,14 @@ public struct AutomationTriggerDeduper {
         let seconds = (stored as? Double) ?? (stored as? NSNumber)?.doubleValue
         guard let seconds else { return nil }
         return Date(timeIntervalSince1970: seconds)
+    }
+
+    public func claimScheduledOccurrence(_ key: String, at now: Date) -> Bool {
+        guard lastFireDate(forKey: key) == nil else { return false }
+        var stamps = defaults.dictionary(forKey: Self.storageKey) ?? [:]
+        stamps[key] = now.timeIntervalSince1970
+        defaults.set(stamps, forKey: Self.storageKey)
+        return true
     }
 
     /// Returns true and records `now` when this trigger may run. A backwards clock jump is treated

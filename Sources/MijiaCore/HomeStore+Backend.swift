@@ -245,18 +245,22 @@ extension HomeStore {
 
     /// False while the Mac or display sleeps, the screen is locked, or another user is active.
     public func setSystemActive(_ active: Bool) {
-        if !active {
-            awayGap.includesAway = true
-            userDefaults.set(true, forKey: MacAwayGap.storageKey)
-        }
+        if !active { recordSystemAway() }
         updatePollingContext { $0.systemActive = active }
     }
 
-    public func setHATransportSuspended(_ suspended: Bool, topologyChanged: Bool) {
+    public func setHATransportSuspended(_ suspended: Bool, topologyChanged: Bool, systemActive: Bool? = nil) {
+        if systemActive == false { recordSystemAway() }
         updatePollingContext {
+            if let systemActive { $0.systemActive = systemActive }
             $0.haTransportSuspended = suspended
             if topologyChanged { $0.haTransportRevision &+= 1 }
         }
+    }
+
+    private func recordSystemAway() {
+        awayGap.includesAway = true
+        userDefaults.set(true, forKey: MacAwayGap.storageKey)
     }
 
     func finishPresenceSnapshot() {

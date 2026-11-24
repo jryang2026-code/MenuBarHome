@@ -347,6 +347,7 @@ struct SnapshotFixture {
     private let previousAliases: String?
     private let previousPanelTheme: String?
     private let previousPanelHeight: String?
+    private let previousQuickDrawerExpanded: Bool?
     private let previousAllowURLDirectControl: Bool?
     private let previousErrorTimestamps: [Date]
 
@@ -366,6 +367,7 @@ struct SnapshotFixture {
         previousAliases = UserDefaults.standard.string(forKey: GroupPrefs.aliasesKey)
         previousPanelTheme = UserDefaults.standard.string(forKey: PanelTheme.storageKey)
         previousPanelHeight = UserDefaults.standard.string(forKey: PanelHeight.storageKey)
+        previousQuickDrawerExpanded = UserDefaults.standard.object(forKey: PanelPrefs.quickDrawerExpandedKey) as? Bool
         previousAllowURLDirectControl = UserDefaults.standard.object(forKey: URLDirectControl.allowDirectControlKey) as? Bool
         previousErrorTimestamps = AppDiagnosticsLog.shared.errorTimestamps
         UserDefaults.standard.set(AppAppearance.system.rawValue, forKey: AppAppearance.storageKey)
@@ -378,6 +380,8 @@ struct SnapshotFixture {
         UserDefaults.standard.removeObject(forKey: KindOrderPrefs.orderKey)
         UserDefaults.standard.removeObject(forKey: GroupPrefs.groupsKey)
         UserDefaults.standard.removeObject(forKey: GroupPrefs.aliasesKey)
+        UserDefaults.standard.removeObject(forKey: PanelPrefs.quickDrawerExpandedKey)
+        PanelQuickDrawerState.shared.reloadFromDefaults()
         UserDefaults.standard.removeObject(forKey: URLDirectControl.allowDirectControlKey)
         UnsupportedDeviceScanner.shared.reset()
         #if DEBUG
@@ -506,6 +510,12 @@ struct SnapshotFixture {
         } else {
             UserDefaults.standard.removeObject(forKey: PanelHeight.storageKey)
         }
+        if let previousQuickDrawerExpanded {
+            UserDefaults.standard.set(previousQuickDrawerExpanded, forKey: PanelPrefs.quickDrawerExpandedKey)
+        } else {
+            UserDefaults.standard.removeObject(forKey: PanelPrefs.quickDrawerExpandedKey)
+        }
+        PanelQuickDrawerState.shared.reloadFromDefaults()
         if let previousAllowURLDirectControl {
             UserDefaults.standard.set(previousAllowURLDirectControl, forKey: URLDirectControl.allowDirectControlKey)
         } else {

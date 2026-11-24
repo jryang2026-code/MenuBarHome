@@ -72,6 +72,18 @@ final class AutomationEngine {
     private var lastExternalDisplayCount = 0
     private var activeContextProvider: (any MacContextProviding)?
     private var lastContext: MacContextSnapshot?
+    private struct LastingObservation {
+        let rule: AutomationRule
+        let state: String
+        let since: TimeInterval
+        var lastSeen: TimeInterval
+        var fired = false
+    }
+
+    private var lastingObservations: [UUID: LastingObservation] = [:]
+    private var isSystemAsleep = false
+    private var sleepGeneration: UInt64 = 0
+    private let elapsedTime: () -> TimeInterval
     /// Away/back notifications drive this so a locked or sleeping Mac does not count as “still
     /// using the computer” for late-night rules; launch-time session state seeds the initial value.
     private var isUserPresent: Bool
@@ -108,7 +120,8 @@ final class AutomationEngine {
         contextProvider: (any MacContextProviding)? = nil,
         calendar: Calendar = .autoupdatingCurrent,
         environment: AutomationEnvironmentProbe = .live,
-        now: @escaping () -> Date = { Date() }
+        now: @escaping () -> Date = { Date() },
+        elapsedTime: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
     ) {
         self.ruleStore = AutomationRuleStore(defaults: defaults)
         self.deduper = AutomationTriggerDeduper(defaults: defaults)
@@ -117,6 +130,7 @@ final class AutomationEngine {
         self.calendar = calendar
         self.environment = environment
         self.now = now
+        self.elapsedTime = elapsedTime
         self.isUserPresent = !environment.isScreenLocked()
     }
 
@@ -134,10 +148,11 @@ final class AutomationEngine {
         guard observesSystem, tokens.isEmpty else { return }
         lastExternalDisplayCount = Self.activeExternalDisplayCount()
         isUserPresent = !environment.isScreenLocked()
+        isSystemAsleep = false
         let workspace = NSWorkspace.shared.notificationCenter
-        observe(workspace, NSWorkspace.willSleepNotification, .away)
+        observe(workspace, NSWorkspace.willSleepNotification, .away, systemSleeping: true)
         observe(workspace, NSWorkspace.screensDidSleepNotification, .away)
-        observe(workspace, NSWorkspace.didWakeNotification, .back)
+        observe(workspace, NSWorkspace.didWakeNotification, .back, systemSleeping: false)
         observe(workspace, NSWorkspace.screensDidWakeNotification, .back)
 
         let distributed = DistributedNotificationCenter.default()
@@ -185,6 +200,8 @@ final class AutomationEngine {
             guard rule.isEnabled else { return false }
             if rule.conditions.wifi.isNetworkSpecific { return true }
             switch rule.trigger {
+            case .scheduledTime:
+                return true
             case .away, .back, .screenLocked, .lidClosedSleep, .systemSleep,
                  .externalDisplayConnected, .externalDisplayDisconnected:
                 return false
@@ -202,7 +219,7 @@ final class AutomationEngine {
     /// Test seam: starts the injected context provider (or the real observer when enabled rules
     /// need it) without subscribing to NSWorkspace/distributed notifications.
     func startContextObservation() {
-        guard store?.eventAutomationEnabled == true, activeContextProvider == nil else { return }
+        guard store?.eventAutomationEnabled == true, activeContextProvider == nil, !isSystemAsleep else { return }
         let provider: any MacContextProviding
         if let injectedContextProvider {
             provider = injectedContextProvider
@@ -233,6 +250,9 @@ final class AutomationEngine {
         wasEnabled = enabled
 
         let rules = enabled ? ruleStore.load() : []
+        lastingObservations = lastingObservations.filter { _, state in
+            state.rule.isEnabled && rules.contains(state.rule)
+        }
         guard rules.contains(where: \.isEnabled) else {
             if !tokens.isEmpty || activeContextProvider != nil || !enabled {
                 observationGeneration &+= 1
@@ -256,12 +276,15 @@ final class AutomationEngine {
         }
     }
 
-    private func stopContextObservation() {
+    private func stopContextObservation(keepingBaseline: Bool = false) {
         contextObservationID = nil
         activeContextProvider?.stop()
         activeContextProvider = nil
-        lastContext = nil
-        lastKnownWiFi = nil
+        lastingObservations.removeAll()
+        if !keepingBaseline {
+            lastContext = nil
+            lastKnownWiFi = nil
+        }
     }
 
     /// Test seam: notifying systems cannot post in unit tests, so the mapping is exercised by
@@ -286,6 +309,10 @@ final class AutomationEngine {
         // network must leave the trigger available for the next one.
         let reading = wifiReadingForDispatch(at: now)
         let eligible = rules.filter { rule in
+            guard rule.conditions.lastingMinutes == nil else {
+                store.recordAutomationRun(rule, at: now, reason: .conditionFalse)
+                return false
+            }
             // A rule outside its window must not consume the cooldown either: the trigger stays
             // available for the first event that lands inside the window.
             guard rule.conditions.isWithinTimeWindow(at: now, calendar: calendar) else {
@@ -352,6 +379,7 @@ final class AutomationEngine {
         let previous = lastContext
         lastContext = effective
         let rules = ruleStore.load()
+        let elapsed = elapsedTime()
         if let resumedAt {
             // Capture the baseline once so later snapshots cannot suppress newly added events.
             for rule in rules {
@@ -359,46 +387,134 @@ final class AutomationEngine {
                     for: rule, previous: nil, current: effective, at: resumedAt, calendar: calendar
                 )
                 for event in events {
-                    resumeSuppressionUntil[event.dedupeKey] = resumedAt.addingTimeInterval(event.cooldown)
+                    resumeSuppressionUntil[event.dedupeKey] = event.trigger == .scheduledTime
+                        ? calendar.dateInterval(of: .minute, for: resumedAt)?.end
+                        : resumedAt.addingTimeInterval(event.cooldown)
                 }
             }
             self.resumedAt = nil
         }
+        var candidates: [(rule: AutomationRule, events: [AutomationTriggerEvent], lastingSince: TimeInterval?)] = []
         for rule in rules where rule.isEnabled {
-            guard generation == observationGeneration, contextID == contextObservationID,
-                  store.eventAutomationEnabled else { break }
-            guard ruleStore.load().contains(rule) else { continue }
             let events = MacContextAutomation.events(
                 for: rule, previous: previous, current: effective, at: now, calendar: calendar
             )
-            guard !events.isEmpty else { continue }
+            guard !events.isEmpty || rule.conditions.lastingMinutes != nil else { continue }
             let conditionSSID = rule.trigger == .wifiNetworkLeft
                 ? (previous?.wifiSSID ?? context.wifiSSID)
                 : context.wifiSSID
-            guard rule.conditions.isWithinTimeWindow(at: now, calendar: calendar),
-                  rule.conditions.evaluate(wifiSSID: conditionSSID, isAuthorized: context.isWiFiAuthorized)
-                    .isSatisfied else {
+            let conditionsHold = rule.conditions.isWithinTimeWindow(at: now, calendar: calendar)
+                && rule.conditions.evaluate(wifiSSID: conditionSSID, isAuthorized: context.isWiFiAuthorized).isSatisfied
+            if let minutes = rule.conditions.lastingMinutes {
+                let state = !isSystemAsleep && conditionsHold
+                    ? lastingState(for: rule, context: effective, at: now) : nil
+                guard let state else {
+                    let wasPending = lastingObservations.removeValue(forKey: rule.id)?.fired == false
+                    if wasPending || !events.isEmpty {
+                        store.recordAutomationRun(rule, at: now, reason: .conditionFalse)
+                    }
+                    continue
+                }
+                var reading = lastingObservations[rule.id]
+                    ?? LastingObservation(rule: rule, state: state, since: elapsed, lastSeen: elapsed)
+                let gap = elapsed - reading.lastSeen
+                guard gap >= 0 else { continue }
+                if reading.rule != rule || reading.state != state || gap > MacContextObserver.refreshInterval * 2 {
+                    reading = LastingObservation(rule: rule, state: state, since: elapsed, lastSeen: elapsed)
+                }
+                reading.lastSeen = elapsed
+                let ready = !reading.fired && elapsed - reading.since >= TimeInterval(minutes) * 60
+                reading.fired = reading.fired || ready
+                lastingObservations[rule.id] = reading
+                if ready { candidates.append((rule, events, reading.since)) }
+                continue
+            }
+            if rule.trigger == .scheduledTime, isSystemAsleep { continue }
+            guard conditionsHold else {
                 store.recordAutomationRun(rule, at: now, reason: .conditionFalse)
                 continue
             }
-            await run(rule, store: store, at: now, cooldown: {
-                events.contains {
-                    now >= (self.resumeSuppressionUntil[$0.dedupeKey] ?? .distantPast)
-                        && self.deduper.shouldFire($0.dedupeKey, at: now, cooldown: $0.cooldown)
-                }
+            candidates.append((rule, events, nil))
+        }
+        for (rule, events, lastingSince) in candidates {
+            guard generation == observationGeneration, contextID == contextObservationID,
+                  store.eventAutomationEnabled else { break }
+            guard ruleStore.load().contains(rule) else { continue }
+            await run(rule, store: store, at: now, lastingSince: lastingSince, cooldown: {
+                (lastingSince != nil && rule.trigger != .lateNightUsage) || self.allows(events, at: now)
             })
+        }
+    }
+
+    private func allows(_ events: [AutomationTriggerEvent], at now: Date) -> Bool {
+        events.contains { event in
+            guard now >= (resumeSuppressionUntil[event.dedupeKey] ?? .distantPast) else { return false }
+            if event.trigger == .scheduledTime {
+                return deduper.claimScheduledOccurrence(event.dedupeKey, at: now)
+            }
+            return deduper.shouldFire(event.dedupeKey, at: now, cooldown: event.cooldown)
+        }
+    }
+
+    private func lastingState(for rule: AutomationRule, context: MacContextSnapshot, at now: Date) -> String? {
+        guard rule.trigger.supportsLasting else { return nil }
+        let options = rule.triggerOptions
+        let active: Bool
+        switch rule.trigger {
+        case .cameraInUse, .cameraNotInUse:
+            guard context.isCameraUsageAvailable else { return nil }
+            active = context.cameraInUse == (rule.trigger == .cameraInUse)
+        case .microphoneInUse, .microphoneNotInUse:
+            guard context.isMicrophoneUsageAvailable else { return nil }
+            active = context.microphoneInUse == (rule.trigger == .microphoneInUse)
+        case .powerConnected: active = context.powerSource == .ac
+        case .powerDisconnected: active = context.powerSource == .battery
+        case .batteryBelowThreshold:
+            active = context.powerSource == .battery && (context.batteryPercent ?? 100) < options.batteryThresholdPercent
+        case .wifiNetworkJoined:
+            guard context.isWiFiAuthorized, let ssid = context.wifiSSID,
+                  options.wifiSSID == nil || options.wifiSSID == ssid else { return nil }
+            return ssid
+        case .focusModeEnabled, .focusModeDisabled:
+            guard let isActive = context.isFocusActive else { return nil }
+            if let name = options.focusModeName {
+                guard !isActive || context.focusModeName != nil else { return nil }
+                active = (isActive && context.focusModeName == name) == (rule.trigger == .focusModeEnabled)
+            } else {
+                active = isActive == (rule.trigger == .focusModeEnabled)
+            }
+        case .lateNightUsage:
+            guard context.isUserPresent,
+                  let anchor = options.lateNightWindow.nightAnchor(containing: now, calendar: calendar) else { return nil }
+            return String(anchor.timeIntervalSince1970)
+        default:
+            return nil
+        }
+        return active ? rule.trigger.rawValue : nil
+    }
+
+    func setSystemSleeping(_ sleeping: Bool) {
+        isSystemAsleep = sleeping
+        if sleeping {
+            sleepGeneration &+= 1
+            lastingObservations.removeAll()
+            if observesSystem { stopContextObservation(keepingBaseline: true) }
+        } else if observesSystem {
+            startContextObservation()
         }
     }
 
     private func observe(
         _ center: NotificationCenter,
         _ name: Notification.Name,
-        _ trigger: AutomationTrigger
+        _ trigger: AutomationTrigger,
+        systemSleeping: Bool? = nil
     ) {
         let generation = observationGeneration
         let token = center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated {
-                guard let self else { return }
+                guard let self, self.observationGeneration == generation else { return }
+                if let systemSleeping { self.setSystemSleeping(systemSleeping) }
                 Task { @MainActor in
                     guard self.observationGeneration == generation else { return }
                     await self.handle(trigger: trigger)
@@ -552,8 +668,13 @@ final class AutomationEngine {
     }
 
     private func run(
-        _ rule: AutomationRule, store: HomeStore, at time: Date, cooldown: () -> Bool
+        _ rule: AutomationRule, store: HomeStore, at time: Date,
+        lastingSince: TimeInterval? = nil, cooldown: () -> Bool
     ) async {
+        if let lastingSince, lastingObservations[rule.id]?.since != lastingSince {
+            store.recordAutomationRun(rule, at: time, reason: .conditionFalse)
+            return
+        }
         guard cooldown() else {
             store.recordAutomationRun(rule, at: time, reason: .cooldown)
             return
@@ -566,9 +687,7 @@ final class AutomationEngine {
         }
         let previous = runTasks[rule.id]
         let generation = observationGeneration
-        if rule.restoreWhenContextEnds {
-            captureContext(for: rule, store: store, at: time)
-        }
+        let sleepGeneration = sleepGeneration
         runStates[rule.id] = state
         let task = Task {
             await previous?.value
@@ -576,6 +695,13 @@ final class AutomationEngine {
                 guard self.runStates[rule.id]?.owns(token) == true else { return .superseded }
                 guard generation == self.observationGeneration, store.eventAutomationEnabled,
                       self.ruleStore.load().contains(rule) else { return .writeGateDenied }
+                if let lastingSince, self.lastingObservations[rule.id]?.since != lastingSince {
+                    return .conditionFalse
+                }
+                if rule.trigger == .scheduledTime || lastingSince != nil {
+                    if self.isSystemAsleep || sleepGeneration != self.sleepGeneration { return .writeGateDenied }
+                    if self.environment.isScreenLocked() { return .screenLocked }
+                }
                 return nil
             }
             let reason: AutomationSkipReason?

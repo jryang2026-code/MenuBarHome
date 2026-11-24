@@ -20,6 +20,7 @@ import {
   normalizePanelOpacity, normalizeTileSize, scopedKey, withAliases,
 } from "./panelPrefs.js";
 import { nextSizeForTheme } from "./panelTheme.js";
+import { togglePanelQuickDrawer } from "./panelQuickDrawer.js";
 import { t } from "../core/i18n.js";
 import { formatTemperature, stepCelsius, toCelsius } from "../core/temperature.js";
 import { finishMiSceneConfirmation } from "./sceneConfirmation.js";
@@ -248,6 +249,9 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
       });
     });
     bindPanelInput(host);
+    host.root.querySelector("#btn-quick-drawer-toggle")?.addEventListener("click", () => {
+      togglePanelQuickDrawer(host);
+    });
     const micBtn = host.root.querySelector<HTMLButtonElement>("#btn-mic");
     micBtn?.addEventListener("click", () => {
       host.toggleVoiceInput();
@@ -764,7 +768,7 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
 
     host.root.querySelector("#btn-refresh")?.addEventListener("click", () => {
       if (host.settings.connectionMode === "homeAssistant" || host.settings.connectionMode === "xiaomiCloud" && host.settings.miSession) {
-        void host.refreshDevices(false);
+        void host.refreshDevices(false, true);
       } else {
         host.render();
       }
@@ -792,7 +796,7 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
       else if (kind === "retryIdentity") void host.retryIdentityMigration();
       else if (kind === "retry") {
         if (host.identityMigrationDiagnostic) void host.retryIdentityMigration();
-        else void host.refreshDevices(false);
+        else void host.refreshDevices(false, true);
       } else if (kind === "leaveDemo") leaveDemoHome(host);
       else if (!hasAnyConnectedOrSelectedDataSource(host) && host.settings.connectionMode !== "demo" && !host.settings.hasCompletedOnboarding) {
         host.activeSheet = "onboarding";
@@ -829,7 +833,7 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
     });
 
     host.root.querySelector("#btn-empty-resync")?.addEventListener("click", () => {
-      void host.refreshDevices(false);
+      void host.refreshDevices(false, true);
     });
 
     host.root.querySelector("#btn-empty-reauth")?.addEventListener("click", () => {
