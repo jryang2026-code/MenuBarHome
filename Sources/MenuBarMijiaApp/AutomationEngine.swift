@@ -88,6 +88,11 @@ final class AutomationEngine {
     /// using the computer” for late-night rules; launch-time session state seeds the initial value.
     private var isUserPresent: Bool
 
+    private struct ContextCapture {
+        let ruleID: UUID
+        let snapshots: [AutomationContextSnapshot]
+    }
+
     // MARK: Away arbitration state
 
     private var arbitrator = AwayArbitrator()
@@ -708,9 +713,10 @@ final class AutomationEngine {
             if let denied = blocked() {
                 reason = denied
             } else {
+                let capture = rule.restoreWhenContextEnds ? self.captureContext(for: rule, store: store) : nil
                 reason = await self.execute(rule, store: store, blocked: blocked)
-                if reason == nil, rule.restoreWhenContextEnds {
-                    self.captureContext(for: rule, store: store, at: time)
+                if reason == nil, let capture {
+                    self.commitContext(capture, in: store, at: time)
                 }
             }
             store.recordAutomationRun(rule, at: time, reason: reason)
@@ -724,15 +730,23 @@ final class AutomationEngine {
         await task.value
     }
 
-    private func captureContext(for rule: AutomationRule, store: HomeStore, at time: Date) {
-        guard case .devices(let ids, let isOn) = rule.action else { return }
+    private func captureContext(for rule: AutomationRule, store: HomeStore) -> ContextCapture? {
+        guard case .devices(let ids, let isOn) = rule.action else { return nil }
         let snapshots = ids.compactMap { id -> AutomationContextSnapshot? in
             guard let device = store.devices.first(where: { $0.id == id }),
                   let baseline = device.automationContextValue() else { return nil }
             let applied = AutomationContextValue(field: .power, boolValue: isOn)
             return AutomationContextSnapshot(deviceID: id, baseline: baseline, applied: applied)
         }
-        _ = contextStack.push(ruleID: rule.id, snapshots: snapshots, at: time)
+        guard !snapshots.isEmpty else { return nil }
+        return ContextCapture(ruleID: rule.id, snapshots: snapshots)
+    }
+
+    private func commitContext(_ capture: ContextCapture, in store: HomeStore, at time: Date) {
+        let applied = capture.snapshots.filter { snapshot in
+            store.devices.first(where: { $0.id == snapshot.deviceID })?.automationContextValue() == snapshot.applied
+        }
+        _ = contextStack.push(ruleID: capture.ruleID, snapshots: applied, at: time)
     }
 
     private func restoreContexts(for trigger: AutomationTrigger, store: HomeStore, at time: Date) async {
@@ -744,9 +758,13 @@ final class AutomationEngine {
         var live = Dictionary(uniqueKeysWithValues: store.devices.compactMap { device in
             device.automationContextValue().map { (device.id, $0) }
         })
-        for rule in rules {
-            let intents = contextStack.pop(ruleID: rule.id, liveValues: live, at: time)
-            guard !intents.isEmpty else { continue }
+        let ruleIDs = Set(rules.map(\.id))
+        let frames = contextStack.allFrames
+            .filter { ruleIDs.contains($0.ruleID) }
+            .sorted { $0.enteredAt > $1.enteredAt }
+        for frame in frames {
+            guard let plan = contextStack.prepareRestore(frame: frame, liveValues: live, at: time) else { continue }
+            let intents = plan.intents
             // A restore is still an unattended write. Never turn a high-risk device back on
             // without the same explicit approval required by the original automation rule.
             let restoreNeedsApproval = intents.contains { intent in
@@ -767,11 +785,16 @@ final class AutomationEngine {
                 title: L10n.tr("自动化还原上下文", "Restore automation context"),
                 canContinue: { true }
             )
-            if outcome.succeededCount == outcome.attemptedCount {
-                for intent in intents {
-                    if case .power(let value) = intent.operation {
-                        live[intent.targetId] = AutomationContextValue(field: .power, boolValue: value)
-                    }
+            let restoredIDs = Set(intents.compactMap { intent -> String? in
+                guard case .power(let value) = intent.operation,
+                      store.devices.first(where: { $0.id == intent.targetId })?.automationContextValue()
+                        == AutomationContextValue(field: .power, boolValue: value) else { return nil }
+                return intent.targetId
+            })
+            contextStack.commitRestore(plan, restoredDeviceIDs: restoredIDs)
+            for intent in intents where restoredIDs.contains(intent.targetId) {
+                if case .power(let value) = intent.operation {
+                    live[intent.targetId] = AutomationContextValue(field: .power, boolValue: value)
                 }
             }
             if outcome.succeededCount == 0, outcome.attemptedCount > 0 {

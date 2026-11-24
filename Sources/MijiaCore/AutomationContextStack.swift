@@ -40,6 +40,16 @@ public struct AutomationContextFrame: Codable, Equatable, Sendable {
     }
 }
 
+public struct AutomationContextRestorePlan: Equatable, Sendable {
+    public let frame: AutomationContextFrame
+    public let intents: [DeviceIntent]
+
+    public init(frame: AutomationContextFrame, intents: [DeviceIntent]) {
+        self.frame = frame
+        self.intents = intents
+    }
+}
+
 /// Persistent LIFO state for context automations. The stack stores only fields changed by the
 /// action, so a restore cannot clobber unrelated device state. Expired frames are discarded on
 /// load without issuing writes.
@@ -82,15 +92,64 @@ public final class AutomationContextStack {
     /// value written on enter. A manual write or a newer context therefore wins.
     @discardableResult
     public func pop(ruleID: UUID, liveValues: [String: AutomationContextValue], at now: Date = Date()) -> [DeviceIntent] {
+        guard let frame = frames.last(where: { $0.ruleID == ruleID }),
+              let plan = prepareRestore(frame: frame, liveValues: liveValues, at: now) else { return [] }
+        commitRestore(plan, restoredDeviceIDs: Set(plan.intents.map(\.targetId)))
+        return plan.intents
+    }
+
+    public func prepareRestore(
+        frame: AutomationContextFrame,
+        liveValues: [String: AutomationContextValue],
+        at now: Date = Date()
+    ) -> AutomationContextRestorePlan? {
         pruneExpired(at: now)
-        guard let index = frames.lastIndex(where: { $0.ruleID == ruleID }) else { return [] }
-        let frame = frames.remove(at: index)
-        persist()
-        return frame.snapshots.compactMap { snapshot in
+        guard let index = frames.firstIndex(where: {
+            $0.ruleID == frame.ruleID && $0.enteredAt == frame.enteredAt
+        }) else { return nil }
+        let retained = frame.snapshots.filter { snapshot in
+            guard let live = liveValues[snapshot.deviceID] else { return true }
+            return live == snapshot.applied
+        }
+        let eligible = retained.compactMap { snapshot -> (AutomationContextSnapshot, DeviceIntent)? in
             guard let live = liveValues[snapshot.deviceID], live == snapshot.applied,
                   snapshot.baseline.field == .power, let value = snapshot.baseline.boolValue else { return nil }
-            return DeviceIntent(targetId: snapshot.deviceID, operation: .power(value))
+            return (snapshot, DeviceIntent(targetId: snapshot.deviceID, operation: .power(value)))
         }
+        guard !retained.isEmpty else {
+            frames.remove(at: index)
+            persist()
+            return nil
+        }
+        let updated = AutomationContextFrame(ruleID: frame.ruleID, enteredAt: frame.enteredAt, snapshots: retained)
+        frames[index] = updated
+        persist()
+        guard !eligible.isEmpty else { return nil }
+        return AutomationContextRestorePlan(
+            frame: AutomationContextFrame(
+                ruleID: updated.ruleID,
+                enteredAt: updated.enteredAt,
+                snapshots: eligible.map(\.0)
+            ),
+            intents: eligible.map(\.1)
+        )
+    }
+
+    public func commitRestore(_ plan: AutomationContextRestorePlan, restoredDeviceIDs: Set<String>) {
+        guard let index = frames.firstIndex(where: {
+            $0.ruleID == plan.frame.ruleID && $0.enteredAt == plan.frame.enteredAt
+        }) else { return }
+        let remaining = frames[index].snapshots.filter { !restoredDeviceIDs.contains($0.deviceID) }
+        if remaining.isEmpty {
+            frames.remove(at: index)
+        } else {
+            frames[index] = AutomationContextFrame(
+                ruleID: frames[index].ruleID,
+                enteredAt: frames[index].enteredAt,
+                snapshots: remaining
+            )
+        }
+        persist()
     }
 
     public func pruneExpired(at now: Date = Date()) {
