@@ -1306,6 +1306,6 @@ private struct CameraStillTile: View {
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.white.opacity(0.12)))
         .contentShape(RoundedRectangle(cornerRadius: 8))
-        .accessibilityLabel(Text(L10n.tr("查看 (camera.name) 实时画面", "View live feed for (camera.name)")))
+        .accessibilityLabel(Text(L10n.format("查看 %@ 实时画面", "View live feed for %@", camera.name)))
     }
 }
