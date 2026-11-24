@@ -709,6 +709,9 @@ final class AutomationEngine {
                 reason = denied
             } else {
                 reason = await self.execute(rule, store: store, blocked: blocked)
+                if reason == nil, rule.restoreWhenContextEnds {
+                    self.captureContext(for: rule, store: store, at: time)
+                }
             }
             store.recordAutomationRun(rule, at: time, reason: reason)
             self.runStates[rule.id]?.finish(token)
@@ -738,7 +741,7 @@ final class AutomationEngine {
             contextStack.pruneExpired(at: time)
             return
         }
-        let live = Dictionary(uniqueKeysWithValues: store.devices.compactMap { device in
+        var live = Dictionary(uniqueKeysWithValues: store.devices.compactMap { device in
             device.automationContextValue().map { (device.id, $0) }
         })
         for rule in rules {
@@ -764,6 +767,13 @@ final class AutomationEngine {
                 title: L10n.tr("自动化还原上下文", "Restore automation context"),
                 canContinue: { true }
             )
+            if outcome.succeededCount == outcome.attemptedCount {
+                for intent in intents {
+                    if case .power(let value) = intent.operation {
+                        live[intent.targetId] = AutomationContextValue(field: .power, boolValue: value)
+                    }
+                }
+            }
             if outcome.succeededCount == 0, outcome.attemptedCount > 0 {
                 store.showToast(
                     L10n.tr("上下文还原被安全策略跳过", "Context restore skipped by safety policy"),
