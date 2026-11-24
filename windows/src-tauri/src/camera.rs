@@ -203,6 +203,7 @@ pub(crate) async fn stop_bridge(
     };
     if no_active_relays {
         scrub_persisted_streams_from_config();
+        reset_supervisor_if_unhealthy();
     }
 }
 
@@ -231,6 +232,99 @@ static GO2RTC_PROCESS: LazyLock<std::sync::Mutex<Option<crate::job_object::Manag
 static GO2RTC_SESSION: LazyLock<std::sync::Mutex<Option<Go2RtcOwnerRecord>>> =
     LazyLock::new(|| std::sync::Mutex::new(None));
 
+struct Go2RtcSupervisorRuntime {
+    clock: crate::process_supervisor::SystemMonotonicClock,
+    core: crate::process_supervisor::SupervisorCore,
+    generation: u64,
+    retry_cancel: Option<CancellationToken>,
+    #[cfg(windows)]
+    exit_cancel: Option<crate::process_supervisor::ProcessExitCancel>,
+}
+
+static GO2RTC_SUPERVISOR: LazyLock<std::sync::Mutex<Go2RtcSupervisorRuntime>> =
+    LazyLock::new(|| {
+        std::sync::Mutex::new(Go2RtcSupervisorRuntime {
+            clock: crate::process_supervisor::SystemMonotonicClock::new(),
+            core: crate::process_supervisor::SupervisorCore::new(),
+            generation: 0,
+            retry_cancel: None,
+            #[cfg(windows)]
+            exit_cancel: None,
+        })
+    });
+
+#[tauri::command]
+pub(crate) fn go2rtc_supervisor_status() -> crate::process_supervisor::SupervisorDiagnostics {
+    GO2RTC_SUPERVISOR
+        .lock()
+        .map(|guard| guard.core.diagnostics())
+        .unwrap_or_else(|_| crate::process_supervisor::SupervisorDiagnostics {
+            state: "stopped".to_string(),
+            consecutive_failures: 0,
+            recent_failures: 0,
+            next_retry_ms: None,
+            last_exit_code: None,
+            last_error: None,
+        })
+}
+
+fn cancel_go2rtc_supervision(reset_breaker: bool) {
+    if let Ok(mut guard) = GO2RTC_SUPERVISOR.lock() {
+        guard.generation = guard.generation.wrapping_add(1);
+        if let Some(token) = guard.retry_cancel.take() {
+            token.cancel();
+        }
+        #[cfg(windows)]
+        if let Some(exit_cancel) = guard.exit_cancel.take() {
+            exit_cancel.cancel();
+        }
+        if reset_breaker {
+            guard.core.explicit_stop();
+        }
+    }
+}
+
+fn reset_supervisor_if_unhealthy() {
+    if let Ok(mut guard) = GO2RTC_SUPERVISOR.lock() {
+        if guard.core.is_backing_off() || guard.core.is_circuit_open() {
+            guard.generation = guard.generation.wrapping_add(1);
+            if let Some(token) = guard.retry_cancel.take() {
+                token.cancel();
+            }
+            #[cfg(windows)]
+            if let Some(exit_cancel) = guard.exit_cancel.take() {
+                exit_cancel.cancel();
+            }
+            guard.core.explicit_stop();
+        }
+    }
+}
+
+fn check_go2rtc_supervisor_can_start() -> Result<(), String> {
+    let guard = GO2RTC_SUPERVISOR
+        .lock()
+        .map_err(|_| "流媒体监督状态不可用".to_string())?;
+    guard.core.check_can_start()
+}
+
+fn check_go2rtc_supervisor_for_frame() -> Result<(), String> {
+    let guard = GO2RTC_SUPERVISOR
+        .lock()
+        .map_err(|_| "流媒体监督状态不可用".to_string())?;
+    guard.core.check_can_start()?;
+    if guard.core.is_backing_off() {
+        let diag = guard.core.diagnostics();
+        let secs = diag
+            .next_retry_ms
+            .map(|ms| (ms.saturating_add(999) / 1000).max(1))
+            .unwrap_or(1);
+        return Err(format!(
+            "本地流媒体服务 go2rtc 异常退出，正在等待退避重启（约 {secs} 秒）…"
+        ));
+    }
+    Ok(())
+}
+
 /// Serializes bridge start/stop end to end: two overlapping starts for the same
 /// camera otherwise interleave their stop_bridge/register sequences and the
 /// newer bridge ends up deleted by the stale one (#97).
@@ -258,7 +352,7 @@ pub(crate) fn scrub_stale_camera_config_in_dir(bin_dir: &std::path::Path) -> boo
     let owner_alive = std::fs::read_to_string(bin_dir.join("go2rtc.owner"))
         .ok()
         .and_then(|text| parse_owner(&text))
-        .is_some_and(|record| process_is_alive(record.pid));
+        .is_some_and(|record| owner_process_matches(&record));
     if owner_alive {
         return false;
     }
@@ -268,6 +362,18 @@ pub(crate) fn scrub_stale_camera_config_in_dir(bin_dir: &std::path::Path) -> boo
 pub(crate) fn scrub_stale_camera_config_on_startup() {
     tauri::async_runtime::block_on(async {
         let _bridge_order = CAMERA_BRIDGE_LOCK.lock().await;
+        if running_child_pid().is_none() {
+            if let Some(record) = read_owner() {
+                if let Some(identity) = record.verifiable_identity() {
+                    if owner_process_matches(&record) {
+                        let _ = crate::process_supervisor::verify_and_terminate_process(&identity);
+                        if let Some(owner_path) = go2rtc_owner_path() {
+                            let _ = std::fs::remove_file(owner_path);
+                        }
+                    }
+                }
+            }
+        }
         if existing_owned_record().is_none() {
             scrub_persisted_streams_from_config();
         }
@@ -287,6 +393,11 @@ pub(crate) fn cancel_camera_preparation() {
     if let Ok(preparation) = CAMERA_PREPARATION.lock() {
         preparation.cancel();
     }
+    if let Ok(mut guard) = GO2RTC_SUPERVISOR.lock() {
+        if let Some(token) = guard.retry_cancel.take() {
+            token.cancel();
+        }
+    }
 }
 
 #[tauri::command]
@@ -301,6 +412,7 @@ pub(crate) async fn resume_camera_runtime() {
 pub(crate) async fn stop_camera_runtime() {
     let _bridge_order = CAMERA_BRIDGE_LOCK.lock().await;
     cancel_camera_preparation();
+    cancel_go2rtc_supervision(true);
     if let Some(record) = existing_owned_record().filter(|_| running_child_pid().is_none()) {
         if let Ok(http) = reqwest::Client::builder()
             .no_proxy()
@@ -320,10 +432,13 @@ pub(crate) async fn stop_camera_runtime() {
 }
 
 pub(crate) fn shutdown_camera_daemons() {
+    cancel_camera_preparation();
+    cancel_go2rtc_supervision(true);
     drop(shutdown_camera_resources());
 }
 
 fn shutdown_camera_resources() -> Vec<tauri::async_runtime::JoinHandle<()>> {
+    cancel_go2rtc_supervision(true);
     if let Ok(mut guard) = GO2RTC_SESSION.lock() {
         *guard = None;
     }
@@ -367,9 +482,27 @@ pub(crate) struct Go2RtcSession {
     pub(crate) nonce: String,
 }
 
+#[derive(Clone)]
 pub(crate) struct Go2RtcOwnerRecord {
     pub(crate) pid: u32,
     pub(crate) session: Go2RtcSession,
+    pub(crate) exe_path: Option<String>,
+    pub(crate) creation_time: Option<u64>,
+}
+
+impl Go2RtcOwnerRecord {
+    pub(crate) fn verifiable_identity(&self) -> Option<crate::process_supervisor::ProcessIdentity> {
+        let executable_path = self.exe_path.as_ref()?.trim();
+        let creation_time_100ns = self.creation_time?;
+        if self.pid == 0 || executable_path.is_empty() || creation_time_100ns == 0 {
+            return None;
+        }
+        Some(crate::process_supervisor::ProcessIdentity {
+            pid: self.pid,
+            executable_path: executable_path.to_string(),
+            creation_time_100ns,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -934,7 +1067,7 @@ pub(crate) fn reserve_loopback_ports(count: usize) -> Result<Vec<u16>, String> {
 }
 
 pub(crate) fn serialize_owner(record: &Go2RtcOwnerRecord) -> String {
-    format!(
+    let mut out = format!(
         "pid={}\nnonce={}\napi_listen={}\nrtsp_listen={}\nusername={}\npassword={}\n",
         record.pid,
         record.session.nonce,
@@ -942,7 +1075,14 @@ pub(crate) fn serialize_owner(record: &Go2RtcOwnerRecord) -> String {
         record.session.rtsp_listen,
         record.session.username,
         record.session.password
-    )
+    );
+    if let Some(exe_path) = record.exe_path.as_deref().filter(|s| !s.is_empty()) {
+        out.push_str(&format!("exe_path={exe_path}\n"));
+    }
+    if let Some(creation_time) = record.creation_time.filter(|&t| t != 0) {
+        out.push_str(&format!("creation_time={creation_time}\n"));
+    }
+    out
 }
 
 pub(crate) fn parse_owner(text: &str) -> Option<Go2RtcOwnerRecord> {
@@ -970,6 +1110,11 @@ pub(crate) fn parse_owner(text: &str) -> Option<Go2RtcOwnerRecord> {
     {
         return None;
     }
+    let exe_path = fields.get("exe_path").cloned();
+    let creation_time = fields
+        .get("creation_time")
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|&value| value != 0);
     Some(Go2RtcOwnerRecord {
         pid,
         session: Go2RtcSession {
@@ -979,6 +1124,8 @@ pub(crate) fn parse_owner(text: &str) -> Option<Go2RtcOwnerRecord> {
             password,
             nonce,
         },
+        exe_path,
+        creation_time,
     })
 }
 
@@ -988,52 +1135,23 @@ pub(crate) fn read_owner() -> Option<Go2RtcOwnerRecord> {
     parse_owner(&text)
 }
 
-pub(crate) fn process_is_alive(pid: u32) -> bool {
-    if pid == 0 {
+/// Verifies that a live process handle matches `record`'s PID, executable path, and creation time.
+/// A PID alone is never sufficient proof of ownership (#424).
+pub(crate) fn owner_process_matches(record: &Go2RtcOwnerRecord) -> bool {
+    let Some(expected) = record.verifiable_identity() else {
         return false;
-    }
-    #[cfg(windows)]
-    {
-        extern "system" {
-            fn OpenProcess(access: u32, inherit: i32, pid: u32) -> *mut core::ffi::c_void;
-            fn GetExitCodeProcess(handle: *mut core::ffi::c_void, code: *mut u32) -> i32;
-            fn CloseHandle(handle: *mut core::ffi::c_void) -> i32;
-        }
-        const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
-        const STILL_ACTIVE: u32 = 259;
-        unsafe {
-            let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
-            if handle.is_null() {
-                return false;
-            }
-            let mut code = 0u32;
-            let ok = GetExitCodeProcess(handle, &mut code);
-            CloseHandle(handle);
-            ok != 0 && code == STILL_ACTIVE
-        }
-    }
+    };
+    let Some(actual) = crate::process_supervisor::inspect_process_identity(expected.pid) else {
+        return false;
+    };
+    crate::process_supervisor::matches_process_identity(&expected, &actual)
 }
 
-pub(crate) fn terminate_pid(pid: u32) {
-    if pid == 0 {
-        return;
-    }
-    #[cfg(windows)]
-    {
-        extern "system" {
-            fn OpenProcess(access: u32, inherit: i32, pid: u32) -> *mut core::ffi::c_void;
-            fn TerminateProcess(handle: *mut core::ffi::c_void, code: u32) -> i32;
-            fn CloseHandle(handle: *mut core::ffi::c_void) -> i32;
-        }
-        const PROCESS_TERMINATE: u32 = 0x0001;
-        unsafe {
-            let handle = OpenProcess(PROCESS_TERMINATE, 0, pid);
-            if !handle.is_null() {
-                TerminateProcess(handle, 1);
-                CloseHandle(handle);
-            }
-        }
-    }
+pub(crate) fn terminate_verified_owner(record: &Go2RtcOwnerRecord) -> bool {
+    let Some(expected) = record.verifiable_identity() else {
+        return false;
+    };
+    crate::process_supervisor::verify_and_terminate_process(&expected)
 }
 
 pub(crate) struct OwnedApiProbe {
@@ -1085,22 +1203,21 @@ pub(crate) fn existing_owned_record() -> Option<Go2RtcOwnerRecord> {
                 return Some(Go2RtcOwnerRecord {
                     pid,
                     session: record.session.clone(),
+                    exe_path: record.exe_path.clone(),
+                    creation_time: record.creation_time,
                 });
             }
         }
     }
     if let Ok(guard) = GO2RTC_SESSION.lock() {
         if let Some(record) = guard.as_ref() {
-            if process_is_alive(record.pid) {
-                return Some(Go2RtcOwnerRecord {
-                    pid: record.pid,
-                    session: record.session.clone(),
-                });
+            if owner_process_matches(record) {
+                return Some(record.clone());
             }
         }
     }
     let saved = read_owner()?;
-    if process_is_alive(saved.pid) {
+    if owner_process_matches(&saved) {
         Some(saved)
     } else {
         None
@@ -1114,6 +1231,7 @@ pub(crate) async fn request_owned_exit(http: &reqwest::Client, session: &Go2RtcS
 }
 
 pub(crate) async fn stop_owned_process(http: &reqwest::Client, record: &Go2RtcOwnerRecord) {
+    cancel_go2rtc_supervision(false);
     request_owned_exit(http, &record.session).await;
     let child_pid = running_child_pid();
     if child_pid == Some(record.pid) {
@@ -1122,13 +1240,13 @@ pub(crate) async fn stop_owned_process(http: &reqwest::Client, record: &Go2RtcOw
         }
     }
     for _ in 0..20 {
-        if !process_is_alive(record.pid) {
+        if !owner_process_matches(record) {
             break;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    if process_is_alive(record.pid) {
-        terminate_pid(record.pid);
+    if owner_process_matches(record) {
+        let _ = terminate_verified_owner(record);
     }
     if let Ok(mut guard) = GO2RTC_SESSION.lock() {
         *guard = None;
@@ -1152,6 +1270,270 @@ pub(crate) async fn wait_for_owned_api(http: &reqwest::Client, session: &Go2RtcS
     false
 }
 
+fn arm_go2rtc_exit_watcher(
+    child: &std::process::Child,
+    exe_path: std::path::PathBuf,
+    cfg_path: std::path::PathBuf,
+    owner_path: std::path::PathBuf,
+    bin_dir: std::path::PathBuf,
+    session: Go2RtcSession,
+) {
+    use crate::process_supervisor::MonotonicClock;
+
+    let pid = child.id();
+    let generation = {
+        let Ok(mut guard) = GO2RTC_SUPERVISOR.lock() else {
+            return;
+        };
+        guard.generation = guard.generation.wrapping_add(1);
+        if let Some(token) = guard.retry_cancel.take() {
+            token.cancel();
+        }
+        #[cfg(windows)]
+        if let Some(exit_cancel) = guard.exit_cancel.take() {
+            exit_cancel.cancel();
+        }
+        let now = guard.clock.now();
+        guard.core.mark_started(pid, now);
+        guard.generation
+    };
+
+    #[cfg(windows)]
+    {
+        let Ok((waiter, exit_cancel)) =
+            crate::process_supervisor::ProcessExitWaiter::from_child(child)
+        else {
+            return;
+        };
+        if let Ok(mut guard) = GO2RTC_SUPERVISOR.lock() {
+            if guard.generation != generation {
+                exit_cancel.cancel();
+                return;
+            }
+            guard.exit_cancel = Some(exit_cancel);
+        }
+        tauri::async_runtime::spawn(async move {
+            let exit_event = tauri::async_runtime::spawn_blocking(move || waiter.wait_blocking())
+                .await
+                .ok()
+                .flatten();
+            if let Some(exit_code) = exit_event {
+                supervise_go2rtc_restart(
+                    generation,
+                    exit_code,
+                    exe_path,
+                    cfg_path,
+                    owner_path,
+                    bin_dir,
+                    session,
+                )
+                .await;
+            }
+        });
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (generation, exe_path, cfg_path, owner_path, bin_dir, session);
+    }
+}
+
+#[cfg(windows)]
+async fn supervise_go2rtc_restart(
+    generation: u64,
+    first_exit_code: Option<i32>,
+    exe_path: std::path::PathBuf,
+    cfg_path: std::path::PathBuf,
+    owner_path: std::path::PathBuf,
+    bin_dir: std::path::PathBuf,
+    session: Go2RtcSession,
+) {
+    use crate::process_supervisor::{default_jitter, ExitDecision, MonotonicClock};
+
+    let mut pending_exit_code = first_exit_code;
+    let mut pending_error: Option<String> = None;
+    let mut is_first_failure = true;
+
+    loop {
+        let Ok(preparation) = camera_preparation() else {
+            return;
+        };
+        if preparation.is_cancelled() {
+            return;
+        }
+
+        let retry_plan = {
+            let Ok(mut guard) = GO2RTC_SUPERVISOR.lock() else {
+                return;
+            };
+            if guard.generation != generation {
+                return;
+            }
+            let now = guard.clock.now();
+            let decision = if is_first_failure {
+                is_first_failure = false;
+                guard
+                    .core
+                    .record_exit(now, pending_exit_code, pending_error.take(), default_jitter)
+            } else {
+                let err = pending_error
+                    .take()
+                    .unwrap_or_else(|| "重启 go2rtc 失败".to_string());
+                guard.core.record_launch_failure(now, err, default_jitter)
+            };
+            match decision {
+                ExitDecision::OpenCircuit => None,
+                ExitDecision::RestartAfter(delay) => {
+                    let retry_token = CancellationToken::new();
+                    if let Some(prev) = guard.retry_cancel.replace(retry_token.clone()) {
+                        prev.cancel();
+                    }
+                    Some((delay, retry_token))
+                }
+            }
+        };
+
+        // Drop the exited child handle without clearing GO2RTC_SESSION or CAMERA_RELAYS so
+        // active UDP relays and MJPEG IPC resume seamlessly once go2rtc restarts.
+        if let Ok(mut proc_guard) = GO2RTC_PROCESS.lock() {
+            let exited = proc_guard
+                .as_mut()
+                .is_some_and(|managed| !matches!(managed.child.try_wait(), Ok(None)));
+            if exited {
+                drop(proc_guard.take());
+            }
+        }
+
+        let Some((delay, retry_token)) = retry_plan else {
+            return;
+        };
+
+        let cancelled_during_wait = tokio::select! {
+            biased;
+            _ = retry_token.cancelled() => true,
+            _ = preparation.cancelled() => true,
+            _ = tokio::time::sleep(delay) => false,
+        };
+        if cancelled_during_wait {
+            return;
+        }
+
+        let _bridge_order = CAMERA_BRIDGE_LOCK.lock().await;
+        if retry_token.is_cancelled() || preparation.is_cancelled() {
+            return;
+        }
+        let still_current = GO2RTC_SUPERVISOR
+            .lock()
+            .map(|guard| guard.generation == generation)
+            .unwrap_or(false);
+        if !still_current {
+            return;
+        }
+
+        if !cfg_path.is_file() {
+            pending_error = Some("go2rtc.yaml 缺失，无法复用会话重启".to_string());
+            pending_exit_code = None;
+            continue;
+        }
+
+        let mut command = std::process::Command::new(&exe_path);
+        command
+            .arg("-c")
+            .arg(&cfg_path)
+            .current_dir(&bin_dir)
+            .creation_flags(CREATE_NO_WINDOW);
+        let child = match command.spawn() {
+            Ok(child) => child,
+            Err(error) => {
+                pending_error = Some(format!("重启 go2rtc 失败：{error}"));
+                pending_exit_code = None;
+                continue;
+            }
+        };
+        let process = match crate::job_object::ManagedCameraProcess::bind(child) {
+            Ok(process) => process,
+            Err(error) => {
+                pending_error = Some(error);
+                pending_exit_code = None;
+                continue;
+            }
+        };
+        let identity = crate::process_supervisor::inspect_child_identity(&process.child);
+        let pid = process.child.id();
+        let record = Go2RtcOwnerRecord {
+            pid,
+            session: session.clone(),
+            exe_path: identity
+                .as_ref()
+                .map(|id| id.executable_path.clone())
+                .or_else(|| Some(exe_path.to_string_lossy().to_string())),
+            creation_time: identity.as_ref().map(|id| id.creation_time_100ns),
+        };
+        let owner_for_write = owner_path.clone();
+        let serialized_owner = serialize_owner(&record);
+        let _ = tauri::async_runtime::spawn_blocking(move || {
+            write_secret_file(&owner_for_write, &serialized_owner)
+        })
+        .await;
+
+        let http = match reqwest::Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_millis(800))
+            .build()
+        {
+            Ok(client) => client,
+            Err(error) => {
+                drop(process);
+                pending_error = Some(error.to_string());
+                pending_exit_code = None;
+                continue;
+            }
+        };
+
+        if let Ok(mut proc_guard) = GO2RTC_PROCESS.lock() {
+            *proc_guard = Some(process);
+        }
+        store_go2rtc_session(record);
+
+        let ready = tokio::select! {
+            biased;
+            _ = retry_token.cancelled() => None,
+            _ = preparation.cancelled() => None,
+            ok = wait_for_owned_api(&http, &session) => Some(ok),
+        };
+
+        match ready {
+            Some(true) => {
+                if let Ok(proc_guard) = GO2RTC_PROCESS.lock() {
+                    if let Some(managed) = proc_guard.as_ref() {
+                        arm_go2rtc_exit_watcher(
+                            &managed.child,
+                            exe_path,
+                            cfg_path,
+                            owner_path,
+                            bin_dir,
+                            session,
+                        );
+                    }
+                }
+                return;
+            }
+            None => {
+                if let Ok(mut proc_guard) = GO2RTC_PROCESS.lock() {
+                    drop(proc_guard.take());
+                }
+                return;
+            }
+            Some(false) => {
+                if let Ok(mut proc_guard) = GO2RTC_PROCESS.lock() {
+                    drop(proc_guard.take());
+                }
+                pending_error = Some("重启后本地流媒体服务未就绪".to_string());
+                pending_exit_code = None;
+            }
+        }
+    }
+}
+
 pub(crate) async fn spawn_fresh_go2rtc(
     app: &AppHandle,
     http: &reqwest::Client,
@@ -1159,6 +1541,8 @@ pub(crate) async fn spawn_fresh_go2rtc(
     ffmpeg_bin: &str,
     preparation: &CancellationToken,
 ) -> Result<(), String> {
+    check_go2rtc_supervisor_can_start()?;
+    cancel_go2rtc_supervision(false);
     let exe_path = bin_dir.join("go2rtc.exe");
     let app_for_component = app.clone();
     let bin_dir_for_component = bin_dir.to_path_buf();
@@ -1194,8 +1578,17 @@ pub(crate) async fn spawn_fresh_go2rtc(
         }
         let child = command.spawn().map_err(|e| format!("启动 go2rtc 失败：{e}"))?;
         let process = crate::job_object::ManagedCameraProcess::bind(child)?;
+        let identity = crate::process_supervisor::inspect_child_identity(&process.child);
         let pid = process.child.id();
-        let record = Go2RtcOwnerRecord { pid, session: session.clone() };
+        let record = Go2RtcOwnerRecord {
+            pid,
+            session: session.clone(),
+            exe_path: identity
+                .as_ref()
+                .map(|id| id.executable_path.clone())
+                .or_else(|| Some(exe_path.to_string_lossy().to_string())),
+            creation_time: identity.as_ref().map(|id| id.creation_time_100ns),
+        };
         let owner_for_write = owner_path.clone();
         let serialized_owner = serialize_owner(&record);
         tauri::async_runtime::spawn_blocking(move || {
@@ -1206,6 +1599,18 @@ pub(crate) async fn spawn_fresh_go2rtc(
         *GO2RTC_PROCESS.lock().map_err(|_| "摄像机进程状态不可用")? = Some(process);
         store_go2rtc_session(record);
         if preparation.run_until_cancelled(wait_for_owned_api(http, &session)).await == Some(true) {
+            if let Ok(proc_guard) = GO2RTC_PROCESS.lock() {
+                if let Some(managed) = proc_guard.as_ref() {
+                    arm_go2rtc_exit_watcher(
+                        &managed.child,
+                        exe_path.clone(),
+                        cfg_path.clone(),
+                        owner_path.clone(),
+                        bin_dir.to_path_buf(),
+                        session.clone(),
+                    );
+                }
+            }
             return Ok(());
         }
         if let Ok(mut guard) = GO2RTC_PROCESS.lock() {
@@ -1219,6 +1624,7 @@ pub(crate) async fn spawn_fresh_go2rtc(
 }
 
 pub(crate) async fn ensure_go2rtc_running(app: &AppHandle) -> Result<(), String> {
+    check_go2rtc_supervisor_can_start()?;
     let preparation = camera_preparation()?;
     if preparation.is_cancelled() {
         return Err("该设备类型已关闭".to_string());
@@ -1898,6 +2304,7 @@ pub(crate) async fn go2rtc_jpeg_frame(src: String) -> Result<String, String> {
     if camera_preparation()?.is_cancelled() {
         return Err("该设备类型已关闭".to_string());
     }
+    check_go2rtc_supervisor_for_frame()?;
     let session = current_go2rtc_session()?;
     let bytes = read_mjpeg_stream_frame(
         &session,
@@ -2189,5 +2596,31 @@ mod runtime_tests {
         ));
         assert!(result.is_err());
         assert!(!CAMERA_MJPEG_STREAMS.lock().unwrap().contains_key("cam_mjpeg_closed"));
+    }
+
+    #[test]
+    fn owner_record_round_trips_verifiable_identity_and_rejects_pid_only_records() {
+        let session = make_ephemeral_go2rtc_session().expect("session");
+        let full = Go2RtcOwnerRecord {
+            pid: 9001,
+            session: session.clone(),
+            exe_path: Some(r"C:\Users\Test\AppData\Local\MenuBarMijia\bin\go2rtc.exe".to_string()),
+            creation_time: Some(133_777_000_000_000_000),
+        };
+        let parsed = parse_owner(&serialize_owner(&full)).expect("parse full owner");
+        assert_eq!(parsed.pid, 9001);
+        assert_eq!(parsed.exe_path, full.exe_path);
+        assert_eq!(parsed.creation_time, full.creation_time);
+        assert!(parsed.verifiable_identity().is_some());
+
+        let legacy = Go2RtcOwnerRecord {
+            pid: 9001,
+            session,
+            exe_path: None,
+            creation_time: None,
+        };
+        let parsed_legacy = parse_owner(&serialize_owner(&legacy)).expect("parse legacy owner");
+        assert!(parsed_legacy.verifiable_identity().is_none());
+        assert!(!owner_process_matches(&parsed_legacy));
     }
 }

@@ -40,6 +40,42 @@ import { tr3 } from "./undoTracker.js";
 
 export type CameraRotationDeg = 0 | 90 | 180 | 270;
 
+export interface Go2RtcSupervisorStatus {
+  readonly state: "stopped" | "running" | "backingOff" | "circuitOpen" | string;
+  readonly consecutiveFailures: number;
+  readonly recentFailures: number;
+  readonly nextRetryMs: number | null;
+  readonly lastExitCode?: number | null;
+  readonly lastError?: string | null;
+}
+
+export function isGo2RtcCircuitOpenError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err ?? "");
+  return /熔断|circuit\s*open|circuitopen/i.test(message);
+}
+
+export function formatGo2RtcSupervisorDiagnostics(
+  status: Go2RtcSupervisorStatus | null,
+  redact: (raw: string) => string,
+): string[] {
+  if (!status || typeof status.state !== "string") {
+    return ["go2rtcSupervisorState: unavailable"];
+  }
+  const lines = [
+    `go2rtcSupervisorState: ${status.state}`,
+    `go2rtcConsecutiveFailures: ${Number.isFinite(status.consecutiveFailures) ? status.consecutiveFailures : 0}`,
+    `go2rtcRecentFailures: ${Number.isFinite(status.recentFailures) ? status.recentFailures : 0}`,
+    `go2rtcNextRetryMs: ${typeof status.nextRetryMs === "number" && Number.isFinite(status.nextRetryMs) ? status.nextRetryMs : "none"}`,
+  ];
+  if (typeof status.lastExitCode === "number" && Number.isFinite(status.lastExitCode)) {
+    lines.push(`go2rtcLastExitCode: ${status.lastExitCode}`);
+  }
+  if (typeof status.lastError === "string" && status.lastError.trim().length > 0) {
+    lines.push(`go2rtcLastError: ${redact(status.lastError.trim())}`);
+  }
+  return lines;
+}
+
 export function normalizeCameraRotation(value: unknown): CameraRotationDeg {
   return value === 90 || value === 180 || value === 270 ? value : 0;
 }
@@ -978,6 +1014,10 @@ export class CameraLiveController {
         }
       } catch (err) {
         if (token !== this.liveCameraToken || signal.aborted) return;
+        if (isGo2RtcCircuitOpenError(err)) {
+          this.failLivePicture(token, liveFrameFailureText(err));
+          return;
+        }
         failureStarted ??= Date.now();
         if (Date.now() - failureStarted >= this.cameraFrameGiveUpMs) {
           this.failLivePicture(token, liveFrameFailureText(err));
@@ -1685,25 +1725,37 @@ export class CameraLiveController {
     this.host.root.querySelector("#btn-copy-camera-diag")?.addEventListener("click", () => {
       const dev = this.host.devices.find((d) => d.id === this.activeLiveCameraId);
       if (!dev || dev.kind.kind !== "camera") return;
+      const isOn = dev.kind.isOn;
       const redact = (raw: string) =>
         raw
           .replace(/https?:\/\/[^\s"'<>]+/gi, "<redacted-url>")
           .replace(/\b(?:\d{1,3}\.){3}\d{1,3}\b/g, "<redacted-ip>")
           .replace(/\b[0-9a-fA-F]{24,}\b/g, "<redacted-token>");
-      const report = [
-        "MenuBarHome Camera Diagnostics (Windows)",
-        `model: ${dev.model}`,
-        `online: ${dev.isOnline}`,
-        `isOn: ${dev.kind.isOn}`,
-        `connectionMode: ${this.host.settings.connectionMode}`,
-        `hasCustomURL: ${Boolean(this.cameraStreamURLs[dev.id])}`,
-        `hasManualIP: ${Boolean(this.cameraLocalIPs[dev.id])}`,
-        `channel: ${this.selectedCameraChannel(dev)}`,
-        `error: ${redact(this.liveCameraError ?? "none")}`,
-      ].join("\n");
-      void navigator.clipboard?.writeText(report).catch(() => {});
-      this.host.replyBanner = { text: t("已复制脱敏诊断信息"), source: t("摄像机诊断") };
-      this.host.render();
+      const writeReport = (supervisorStatus: Go2RtcSupervisorStatus | null) => {
+        const report = [
+          "MenuBarHome Camera Diagnostics (Windows)",
+          `model: ${dev.model}`,
+          `online: ${dev.isOnline}`,
+          `isOn: ${isOn}`,
+          `connectionMode: ${this.host.settings.connectionMode}`,
+          `hasCustomURL: ${Boolean(this.cameraStreamURLs[dev.id])}`,
+          `hasManualIP: ${Boolean(this.cameraLocalIPs[dev.id])}`,
+          `channel: ${this.selectedCameraChannel(dev)}`,
+          ...formatGo2RtcSupervisorDiagnostics(supervisorStatus, redact),
+          `error: ${redact(this.liveCameraError ?? "none")}`,
+        ].join("\n");
+        void navigator.clipboard?.writeText(report).catch(() => {});
+        this.host.replyBanner = { text: t("已复制脱敏诊断信息"), source: t("摄像机诊断") };
+        this.host.render();
+      };
+      const invoke = window.__TAURI_INTERNALS__?.invoke;
+      if (!invoke) {
+        writeReport(null);
+        return;
+      }
+      void invoke<Go2RtcSupervisorStatus>("go2rtc_supervisor_status")
+        .then((status) => writeReport(status && typeof status === "object" ? status : null))
+        .catch(() => writeReport(null));
     });
 
     this.host.root.querySelector("#btn-save-camera-url")?.addEventListener("click", () => {

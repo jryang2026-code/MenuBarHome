@@ -5,6 +5,7 @@ mod camera;
 mod companion;
 mod desktop_shell;
 mod job_object;
+mod process_supervisor;
 mod credentials;
 mod miio;
 mod miio_crypto;
@@ -306,7 +307,8 @@ fn main() {
             cancel_camera_preparation,
             stop_camera_runtime,
             resume_camera_runtime,
-            go2rtc_jpeg_frame
+            go2rtc_jpeg_frame,
+            go2rtc_supervisor_status
         ])
         .setup(move |app| {
             sweep_stale_update_installers();
@@ -1178,6 +1180,8 @@ mod tests {
             serialize_owner(&Go2RtcOwnerRecord {
                 pid: 0,
                 session: session.clone(),
+                exe_path: None,
+                creation_time: None,
             }),
         )
         .expect("write dead owner");
@@ -1188,15 +1192,33 @@ mod tests {
 
         #[cfg(windows)]
         {
+            // PID alone (missing exe_path / creation_time) is not sufficient proof of ownership.
             std::fs::write(&cfg_path, &rewritten_by_go2rtc).expect("rewrite dirty config");
             std::fs::write(
                 &owner_path,
                 serialize_owner(&Go2RtcOwnerRecord {
                     pid: std::process::id(),
                     session: session.clone(),
+                    exe_path: None,
+                    creation_time: None,
                 }),
             )
-            .expect("write live owner");
+            .expect("write pid-only owner");
+            assert!(scrub_stale_camera_config_in_dir(&root));
+
+            // Full verifiable identity (PID + executable path + creation time) preserves config.
+            let self_id = process_supervisor::current_process_identity().expect("self identity");
+            std::fs::write(&cfg_path, &rewritten_by_go2rtc).expect("rewrite dirty config");
+            std::fs::write(
+                &owner_path,
+                serialize_owner(&Go2RtcOwnerRecord {
+                    pid: self_id.pid,
+                    session: session.clone(),
+                    exe_path: Some(self_id.executable_path),
+                    creation_time: Some(self_id.creation_time_100ns),
+                }),
+            )
+            .expect("write verified live owner");
             assert!(!scrub_stale_camera_config_in_dir(&root));
             assert!(std::fs::read_to_string(&cfg_path)
                 .expect("read preserved config")
