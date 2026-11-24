@@ -242,7 +242,8 @@ public actor HAWebSocketProvider: HomeProvider {
     private var activeWebSocket: (any HAWebSocketConnection)?
     private var handshakingWebSocket: (any HAWebSocketConnection)?
     private var nextWebSocketMessageId: Int = 5
-    private var pendingRefreshStateIds: Set<Int> = []
+    private var pendingRefreshStateIds: [Int: ContinuousClock.Instant] = [:]
+    private var initialPollCapturedEpochs: [Int: ContinuousClock.Instant] = [:]
     private var pendingStreamRequests: [Int: CheckedContinuation<String?, Never>] = [:]
     private var startupReplies: [Int: [String: JSONValue]] = [:]
     private var startupWaiters: [Int: CheckedContinuation<[String: JSONValue], Error>] = [:]
@@ -484,11 +485,11 @@ public actor HAWebSocketProvider: HomeProvider {
         guard !isShutDown else { return }
         if let ws = activeWebSocket {
             let id = allocateWebSocketMessageId()
-            pendingRefreshStateIds.insert(id)
+            pendingRefreshStateIds[id] = .now
             do {
                 try await sendJSON(ws: ws, ["id": id, "type": "get_states"])
             } catch {
-                pendingRefreshStateIds.remove(id)
+                pendingRefreshStateIds.removeValue(forKey: id)
             }
         } else if handshakingWebSocket == nil {
             restartLoop()
@@ -771,13 +772,15 @@ public actor HAWebSocketProvider: HomeProvider {
                         waiter.resume(returning: msg["result"]?["url"]?.stringValue)
                         continue
                     }
+                    let initialCapturedEpoch = initialPollCapturedEpochs.removeValue(forKey: id)
                     let isInitialStates = id == legacyInitialStatesID
                     let isStartup = (1...Self.compressedSubscriptionID).contains(id)
                         || isInitialStates || id == legacySubscriptionID
                     if isStartup {
                         deliverStartupReply(id: id, message: msg)
                     }
-                    let isRefresh = pendingRefreshStateIds.remove(id) != nil
+                    let refreshCapturedEpoch = pendingRefreshStateIds.removeValue(forKey: id)
+                    let isRefresh = refreshCapturedEpoch != nil
                     if !isRefresh && !isInitialStates && !(1...3).contains(id) {
                         if !isStartup {
                             logger.debug("Ignoring Home Assistant result id \(id, privacy: .public) with no open request")
@@ -786,7 +789,9 @@ public actor HAWebSocketProvider: HomeProvider {
                     }
                     if let home = try snapshot.receive(
                         msg, isInitialStatesResult: isInitialStates,
-                        isRefreshStatesResult: isRefresh, typePrunePolicy: typePrunePolicyLoader()
+                        isRefreshStatesResult: isRefresh,
+                        typePrunePolicy: typePrunePolicyLoader(),
+                        pollCapturedEpoch: initialCapturedEpoch ?? refreshCapturedEpoch
                     ) {
                         coalesceTask?.cancel()
                         coalesceTask = nil
@@ -800,7 +805,7 @@ public actor HAWebSocketProvider: HomeProvider {
                     if msg["id"]?.intValue == Self.compressedSubscriptionID, legacyInitialStatesID == nil {
                         shouldSynthesize = try snapshot.ingestCompressedStates(msg["event"], typePrunePolicy: policy)
                     } else if let legacySubscriptionID, msg["id"]?.intValue == legacySubscriptionID {
-                        shouldSynthesize = snapshot.ingestStateChangedEvent(msg, typePrunePolicy: policy)
+                        shouldSynthesize = snapshot.ingestStateChangedEvent(msg, typePrunePolicy: policy, capturedEpoch: .now)
                     } else {
                         continue
                     }
@@ -897,6 +902,7 @@ public actor HAWebSocketProvider: HomeProvider {
             // A refresh or heartbeat can use the socket while the probe is in flight.
             let statesID = allocateWebSocketMessageId()
             legacyInitialStatesID = statesID
+            initialPollCapturedEpochs[statesID] = .now
             try await sendJSON(ws: ws, ["id": statesID, "type": "get_states"])
             let subscriptionID = allocateWebSocketMessageId()
             legacySubscriptionID = subscriptionID

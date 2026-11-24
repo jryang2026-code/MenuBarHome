@@ -116,7 +116,7 @@ enum ControlFailure: Sendable {
         }
     }
 
-    private func message(deviceName: String, adjustment: Bool) -> String {
+    func message(deviceName: String, adjustment: Bool) -> String {
         let reason: String
         switch self {
         case .deviceOffline:

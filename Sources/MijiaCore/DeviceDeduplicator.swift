@@ -399,10 +399,12 @@ public enum DeviceDeduplicator {
             haFacets[cardID] = controls
         }
         var miFacets: [String: [FacetControl]] = [:]
+        var miFacetCaptures: [String: ContinuousClock.Instant] = [:]
         for (sourceID, controls) in xiaomiCloud?.deviceFacets ?? [:] {
             let cardID = miCanonicalIDs[sourceID] ?? sourceID
             guard mergedIDs.contains(cardID) else { continue }
             miFacets[cardID] = controls
+            miFacetCaptures[cardID] = xiaomiCloud?.facetPollCapturedEpochs[sourceID]
         }
         var mergedFacets: [String: [FacetControl]] = [:]
         for cardID in mergedIDs {
@@ -418,6 +420,13 @@ public enum DeviceDeduplicator {
             if let preferred, !preferred.isEmpty { mergedFacets[cardID] = preferred }
         }
         home.deviceFacets = mergedFacets
+        for (id, route) in routes {
+            let source = route.backend == .homeAssistant ? homeAssistant : xiaomiCloud
+            home.devicePollCapturedEpochs[id] = source?.devicePollCapturedEpochs[route.sourceDeviceID]
+            if route.backend == .xiaomiCloud || haFacets[id] == nil {
+                home.facetPollCapturedEpochs[id] = miFacetCaptures[id]
+            }
+        }
         for (sourceID, diag) in xiaomiCloud?.deviceTransportDiagnostics ?? [:] {
             let cardID = miCanonicalIDs[sourceID] ?? sourceID
             if mergedIDs.contains(cardID), routes[cardID]?.backend == .xiaomiCloud { home.deviceTransportDiagnostics[cardID] = diag }
