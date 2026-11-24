@@ -692,8 +692,9 @@ describe("MiCloud transport redirect lock, rate-limit non-fallback, and spec ded
       unblockGate = r;
     });
     let fetchCount = 0;
-    const gatedResolver = new MiotSpecResolver(async () => {
-      fetchCount += 1;
+    const gatedResolver = new MiotSpecResolver(async (req) => {
+      // Official multiLanguage shares this transport; only count spec fetches per URN.
+      if (req.url.includes("/instance?type=")) fetchCount += 1;
       await gate;
       if (shouldFail) {
         return { status: 503, headers: {}, body: "" };
