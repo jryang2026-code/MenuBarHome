@@ -683,6 +683,9 @@ final class MenuBarPanelController: NSObject {
         if speech.isListening || speech.isHoldToTalk || isStatusItemPressActive {
             return true
         }
+        // A pending shrink is settled by one more tick; without it an idle readout keeps the wider
+        // reserve until the next text change (#420). The tick clears the flag, so the loop stops again.
+        if MenuBarWidthStabilizer.needsSettle(widthState) { return true }
         if store.undoBanner != nil || store.toastNotice != nil {
             return true
         }

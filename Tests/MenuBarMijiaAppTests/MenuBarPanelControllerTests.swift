@@ -943,6 +943,29 @@ struct MenuBarPanelControllerTests {
         #expect(abs(item.length - CGFloat(narrow)) <= 0.5)
     }
 
+    @Test("A pending width shrink is the reason the idle label timer keeps ticking")
+    func labelTimerCoversPendingShrink() async throws {
+        let (store, _) = try await makeStore()
+        let speech = SpeechInputController.shared
+        let wasListening = speech.isListening
+        let previousDraft = speech.draft
+        defer { speech.setPreviewState(isListening: wasListening, isHoldToTalk: false, draft: previousDraft) }
+        speech.setPreviewState(isListening: true, isHoldToTalk: true, draft: "一二三四五六七八九十")
+
+        let controller = makeController(store: store)
+        defer { controller.uninstall() }
+        controller.syncStatusItem()
+
+        speech.setPreviewState(isListening: true, isHoldToTalk: true, draft: "一二三")
+        controller.syncStatusItem()
+        #expect(controller.widthState.pendingShrinkCount == 1)
+
+        // Nothing else asks for ticks now, so the armed shrink is the only reason to keep the timer:
+        // without it the readout keeps the wider reserve until the next text change.
+        speech.setPreviewState(isListening: false, isHoldToTalk: false, draft: "")
+        #expect(controller.shouldRunLabelTimer())
+    }
+
     @Test("Reopening during dismissal preserves the panel and emits each visibility change once", arguments: [false, true])
     func reopenDuringDismissal(reduced: Bool) async throws {
         // The slide-in dismissal this test drives belongs to the liquid-glass window.
