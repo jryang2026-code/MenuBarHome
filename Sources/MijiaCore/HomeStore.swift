@@ -450,6 +450,8 @@ public final class HomeStore {
     /// Cleared by `invalidateUndoContext`; a press whose card leaves the home drops out of
     /// `panelActivities`.
     public internal(set) var recentDoorbellRings: [DoorbellRing] = []
+    public let cameraEventStore: CameraEventStore
+    public internal(set) var cameraEventRevision: UInt64 = 0
     /// Safety alerts the panel's activity stack shows, newest first, at most
     /// `recentSafetyAlertLimit`. Written by the snapshot path in `HomeStore+Backend.swift`, which is
     /// also where the notification handler fires, so the panel keeps its copy when no handler is
@@ -465,6 +467,8 @@ public final class HomeStore {
     /// (#10). The chime and popup switches gate it through `wantsDoorbellNotification`, and
     /// `swift test` never sets it, so no test touches the notification centre.
     public var onDoorbellNotification: (@MainActor (DoorbellNotification) -> Void)?
+    /// Installed by the app to capture the event still without opening a new stream.
+    public var onDoorbellSnapshot: (@MainActor (String) async -> Data?)?
 
     /// Refuse user-initiated device control while the Mac screen is locked (#143). Defaults on:
     /// the only paths that can still fire while locked are external ones (URL links, App Intents,
@@ -1326,7 +1330,13 @@ public final class HomeStore {
         defaults: UserDefaults? = nil
     ) {
         let ud = defaults ?? defaultsSuiteName.flatMap { UserDefaults(suiteName: $0) } ?? .standard
+        let testEnvironment = (provider != nil || dualSource != nil || defaultsSuiteName != nil || defaults != nil)
         self.userDefaults = ud
+        self.cameraEventStore = CameraEventStore(
+            directory: testEnvironment
+                ? FileManager.default.temporaryDirectory.appendingPathComponent("CameraEvents-\(UUID().uuidString)", isDirectory: true)
+                : nil
+        )
         if let data = ud.data(forKey: Self.automationRunHistoryKey),
            let history = try? JSONDecoder().decode([AutomationRunEntry].self, from: data) {
             self.automationRunHistory = Array(history.prefix(Self.automationRunHistoryLimit))
@@ -1339,7 +1349,7 @@ public final class HomeStore {
         let initialPins = DeviceSourcePinStorage.load(defaults: ud)
         self.pinnedDeviceSourcesBox = DeviceSourcePinBox(initialPins)
         self.pinnedDeviceSources = initialPins
-        let isTestEnvironment = (provider != nil || dualSource != nil || defaultsSuiteName != nil || defaults != nil)
+        let isTestEnvironment = testEnvironment
         self.isTestEnvironment = isTestEnvironment
         self.updater = updater ?? AppUpdater()
         self.energyHistory = EnergyHistory(defaults: ud)
