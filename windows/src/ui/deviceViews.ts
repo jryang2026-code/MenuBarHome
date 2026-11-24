@@ -12,6 +12,7 @@ import {
 import { TILE_SIZES, comfort, localizeEffect, localizeFanMode, tr3, type TileSize } from "./panelPrefs.js";
 import { formatTemperature, formatTemperatureValue, getTemperatureUnit, displayStep, temperatureSymbol } from "../core/temperature.js";
 import type { EnergyScopeSource } from "../core/energyHistory.js";
+import type { CameraStillWallRenderState } from "../core/cameraEventStore.js";
 import { SF_ICONS } from "./appConstants.js";
 import type { PendingHighRiskConfirmation } from "./appTypes.js";
 import { resolveTilePresentation, type PanelTheme } from "./panelTheme.js";
@@ -267,6 +268,7 @@ function renderPrimaryDrawer(
   unsupportedLightEffects?: ReadonlySet<string>,
   speakerDrawerState?: { readonly mode?: SpeakerTextMode; readonly draft?: string },
   energyScope?: EnergyScopeSource,
+  cameraStillWall?: CameraStillWallRenderState | null,
 ): string {
     const k = dev.kind;
     if (k.kind === "light") {
@@ -501,11 +503,35 @@ function renderPrimaryDrawer(
         </div>`;
     }
     if (k.kind === "camera") {
-      if (k.powerWritable === false && k.availableNightShots.length === 0 && !k.motionDetectionEntityId) return "";
+      const hasStillWall = Boolean(cameraStillWall && cameraStillWall.tiles.length > 0);
+      if (!hasStillWall && k.powerWritable === false && k.availableNightShots.length === 0 && !k.motionDetectionEntityId) return "";
       const id = escapeHtml(dev.id);
       const motionOn = Boolean(k.isMotionDetectionOn);
+      const stillWallHtml = hasStillWall && cameraStillWall
+        ? `<div class="cc-camera-still-wall" role="group" aria-label="${escapeHtml(tr3("摄像头事件画面", "攝影機事件畫面", "Camera event stills"))}">
+            ${cameraStillWall.tiles
+              .map((tile) => {
+                const tileId = escapeHtml(tile.id);
+                const label = escapeHtml(tile.name);
+                const aria = escapeHtml(
+                  tr3(
+                    "查看 {name} 实时画面",
+                    "查看 {name} 即時畫面",
+                    "View live feed for {name}",
+                    { name: tile.name },
+                  ),
+                );
+                const media = tile.snapshotDataUrl
+                  ? `<img class="cc-camera-still-img" src="${escapeHtml(tile.snapshotDataUrl)}" alt="" />`
+                  : `<span class="cc-camera-still-placeholder" aria-hidden="true">${SF_ICONS.videoFill}</span>`;
+                return `<button type="button" class="cc-camera-still-tile${tile.isOnline ? "" : " is-offline"}" data-camera-live="${tileId}" data-still-tile="${tileId}" ${tile.isOnline ? "" : "disabled"} aria-label="${aria}">${media}<span class="cc-camera-still-label">${label}</span></button>`;
+              })
+              .join("")}
+          </div>`
+        : "";
       return `
         <div class="cc-tile-drawer">
+          ${stillWallHtml}
           <div class="cc-segmented-pills">
             <button class="cc-seg-pill is-active" data-camera-live="${id}">
               ${t("放大实时画面")}
@@ -627,6 +653,7 @@ export function renderDeviceDrawer(
   unsupportedLightEffects?: ReadonlySet<string>,
   speakerDrawerState?: { readonly mode?: SpeakerTextMode; readonly draft?: string },
   energyScope?: EnergyScopeSource,
+  cameraStillWall?: CameraStillWallRenderState | null,
 ): string {
   const primary = renderPrimaryDrawer(
     dev,
@@ -637,6 +664,7 @@ export function renderDeviceDrawer(
     unsupportedLightEffects,
     speakerDrawerState,
     energyScope,
+    cameraStillWall,
   );
   const extraConfirm =
     dev.kind.kind !== "climate" || primary === ""
@@ -1085,6 +1113,7 @@ export interface DeviceTileViewState {
   readonly speakerDrawerState?: { readonly mode?: SpeakerTextMode; readonly draft?: string };
   readonly energyScope?: EnergyScopeSource;
   readonly sensorHistoryUi?: SensorHistoryUiState;
+  readonly cameraStillWall?: CameraStillWallRenderState | null;
   readonly panelTheme?: PanelTheme;
   readonly isCompactGridMode?: boolean;
   readonly escapeHtml: (value: string) => string;
@@ -1315,7 +1344,10 @@ export function renderDeviceTile(dev: SmartDevice, state: DeviceTileViewState): 
           },
         }
       : dev;
-  const hasDrawer = dev.isOnline && hasDetailDrawer(effectiveDevForDrawer, facets);
+  const hasDrawer =
+    dev.isOnline &&
+    (hasDetailDrawer(effectiveDevForDrawer, facets) ||
+      (kind === "camera" && Boolean(state.cameraStillWall?.tiles.length)));
   const canPlotSensor =
     dev.isOnline &&
     kind === "sensor" &&
@@ -1571,7 +1603,7 @@ export function renderDeviceTile(dev: SmartDevice, state: DeviceTileViewState): 
               : `<span class="cc-tile-orb win-subpage-power" title="${escape(dev.name)}" aria-hidden="true">${svg}</span>`
           }
         </div>
-        ${renderDeviceDrawer(dev, escape, facets, state.allowAdvancedFacetWrites, state.pendingHighRisk, state.unsupportedLightEffects, state.speakerDrawerState, state.energyScope)}
+        ${renderDeviceDrawer(dev, escape, facets, state.allowAdvancedFacetWrites, state.pendingHighRisk, state.unsupportedLightEffects, state.speakerDrawerState, state.energyScope, state.cameraStillWall)}
       </div>
     `;
   }
@@ -1654,7 +1686,7 @@ export function renderDeviceTile(dev: SmartDevice, state: DeviceTileViewState): 
         ${inlineSlider}
         ${
           isExpanded && hasDrawer
-            ? renderDeviceDrawer(dev, escape, facets, state.allowAdvancedFacetWrites, state.pendingHighRisk, state.unsupportedLightEffects, state.speakerDrawerState, state.energyScope)
+            ? renderDeviceDrawer(dev, escape, facets, state.allowAdvancedFacetWrites, state.pendingHighRisk, state.unsupportedLightEffects, state.speakerDrawerState, state.energyScope, state.cameraStillWall)
             : ""
         }
         ${isExpanded && canPlotSensor ? `<div class="cc-expander-grid"><div class="cc-expander-clip">${renderSensorHistorySection(dev, facets, escape, state.sensorHistoryUi)}</div></div>` : ""}
