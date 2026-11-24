@@ -610,6 +610,12 @@ extension View {
             glassHoverHighlight(in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous), isEnabled: isEnabled)
         }
     }
+
+    /// macOS 26 Tahoe drops `.onHover` tracking on views backed only by fully transparent pixels.
+    /// A 0.001-alpha white fill keeps hit-testing and hover alive with zero visible pixel delta.
+    func tahoeHoverHitTarget() -> some View {
+        background(Color.white.opacity(0.001))
+    }
 }
 
 // MARK: - Panel Tile Surface
@@ -653,12 +659,10 @@ public struct GlassShapeBackground<S: InsettableShape>: ViewModifier {
         } else if #available(macOS 26.0, *) {
             // Pure native Liquid Glass: never paint a `.background` fill before `.glassEffect`, or
             // the view's own fill sits in front of the system glass slab and blocks both desktop
-            // refraction and System Settings (Tinted / Clear) adaptation.
-            if let tint {
-                content.glassEffect(.regular.tint(tint), in: shape)
-            } else {
-                content.glassEffect(.regular, in: shape)
-            }
+            // refraction and System Settings (Tinted / Clear) adaptation. Keep a single branch so
+            // toggling `tint` never resets SwiftUI view identity on Tahoe.
+            let style: Glass = tint.map { Glass.regular.tint($0) } ?? .regular
+            content.glassEffect(style, in: shape)
         } else {
             content
                 .background {
@@ -690,11 +694,8 @@ struct ChipSurface<S: InsettableShape>: ViewModifier {
         if isHidden {
             content
         } else if #available(macOS 26.0, *), !reduceTransparency {
-            if let tint {
-                content.glassEffect(glassStyle.tint(tint), in: shape)
-            } else {
-                content.glassEffect(glassStyle, in: shape)
-            }
+            let style: Glass = tint.map { glassStyle.tint($0) } ?? glassStyle
+            content.glassEffect(style, in: shape)
         } else {
             content.modifier(ClassicGlass(shape: shape, tint: tint, interactive: interactive, clear: clear))
         }

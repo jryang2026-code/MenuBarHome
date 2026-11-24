@@ -41,6 +41,8 @@ pub(crate) enum MiIOError {
     LocalNetworkDenied,
     SendFailed,
     AmbiguousActionOutcome,
+    AmbiguousWriteOutcome,
+    WriteNotSent(Box<MiIOError>),
     DeviceError { code: i64, message: String },
 }
 
@@ -62,12 +64,17 @@ impl MiIOError {
             Self::LocalNetworkDenied => "local_network_denied",
             Self::SendFailed => "send_failed",
             Self::AmbiguousActionOutcome => "ambiguous_action_outcome",
+            Self::AmbiguousWriteOutcome => "ambiguous_write_outcome",
+            Self::WriteNotSent(_) => "write_not_sent",
             Self::DeviceError { .. } => "device_error",
         }
     }
 
     pub(crate) fn is_retryable(&self) -> bool {
-        matches!(self, Self::Timeout | Self::HandshakeFailed | Self::MalformedPacket)
+        match self {
+            Self::WriteNotSent(cause) => cause.is_retryable(),
+            _ => matches!(self, Self::Timeout | Self::HandshakeFailed | Self::MalformedPacket),
+        }
     }
 
     pub(crate) fn proves_packet_crossed_permission_boundary(&self) -> bool {
@@ -120,6 +127,10 @@ impl fmt::Display for MiIOError {
             Self::AmbiguousActionOutcome => {
                 write!(f, "Local action outcome could not be confirmed")
             }
+            Self::AmbiguousWriteOutcome => {
+                write!(f, "Local property write outcome could not be confirmed")
+            }
+            Self::WriteNotSent(_) => write!(f, "Local write could not be sent"),
             Self::DeviceError { code, message } => {
                 write!(f, "Local device error ({code}): {message}")
             }

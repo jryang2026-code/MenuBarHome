@@ -98,6 +98,8 @@ public struct HAEntityState: Equatable, Sendable {
     public var state: String
     public var attributes: [String: JSONValue]
     public var lastChanged: Date?
+    var lastUpdated: Date?
+    var context: [String: JSONValue] = [:]
 
     public init(
         entityId: String,
@@ -235,6 +237,8 @@ public struct SynthesizedHome: Equatable, Sendable {
     public var freshAccountIds: Set<String> = []
     /// Monotonic configuration epoch stamped by `MiAccountsProvider` so `HomeStore` ignores buffered pre-rebuild snapshots.
     public var miAccountsEpoch: Int?
+    var devicePollCapturedEpochs: [String: ContinuousClock.Instant] = [:]
+    var facetPollCapturedEpochs: [String: ContinuousClock.Instant] = [:]
     /// A Mi Cloud refresh emits the last values before the poll returns. That snapshot must not
     /// close the away gap, because the door may have opened while polling was paused.
     public var closesAwayGap: Bool = true

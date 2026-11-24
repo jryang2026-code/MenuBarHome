@@ -600,6 +600,9 @@ public actor MiCloudClient: MiCloudAPI {
             let pid: Int?
             if case .number(let rawPid)? = item["pid"], abs(rawPid) <= 9_007_199_254_740_991 {
                 pid = Int(exactly: rawPid)
+            } else if case .string(let rawPidStr)? = item["pid"] {
+                let trimmed = rawPidStr.trimmingCharacters(in: .whitespacesAndNewlines)
+                pid = trimmed.allSatisfy(\.isASCII) ? Int(trimmed) : nil
             } else {
                 pid = nil
             }

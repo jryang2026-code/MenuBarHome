@@ -222,6 +222,8 @@ private final class URLSessionHAWebSocketConnection: HAWebSocketConnection, @unc
 }
 
 public actor HAWebSocketProvider: HomeProvider {
+    private static let compressedSubscriptionID = 4
+
     public static let capabilities: Set<HomeProviderCapability> = [
         .readSnapshot, .pushEvents, .control, .scenes, .cameras,
     ]
@@ -240,11 +242,14 @@ public actor HAWebSocketProvider: HomeProvider {
     private var activeWebSocket: (any HAWebSocketConnection)?
     private var handshakingWebSocket: (any HAWebSocketConnection)?
     private var nextWebSocketMessageId: Int = 5
-    private var pendingRefreshStateIds: Set<Int> = []
+    private var pendingRefreshStateIds: [Int: ContinuousClock.Instant] = [:]
+    private var initialPollCapturedEpochs: [Int: ContinuousClock.Instant] = [:]
     private var pendingStreamRequests: [Int: CheckedContinuation<String?, Never>] = [:]
     private var startupReplies: [Int: [String: JSONValue]] = [:]
     private var startupWaiters: [Int: CheckedContinuation<[String: JSONValue], Error>] = [:]
     private var startupFailure: Error?
+    private var legacyInitialStatesID: Int?
+    private var legacySubscriptionID: Int?
 
     var hasActiveSessionForTesting: Bool { session != nil }
     var hasActiveWebSocketForTesting: Bool { activeWebSocket != nil }
@@ -480,11 +485,11 @@ public actor HAWebSocketProvider: HomeProvider {
         guard !isShutDown else { return }
         if let ws = activeWebSocket {
             let id = allocateWebSocketMessageId()
-            pendingRefreshStateIds.insert(id)
+            pendingRefreshStateIds[id] = .now
             do {
                 try await sendJSON(ws: ws, ["id": id, "type": "get_states"])
             } catch {
-                pendingRefreshStateIds.remove(id)
+                pendingRefreshStateIds.removeValue(forKey: id)
             }
         } else if handshakingWebSocket == nil {
             restartLoop()
@@ -760,23 +765,34 @@ public actor HAWebSocketProvider: HomeProvider {
         do {
             while !Task.isCancelled {
                 let msg = try await receiveJSON(ws: ws)
+                try Task.checkCancellation()
                 if msg["type"]?.stringValue == "result",
                    let id = msg["id"]?.intValue {
                     if let waiter = pendingStreamRequests.removeValue(forKey: id) {
                         waiter.resume(returning: msg["result"]?["url"]?.stringValue)
                         continue
                     }
-                    if (1...5).contains(id) {
+                    let initialCapturedEpoch = initialPollCapturedEpochs.removeValue(forKey: id)
+                    let isInitialStates = id == legacyInitialStatesID
+                    let isStartup = (1...Self.compressedSubscriptionID).contains(id)
+                        || isInitialStates || id == legacySubscriptionID
+                    if isStartup {
                         deliverStartupReply(id: id, message: msg)
                     }
-                    let isRefresh = pendingRefreshStateIds.remove(id) != nil
-                    if !isRefresh && !(1...4).contains(id) {
-                        if !(1...5).contains(id) {
+                    let refreshCapturedEpoch = pendingRefreshStateIds.removeValue(forKey: id)
+                    let isRefresh = refreshCapturedEpoch != nil
+                    if !isRefresh && !isInitialStates && !(1...3).contains(id) {
+                        if !isStartup {
                             logger.debug("Ignoring Home Assistant result id \(id, privacy: .public) with no open request")
                         }
                         continue
                     }
-                    if let home = try snapshot.receive(msg, isRefreshStatesResult: isRefresh, typePrunePolicy: typePrunePolicyLoader()) {
+                    if let home = try snapshot.receive(
+                        msg, isInitialStatesResult: isInitialStates,
+                        isRefreshStatesResult: isRefresh,
+                        typePrunePolicy: typePrunePolicyLoader(),
+                        pollCapturedEpoch: initialCapturedEpoch ?? refreshCapturedEpoch
+                    ) {
                         coalesceTask?.cancel()
                         coalesceTask = nil
                         hasPendingCoalescedSynthesis = false
@@ -784,7 +800,15 @@ public actor HAWebSocketProvider: HomeProvider {
                         publish(home, force: isRefresh || lastEmittedHome == nil)
                     }
                 } else if msg["type"]?.stringValue == "event" {
-                    let shouldSynthesize = snapshot.ingestStateChangedEvent(msg, typePrunePolicy: typePrunePolicyLoader())
+                    let policy = typePrunePolicyLoader()
+                    let shouldSynthesize: Bool
+                    if msg["id"]?.intValue == Self.compressedSubscriptionID, legacyInitialStatesID == nil {
+                        shouldSynthesize = try snapshot.ingestCompressedStates(msg["event"], typePrunePolicy: policy)
+                    } else if let legacySubscriptionID, msg["id"]?.intValue == legacySubscriptionID {
+                        shouldSynthesize = snapshot.ingestStateChangedEvent(msg, typePrunePolicy: policy, capturedEpoch: .now)
+                    } else {
+                        continue
+                    }
                     for ring in snapshot.takeDoorbellRings() {
                         emitEvent?(.doorbellRang(ring))
                     }
@@ -867,34 +891,42 @@ public actor HAWebSocketProvider: HomeProvider {
         }
     }
 
-    func fetchInitialRegistries(ws: any HAWebSocketConnection) async throws {
+    private func fetchInitialRegistries(ws: any HAWebSocketConnection) async throws {
         try await sendJSON(ws: ws, ["id": 1, "type": "config/area_registry/list"])
         try await sendJSON(ws: ws, ["id": 2, "type": "config/device_registry/list"])
         try await sendJSON(ws: ws, ["id": 3, "type": "config/entity_registry/list"])
-        try await sendJSON(ws: ws, ["id": 4, "type": "get_states"])
-        try await sendJSON(ws: ws, [
-            "id": 5,
-            "type": "subscribe_events",
-            "event_type": "state_changed"
-        ])
-        _ = try await collectInitialRegistryReplies()
+        try await sendJSON(ws: ws, ["id": Self.compressedSubscriptionID, "type": "subscribe_entities"])
+        let subscription = try await awaitStartupReply(id: Self.compressedSubscriptionID)
+        var replyIDs = [1, 2, 3]
+        if subscription["success"]?.boolValue == false {
+            // A refresh or heartbeat can use the socket while the probe is in flight.
+            let statesID = allocateWebSocketMessageId()
+            legacyInitialStatesID = statesID
+            initialPollCapturedEpochs[statesID] = .now
+            try await sendJSON(ws: ws, ["id": statesID, "type": "get_states"])
+            let subscriptionID = allocateWebSocketMessageId()
+            legacySubscriptionID = subscriptionID
+            try await sendJSON(ws: ws, [
+                "id": subscriptionID,
+                "type": "subscribe_events",
+                "event_type": "state_changed"
+            ])
+            replyIDs += [statesID, subscriptionID]
+        }
+        _ = try await collectInitialRegistryReplies(ids: replyIDs)
     }
 
-    func collectInitialRegistryReplies() async throws -> [[String: JSONValue]] {
-        async let areasReply = awaitStartupReply(id: 1)
-        async let devicesReply = awaitStartupReply(id: 2)
-        async let entitiesReply = awaitStartupReply(id: 3)
-        async let statesReply = awaitStartupReply(id: 4)
-        async let subscribeReply = awaitStartupReply(id: 5)
-        let r1 = try await areasReply
-        let r2 = try await devicesReply
-        let r3 = try await entitiesReply
-        let r4 = try await statesReply
-        let r5 = try await subscribeReply
-        return [r1, r2, r3, r4, r5]
+    func collectInitialRegistryReplies(ids: [Int]) async throws -> [[String: JSONValue]] {
+        var replies: [[String: JSONValue]] = []
+        for id in ids {
+            replies.append(try await awaitStartupReply(id: id))
+        }
+        return replies
     }
 
     func resetStartupReplyState() {
+        legacyInitialStatesID = nil
+        legacySubscriptionID = nil
         startupReplies.removeAll()
         startupFailure = nil
         failPendingStartupReplies(with: CancellationError())
@@ -902,7 +934,10 @@ public actor HAWebSocketProvider: HomeProvider {
     }
 
     func deliverStartupReply(id: Int, message: [String: JSONValue]) {
-        guard message["success"]?.boolValue == true else {
+        let isUnsupported = id == Self.compressedSubscriptionID
+            && message["success"]?.boolValue == false
+            && message["error"]?["code"]?.stringValue == "unknown_command"
+        guard message["success"]?.boolValue == true || isUnsupported else {
             failPendingStartupReplies(with: HAHomeSnapshot.ReadError.rejected)
             return
         }

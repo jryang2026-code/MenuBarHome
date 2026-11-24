@@ -111,7 +111,7 @@ impl HardwareDeviceId {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 struct DeviceSession {
     ip: String, token: [u8; 16], unknown: u32, device_id32: u32,
     base_stamp: u32, handshake_at: Instant, last_sent_stamp: Option<u32>,
@@ -146,7 +146,7 @@ pub(crate) struct MiIOClient {
     inner: Mutex<ClientInner>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct MiIOEndpointInput { pub(crate) did: String, pub(crate) ip: String, pub(crate) token: String }
 #[derive(Debug, Clone, Deserialize)]
@@ -158,7 +158,7 @@ pub(crate) struct MiIOPropWriteInput { pub(crate) did: String, pub(crate) siid: 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct MiIOActionCallInput { pub(crate) did: String, pub(crate) siid: i64, pub(crate) aiid: i64, pub(crate) inputs: Vec<Value> }
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct MiIODiscoveryCandidateInput { pub(crate) did: String, pub(crate) token: String }
 
@@ -220,6 +220,15 @@ impl MiIOClient {
         self.lock_inner().last_rtt_ms.get(did).copied()
     }
 
+    /// Clears cached LAN handshake sessions and RTT estimates after a network change or
+    /// system resume so stale IPs and device stamps are re-handshaked cleanly.
+    pub(crate) fn reset_sessions(&self) {
+        let mut g = self.lock_inner();
+        g.sessions.clear();
+        g.known_hardware_ids.clear();
+        g.last_rtt_ms.clear();
+    }
+
     pub(crate) async fn shutdown(&self) {
         if self.shut_down.swap(true, Ordering::AcqRel) { return; }
         {
@@ -264,24 +273,31 @@ impl MiIOClient {
 
     pub(crate) async fn set_props(&self, writes: &[MiIOPropWriteInput], ep: &MiIOEndpointInput) -> Result<MiIOWriteOutput, MiIOError> {
         if writes.is_empty() { return Ok(MiIOWriteOutput { rtt_ms: self.last_rtt_ms(&ep.did) }); }
-        let (token, host) = Self::validate_endpoint(ep)?;
+        let (token, host) = Self::validate_endpoint(ep).map_err(write_not_sent)?;
         let lock = self.did_lock(&ep.did);
         let _g = lock.lock().await;
-        for chunk in writes.chunks(DEFAULT_MAX_BATCH_SIZE) {
+        for (index, chunk) in writes.chunks(DEFAULT_MAX_BATCH_SIZE).enumerate() {
             let params: Vec<Value> = chunk.iter().map(|w| json!({ "did": w.did, "siid": w.siid, "piid": w.piid, "value": w.value })).collect();
-            let result = self.send_with_retry(&ep.did, &host, token, "set_properties", Value::Array(params), true).await?;
-            check_write_codes(result.as_array().map(Vec::as_slice).unwrap_or(&[]))?;
+            let acknowledgement = self.send_with_retry(&ep.did, &host, token, "set_properties", Value::Array(params), false).await
+                .and_then(|result| check_property_acknowledgements(&result, chunk));
+            if let Err(error) = acknowledgement {
+                // Earlier chunks may already have changed the device, even if this chunk was never sent.
+                if index > 0 || error == MiIOError::AmbiguousActionOutcome {
+                    return Err(MiIOError::AmbiguousWriteOutcome);
+                }
+                return Err(error);
+            }
         }
         Ok(MiIOWriteOutput { rtt_ms: self.last_rtt_ms(&ep.did) })
     }
 
     pub(crate) async fn call_action(&self, call: &MiIOActionCallInput, ep: &MiIOEndpointInput) -> Result<MiIOActionOutput, MiIOError> {
-        let (token, host) = Self::validate_endpoint(ep)?;
+        let (token, host) = Self::validate_endpoint(ep).map_err(write_not_sent)?;
         let lock = self.did_lock(&ep.did);
         let _g = lock.lock().await;
         let params = json!({ "did": call.did, "siid": call.siid, "aiid": call.aiid, "in": call.inputs });
         let result = self.send_with_retry(&ep.did, &host, token, "action", params, false).await?;
-        if let Some(items) = result.as_array() { check_write_codes(items)?; } else { check_write_codes(std::slice::from_ref(&result))?; }
+        check_action_acknowledgement(&result, call)?;
         Ok(MiIOActionOutput { result, rtt_ms: self.last_rtt_ms(&ep.did) })
     }
 
@@ -585,13 +601,17 @@ impl MiIOClient {
     }
 
     async fn send_once(&self, did: &str, host: &str, token: [u8; 16], method: &str, params: &Value, allow_post_send_retry: bool) -> Result<Value, MiIOError> {
-        let mut session = self.ensure_session(did, host, token).await?;
+        let pre_send_error = |error| {
+            if allow_post_send_retry { error } else { write_not_sent(error) }
+        };
+        let mut session = self.ensure_session(did, host, token).await.map_err(pre_send_error)?;
         let stamp = session.next_stamp(Instant::now());
         self.lock_inner().sessions.insert(did.to_string(), session.clone());
 
         let req_id = self.allocate_request_id();
-        let payload = serde_json::to_vec(&json!({ "id": req_id, "method": method, "params": params })).map_err(|_| MiIOError::EncryptionFailed)?;
-        let packet = encode_packet(session.device_id32, stamp, &token, &payload, session.unknown)?;
+        let payload = serde_json::to_vec(&json!({ "id": req_id, "method": method, "params": params })).map_err(|_| pre_send_error(MiIOError::EncryptionFailed))?;
+        let packet = encode_packet(session.device_id32, stamp, &token, &payload, session.unknown)
+            .map_err(pre_send_error)?;
         let send_start = Instant::now();
         let json: Value = match self.transport.send(packet, host.to_string(), MIIO_PORT, REQUEST_TIMEOUT).await.and_then(|resp| {
             let rtt = send_start.elapsed().as_millis().max(1) as u64;
@@ -607,7 +627,7 @@ impl MiIOClient {
                 if err == MiIOError::LocalNetworkDenied { self.lock_inner().sessions.remove(did); }
                 if !allow_post_send_retry {
                     if matches!(err, MiIOError::TransportUnavailable | MiIOError::LocalNetworkDenied | MiIOError::SendFailed | MiIOError::ShutDown) {
-                        return Err(err);
+                        return Err(write_not_sent(err));
                     }
                     self.lock_inner().sessions.remove(did);
                     return Err(MiIOError::AmbiguousActionOutcome);
@@ -628,8 +648,7 @@ impl MiIOClient {
         }
         if let Some(err_obj) = json.get("error").and_then(Value::as_object) {
             let code = err_obj.get("code").and_then(Value::as_i64).unwrap_or(-1);
-            let message = err_obj.get("message").and_then(Value::as_str).unwrap_or("device error").to_string();
-            return Err(MiIOError::DeviceError { code, message });
+            return Err(device_rejected(code));
         }
         Ok(json.get("result").cloned().unwrap_or(Value::Null))
     }
@@ -651,20 +670,105 @@ fn parse_prop_values(result: &Value, default_did: &str) -> Vec<MiIOPropValueOutp
     }).collect()
 }
 
-fn check_write_codes(items: &[Value]) -> Result<(), MiIOError> {
-    for item in items {
-        let code = item.get("code").and_then(Value::as_i64).unwrap_or(0);
-        if code < 0 {
-            return Err(MiIOError::DeviceError { code, message: "Device did not respond or is offline".to_string() });
-        }
+fn write_not_sent(error: MiIOError) -> MiIOError {
+    if error == MiIOError::ShutDown {
+        error
+    } else {
+        MiIOError::WriteNotSent(Box::new(error))
     }
-    Ok(())
+}
+
+fn device_rejected(code: i64) -> MiIOError {
+    MiIOError::DeviceError { code, message: "Device rejected the local request".into() }
+}
+
+fn check_property_acknowledgements(result: &Value, writes: &[MiIOPropWriteInput]) -> Result<(), MiIOError> {
+    let unknown = MiIOError::AmbiguousWriteOutcome;
+    let items = result.as_array().filter(|items| !items.is_empty() && items.len() == writes.len())
+        .ok_or(unknown.clone())?;
+    let mut acknowledged = HashSet::new();
+    let mut rejection = None;
+    let mut accepted = false;
+    for (index, item) in items.iter().enumerate() {
+        let code = item.get("code").and_then(Value::as_i64).ok_or(unknown.clone())?;
+        let matched = match (item.get("siid"), item.get("piid")) {
+            (Some(siid), Some(piid)) => writes.iter().position(|write| {
+                Some(write.siid) == siid.as_i64() && Some(write.piid) == piid.as_i64()
+                    && ack_did_matches(item, &write.did)
+            }).ok_or(unknown.clone())?,
+            (None, None) if ack_did_matches(item, &writes[index].did) => index,
+            _ => return Err(unknown),
+        };
+        if !acknowledged.insert(matched) { return Err(unknown); }
+        if code < 0 { rejection.get_or_insert(code); } else { accepted = true; }
+    }
+    match rejection {
+        Some(_) if accepted => Err(unknown),
+        Some(code) => Err(device_rejected(code)),
+        None => Ok(()),
+    }
+}
+
+fn ack_did_matches(item: &Value, did: &str) -> bool {
+    match item.get("did") {
+        None => true,
+        Some(Value::String(value)) => value == did,
+        Some(Value::Number(value)) => value.to_string() == did,
+        _ => false,
+    }
+}
+
+fn check_action_acknowledgement(result: &Value, call: &MiIOActionCallInput) -> Result<(), MiIOError> {
+    let unknown = MiIOError::AmbiguousActionOutcome;
+    let item = match result.as_array() {
+        Some(items) if items.len() == 1 => &items[0],
+        Some(_) => return Err(unknown),
+        None => result,
+    };
+    let fields = item.as_object().ok_or(unknown.clone())?;
+    if !ack_did_matches(item, &call.did)
+        || fields.get("siid").is_some_and(|siid| siid.as_i64() != Some(call.siid))
+        || fields.get("aiid").is_some_and(|aiid| aiid.as_i64() != Some(call.aiid))
+    {
+        return Err(unknown);
+    }
+    match fields.get("code") {
+        Some(code) => match code.as_i64() {
+            Some(code) if code < 0 => Err(device_rejected(code)),
+            Some(_) => Ok(()),
+            None => Err(unknown),
+        },
+        None if fields.get("out").and_then(Value::as_array).is_some_and(|out| !out.is_empty())
+            || contains_stream_url(item) => Ok(()),
+        None => Err(unknown),
+    }
+}
+
+fn contains_stream_url(value: &Value) -> bool {
+    match value {
+        Value::String(value) => {
+            let value = value.trim();
+            value.split_once("://").is_some_and(|(scheme, _)| {
+                (scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https"))
+                    && reqwest::Url::parse(value).is_ok_and(|url| url.has_host())
+            })
+        }
+        Value::Array(items) => items.iter().any(contains_stream_url),
+        Value::Object(fields) => fields.values().any(contains_stream_url),
+        _ => false,
+    }
 }
 
 // MARK: - Tauri State & Commands
 
 #[derive(Default)]
 pub(crate) struct MiIOState { client: Arc<MiIOClient> }
+
+impl MiIOState {
+    pub(crate) fn reset_for_network_change(&self) {
+        self.client.reset_sessions();
+    }
+}
 
 #[tauri::command]
 pub(crate) async fn miio_handshake(state: tauri::State<'_, MiIOState>, endpoint: MiIOEndpointInput) -> Result<MiIOHandshakeOutput, MiIOCommandError> {
@@ -775,6 +879,112 @@ mod tests {
     }
 
     #[test]
+    fn property_writes_need_one_explicit_code_per_requested_property() {
+        let writes = [1, 2].map(|piid| MiIOPropWriteInput {
+            did: "1001".into(), siid: 2, piid, value: json!(true),
+        });
+        for result in [
+            Value::Null,
+            json!({}),
+            json!([]),
+            json!([{ "code": 0 }]),
+            json!([{ "code": 0 }, {}]),
+            json!([{ "code": 0 }, { "code": 0.5 }]),
+            json!([{ "code": 0 }, { "code": -1 }]),
+            json!([{ "siid": 2, "piid": 1, "code": 0 }, { "siid": 2, "piid": 1, "code": 0 }]),
+            json!([{ "siid": 2, "piid": 1, "code": 0 }, { "did": "other", "siid": 2, "piid": 2, "code": 0 }]),
+        ] {
+            assert_eq!(check_property_acknowledgements(&result, &writes), Err(MiIOError::AmbiguousWriteOutcome));
+        }
+        assert_eq!(check_property_acknowledgements(&json!([{ "code": -1 }, { "code": -2 }]), &writes), Err(device_rejected(-1)));
+        assert_eq!(check_property_acknowledgements(&json!([
+            { "did": 1001, "siid": 2, "piid": 2, "code": 0 },
+            { "did": "1001", "siid": 2, "piid": 1, "code": 1 },
+        ]), &writes), Ok(()));
+    }
+
+    #[test]
+    fn actions_require_explicit_code_or_output() {
+        let call = MiIOActionCallInput { did: "1001".into(), siid: 2, aiid: 1, inputs: vec![] };
+        for result in [Value::Null, json!([]), json!({}), json!([{}]), json!({ "out": [] }),
+            json!({ "code": null, "out": [1] }), json!({ "code": 0.5 }),
+            json!({ "message": "offline http://device/stream" }), json!({ "aiid": 2, "code": 0 })] {
+            assert_eq!(check_action_acknowledgement(&result, &call), Err(MiIOError::AmbiguousActionOutcome));
+        }
+        for result in [json!({ "code": 0 }), json!([{ "code": 0 }]), json!({ "out": [1] }),
+            json!({ "out": { "url": "https://device/stream" } })] {
+            assert_eq!(check_action_acknowledgement(&result, &call), Ok(()));
+        }
+        assert_eq!(check_action_acknowledgement(&json!({ "code": -1, "out": [1] }), &call), Err(device_rejected(-1)));
+    }
+
+    #[test]
+    fn property_timeout_after_send_is_not_retried() {
+        let token = "0123456789abcdef0123456789abcdef";
+        let tok = validate_token(token).unwrap();
+        let sends = Arc::new(AtomicU64::new(0));
+        let sends_c = sends.clone();
+        let client = MiIOClient::new(Arc::new(MockTransport {
+            send_fn: Box::new(move |packet, _, _, _| {
+                sends_c.fetch_add(1, Ordering::SeqCst);
+                Box::pin(async move {
+                    if packet == HELLO_PACKET { return Ok(hello_reply(1001, 50, &tok)); }
+                    Err(MiIOError::Timeout)
+                })
+            }),
+            bcast_fn: Box::new(|_, _, _| Box::pin(async { Ok(vec![]) })),
+        }));
+        let endpoint = MiIOEndpointInput { did: "1001".into(), ip: "192.168.1.20".into(), token: token.into() };
+        let writes = [MiIOPropWriteInput { did: "1001".into(), siid: 2, piid: 1, value: json!(true) }];
+        assert_eq!(tauri::async_runtime::block_on(client.set_props(&writes, &endpoint)).unwrap_err(), MiIOError::AmbiguousWriteOutcome);
+        assert_eq!(sends.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn later_chunk_send_failure_cannot_replay_an_acknowledged_chunk() {
+        let token = "0123456789abcdef0123456789abcdef";
+        let tok = validate_token(token).unwrap();
+        let sends = AtomicU64::new(0);
+        let client = MiIOClient::new(Arc::new(MockTransport {
+            send_fn: Box::new(move |packet, _, _, _| {
+                let n = sends.fetch_add(1, Ordering::SeqCst);
+                Box::pin(async move {
+                    if packet == HELLO_PACKET { return Ok(hello_reply(1001, 50, &tok)); }
+                    if n > 1 { return Err(MiIOError::SendFailed); }
+                    let (hdr, payload) = decode_packet(&packet, &tok).unwrap();
+                    let req: Value = serde_json::from_slice(&payload).unwrap();
+                    let rows = vec![json!({ "code": 0 }); DEFAULT_MAX_BATCH_SIZE];
+                    let reply = serde_json::to_vec(&json!({ "id": req["id"], "result": rows })).unwrap();
+                    encode_packet(hdr.device_id, hdr.stamp + 1, &tok, &reply, 0)
+                })
+            }),
+            bcast_fn: Box::new(|_, _, _| Box::pin(async { Ok(vec![]) })),
+        }));
+        let endpoint = MiIOEndpointInput { did: "1001".into(), ip: "192.168.1.20".into(), token: token.into() };
+        let writes: Vec<_> = (1..=DEFAULT_MAX_BATCH_SIZE as i64 + 1).map(|piid| MiIOPropWriteInput {
+            did: "1001".into(), siid: 2, piid, value: json!(true),
+        }).collect();
+        assert_eq!(tauri::async_runtime::block_on(client.set_props(&writes, &endpoint)).unwrap_err(), MiIOError::AmbiguousWriteOutcome);
+    }
+
+    #[test]
+    fn handshake_timeout_is_a_write_not_sent() {
+        let client = MiIOClient::new(Arc::new(MockTransport {
+            send_fn: Box::new(move |packet, _, _, _| {
+                assert_eq!(packet, HELLO_PACKET);
+                Box::pin(async { Err(MiIOError::Timeout) })
+            }),
+            bcast_fn: Box::new(|_, _, _| Box::pin(async { Ok(vec![]) })),
+        }));
+        let endpoint = MiIOEndpointInput {
+            did: "1001".into(), ip: "192.168.1.20".into(), token: "0123456789abcdef0123456789abcdef".into(),
+        };
+        let call = MiIOActionCallInput { did: "1001".into(), siid: 2, aiid: 1, inputs: vec![] };
+        let error = tauri::async_runtime::block_on(client.call_action(&call, &endpoint)).unwrap_err();
+        assert_eq!(error.to_command_error().code, "write_not_sent");
+    }
+
+    #[test]
     fn discovery_keeps_validated_replies_when_wave_times_out_444() {
         let (tok_a_hex, tok_b_hex) = ("0123456789abcdef0123456789abcdef", "deadbeefcafebabe1122334455667788");
         let (tok_a, tok_b) = (validate_token(tok_a_hex).unwrap(), validate_token(tok_b_hex).unwrap());
@@ -814,5 +1024,45 @@ mod tests {
         )).unwrap();
         assert_eq!(discovered.get("1001").map(String::as_str), Some("192.168.1.10"));
         assert!(!discovered.contains_key("2002"));
+    }
+
+    #[test]
+    fn reset_sessions_clears_cached_handshakes_so_next_call_rehandshakes() {
+        let tok_hex = "0123456789abcdef0123456789abcdef";
+        let tok = validate_token(tok_hex).unwrap();
+        let hellos = Arc::new(AtomicU64::new(0));
+        let hellos_cb = hellos.clone();
+        let client = MiIOClient::new(Arc::new(MockTransport {
+            send_fn: Box::new(move |pkt, _, _, _| {
+                let hellos = hellos_cb.clone();
+                Box::pin(async move {
+                    if pkt == HELLO_PACKET {
+                        hellos.fetch_add(1, Ordering::SeqCst);
+                        return Ok(hello_reply(42, 100, &tok));
+                    }
+                    let (hdr, pt) = decode_packet(&pkt, &tok).unwrap();
+                    let req: Value = serde_json::from_slice(&pt).unwrap();
+                    let resp = serde_json::to_vec(&json!({
+                        "id": req["id"],
+                        "result": [{ "did": "42", "siid": 2, "piid": 1, "code": 0, "value": true }]
+                    })).unwrap();
+                    Ok(encode_packet(hdr.device_id, hdr.stamp + 1, &tok, &resp, 0).unwrap())
+                })
+            }),
+            bcast_fn: Box::new(|_, _, _| Box::pin(async { Ok(Vec::new()) })),
+        }));
+        let ep = MiIOEndpointInput { did: "42".into(), ip: "192.168.1.50".into(), token: tok_hex.into() };
+        let key = [MiIOPropKeyInput { did: "42".into(), siid: 2, piid: 1 }];
+        tauri::async_runtime::block_on(async {
+            client.get_props(&key, &ep).await.unwrap();
+            client.get_props(&key, &ep).await.unwrap();
+            assert_eq!(hellos.load(Ordering::SeqCst), 1);
+
+            client.reset_sessions();
+            assert_eq!(client.last_rtt_ms("42"), None);
+
+            client.get_props(&key, &ep).await.unwrap();
+            assert_eq!(hellos.load(Ordering::SeqCst), 2);
+        });
     }
 }

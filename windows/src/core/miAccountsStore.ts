@@ -1335,6 +1335,7 @@ export async function refreshMiAccountsConcurrently(options: RefreshMiAccountsOp
       // One plan per round: the same keys feed LAN/cloud batching, single source, dual source and
       // every account, and a closed category's alert-only devices keep just the reads they need.
       const propKeys = prune ? [...prune.readKeys] : collectAccountMiotPropKeys(filtered.devices, specs);
+      if (!options.clientFactory) client.withLAN(filtered.devices, discovered.rooms);
       const values = propKeys.length > 0
           ? await client.getProps(propKeys)
           : new Map<string, unknown>();
@@ -1547,6 +1548,7 @@ export class MultiAccountMiCloudProvider implements HomeCommandProvider {
       readonly sceneForEntity?: (entityId: string) => HomeScene | undefined;
       readonly transport: HttpTransport;
       readonly storage?: Storage | null;
+      readonly clientForSession?: (session: MiSession) => MiCloudClient;
     },
   ) {}
 
@@ -1611,13 +1613,15 @@ export class MultiAccountMiCloudProvider implements HomeCommandProvider {
         options.beforeSend?.();
       }
       attemptCount += 1;
-      const client = new MiCloudClient(account.session, this.dependencies.transport);
+      const client = this.dependencies.clientForSession?.(account.session) ??
+        new MiCloudClient(account.session, this.dependencies.transport);
+      const beforeFallback = options.beforeFallback ?? options.beforeSend;
       try {
         if (write.kind === "action") {
-          await client.action(write.call);
+          await client.action(write.call, beforeFallback);
           return null;
         }
-        await client.setProps(write.writes);
+        await client.setProps(write.writes, beforeFallback);
         if (!options.readBackPower) return null;
         const power = write.writes.find((w) => typeof w.value === "boolean");
         if (!power) return null;

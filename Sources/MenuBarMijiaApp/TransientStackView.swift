@@ -134,6 +134,7 @@ struct TransientStackView: View {
                     .padding(.horizontal, 12)
                 }
             }
+            .tahoeHoverHitTarget()
             .contentShape(Rectangle())
             .onHover { hovering in handleHover(hovering) }
             .padding(.bottom, 42)

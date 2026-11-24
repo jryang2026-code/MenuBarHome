@@ -63,6 +63,7 @@ public struct OptimisticLockEntry: Equatable, Sendable {
     public var until: Date
     public var untilInstant: ContinuousClock.Instant?
     public var revision: UInt64
+    var writeEpoch: ContinuousClock.Instant?
 
     public init(until: Date, untilInstant: ContinuousClock.Instant? = nil, revision: UInt64) {
         self.until = until

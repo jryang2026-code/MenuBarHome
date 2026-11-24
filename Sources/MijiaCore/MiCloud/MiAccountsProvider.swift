@@ -659,6 +659,8 @@ public actor MiAccountsProvider: HomeProvider {
         var identities: [String: DeviceSourceIdentity] = [:]
         var lightGroupOwners: [String: String] = [:]
         var facetsByDevice: [String: [FacetControl]] = [:]
+        var deviceCaptures: [String: ContinuousClock.Instant] = [:]
+        var facetCaptures: [String: ContinuousClock.Instant] = [:]
         var transportDiagnosticsByDevice: [String: DeviceTransportDiagnostics] = [:]
         var closesAwayGap = true
         for (account, home) in reported {
@@ -689,6 +691,8 @@ public actor MiAccountsProvider: HomeProvider {
                    let existingRank = bestRankByDeviceId[device.id] {
                     if rank < existingRank {
                         devices[existingIndex] = device
+                        deviceCaptures[device.id] = home.devicePollCapturedEpochs[device.id]
+                        facetCaptures[device.id] = home.facetPollCapturedEpochs[device.id]
                         bestRankByDeviceId[device.id] = rank
                         winningAccountByDeviceId[device.id] = account.id
                         if let identity = home.deviceIdentities[device.id] {
@@ -709,6 +713,8 @@ public actor MiAccountsProvider: HomeProvider {
                     winningAccountByDeviceId[device.id] = account.id
                     deviceIds.insert(device.id)
                     devices.append(device)
+                    deviceCaptures[device.id] = home.devicePollCapturedEpochs[device.id]
+                    facetCaptures[device.id] = home.facetPollCapturedEpochs[device.id]
                     if let identity = home.deviceIdentities[device.id] {
                         identities[device.id] = identity
                     }
@@ -762,6 +768,8 @@ public actor MiAccountsProvider: HomeProvider {
         merged.miAccountsEpoch = configEpoch
         merged.deviceIdentities = identities
         merged.deviceFacets = facetsByDevice
+        merged.devicePollCapturedEpochs = deviceCaptures
+        merged.facetPollCapturedEpochs = facetCaptures
         merged.deviceTransportDiagnostics = transportDiagnosticsByDevice
         merged.localNetworkBlockedFeatures = lastLocalNetworkBlocks
         merged.lightGroupOwners = lightGroupOwners.filter {

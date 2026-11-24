@@ -1,3 +1,5 @@
+import { MiIOUnconfirmedWriteError } from "../core/miCloud/localMiIO.js";
+import { getCachedXiaomiTopology, miSessionFingerprint } from "../core/pollingPolicy.js";
 import { miSceneAccount } from "../core/miCloud/scenes.js";
 import { requestMiSceneConfirmation } from "./sceneConfirmation.js";
 import { isWorkstationLockBlockingControl } from "./transport.js";
@@ -49,6 +51,7 @@ import {
   MiotSynthesizer,
   type MiDeviceRecord,
   type MiRoom,
+  type MiSession,
   type MiotPropKey,
 } from "../core/miCloudClient.js";
 import { facetTitle, facetValue } from "../core/miotFacetText.js";
@@ -608,7 +611,7 @@ export function scheduleEchoReadBack(
       resolvedSession &&
       host.specResolver &&
       typeof host.specResolver.resolve === "function" &&
-      host.transport
+      typeof host.transport === "function"
     ) {
       const session = resolvedSession;
       const record = buildSingleDeviceMiRecord(currentDev, host.deviceFacets?.[deviceId]);
@@ -619,7 +622,8 @@ export function scheduleEchoReadBack(
         ...MiotSynthesizer.requiredProps(record, spec),
         ...MiotSynthesizer.facetProps(record, spec),
       ]);
-      const client = new MiCloudClient(session, host.transport);
+      const client = xiaomiClientForHost(host, session);
+      const { pollCapturedEpoch } = host.sourceEpoch.capture();
       const values =
         propKeys.length > 0 ? await client.getProps(propKeys) : new Map<string, unknown>();
       if (!isStillCurrent() || !isHostMiSessionEnabled(host, session)) return;
@@ -702,6 +706,7 @@ export function scheduleEchoReadBack(
         nextIncomingFacets,
         Date.now(),
         new Set([deviceId]),
+        pollCapturedEpoch,
       );
       host.devices = merged.devices;
       host.deviceFacets = merged.deviceFacets;
@@ -816,7 +821,9 @@ function beginCoverOptimisticWrite(
     effectiveCommandBackend(host, command),
     facets,
   );
+  host.sourceEpoch.advance("localWrite");
   lockOptimistic(host, device.id, COVER_OPTIMISTIC_LOCK_DURATION_MS, {
+    writeEpoch: host.sourceEpoch.capture().pollCapturedEpoch,
     coverOriginPosition: originPosition,
     baselineDevice: priorDevice,
     baselineFacets: priorFacets,
@@ -921,6 +928,16 @@ export async function applyCommand(
   }
   const targetDev =
     targetDeviceId !== null ? (host.devices.find((d) => d.id === targetDeviceId) ?? null) : null;
+  if (targetDev && !targetDev.isOnline) {
+    const text = controlFailureUserMessage(null, {
+      deviceName: displayNameForDevice(host, targetDev),
+      isDeviceOnline: false,
+      languagePreference: host.settings.interfaceLanguage,
+    });
+    host.replyBanner = { text: text ?? t("控制失败"), source: t("控制失败"), isError: true };
+    renderHostImmediate(host);
+    return false;
+  }
   const claim = targetDeviceId !== null ? claimDeviceWrite(host, targetDeviceId) : null;
   const coverWrite = beginCoverOptimisticWrite(host, command);
   const effectiveMode = effectiveCommandBackend(host, command);
@@ -935,6 +952,9 @@ export async function applyCommand(
     if (sourceRevision !== host.sourceRevision) return false;
     const revertedCover = Boolean(coverWrite && stillOwnsWrite(host, claim));
     if (coverWrite && revertedCover) revertCoverOptimisticWrite(host, coverWrite);
+    if (error instanceof MiIOUnconfirmedWriteError && targetDeviceId !== null && stillOwnsWrite(host, claim)) {
+      scheduleDelayedReadBack(host, targetDeviceId, READ_BACK_DELAY_MS);
+    }
 
     if (isCapabilityGateError(error) || isHaBlockedRequestError(error)) {
       const gateText =
@@ -1041,6 +1061,7 @@ export async function applyCommand(
     });
   }
   host.sourceEpoch.advance("localWrite");
+  const writeEpoch = host.sourceEpoch.capture().pollCapturedEpoch;
   if (coverWrite) {
     const device = host.devices.find((item) => item.id === coverWrite.deviceId);
     if (device) restoreKindInPlace(device, coverWrite.priorDevice);
@@ -1088,6 +1109,7 @@ export async function applyCommand(
         dev.id,
         dev.kind.kind === "cover" ? COVER_OPTIMISTIC_LOCK_DURATION_MS : OPTIMISTIC_LOCK_DURATION_MS,
         {
+          writeEpoch,
           coverOriginPosition: prior.coverOrigin,
           baselineDevice: prior.baselineDevice,
           baselineFacets: prior.baselineFacets,
@@ -1206,31 +1228,38 @@ async function dispatchCloudCommand(
   const sourceRevision = host.sourceRevision;
   const homeRevision = host.homeRevision;
   const provider = homeProviderFor(host);
+  const beforeSend = () => {
+    if (sourceRevision !== host.sourceRevision || homeRevision !== host.homeRevision) {
+      throw new Error("Connection source changed");
+    }
+    if (host.settings?.connectionMode !== "demo" || isDualSourceEnabled(host)) {
+      const currentTargetId = deviceOwningEntityId(
+        host.devices,
+        host.deviceFacets ?? {},
+        originalEntityId,
+      );
+      const gateFailure = evaluateDeviceEntityWriteGateVerdict({
+        targetKind: command.kind === "activateScene" ? "scene" : "device",
+        targetIdOrEntityId: originalEntityId,
+        resolvedActiveDeviceId: currentTargetId,
+        context: buildHostCapabilityContext(host),
+        rejectUnknown: true,
+        languagePreference: host.settings?.interfaceLanguage,
+      });
+      if (gateFailure !== null) {
+        throw new CapabilityGateError(gateFailure.reason, host.settings?.interfaceLanguage);
+      }
+    }
+  };
   try {
     return await provider.execute(command, {
       readBackPower,
-      beforeSend: () => {
-        if (sourceRevision !== host.sourceRevision || homeRevision !== host.homeRevision) {
-          throw new Error("Connection source changed");
+      beforeSend,
+      beforeFallback: async () => {
+        if (await isWorkstationLockBlockingControl(host)) {
+          throw new DOMException("Control blocked while workstation is locked", "AbortError");
         }
-        if (host.settings?.connectionMode !== "demo" || isDualSourceEnabled(host)) {
-          const currentTargetId = deviceOwningEntityId(
-            host.devices,
-            host.deviceFacets ?? {},
-            originalEntityId,
-          );
-          const gateFailure = evaluateDeviceEntityWriteGateVerdict({
-            targetKind: command.kind === "activateScene" ? "scene" : "device",
-            targetIdOrEntityId: originalEntityId,
-            resolvedActiveDeviceId: currentTargetId,
-            context: buildHostCapabilityContext(host),
-            rejectUnknown: true,
-            languagePreference: host.settings?.interfaceLanguage,
-          });
-          if (gateFailure !== null) {
-            throw new CapabilityGateError(gateFailure.reason, host.settings?.interfaceLanguage);
-          }
-        }
+        beforeSend();
       },
     });
   } catch (error) {
@@ -1238,6 +1267,21 @@ async function dispatchCloudCommand(
     if (sourceRevision === host.sourceRevision) markCloudValuesStale(host);
     throw error.reason;
   }
+}
+
+function xiaomiClientForHost(host: MenuMijiaWindowsApp, session: MiSession): MiCloudClient {
+  const client = new MiCloudClient(session, host.transport);
+  const fingerprint = miSessionFingerprint(session);
+  const child = getHostMiAccountsState(host)?.children[miAccountId(session)];
+  if (child?.status.kind === "connected" && miSessionFingerprint(child.account.session) === fingerprint) {
+    return client.withLAN(child.rawDevices, child.allRooms);
+  }
+  const cached = getCachedXiaomiTopology(host);
+  if (cached?.sessionFingerprint === fingerprint && cached.sourceRevision === host.sourceRevision &&
+      cached.selectedHomeId === (host.settings.selectedHomeId ?? null)) {
+    return client.withLAN(cached.rawDevices, cached.allRooms);
+  }
+  return client;
 }
 
 function buildXiaomiHomeProvider(host: MenuMijiaWindowsApp): HomeCommandProvider {
@@ -1265,6 +1309,7 @@ function buildXiaomiHomeProvider(host: MenuMijiaWindowsApp): HomeCommandProvider
       deviceForEntity,
       sceneForEntity: sceneForEntityInSelectedHome,
       transport: host.transport,
+      clientForSession: (session) => xiaomiClientForHost(host, session),
     });
   }
   const session = host.settings.miSession ?? accounts[0]?.session ?? null;
@@ -1280,7 +1325,7 @@ function buildXiaomiHomeProvider(host: MenuMijiaWindowsApp): HomeCommandProvider
     );
   }
   return new MiCloudProvider({
-    client: new MiCloudClient(session, host.transport),
+    client: xiaomiClientForHost(host, session),
     specResolver: host.specResolver,
     deviceForEntity,
     sceneForEntity: (entityId) => miSceneAccount(entityId) === miAccountId(session)

@@ -1,3 +1,4 @@
+import { LocalMiIO, rememberMiIODeviceToken } from "./localMiIO.js";
 import { decodeMiScenes, type MiCloudScene } from "./scenes.js";
 import { t } from "../i18n.js";
 import { MiCloudCrypto } from "../miCloudCrypto.js";
@@ -23,6 +24,7 @@ export interface MiDeviceRecord {
   readonly parentDid?: string | null;
   readonly pid?: number;
   readonly localIp?: string | null;
+  readonly isShared?: boolean;
   readonly mac?: string | null;
 }
 
@@ -160,11 +162,21 @@ export class MiCloudClient {
   private readonly session: MiSession;
   private readonly transport: HttpTransport;
   private readonly userAgent: string;
+  private local: LocalMiIO | undefined;
 
   constructor(session: MiSession, transport: HttpTransport) {
     this.session = session;
     this.transport = transport;
     this.userAgent = "abcdefghijklmnoqrs-ABCDEABCDEABC APP/com.xiaomi.mihome APPV/10.5.201";
+  }
+
+  withLAN(
+    devices: readonly MiDeviceRecord[],
+    rooms: readonly MiRoom[],
+    invoke = typeof window !== "undefined" ? window.__TAURI_INTERNALS__?.invoke : undefined,
+  ): this {
+    if (invoke) this.local = new LocalMiIO(this.session, devices, rooms, invoke);
+    return this;
   }
 
   async request(api: string, data: unknown): Promise<unknown> {
@@ -297,10 +309,20 @@ export class MiCloudClient {
       asIdString(extra["parentDid"]) ??
       asIdString(extra["parent_id"]) ??
       asIdString(extra["parentId"]);
-    const pid = rec["pid"];
+    const rawPid = rec["pid"];
+    const pid =
+      typeof rawPid === "number" && Number.isSafeInteger(rawPid)
+        ? rawPid
+        : typeof rawPid === "string" && /^\s*\d+\s*$/.test(rawPid)
+          ? Number(rawPid.trim())
+          : undefined;
     const localIp = normalizeDeviceLocalIp(rec["localip"] ?? rec["localIp"]);
     const mac = normalizeDeviceMac(rec["mac"]);
-    return {
+    const shareFlag = rec["share_flag"];
+    const isShared = typeof shareFlag === "number" || typeof shareFlag === "boolean"
+      ? Boolean(shareFlag)
+      : (rec["isShared"] ?? rec["is_shared"]) === true;
+    const record: MiDeviceRecord = {
       did,
       name: typeof rec["name"] === "string" ? rec["name"] : model,
       model,
@@ -308,10 +330,13 @@ export class MiCloudClient {
       specType: typeof rec["spec_type"] === "string" ? rec["spec_type"] : null,
       ...(splitParentDid && splitSiid !== null ? { splitParentDid, splitSiid } : {}),
       ...(parentDid !== null ? { parentDid } : {}),
-      ...(typeof pid === "number" && Number.isSafeInteger(pid) ? { pid } : {}),
+      ...(pid !== undefined && Number.isSafeInteger(pid) ? { pid } : {}),
       ...(localIp !== null ? { localIp } : {}),
+      ...(isShared ? { isShared: true } : {}),
       ...(mac !== null ? { mac } : {}),
     };
+    rememberMiIODeviceToken(record, rec["token"]);
+    return record;
   }
 
   /** `home_device_list` returns its rows directly, so `device_info` is already the record array. */
@@ -696,6 +721,23 @@ export class MiCloudClient {
 
   async getProps(keys: readonly MiotPropKey[]): Promise<Map<string, unknown>> {
     const values = new Map<string, unknown>();
+    const local = this.local;
+    if (local) {
+      const groups = new Map<string, MiotPropKey[]>();
+      for (const key of keys) {
+        const group = groups.get(key.did);
+        if (group) group.push(key);
+        else groups.set(key.did, [key]);
+      }
+      await Promise.all([...groups].map(async ([did, group]) => {
+        const requested = new Set(group.map(propKeyString));
+        for (const row of await local.read(did, group)) {
+          const key = propKeyString(row);
+          if (requested.has(key)) values.set(key, row.value);
+        }
+      }));
+      keys = keys.filter((key) => !values.has(propKeyString(key)));
+    }
     const chunkSize = 100;
     for (let start = 0; start < keys.length; start += chunkSize) {
       const chunk = keys.slice(start, start + chunkSize);
@@ -708,8 +750,16 @@ export class MiCloudClient {
     return values;
   }
 
-  async setProps(writes: readonly MiotPropWrite[]): Promise<void> {
-    if (writes.length === 0) return;
+  async setProps(writes: readonly MiotPropWrite[], beforeFallback?: () => void | Promise<void>): Promise<void> {
+    const first = writes[0];
+    if (!first) return;
+    if (this.local && writes.every((write) => write.did === first.did)) {
+      const pending = this.local.write(first.did, "miio_set_props", { writes });
+      if (pending) {
+        if ((await pending).sent) return;
+        await beforeFallback?.();
+      }
+    }
     const params = writes.map((w) => ({
       did: w.did,
       siid: w.siid,
@@ -725,11 +775,17 @@ export class MiCloudClient {
     for (const item of result) MiCloudClient.checkWriteCode(item);
   }
 
-  async action(call: MiotActionCall): Promise<void> {
-    await this.callAction(call);
+  async action(call: MiotActionCall, beforeFallback?: () => void | Promise<void>): Promise<void> {
+    await this.callAction(call, beforeFallback);
   }
 
-  async callAction(call: MiotActionCall): Promise<unknown> {
+  async callAction(call: MiotActionCall, beforeFallback?: () => void | Promise<void>): Promise<unknown> {
+    const pending = this.local?.write(call.did, "miio_call_action", { call });
+    if (pending) {
+      const local = await pending;
+      if (local.sent) return local.result;
+      await beforeFallback?.();
+    }
     const result = await this.request("miotspec/action", {
       params: {
         did: call.did,

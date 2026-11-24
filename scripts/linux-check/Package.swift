@@ -9,7 +9,7 @@ let package = Package(
     .target(name: "os", dependencies: ["ThreadingShim"], path: "Shims/os"),
     .target(name: "Security", path: "Shims/Security"),
     .target(name: "CryptoKit", dependencies: [.product(name: "Crypto", package: "swift-crypto")], path: "Shims/CryptoKit"),
-    .target(name: "MijiaCore", dependencies: ["os", "Security", "CryptoKit"], path: ".work/MijiaCore", resources: [.copy("Resources/Localizations"), .copy("Resources/fallbackSpecs.json"), .copy("Resources/deviceProfiles.json"), .copy("Resources/capability-manifest.json"), .copy("Resources/deviceLabels.json"), .copy("Resources/deviceClaims.json")], swiftSettings: [.swiftLanguageMode(.v6)]),
+    .target(name: "MijiaCore", dependencies: ["os", "Security", "CryptoKit"], path: ".work/MijiaCore", resources: [.copy("Resources/Localizations"), .copy("Resources/fallbackSpecs.json"), .copy("Resources/deviceProfiles.json"), .copy("Resources/capability-manifest.json"), .copy("Resources/deviceLabels.json"), .copy("Resources/deviceClaims.json"), .copy("Resources/specPatches.json")], swiftSettings: [.swiftLanguageMode(.v6)]),
     .target(name: "KeychainTestSupport", dependencies: ["MijiaCore"], path: ".work/KeychainTestSupport", swiftSettings: [.swiftLanguageMode(.v6)]),
     .target(name: "PreferencesTestSupport", path: ".work/PreferencesTestSupport", swiftSettings: [.swiftLanguageMode(.v6)]),
     .target(name: "StateTestSupport", path: ".work/StateTestSupport", swiftSettings: [.swiftLanguageMode(.v6)]),

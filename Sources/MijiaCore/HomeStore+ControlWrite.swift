@@ -178,6 +178,8 @@ extension HomeStore {
     }
 
     func clearOptimisticRevisions(for deviceId: String) {
+        fieldWriteEpochs = fieldWriteEpochs.filter { $0.key.deviceId != deviceId }
+        facetWriteEpochs = facetWriteEpochs.filter { !$0.key.hasPrefix("\(deviceId).facet.") }
         for key in optimisticFieldRevisions.keys where key.deviceId == deviceId {
             optimisticFieldRevisions.removeValue(forKey: key)
         }
@@ -188,11 +190,13 @@ extension HomeStore {
     }
 
     func makeOptimisticEntry(duration: Duration, revision: UInt64) -> OptimisticLockEntry {
-        OptimisticLockEntry(
+        var entry = OptimisticLockEntry(
             until: optimisticNow().addingTimeInterval(duration.optimisticTimeInterval),
             untilInstant: hasCustomOptimisticNow ? nil : ContinuousClock.now.advanced(by: duration),
             revision: revision
         )
+        entry.writeEpoch = writeEpochNow()
+        return entry
     }
 
     func isOptimisticEntryActive(
@@ -224,6 +228,8 @@ extension HomeStore {
             manualWriteSessions.removeAll()
             optimisticFieldLocks.removeAll()
             optimisticFacetLocks.removeAll()
+            fieldWriteEpochs.removeAll()
+            facetWriteEpochs.removeAll()
             optimisticFieldRevisions.removeAll()
             optimisticFacetRevisions.removeAll()
             optimisticLockRevision.removeAll()
@@ -308,6 +314,7 @@ extension HomeStore {
         }
         let entry = makeOptimisticEntry(duration: duration, revision: rev)
         for field in targetFields {
+            fieldWriteEpochs[.field(deviceId, field)] = entry.writeEpoch
             optimisticFieldLocks[.field(deviceId, field)] = entry
             optimisticFieldRevisions[.field(deviceId, field)] = rev
         }
@@ -327,7 +334,9 @@ extension HomeStore {
         if bumpDeviceRevision {
             optimisticLockRevision[deviceId] = rev
         }
-        optimisticFacetLocks[key] = makeOptimisticEntry(duration: duration, revision: rev)
+        let entry = makeOptimisticEntry(duration: duration, revision: rev)
+        facetWriteEpochs[key] = entry.writeEpoch
+        optimisticFacetLocks[key] = entry
         optimisticFacetRevisions[key] = rev
         return rev
     }
@@ -833,7 +842,7 @@ extension HomeStore {
         lock: Duration?,
         preserveManualDebounces: Bool = false
     ) -> OptimisticWrite {
-        guard let updated, let idx = devices.firstIndex(where: { $0.id == previous.id }) else {
+        guard let updated, let idx = devices.firstIndex(where: { $0.id == previous.id && $0.isOnline }) else {
             return OptimisticWrite(deviceId: previous.id, previous: previous, revision: nil, isShown: false)
         }
         let rawChanged = OptimisticField.changedFields(from: previous, to: updated)
@@ -880,7 +889,9 @@ extension HomeStore {
         } else if !changed.isEmpty {
             let bumped = (optimisticLockRevision[previous.id] ?? 0) &+ 1
             optimisticLockRevision[previous.id] = bumped
+            let writeEpoch = writeEpochNow()
             for field in changed {
+                fieldWriteEpochs[.field(previous.id, field)] = writeEpoch
                 optimisticFieldRevisions[.field(previous.id, field)] = bumped
             }
             revision = bumped
@@ -1062,6 +1073,10 @@ extension HomeStore {
               lgClientServes(liveDevice) == lgClientServes(previous),
               !rejectWritesBlockedByMiSession(needsMi: !lgClientServes(liveDevice)),
               !rejectControlWhileLocked() else { return }
+        guard liveDevice.isOnline else {
+            showToast(ControlFailure.deviceOffline.message(deviceName: liveDevice.name, adjustment: debounceKey != nil), isError: true)
+            return
+        }
         let context = controlContextID
         let modalContext = captureModalDeviceContext(for: liveDevice)
         guard let updated else {
@@ -1150,7 +1165,9 @@ extension HomeStore {
 
         let rev = (optimisticLockRevision[deviceId] ?? 0) &+ 1
         optimisticLockRevision[deviceId] = rev
+        let writeEpoch = writeEpochNow()
         for field in patchFields {
+            fieldWriteEpochs[.field(deviceId, field)] = writeEpoch
             optimisticFieldRevisions[.field(deviceId, field)] = rev
         }
         let initialLockEntry = lock.map { makeOptimisticEntry(duration: $0, revision: rev) }

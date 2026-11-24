@@ -461,6 +461,7 @@ extension ClassicControlCenterPanel {
             }
             .padding(.horizontal, 3)
             .frame(minHeight: DesignTokens.minHitTarget)
+            .tahoeHoverHitTarget()
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

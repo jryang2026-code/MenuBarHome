@@ -70,8 +70,8 @@ struct ProviderSeamTests {
 
     @Test("HAWebSocketProvider halts only on auth_invalid and retries unexpected handshake frames")
     func authInvalidStopsWhileUnexpectedHandshakeFramesReconnect() async throws {
-        let invalidAttempts = LockedCounter()
-        let invalidSleeps = LockedCounter()
+        let invalidAttempts = ProviderTestCounter()
+        let invalidSleeps = ProviderTestCounter()
         let invalidProvider = HAWebSocketProvider(
             baseURLString: "http://192.168.1.20:8123",
             token: "bad-token",
@@ -102,7 +102,7 @@ struct ProviderSeamTests {
         #expect(invalidStatuses.count == 2)
         await invalidProvider.shutdown()
 
-        let transientAttempts = LockedCounter()
+        let transientAttempts = ProviderTestCounter()
         let transientProvider = HAWebSocketProvider(
             baseURLString: "http://192.168.1.20:8123",
             token: "good-token",
@@ -143,7 +143,7 @@ struct ProviderSeamTests {
     }
 }
 
-private final class LockedCounter: @unchecked Sendable {
+final class ProviderTestCounter: @unchecked Sendable {
     private let lock = NSLock()
     private var count = 0
     var value: Int { lock.withLock { count } }

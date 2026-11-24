@@ -120,6 +120,8 @@ public actor MiCloudProvider: HomeProvider {
     /// Models currently served by the read-only fallback; retried on every device-list refresh (#30).
     private var fallbackSpecModels: Set<String> = []
     private var values: [MiotPropKey: JSONValue] = [:]
+    private var propertyCaptureEpochs: [MiotPropKey: ContinuousClock.Instant] = [:]
+    private var cacheCreatedEpoch = ContinuousClock.now
     /// Lights whose `mode` write the cloud rejected as unsupported; their scene chips are hidden.
     private var effectsUnsupported: Set<String> = []
 
@@ -467,6 +469,8 @@ public actor MiCloudProvider: HomeProvider {
             rooms = []
             manualScenes = []
             values = [:]
+            propertyCaptureEpochs.removeAll()
+            cacheCreatedEpoch = .now
             emitSnapshot()
             return
         }
@@ -726,6 +730,8 @@ public actor MiCloudProvider: HomeProvider {
         rooms = []
         sharedHomeDids.removeAll()
         values = [:]
+        propertyCaptureEpochs.removeAll()
+        cacheCreatedEpoch = .now
         emitSnapshot()
     }
 
@@ -1057,6 +1063,7 @@ public actor MiCloudProvider: HomeProvider {
         let keys = pollKeys(from: plan, scoped: scopedDevices, dids: dids)
         var freshKeys: Set<MiotPropKey> = []
         if !keys.isEmpty {
+            let pollCapturedEpoch = ContinuousClock.now
             let outcome = try await fetchPropsHybrid(
                 api: api,
                 keys: keys,
@@ -1073,13 +1080,21 @@ public actor MiCloudProvider: HomeProvider {
                 lanTransportSucceededDids.subtract(dids)
                 lanTransportSucceededDids.formUnion(outcome.lanTransportSucceededDids)
             }
-            freshKeys = Set(outcome.values.keys)
+            let freshValues = outcome.values.filter {
+                propertyCaptureEpochs[$0.key].map { $0 <= pollCapturedEpoch } ?? true
+            }
+            freshKeys = Set(freshValues.keys)
             everObservedPropDids.formUnion(outcome.values.keys.map(\.did))
             // getProps omits items with a non-zero code. A missing door-state must not keep the
             // previous locked/unlocked claim while the device list still says online (#149).
-            let requestedLocks = doorStateKeys(requested: outcome.completedKeys)
+            let requestedLocks = doorStateKeys(requested: outcome.completedKeys).filter {
+                propertyCaptureEpochs[$0].map { $0 <= pollCapturedEpoch } ?? true
+            }
+            for key in freshKeys.union(requestedLocks) {
+                propertyCaptureEpochs[key] = pollCapturedEpoch
+            }
             let clearedCachedLock = requestedLocks.contains { outcome.values[$0] == nil && values[$0] != nil }
-            Self.applyPropRead(&values, fresh: outcome.values, requestedLockKeys: requestedLocks)
+            Self.applyPropRead(&values, fresh: freshValues, requestedLockKeys: requestedLocks)
             if let cloudError = outcome.cloudError {
                 if lanSucceededDids.isEmpty {
                     if !outcome.values.isEmpty || clearedCachedLock {
@@ -1520,7 +1535,7 @@ public actor MiCloudProvider: HomeProvider {
             let did = record.miotDid
             let ip = record.localIp?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             let token = record.token?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            guard !token.isEmpty else {
+            guard !token.isEmpty, LocalMiIOClient.isLANEligiblePID(record.pid) else {
                 lanBindingsByDid.removeValue(forKey: did); lanHealthByDid.removeValue(forKey: did); continue
             }
             let seeded = seededDiscoveredIPs[did]?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1544,6 +1559,7 @@ public actor MiCloudProvider: HomeProvider {
               !sharedHomeDids.contains(record.miotDid),
               record.splitParentDid == nil,
               !record.did.hasPrefix("group."),
+              LocalMiIOClient.isLANEligiblePID(record.pid),
               let ip = (binding?.effectiveIP ?? record.localIp)?.trimmingCharacters(in: .whitespacesAndNewlines),
               LocalMiIOClient.isPrivateRFC1918IPv4(ip),
               let token = (binding?.token ?? record.token)?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -1805,6 +1821,9 @@ public actor MiCloudProvider: HomeProvider {
             home.expiredAccountIDs = [MiAccount(session: rejected).id]
         }
         DeviceSynthesizer.reconcileLightGroups(&home)
+        let capturesByDid = propertyCaptureEpochs.reduce(into: [String: ContinuousClock.Instant]()) { captures, item in
+            captures[item.key.did] = max(captures[item.key.did] ?? item.value, item.value)
+        }
         let currentNow = now()
         // Light groups advertise `mode` but their members reject it; hide scenes there too.
         for i in home.devices.indices {
@@ -1812,6 +1831,9 @@ public actor MiCloudProvider: HomeProvider {
             let candidateDids = ([recordMiotDid].compactMap { $0 })
                 + home.devices[i].miotCommandDids
                 + [home.devices[i].id]
+            let captured = candidateDids.compactMap { capturesByDid[$0] }.min() ?? cacheCreatedEpoch
+            home.devicePollCapturedEpochs[home.devices[i].id] = captured
+            home.facetPollCapturedEpochs[home.devices[i].id] = captured
             let primaryMiotDid = recordMiotDid ?? home.devices[i].miotCommandDids.first ?? home.devices[i].id
             let health = lanHealthByDid[primaryMiotDid]
             let route: DeviceTransportRoute = if health?.lastErrorWasLocalNetworkDenied == true { .localNetworkBlocked }
