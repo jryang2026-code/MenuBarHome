@@ -112,7 +112,7 @@ export { dispatchSystemContextEvent };
 export function initializeCredentials(
   host: MenuMijiaWindowsApp,
   options: { readonly overwriteExisting?: boolean } = {},
-): void {
+): Promise<void> {
     const initialKey = host.settings.openRouterApiKey.trim();
     const initialIdentity = assistantEndpointIdentity(host.settings.assistantBaseURL);
     if (initialKey !== "" && initialIdentity !== null && initialIdentity === host.settings.assistantKeyEndpoint) {
@@ -126,11 +126,11 @@ export function initializeCredentials(
       stripCredentialFieldsFromStoredCopies();
       void persistCredentials(host);
       host.timerCredentialsReady = true;
-      return;
+      return Promise.resolve();
     }
     // A stale pre-1.0 copy can still hold secrets even when the v2 copy is clean (#28).
     stripCredentialFieldsFromStoredCopies();
-    void hydrateCredentials(host, options);
+    return hydrateCredentials(host, options);
   }
 
 const hydratingHosts = new WeakSet<MenuMijiaWindowsApp>();

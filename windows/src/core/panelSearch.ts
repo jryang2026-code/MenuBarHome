@@ -1,5 +1,6 @@
 import { pinyin } from "pinyin-pro";
 import { DelayPhrase, LocalIntentParser, UndoPhrase } from "./assistant.js";
+import { parseStateQuery } from "./assistant/stateQuery.js";
 import type { HomeScene, SmartDevice } from "./models.js";
 
 interface DeviceSearchEntry {
@@ -88,7 +89,7 @@ export function panelQueryKind(raw: string, devices: readonly SmartDevice[], sce
   const rooms = devices.map((device) => normalizeSearch(device.roomName)).filter(Boolean);
   if (names.includes(q) || (q.length >= 2 && names.some((name) => name.startsWith(q)))) return "filter";
   if (rooms.some((room) => room.startsWith(q))) return "filter";
-  if (LocalIntentParser.parse(query, [...devices], [...scenes]) || UndoPhrase.isUndo(query) || DelayPhrase.extract(query)) return "command";
+  if (parseStateQuery(query) || LocalIntentParser.parse(query, [...devices], [...scenes]) || UndoPhrase.isUndo(query) || DelayPhrase.extract(query)) return "command";
   if (/^(打开|开启|关闭|关掉|关上|熄灭|请|帮我|帮忙|把|将|调|设|切|执行|启动|运行|全关|全开)/.test(query)) return "command";
   if (/^(turn|open|close|switch|set|make|please|run|start|activate|enable|disable|dim|brighten|lock|unlock|mute|unmute|pause|stop|toggle)(?![a-z])/i.test(query)) return "command";
   if (/[0-9]+(\.[0-9]+)?\s*(%|％|度|℃|°c|°f|°|k|档|级)|(调到|调成|调至|调为|调低|调高|设为|设成|设置为|切换到|切到|改成|改为)\s*[0-9]+/i.test(query)) return "command";

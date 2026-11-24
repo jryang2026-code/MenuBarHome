@@ -1,5 +1,7 @@
+import { AutomationRunHistory, type AutomationSkipReason } from "../core/automationRun.js";
 import { isEventAutomationEnabled } from "../core/freshInstallDefaults.js";
 import {
+  AutomationEngine,
   AutomationRuleStore,
   AutomationTriggerDeduper,
   automationRequiredPermission,
@@ -9,7 +11,6 @@ import {
   automationTimeWindowSummary,
   createAutomationConditions,
   createAutomationRule,
-  executeAutomationRule,
   isAutomationTrigger,
   isTriggerSupportedOnWindows,
   isWiFiConditionSupportedOnWindows,
@@ -832,6 +833,18 @@ function renderTriggerOptionsEditor(
   return permHtml;
 }
 
+const runReasons: Record<AutomationSkipReason, readonly [string, string, string]> = {
+  conditionFalse: ["条件未满足", "條件未滿足", "Conditions not met"],
+  singleAlreadyRunning: ["规则正在运行", "規則正在執行", "Already running"],
+  screenLocked: ["屏幕已锁定", "螢幕已鎖定", "Screen locked"],
+  writeGateDenied: ["设备控制被拒绝", "裝置控制遭拒", "Device control denied"],
+  deviceOffline: ["设备离线", "裝置離線", "Device offline"],
+  error: ["执行失败", "執行失敗", "Execution failed"],
+  cooldown: ["触发间隔过短", "觸發間隔過短", "Trigger cooldown"],
+  superseded: ["被新运行替代", "被新執行取代", "Replaced by a newer run"],
+  noActionNeeded: ["无需变更设备", "無需變更裝置", "No device change needed"],
+};
+
 export function renderAutomationAndSafetySettingsSections(ctx: SettingsViewContext): string {
   const esc = (v: string) => ctx.escapeHtml(v);
   const center = ctx.activityCenter ?? null;
@@ -843,6 +856,7 @@ export function renderAutomationAndSafetySettingsSections(ctx: SettingsViewConte
   const ruleStore = center?.automationEngine.store ?? new AutomationRuleStore(storage);
   const deduper = center?.automationEngine.deduper ?? new AutomationTriggerDeduper(storage);
   const rules = ruleStore.load();
+  const history = (center?.automationEngine.history ?? new AutomationRunHistory(storage)).load();
   const scopeKey = center?.scopeKey ?? computeActivityScopeKey({ settings: ctx.settings });
   const scopedRuns = (center?.recentAutomationRuns ?? []).filter((r) => r.scope === scopeKey);
 
@@ -906,6 +920,15 @@ export function renderAutomationAndSafetySettingsSections(ctx: SettingsViewConte
               triggerSupported && wifiSupported
                 ? ""
                 : `<div data-auto-rule-unsupported="${esc(rule.id)}" style="font-size: 11px; font-weight: 600; color: #e67e22; margin-top: 2px;">${esc(t("Windows 暂不支持，不会触发"))}</div>`;
+            const modeLabel = uiText(lang, "执行模式", "執行模式", "Execution mode");
+            const runRows = history.filter((entry) => entry.ruleId === rule.id).map((entry) => {
+              const result = entry.result === "executed" ? uiText(lang, "已执行", "已執行", "Executed")
+                : `${uiText(lang, "已跳过", "已略過", "Skipped")} · ${uiText(lang, ...(runReasons[entry.reason] ?? runReasons.error))}`;
+              const timestamp = new Date(entry.time).toLocaleString(lang);
+              const trigger = isAutomationTrigger(entry.trigger) ? automationTriggerTitle(entry.trigger, lang)
+                : uiText(lang, "立即试运行", "立即試運行", "Run Now");
+              return `<li>${esc(`${timestamp} · ${trigger} · ${result}`)}</li>`;
+            }).join("");
             return `<div class="cc-update-row" data-auto-rule-row="${esc(rule.id)}" style="padding: 7px 8px; border-radius: 8px; background: rgba(128, 128, 128, 0.08); gap: 8px; align-items: center; flex-wrap: wrap;">
             <div style="display: flex; align-items: flex-start; gap: 7px; flex: 1 1 200px; min-width: 0;">
               <span style="margin-top: 2px; opacity: ${rule.isEnabled ? "0.9" : "0.45"};">${triggerIconSvg(rule.trigger)}</span>
@@ -913,9 +936,17 @@ export function renderAutomationAndSafetySettingsSections(ctx: SettingsViewConte
                 <div style="font-size: 12.5px; font-weight: 600; opacity: ${rule.isEnabled ? "1" : "0.55"}; word-break: break-word;">${esc(titleText)}</div>
                 ${unsupportedBadge}
                 ${details ? `<div class="cc-field-hint" style="margin: 2px 0 0 0;">${esc(details)}</div>` : ""}
+                <details class="cc-field-hint">
+                  <summary>${esc(uiText(lang, "最近运行", "最近執行", "Recent runs"))}</summary>
+                  ${runRows ? `<ul>${runRows}</ul>` : esc(uiText(lang, "暂无运行记录", "暫無執行記錄", "No runs yet"))}
+                </details>
               </div>
             </div>
             <div style="display: flex; align-items: center; gap: 6px; margin-left: auto;">
+              <select data-auto-rule-mode="${esc(rule.id)}" aria-label="${esc(modeLabel)}">
+                <option value="single">${esc(uiText(lang, "单次运行", "單次執行", "Single"))}</option>
+                <option value="restart" ${rule.mode === "restart" ? "selected" : ""}>${esc(uiText(lang, "重新开始", "重新開始", "Restart"))}</option>
+              </select>
               <input type="checkbox" data-auto-rule-toggle="${esc(rule.id)}" aria-label="${esc(uiText(lang, "启用规则", "啟用規則", "Enable rule"))}" ${rule.isEnabled ? "checked" : ""} />
               <button type="button" class="cc-btn-secondary" data-auto-rule-run="${esc(rule.id)}" ${isEventAutomationEnabled(ctx.settings) ? "" : "disabled"}>${esc(uiText(lang, "立即试运行", "立即試運行", "Run Now"))}</button>
               <button type="button" class="cc-btn-secondary" data-auto-rule-delete="${esc(rule.id)}">${esc(uiText(lang, "删除", "刪除", "Delete"))}</button>
@@ -1204,7 +1235,8 @@ export function bindAutomationSettingsEvents(host: AutoSafetySettingsHost): void
 
   const center = resolveHostActivityCenter(host);
   const storage = center?.storage ?? defaultSafetyStorage();
-  const ruleStore = center?.automationEngine.store ?? new AutomationRuleStore(storage);
+  const engine = center?.automationEngine ?? new AutomationEngine(storage);
+  const ruleStore = engine.store;
   const draft = session.draft;
   ensureDraftTriggerSupported(draft);
   const lang = effectiveLanguage(host.settings.interfaceLanguage);
@@ -1261,6 +1293,11 @@ export function bindAutomationSettingsEvents(host: AutoSafetySettingsHost): void
   autoSection?.addEventListener("change", (event) => {
     const target = event.target as HTMLElement | null;
     if (!target || target.closest("[data-exit-ghost]")) return;
+    if (isSelectEl(target) && target.dataset.autoRuleMode) {
+      const mode = target.value === "restart" ? "restart" : "single";
+      ruleStore.save(ruleStore.load().map((r) => r.id === target.dataset.autoRuleMode ? { ...r, mode } : r));
+      return;
+    }
     if (isInputEl(target) && target.dataset.autoRuleToggle) {
       const ruleId = target.dataset.autoRuleToggle;
       const existing = ruleStore.load().find((r) => r.id === ruleId);
@@ -1415,23 +1452,6 @@ export function bindAutomationSettingsEvents(host: AutoSafetySettingsHost): void
     if (runId && isEventAutomationEnabled(host.settings)) {
       const rule = ruleStore.load().find((r) => r.id === runId);
       if (!rule || typeof host.applyCommand !== "function") return;
-      if (host.settings.connectionMode !== "demo" || isDualSourceEnabled(host)) {
-        const gateMsg = evaluateAutomationRuleWriteGate({
-          rule,
-          context: buildHostCapabilityContext(host),
-          lastManuallyUsedLightId: host.lastManuallyUsedLightId,
-          languagePreference: host.settings.interfaceLanguage,
-        });
-        if (gateMsg !== null) {
-          host.replyBanner = {
-            text: gateMsg,
-            source: uiText(lang, "控制失败", "控制失敗", "Control Failed"),
-            isError: true,
-          };
-          host.render();
-          return;
-        }
-      }
       const scopeAtStart = center?.scopeKey ?? computeActivityScopeKey(host);
       const sourceRevisionAtStart = host.sourceRevision ?? 0;
       const automationGeneration = center?.automationGeneration;
@@ -1441,14 +1461,14 @@ export function bindAutomationSettingsEvents(host: AutoSafetySettingsHost): void
         (host.sourceRevision ?? 0) === sourceRevisionAtStart &&
         (center?.scopeKey ?? computeActivityScopeKey(host)) === scopeAtStart;
       void (async () => {
-        if (isFullPanelHost(host) && (await rejectIfControlBlockedWhileLocked(host))) return;
-        if (!canContinue()) return;
-        if (!isSameScope()) return;
         const execHost = host as AutoSafetySettingsHost & {
           applyCommand(cmd: DeviceCommand, silent?: boolean): Promise<boolean>;
         };
-        const run = await executeAutomationRule(execHost, rule, {
-          canContinue,
+        const run = await engine.runRule(execHost, rule, {
+          manual: true,
+          canContinue: () => canContinue() && isSameScope()
+            && ruleStore.load().some((current) => JSON.stringify(current) === JSON.stringify(rule)),
+          isLockBlocked: () => isFullPanelHost(host) && rejectIfControlBlockedWhileLocked(host),
           scope: scopeAtStart,
           displayDevices: aliasedDevices,
           evaluateRuleWriteGate: (r) =>

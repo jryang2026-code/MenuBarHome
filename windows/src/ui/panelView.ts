@@ -1,3 +1,4 @@
+import { renderMiSceneConfirmation } from "./sceneConfirmation.js";
 import type { MenuMijiaWindowsApp } from "./app.js";
 import { t } from "../core/i18n.js";
 import { deviceCanTogglePower, hasDetailDrawer, isDeviceActiveOn, type SmartDevice } from "../core/models.js";
@@ -12,7 +13,10 @@ import {
 } from "./activityStackView.js";
 import { SF_ICONS } from "./appConstants.js";
 import { renderConnectionStatus, resolveConnectionStatus, type ConnectionStatusPresentation } from "./connectionStatus.js";
-import { applyPanelOpacity, withAliases } from "./panelPrefs.js";
+import { applyPanelOpacity, hiddenDeviceIds, withAliases } from "./panelPrefs.js";
+import { computeHomeSummary, formatHomeSummaryCapsuleTitle, type HomeSummaryCapsule } from "../core/homeSummary.js";
+import { isSwitchMarkedAsLight } from "../core/switchLightMarks.js";
+import { getTemperatureUnit } from "../core/temperature.js";
 import { quickActions } from "./demo.js";
 import { isVoiceInputEnabled, quickActionScopeDevices, reconcileUndoBannerHoverAfterRender } from "./speechGuard.js";
 import { renderProactiveInlinePill } from "./proactive.js";
@@ -236,7 +240,8 @@ export function renderPanel(host: MenuMijiaWindowsApp): void {
               ${isClassic ? `${roomOrderBtnHtml}${gridToggleBtnHtml}${offlineToggleBtnHtml}` : `${gridToggleBtnHtml}${offlineToggleBtnHtml}${roomOrderBtnHtml}`}
             </div>
           </div>
-          ${isClassic && kindBarHtml ? `<div class="cc-kind-bar" role="toolbar" aria-label="${host.escapeHtml(tr3("设备类型筛选", "設備類型篩選", "Filter by device type"))}"><div class="cc-room-scroll cc-kind-scroll"><span class="cc-tab-indicator" aria-hidden="true"></span>${kindBarHtml}</div></div>` : ""}`;
+          ${isClassic && kindBarHtml ? `<div class="cc-kind-bar" role="toolbar" aria-label="${host.escapeHtml(tr3("设备类型筛选", "設備類型篩選", "Filter by device type"))}"><div class="cc-room-scroll cc-kind-scroll"><span class="cc-tab-indicator" aria-hidden="true"></span>${kindBarHtml}</div></div>` : ""}
+          ${renderHomeSummaryRow(host)}`;
   const scrollAreaHtml = `
         <main class="cc-scroll-area" aria-label="${t("设备列表")}">
           ${renderEditLayoutToolbar(host)}
@@ -635,7 +640,7 @@ function liveBanner(host: MenuMijiaWindowsApp): string {
           ? `<button class="cc-inline-pill" id="btn-cloud-allow">${t("允许并发送")}</button><button class="cc-inline-pill" id="btn-cloud-decline">${t("不用了")}</button>`
           : ""
       }
-      ${markAsLightPill}
+      ${markAsLightPill}${renderMiSceneConfirmation(host)}
       ${undo ? `<button class="cc-inline-pill" id="btn-undo">${t("撤销")}</button>` : ""}
       ${reply?.isError ? `<button type="button" class="cc-inline-pill" id="btn-dismiss-banner" aria-label="${t("忽略")}">×</button>` : ""}
     </div>
@@ -666,14 +671,11 @@ function quickStrip(host: MenuMijiaWindowsApp): string {
     (act) =>
       `<button class="cc-quick-pill tint-${act.tint}" data-scene-cmd="${host.escapeHtml(act.command)}"><span class="cc-quick-icon">${quickActionIcon(act.id)}</span><span>${host.escapeHtml(act.title)}</span></button>`,
   );
-  const haScenes =
-    host.settings.connectionMode === "homeAssistant"
-      ? host.scenes.map(
+  const scenePills = host.scenes.map(
           (scene) =>
             `<button class="cc-quick-pill tint-blue" data-ha-scene="${host.escapeHtml(scene.id)}"><span class="cc-quick-icon">${SF_ICONS.sparkles}</span><span>${host.escapeHtml(scene.name)}</span></button>`,
-        )
-      : [];
-  const allPills = [...builtIns, ...haScenes];
+  );
+  const allPills = [...builtIns, ...scenePills];
   if (allPills.length === 0) return "";
   return `<section class="cc-quick-strip">${allPills.join("")}</section>`;
 }
@@ -682,6 +684,66 @@ export function unsupportedDevicesQuietRowText(count: number): string {
   if (count <= 0) return "";
   if (count === 1) return t("1 台设备暂不支持显示");
   return t("{count} 台设备暂不支持显示", { count });
+}
+
+function homeSummaryCapsuleIcon(capsule: HomeSummaryCapsule): string {
+  switch (capsule.kind) {
+    case "alerts":
+      return SF_ICONS.activityPulse;
+    case "lightsOn":
+      return SF_ICONS.lightbulbFill;
+    case "doorsOpen":
+      return SF_ICONS.houseFill;
+    case "indoorTemp":
+      return SF_ICONS.sensorFill;
+  }
+}
+
+export function renderHomeSummaryRow(host: MenuMijiaWindowsApp): string {
+  if (!host.settings.showHomeSummaryRow || host.isEditingLayout || normalizeSearch(host.panelSearch.query)) {
+    return "";
+  }
+  const hiddenSet = new Set(hiddenDeviceIds(host.layout));
+  const candidates = host.devices.filter((dev) => !hiddenSet.has(dev.id));
+  const lightMarkedSwitchIds = new Set(
+    candidates.filter((dev) => isSwitchMarkedAsLight(dev.id)).map((dev) => dev.id),
+  );
+  const alerts = host.activityCenter?.recentSafetyAlerts.map((entry) => entry.alert) ?? [];
+  const summary = computeHomeSummary({ devices: candidates, alerts, lightMarkedSwitchIds });
+  if (summary.isEmpty) return "";
+
+  const unit = getTemperatureUnit();
+  const pillsHtml = summary.capsules
+    .map((capsule) => {
+      const title = formatHomeSummaryCapsuleTitle(capsule, unit);
+      const selected =
+        capsule.filterTag !== null &&
+        host.listCut.kind === "deviceKind" &&
+        host.listCut.tag === capsule.filterTag;
+      const severityClass =
+        capsule.kind === "alerts"
+          ? capsule.alertSeverity === "alert"
+            ? "is-alert"
+            : "is-warning"
+          : `is-${capsule.kind}`;
+      const targetDevice = capsule.targetDeviceIds[0] ?? "";
+      return `<button
+        type="button"
+        class="cc-home-summary-pill ${severityClass} ${selected ? "is-active" : ""}"
+        data-home-summary-capsule="${capsule.kind}"
+        ${capsule.filterTag ? `data-home-summary-tag="${capsule.filterTag}"` : ""}
+        ${targetDevice ? `data-home-summary-device="${host.escapeHtml(targetDevice)}"` : ""}
+        aria-pressed="${selected}"
+        aria-label="${host.escapeHtml(title)}"
+        title="${host.escapeHtml(title)}"
+      >
+        <span class="cc-home-summary-icon" aria-hidden="true">${homeSummaryCapsuleIcon(capsule)}</span>
+        <span class="cc-home-summary-label">${host.escapeHtml(title)}</span>
+      </button>`;
+    })
+    .join("");
+
+  return `<div class="cc-home-summary-row" data-home-summary-row role="toolbar" aria-label="${host.escapeHtml(t("我家现在摘要"))}">${pillsHtml}</div>`;
 }
 
 export function renderUnsupportedDevicesQuietRow(host: MenuMijiaWindowsApp): string {

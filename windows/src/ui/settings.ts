@@ -335,6 +335,7 @@ export function loadSettings(): LoadedSettings {
         panelOpacity: normalizePanelOpacity(parsed.panelOpacity),
         climatePanel: parsed.climatePanel ?? true,
         showQuickActionsBar: parsed.showQuickActionsBar ?? true,
+        showHomeSummaryRow: parsed.showHomeSummaryRow ?? true,
         interfaceLanguage:
           parsed.interfaceLanguage === "zh-Hans" ||
           parsed.interfaceLanguage === "zh-Hant" ||
@@ -460,6 +461,7 @@ function buildDefaultSettings(): PersistedSettings {
     panelOpacity: DEFAULT_PANEL_OPACITY,
     climatePanel: true,
     showQuickActionsBar: true,
+    showHomeSummaryRow: true,
     layout: emptyLayoutPrefs(),
     selectedHomeId: null,
     interfaceLanguage: "system",

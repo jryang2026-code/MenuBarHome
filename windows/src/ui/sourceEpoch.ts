@@ -134,4 +134,9 @@ export class SourceEpoch {
   public get sourceRevision(): number {
     return this.sourceCount;
   }
+
+  /** How many times the selected home was replaced inside the same source. */
+  public get homeRevision(): number {
+    return this.homeCount;
+  }
 }

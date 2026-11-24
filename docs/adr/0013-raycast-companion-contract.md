@@ -23,9 +23,10 @@
    - **外部链接边界（`URLDirectControl.requiresConfirmation`）**：带有效 `bridgeToken` 的本地 CLI（`scripts/mijia`）、MCP（`scripts/mijia-mcp`）与 Raycast 写操作在 `URLDirectControl` 入口有意设计为非交互免弹窗。因为 `bridgeToken` 仅保存在当前登录用户本机 `0600` 权限的 `raycast-snapshot.json` 中，持有该令牌即证明调用方是同一操作系统的本机同用户进程，无需防范浏览器或第三方应用的跨站伪造跳转。
    - **核心安全策略保持强制执行**：跳过外部链接来源弹窗不等于跳过设备安全守卫。所有路由进入 `HomeStore` 后，仍然强制执行锁屏拦截、`ManualControlPolicy` 高风险设备（取暖器、插座、阀门、车库门等）二次确认与乐观写入。
    - **`power` 路由语义**：`power` 对普通设备复用 `togglePrimary`，但窗帘 / 窗户 / 卷帘门 / 晾衣架改走显式的「开到 100% / 关到 0%」：三态磁贴的 `togglePrimary` 对移动中的窗帘语义是暂停，若 `on` / `off` 也照此执行，「关闭」会变成「停在半路」，与链接的字面承诺不符。按钮类触发与阀门仍走 `togglePrimary`。
-5. **`focus` 不算控制**：`menumijia://focus?device=<id>` 只切换房间筛选并展开抽屉，不写设备，因此不弹外部链接确认；但仍受锁屏拦截。
+5. **`focus` 不算控制**：`menumijia://focus?device=<id>` 只切换房间筛选并展开抽屉，不写设备，因此不弹外部链接确认；但仍受锁屏拦截。`menumijia://focus?room=<id>`（#575，macOS 独有，供 Spotlight 房间结果直达）同样只切房间筛选；`device` 与 `room` 同时出现视为歧义直接拒绝，规则与 `fan` 的 `percent`/`preset` 一致。Scene/device 的 Spotlight 结果分别走 `scene?name=`（照旧弹确认）与 `focus?device=`。
 6. **不猜档位**：`fan?preset=` 必须是设备 `availablePresetModes` 里的值，否则报错并列出可选档位，避免把固件没有的模式发下去；`percent` 与 `preset` 只能二选一，同时出现视为歧义直接拒绝，`percent` 越界也不会被同时给出的 `preset` 掩盖。
 7. **MCP 服务不向模型暴露 `bridgeToken`**：`scripts/mijia-mcp`（或 `scripts/mijia mcp`）以 stdio JSON-RPC 2.0 暴露只读资源（`mijia://status`、`mijia://devices`、`mijia://scenes`）与精确值工具，下发指令时在本机进程内部读取 `bridgeToken` 拼装 `menumijia://` 链接并轮询 `lastCommandFeedback`，但所有返回给模型上下文的 JSON 都剥离 `bridgeToken`。会改变设备状态的工具一律标注 `destructiveHint: true`（MCP 规范默认值），让客户端自行弹确认；`--read-only` 启动参数则把 `tools/list` 收窄到 `list_devices` / `get_home_status` / `focus_device`，写工具调用在本地直接拒绝，用于只读 AI 会话的最小授权隔离。
+8. **更多只读展示格式与 AI 工具仍是同一契约的客户端（#31，2026-11-24）**：`scripts/mijia list --format alfred|swiftbar` 只把同一份快照渲染成 Alfred Script Filter JSON 与 SwiftBar / xbar 插件文本，不新增网络接口，每条目只携带 `menumijia://` 链接（含本机 `bridgeToken`，与其它 CLI 命令同级），动作仍由应用执行并在应用内确认；Raycast 的 `no-view` 命令与 AI 工具同样只读快照、只发链接，唯一会改设备的 `control-device` 工具额外由 Raycast `confirmation` 在工具执行前点名目标与动作。三者都不引入第三方脚本执行面。
 
 ## 后果
 

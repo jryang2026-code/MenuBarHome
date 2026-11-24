@@ -73,6 +73,10 @@ public enum HomePreferences {
     public static let enableVoiceInput = HomePreference.flag("enable_voice_input", default: true)
     public static let isCompactGridMode = HomePreference.flag("compact_grid_mode", default: true)
     public static let showQuickActionsBar = HomePreference.flag("show_quick_actions_bar", default: true)
+    public static let showHomeSummaryRow = HomePreference.flag("show_home_summary_row", default: true)
+    /// Off by default (#575): mirroring device and room names into the system Spotlight index is a
+    /// privacy decision the user makes, not something an upgrade does for them. See `SpotlightIndexPlan`.
+    public static let spotlightIndexEnabled = HomePreference.flag("spotlight_index_enabled", default: false)
     public static let enableSafetyAlerts = HomePreference.flag("enable_safety_alerts", default: true)
     /// Off by default: a new recurring notification (#182).
     public static let enableWeeklyHealthReport = HomePreference.flag("weekly_health_report_enabled_v1", default: false)

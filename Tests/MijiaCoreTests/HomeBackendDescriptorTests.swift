@@ -54,7 +54,7 @@ struct HomeBackendDescriptorTests {
     @Test("Built-in providers declare their capabilities")
     func providerCapabilities() {
         #expect(HAWebSocketProvider.capabilities == [.readSnapshot, .pushEvents, .control, .scenes, .cameras])
-        #expect(MiCloudProvider.capabilities == [.readSnapshot, .control, .cameras])
+        #expect(MiCloudProvider.capabilities == [.readSnapshot, .control, .scenes, .cameras])
         #expect(MiAccountsProvider.capabilities == MiCloudProvider.capabilities)
     }
 
@@ -143,7 +143,7 @@ struct HomeBackendDescriptorTests {
         let haProvider = HomeBackend.homeAssistant.descriptor.makeProvider(store)
         let miProvider = HomeBackend.xiaomiCloud.descriptor.makeProvider(store)
         let demoProvider = HomeBackend.demo.descriptor.makeProvider(store)
-        #expect(haProvider is HAWebSocketProvider)
+        #expect(haProvider is HAHomeAdapter)
         #expect(miProvider is MiAccountsProvider)
         #expect(demoProvider is DemoHomeProvider)
         await haProvider.shutdown()

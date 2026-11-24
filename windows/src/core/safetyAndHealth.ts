@@ -51,7 +51,7 @@ export function sensorAlertEnabledByDefault(kind: SensorAlertKind): boolean {
 }
 
 /** Life-safety kinds that stay on 24/7. A lock is an `alert` but still follows away-only. */
-export function sensorAlertIsHazard(kind: SensorAlertKind): boolean {
+export function sensorAlertIsHazard(kind: SensorAlertKind): kind is "smoke" | "gas" | "leak" {
   return kind === "smoke" || kind === "gas" || kind === "leak";
 }
 

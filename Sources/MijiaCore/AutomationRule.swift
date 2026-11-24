@@ -660,6 +660,7 @@ public struct AutomationRule: Codable, Identifiable, Equatable, Sendable {
     public var triggerOptions: AutomationTriggerOptions
     /// AND-ed with the trigger. Older rules decode with no conditions and behave exactly as before.
     public var conditions: AutomationConditions
+    public var mode: AutomationExecutionMode
     public var highRiskApproved: Bool
     public var pausedCapabilities: [CapabilityID]
     /// Connection scopes whose loss paused this rule. Re-enabling one of them is not enough while
@@ -673,6 +674,7 @@ public struct AutomationRule: Codable, Identifiable, Equatable, Sendable {
         isEnabled: Bool = true,
         triggerOptions: AutomationTriggerOptions = AutomationTriggerOptions(),
         conditions: AutomationConditions = AutomationConditions(),
+        mode: AutomationExecutionMode = .single,
         highRiskApproved: Bool = false,
         pausedCapabilities: [CapabilityID] = [],
         pausedScopes: [String] = []
@@ -683,6 +685,7 @@ public struct AutomationRule: Codable, Identifiable, Equatable, Sendable {
         self.isEnabled = isEnabled
         self.triggerOptions = triggerOptions
         self.conditions = conditions
+        self.mode = mode
         self.highRiskApproved = highRiskApproved
         self.pausedCapabilities = pausedCapabilities
         self.pausedScopes = pausedScopes
@@ -695,6 +698,7 @@ public struct AutomationRule: Codable, Identifiable, Equatable, Sendable {
         case action
         case triggerOptions
         case conditions
+        case mode
         case highRiskApproved
         case pausedCapabilities
         case pausedScopes
@@ -711,6 +715,7 @@ public struct AutomationRule: Codable, Identifiable, Equatable, Sendable {
             ?? AutomationTriggerOptions()
         conditions = try container.decodeIfPresent(AutomationConditions.self, forKey: .conditions)
             ?? AutomationConditions()
+        mode = try container.decodeIfPresent(AutomationExecutionMode.self, forKey: .mode) ?? .single
         highRiskApproved = try container.decodeIfPresent(Bool.self, forKey: .highRiskApproved) ?? false
         pausedCapabilities = try container.decodeIfPresent([CapabilityID].self, forKey: .pausedCapabilities) ?? []
         pausedScopes = try container.decodeIfPresent([String].self, forKey: .pausedScopes) ?? []
@@ -724,6 +729,7 @@ public struct AutomationRule: Codable, Identifiable, Equatable, Sendable {
         try container.encode(action, forKey: .action)
         try container.encode(triggerOptions, forKey: .triggerOptions)
         try container.encode(conditions, forKey: .conditions)
+        try container.encode(mode, forKey: .mode)
         try container.encode(highRiskApproved, forKey: .highRiskApproved)
         if !pausedCapabilities.isEmpty {
             try container.encode(pausedCapabilities, forKey: .pausedCapabilities)

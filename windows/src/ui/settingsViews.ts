@@ -411,7 +411,7 @@ export function buildInactiveTabCacheKey(ctx: SettingsViewContext, tabId: Settin
       ctx.updateProgress ?? getUpdateProgressForSettings(ctx.settings), ctx.settings.autoCheckUpdates,
       ctx.settings.appearance, ctx.settings.panelTheme, ctx.settings.panelOpacity, ctx.settings.interfaceLanguage,
       ctx.settings.temperatureUnit, ctx.settings.panelHeight, ctx.panelAnchor, ctx.settings.climatePanel,
-      ctx.settings.isCompactGridMode, ctx.settings.hideOfflineDevices, ctx.settings.hideGroupedLights, ctx.settings.showQuickActionsBar,
+      ctx.settings.isCompactGridMode, ctx.settings.hideOfflineDevices, ctx.settings.hideGroupedLights, ctx.settings.showQuickActionsBar, ctx.settings.showHomeSummaryRow,
       ctx.deviceTypes?.key,
       ctx.settings.launchAtLogin, ctx.settings.enableGlobalHotkey, ctx.settings.globalHotkey,
       ctx.isRecordingHotkey, ctx.hotkeyNeedsHint, ctx.hotkeyRegistrationError,
@@ -549,6 +549,11 @@ function renderGeneralPanel(ctx: SettingsViewContext): string {
         <div class="cc-field cc-field-row" data-settings-anchor="quickScenesBar">
           <label for="settings-quick-actions">${t("显示顶部快捷场景栏")}</label>
           <input id="settings-quick-actions" type="checkbox" ${ctx.settings.showQuickActionsBar ? "checked" : ""} />
+        </div>
+
+        <div class="cc-field cc-field-row" data-settings-anchor="homeSummaryRow">
+          <label for="settings-home-summary-row">${t("面板顶部显示「我家现在」摘要行")}</label>
+          <input id="settings-home-summary-row" type="checkbox" ${ctx.settings.showHomeSummaryRow ? "checked" : ""} />
         </div>
 
         <div class="cc-field cc-field-row" data-settings-anchor="voiceControl">

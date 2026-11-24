@@ -1,5 +1,6 @@
+import { executeMiScene, miSceneAccount, miSceneRows, refreshMiScenes, type MiSceneSnapshot } from "./miCloud/scenes.js";
 import { discoverMiHome } from "./miCloud/discovery.js";
-import { PowerReadBackError, type ExecuteOptions, type HomeProvider } from "./homeProvider.js";
+import { PowerReadBackError, type ExecuteOptions, type HomeCommandProvider } from "./homeProvider.js";
 import { readMiotPower } from "./models.js";
 import { tr3, type LanguagePreference } from "./i18n.js";
 import { MI_SESSION_WARNING_LEAD_MS,
@@ -717,6 +718,7 @@ export interface AccountChildSnapshot { readonly account: MiAccount;
   readonly rawDevices: readonly MiDeviceRecord[];
   readonly allDevices: readonly MiDeviceRecord[];
   readonly allRooms: readonly MiRoom[];
+  readonly sceneSnapshot?: MiSceneSnapshot;
   readonly specs: Readonly<Record<string, MiotDeviceSpec>>;
   readonly lightGroupOwners: ReadonlyMap<string, string>;
   /** Devices of a turned-off category whose enabled alerts still need their signal (P3a-W). */
@@ -1337,6 +1339,9 @@ export async function refreshMiAccountsConcurrently(options: RefreshMiAccountsOp
           ? await client.getProps(propKeys)
           : new Map<string, unknown>();
 
+      const sceneSnapshot = await refreshMiScenes(
+        client, discovered.rooms, account.session.userId, previousSnapshots[account.id]?.sceneSnapshot, nowMs,
+      );
       const rawHome = MiotSynthesizer.synthesize(prune ? prune.visibleRecords : filtered.devices,
         filtered.rooms,
         specs,
@@ -1345,6 +1350,7 @@ export async function refreshMiAccountsConcurrently(options: RefreshMiAccountsOp
       const safetyHome = prune && prune.safetyRecords.length > 0
         ? MiotSynthesizer.synthesize(prune.safetyRecords, filtered.rooms, specs, values)
         : null;
+      rawHome.scenes.push(...miSceneRows(sceneSnapshot, filtered.rooms, account.id));
       const rawHomes = buildHomeOptionsFromMiRooms(discovered.rooms);
       const stamped = stampAccountSnapshot(rawHome, rawHomes, account, namespaceIds);
       const stampedSafety = safetyHome ? stampAccountSnapshot(safetyHome, [], account, namespaceIds) : null;
@@ -1363,6 +1369,7 @@ export async function refreshMiAccountsConcurrently(options: RefreshMiAccountsOp
         rawDevices: filtered.devices,
         allDevices: discovered.devices,
         allRooms: discovered.rooms,
+        sceneSnapshot,
         specs,
         lightGroupOwners: buildMemberGroupOwners(membersByGroup),
         ...(stampedSafety
@@ -1528,7 +1535,7 @@ export async function executeMultiAccountMiotCommand(command: DeviceCommand,
     : new MiCloudError("notLoggedIn", "No active Xiaomi account available for command");
 }
 
-export class MultiAccountMiCloudProvider implements HomeProvider {
+export class MultiAccountMiCloudProvider implements HomeCommandProvider {
   constructor(
     private readonly dependencies: {
       readonly accounts: readonly MiAccount[];
@@ -1537,12 +1544,25 @@ export class MultiAccountMiCloudProvider implements HomeProvider {
       readonly devices: readonly SmartDevice[];
       readonly specResolver: Pick<MiotSpecResolver, "resolve">;
       readonly deviceForEntity: (entityId: string) => SmartDevice | undefined;
+      readonly sceneForEntity?: (entityId: string) => HomeScene | undefined;
       readonly transport: HttpTransport;
       readonly storage?: Storage | null;
     },
   ) {}
 
   async execute(command: DeviceCommand, options: ExecuteOptions = {}): Promise<boolean | null> {
+    const sceneOwner = command.kind === "activateScene" ? miSceneAccount(command.entityId) : null;
+    if (sceneOwner !== null) {
+      const account = this.dependencies.accounts.find((a) => a.id === sceneOwner);
+      if (!account || getAccountTokenStatus(account, Date.now(), this.dependencies.storage).kind === "expired") {
+        throw new MiCloudError("sessionExpired", "Xiaomi scene requires an active session");
+      }
+      return executeMiScene(
+        new MiCloudClient(account.session, this.dependencies.transport),
+        this.dependencies.sceneForEntity?.(command.entityId),
+        options.beforeSend,
+      );
+    }
     const parsed = parseMiotActionAddress(command.entityId) ?? parseMiotAddress(command.entityId);
     if (!parsed) {
       throw new Error(`Invalid MIoT entity address: ${command.entityId}`);

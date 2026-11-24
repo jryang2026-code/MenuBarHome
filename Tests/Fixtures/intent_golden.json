@@ -162,6 +162,17 @@
     }
   ],
   "intentCases": [
+    {"utterance": "书房灯开着吗", "expected": [], "expectedReply": "书房吸顶灯：开着，亮度 80%；书房台灯：开着，亮度 50%", "candidates": []},
+    {"utterance": "请问 sftd 开着吗？", "expected": [], "expectedReply": "书房台灯：开着，亮度 50%", "candidates": []},
+    {"utterance": "shufangtaideng打开了吗", "expected": [], "expectedReply": "书房台灯：开着，亮度 50%", "candidates": []},
+    {"utterance": "請問書房檯燈開著嗎？", "expected": [], "expectedReply": "书房台灯：开着，亮度 50%", "candidates": []},
+    {"utterance": "书房台灯是不是开着", "expected": [], "expectedReply": "书房台灯：开着，亮度 50%", "candidates": []},
+    {"utterance": "客厅温度多少", "expected": [], "expectedReply": "客厅空调：27.5°C", "candidates": []},
+    {"utterance": "可以帮我关掉风扇吗", "expected": [{"targetId": "dev_fan", "kind": "power", "value": false}]},
+    {"utterance": "请帮我把书房台灯关上", "expected": [{"targetId": "dev_desk", "kind": "power", "value": false}]},
+    {"utterance": "请问关闭书房台灯", "expected": [{"targetId": "dev_desk", "kind": "power", "value": false}]},
+    {"utterance": "客厅灯是不是关了再打开书房吸顶灯", "expected": null},
+    {"utterance": "未注册的灯开着吗", "expected": null},
     {
       "utterance": "关闭书房吸顶灯",
       "expected": [
@@ -705,6 +716,71 @@
     { "utterance": "打开书房灯", "isUndo": false }
   ],
   "catalogCases": [
+    {
+      "name": "只读门磁与窗帘边界",
+      "devices": [
+        {
+          "id": "entry_contact",
+          "name": "入户门",
+          "roomId": "entry",
+          "roomName": "玄关",
+          "model": "lumi.sensor_magnet",
+          "isOnline": true,
+          "kind": {
+            "kind": "sensor",
+            "temperature": null,
+            "humidity": null,
+            "battery": 80,
+            "safetyObservations": [
+              {
+                "entityId": "binary_sensor.entry_contact",
+                "kind": "contact",
+                "alarming": false
+              }
+            ]
+          }
+        },
+        {
+          "id": "cov_living_curtain",
+          "name": "客厅窗帘",
+          "roomId": "living",
+          "roomName": "客厅",
+          "model": "lumi.curtain.agl001",
+          "isOnline": true,
+          "kind": {
+            "kind": "cover",
+            "entityId": "cover.cov_living_curtain",
+            "subtype": "curtain",
+            "positionPercent": 0,
+            "reportedPositionPercent": 0,
+            "positionWritable": true,
+            "openDescription": "打开",
+            "closeDescription": "关闭",
+            "pauseDescription": "暂停",
+            "batteryPercent": 88,
+            "faultText": null,
+            "motion": "stopped",
+            "motionIsInferred": false
+          }
+        }
+      ],
+      "cases": [
+        {
+          "utterance": "门关好了吗",
+          "expected": [],
+          "expectedReply": "入户门：关好",
+          "candidates": []
+        },
+        {
+          "utterance": "客厅窗帘开着吗",
+          "expected": null
+        },
+        {
+          "utterance": "打开客厅窗帘",
+          "expected": null
+        }
+      ]
+    },
     {
       "name": "category words that are also room-stripped device names",
       "devices": [

@@ -44,7 +44,7 @@ struct TransientStackView: View {
         _isManuallyExpanded = State(initialValue: initialExpanded)
     }
 
-    private var animation: Animation { reduceMotion ? .easeOut(duration: 0.2) : AppleMotion.stack }
+    private var animation: Animation? { AppleMotion.resolve(.stack, reduceMotion: reduceMotion) }
 
     /// Stacked cards share the notification centre's corner, so the peeking edge lines up with the
     /// card in front of it.
@@ -52,7 +52,7 @@ struct TransientStackView: View {
         RoundedRectangle(cornerRadius: DesignTokens.Radius.module, style: .continuous)
     }
 
-    private var cardTransition: AnyTransition { reduceMotion ? .opacity : AppleMotion.drawerTransition }
+    private var cardTransition: AnyTransition { AppleMotion.drawerTransition(reduceMotion: reduceMotion) }
 
     /// Reduced motion never offsets or scales; only the opacity changes.
     private var peekOffset: CGFloat {
@@ -189,7 +189,7 @@ struct TransientStackView: View {
                     Button(L10n.tr("展开", "Expand")) { setManuallyExpanded(true) }
                     if cards.dropFirst().contains(where: { if case .undo = $0 { return true }; return false }) {
                         Button(L10n.tr("撤销", "Undo")) {
-                            withAnimation(AppleMotion.snappySpring) { _ = store.undoTurnAllOff() }
+                            withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) { _ = store.undoTurnAllOff() }
                         }
                     }
                 }
@@ -215,7 +215,7 @@ struct TransientStackView: View {
     private func hiddenUndoShortcut(for cards: [Card]) -> some View {
         if cards.dropFirst().contains(where: { if case .undo = $0 { return true }; return false }) {
             Button("") {
-                withAnimation(AppleMotion.snappySpring) { _ = store.undoTurnAllOff() }
+                withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) { _ = store.undoTurnAllOff() }
             }
             .keyboardShortcut("z", modifiers: .command)
             .opacity(0)
@@ -265,7 +265,7 @@ struct TransientStackView: View {
             Spacer()
 
             Button(L10n.tr("撤销", "Undo")) {
-                withAnimation(AppleMotion.snappySpring) {
+                withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) {
                     _ = store.undoTurnAllOff()
                 }
             }
@@ -284,7 +284,7 @@ struct TransientStackView: View {
             notice: toast,
             onAction: {
                 guard let action = toast.action else { return }
-                withAnimation(AppleMotion.snappySpring) {
+                withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) {
                     ToastNoticeActions.perform(action, store: store)
                 }
             },

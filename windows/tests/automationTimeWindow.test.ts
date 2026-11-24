@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { AUTOMATION_SKIP_REASONS, AutomationRunState } from "../src/core/automationRun.js";
+
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { setImmediate } from "node:timers/promises";
@@ -723,5 +726,76 @@ describe("automation time window settings", () => {
     const saved = new AutomationRuleStore().load()[0];
     assert.ok(saved);
     assert.deepEqual(saved.conditions.wifi, { kind: "any" });
+  });
+});
+
+describe("automation run history and mode", () => {
+  it("agrees with the shared reason codes and run transitions", () => {
+    const fixture = JSON.parse(readFileSync(new URL("../../Tests/Fixtures/automation_run_golden.json", import.meta.url), "utf8"));
+    assert.deepEqual(AUTOMATION_SKIP_REASONS, fixture.reasons);
+    const state = new AutomationRunState();
+    const tokens = new Map<number, symbol>();
+    for (const start of fixture.starts) {
+      const token = Symbol();
+      tokens.set(start.time, token);
+      assert.equal(state.start(token, start.mode), start.accepted);
+    }
+    for (const time of [1000, 1002]) {
+      const old = tokens.get(time)!;
+      assert.equal(state.owns(old), false);
+      state.finish(old);
+    }
+    const newest = tokens.get(1003)!;
+    assert.equal(state.owns(newest), true);
+    state.finish(newest);
+    assert.equal(state.isRunning, false);
+  });
+
+  it("persists lock refusals without issuing device commands", async () => {
+    const storage = new MemoryKV();
+    const engine = new AutomationEngine(storage);
+    const { host, commands } = trackingHost([makeLight()]);
+    const rule = createAutomationRule({
+      trigger: "away", action: { kind: "devices", deviceIds: ["light.desk"], isOn: false },
+    });
+    const time = at(10);
+    await engine.runRule(host, rule, { nowMs: time, isLockBlocked: () => true });
+    assert.deepEqual(commands, []);
+    assert.deepEqual(new AutomationEngine(storage).history.load(), [
+      { ruleId: rule.id, trigger: "away", time, result: "skipped", reason: "screenLocked" },
+    ]);
+  });
+
+  it("stops an older run before its next write and waits for the write already in flight", async () => {
+    const engine = new AutomationEngine(new MemoryKV());
+    const light = makeLight();
+    const second = { ...makeLight(), id: "second", kind: { ...light.kind, entityId: "light.second" } } as SmartDevice;
+    const rule = createAutomationRule({
+      trigger: "away", action: { kind: "devices", deviceIds: [light.id, second.id], isOn: false },
+    });
+    let sawWrite!: () => void;
+    let release!: () => void;
+    const started = new Promise<void>((resolve) => { sawWrite = resolve; });
+    const released = new Promise<void>((resolve) => { release = resolve; });
+    const commands: DeviceCommand[] = [];
+    const host: AutomationExecutionHost = { devices: [light, second], scenes: [], applyCommand: async (command) => {
+      commands.push(command);
+      if (commands.length === 1) {
+        sawWrite();
+        await released;
+        setLightOn(light, false);
+      }
+      return true;
+    } };
+    const old = engine.runRule(host, rule, { nowMs: 1000 });
+    await started;
+    await engine.runRule(host, rule, { nowMs: 1001 });
+    const next = engine.runRule(host, { ...rule, mode: "restart" }, { nowMs: 1002 });
+    assert.equal(commands.length, 1);
+    release();
+    await Promise.all([old, next]);
+    assert.deepEqual(commands.map((command) => "entityId" in command && command.entityId), ["light.desk", "light.second"]);
+    assert.deepEqual(engine.history.load().map((entry) => entry.result === "executed" ? entry.result : entry.reason),
+      ["executed", "executed", "singleAlreadyRunning"]);
   });
 });

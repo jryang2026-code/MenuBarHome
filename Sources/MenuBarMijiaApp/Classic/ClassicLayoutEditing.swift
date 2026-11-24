@@ -100,7 +100,7 @@ struct ClassicLayoutEditable: ViewModifier {
                     .scaleEffect(isHandleActive ? 1.25 : 1, anchor: .bottomTrailing)
                     .frame(width: 28, height: 28)
                     .contentShape(Rectangle())
-                    .animation(reduceMotion ? nil : AppleMotion.pressFeedback, value: isHandleActive)
+                    .animation(AppleMotion.resolve(.pressFeedback, reduceMotion: reduceMotion), value: isHandleActive)
                     .highPriorityGesture(
                         DragGesture(minimumDistance: 0, coordinateSpace: .named(TileSpace.name))
                             .onChanged { value in

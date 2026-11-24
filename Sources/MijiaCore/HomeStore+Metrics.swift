@@ -12,6 +12,16 @@ extension HomeStore {
         devices.filter(\.isOnline).count
     }
 
+    public var homeSummary: HomeSummary {
+        let candidates = categoryVisibleDevices.filter { !hiddenDeviceIds.contains($0.id) }
+        let lightSwitches = Set(candidates.compactMap { isSwitchMarkedAsLight($0.id) ? $0.id : nil })
+        return HomeSummary.compute(
+            devices: candidates,
+            alerts: recentSafetyAlerts.map(\.alert),
+            lightMarkedSwitchIds: lightSwitches
+        )
+    }
+
     public var totalPowerWatts: Double {
         devices.reduce(0.0) { acc, dev in
             guard dev.isOnline, case .plug(let s) = dev.kind, s.isOn, s.countsInTotalPower else { return acc }
@@ -174,6 +184,28 @@ extension HomeStore {
         let folded = foldedDeviceIds
         guard !folded.isEmpty else { return filteredDevices }
         return filteredDevices.filter { !folded.contains($0.id) }
+    }
+
+    /// The camera still wall: cameras that recorded an event first, then the rest in list order,
+    /// capped so the drawer never grows past a 2x2 grid. It reads `visibleDevices`, so a hidden or
+    /// filtered camera never shows a still, and both card styles share this one selection.
+    public func cameraStillWallCameras(limit: Int = 4) -> [SmartDevice] {
+        Self.stillWallCameras(from: visibleDevices, limit: limit) {
+            cameraEventStore.latestEvent(for: $0) != nil
+        }
+    }
+
+    /// The selection half of `cameraStillWallCameras`, split out so a test can order cameras without
+    /// a store.
+    static func stillWallCameras(
+        from devices: [SmartDevice],
+        limit: Int = 4,
+        hasEvent: (String) -> Bool
+    ) -> [SmartDevice] {
+        let cameras = devices.filter { if case .camera = $0.kind { return true }; return false }
+        let eventful = cameras.filter { hasEvent($0.id) }
+        let quiet = cameras.filter { !hasEvent($0.id) }
+        return Array((eventful + quiet).prefix(limit))
     }
 
     public var kindChips: [DeviceKindTag] {

@@ -184,7 +184,7 @@ public struct SettingsWindowView: View {
             // Save, Discard or Cancel; a save that fails keeps the window open (#148).
             unsaved.resolveBeforeLeaving(allowCancel: true)
         })
-        .animation(reduceMotion ? nil : AppleMotion.pressFeedback, value: store.toastNotice)
+        .animation(AppleMotion.resolve(.pressFeedback, reduceMotion: reduceMotion), value: store.toastNotice)
         .transaction { if reduceMotion { $0.disablesAnimations = true } }
         // Errors shown while the window is open still reach the diagnostics ring buffer (#45).
         .onChange(of: store.toastNotice?.id) { _, _ in
@@ -343,7 +343,7 @@ public struct SettingsWindowView: View {
         if reduceMotion {
             proxy.scrollTo(anchor, anchor: .center)
         } else {
-            withAnimation(AppleMotion.reveal) {
+            withAnimation(AppleMotion.resolve(.reveal, reduceMotion: reduceMotion)) {
                 proxy.scrollTo(anchor, anchor: .center)
             }
         }
@@ -745,6 +745,7 @@ private struct GeneralSettingsTab: View {
     let store: HomeStore
     @Binding var advancedDisplay: GeneralSettingsDisclosure.State
     @Environment(\.settingsSearchFocus) private var searchFocus
+    @Environment(\.effectiveReduceMotion) private var reduceMotion
     @State private var showNotificationRationale = false
     @AppStorage(AppAppearance.storageKey) private var appearanceRaw: String = AppAppearance.system.rawValue
     @AppStorage(PanelTheme.storageKey) private var panelThemeRaw: String = PanelTheme.defaultValue.rawValue
@@ -852,6 +853,15 @@ private struct GeneralSettingsTab: View {
                     )
                 )
                 .settingsRow(anchor: .quickScenesBar)
+
+                SettingsToggleRow(
+                    title: L10n.tr("面板顶部显示「我家现在」摘要行", "Show Home Summary Row"),
+                    isOn: Binding(
+                        get: { store.showHomeSummaryRow },
+                        set: { store.showHomeSummaryRow = $0 }
+                    )
+                )
+                .settingsRow(anchor: .homeSummaryRow)
 
                 SettingsToggleRow(
                     title: L10n.tr("操作声音反馈", "Play Feedback Sounds"),
@@ -985,7 +995,7 @@ private struct GeneralSettingsTab: View {
                             if store.hiddenDevices.count > 1 {
                                 Button(L10n.tr("全部恢复显示", "Unhide All")) {
                                     let ids = store.hiddenDevices.map(\.id)
-                                    withAnimation(AppleMotion.snappySpring) {
+                                    withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) {
                                         for id in ids {
                                             store.unhideDevice(id)
                                         }
@@ -1013,7 +1023,7 @@ private struct GeneralSettingsTab: View {
                                 Spacer()
 
                                 Button(L10n.tr("恢复显示", "Unhide")) {
-                                    withAnimation(AppleMotion.snappySpring) {
+                                    withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) {
                                         store.unhideDevice(dev.id)
                                     }
                                 }
@@ -1515,6 +1525,7 @@ private struct ConnectionSettingsTab: View {
     @State private var pendingHARemovalPauseConfirmation: HADisableConnectionConfirmation?
     @Environment(\.settingsSearchFocus) private var searchFocus
     @Environment(\.settingsUnsavedChanges) private var unsaved
+    @Environment(\.effectiveReduceMotion) private var reduceMotion
     /// The address and token as loaded or last saved; edits that differ are unsaved (#148).
     @State private var haBaselineURL = ""
     @State private var haBaselineToken = ""
@@ -1638,7 +1649,7 @@ private struct ConnectionSettingsTab: View {
                 Toggle(isOn: Binding(
                     get: { store.homeBackend == .demo },
                     set: { isDemo in
-                        withAnimation(AppleMotion.snappySpring) {
+                        withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) {
                             store.switchBackend(isDemo ? .demo : store.preferredLiveBackend)
                         }
                     }
@@ -1692,7 +1703,7 @@ private struct ConnectionSettingsTab: View {
                 } else {
                     SettingsSection(title: "Home Assistant") {
                         Button {
-                            withAnimation(AppleMotion.snappySpring) { haExpanded = true }
+                            withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) { haExpanded = true }
                         } label: {
                             HStack {
                                 Text(L10n.tr("我用 Home Assistant", "I use Home Assistant"))
@@ -2796,6 +2807,30 @@ private struct PrivacySettingsTab: View {
                     .fixedSize(horizontal: false, vertical: true)
                 }
                 .settingsRow(anchor: .allowURLControl)
+
+                Divider().overlay(Color.primary.opacity(0.06))
+
+                VStack(alignment: .leading, spacing: 6) {
+                    SettingsToggleRow(
+                        title: L10n.tr(
+                            "在系统搜索（Spotlight）里找到设备、房间与场景",
+                            "Show devices, rooms and scenes in Spotlight search"
+                        ),
+                        isOn: Binding(
+                            get: { store.spotlightIndexEnabled },
+                            set: { store.spotlightIndexEnabled = $0 }
+                        )
+                    )
+
+                    Text(L10n.tr(
+                        "关闭时不会向系统索引写入任何内容，退出账号或断开连接会同时清空已写入的条目。索引只包含设备名、房间名和场景名，不含设备 ID、地址、账号或令牌。",
+                        "When off, nothing is written to the system index; signing out or removing a connection clears what was written. The index holds device, room and scene names only — no device IDs, addresses, accounts or tokens."
+                    ))
+                    .font(.system(size: DesignTokens.TypeSize.caption))
+                    .foregroundStyle(DesignTokens.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+                }
+                .settingsRow(anchor: .spotlightIndex)
             }
         }
         .task { await HotkeyAndNotificationManager.shared.refreshNotificationPermission() }

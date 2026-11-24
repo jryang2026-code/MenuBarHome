@@ -42,6 +42,7 @@ export interface SwitchHomeHost {
   aiProactiveSignature: string | null;
   isRefreshingProactive: boolean;
   proactiveRetryAfterMs: number | null;
+  clearPendingHighRisk(options?: { readonly syncPin?: boolean }): void;
 }
 
 /**
@@ -95,6 +96,10 @@ export function switchSource(host: SourceSwitchHost, reason: string): void {
 export function switchHome(host: SwitchHomeHost): void {
   // Invalidate any in-flight cloud refresh from the previous home so it cannot overwrite the new selection.
   host.sourceEpoch.advance("home");
+  // A confirmation armed for the previous home must not survive the switch: its confirm click
+  // resolves the pending promise with `false` (and drops the inline buttons) instead of running
+  // a scene that may not even exist in the newly selected home.
+  host.clearPendingHighRisk();
   host.isSyncingCloud = false;
   // A different home is a different suggestion context even at the same ambient signature (Codex #116 review).
   host.aiProactiveSuggestions = null;

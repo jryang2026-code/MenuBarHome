@@ -464,7 +464,7 @@ extension HomeStore {
                     return nil
                 })
                 snapshot.devices.removeAll { disabledHADeviceIds.contains($0.id) }
-                snapshot.scenes = []
+                snapshot.scenes.removeAll { MiCloudScene.accountID(for: $0.entityId) == nil }
                 snapshot.sourceStatuses.removeValue(forKey: .homeAssistant)
                 snapshot.localNetworkBlockedFeatures.remove(.homeAssistant)
                 snapshot.activeBackends.remove(.homeAssistant)
@@ -996,7 +996,7 @@ extension HomeStore {
 
     // MARK: - Connection & Settings Management
 
-    func makeHAProvider(baseURLString: String, token: String) -> HAWebSocketProvider {
+    func makeHAProvider(baseURLString: String, token: String) -> HAHomeAdapter {
         let callback: (@Sendable (HADiscoveredInstance) -> Void)?
         if isTestEnvironment {
             callback = nil
@@ -1010,7 +1010,7 @@ extension HomeStore {
         let defaults = UncheckedUserDefaults(userDefaults)
         let pruneBox = haTypePruneBox
         syncMiotTypePrunePolicy()
-        return HAWebSocketProvider(
+        let provider = HAWebSocketProvider(
             baseURLString: baseURLString,
             token: token,
             onAddressSuggestion: callback,
@@ -1023,6 +1023,7 @@ extension HomeStore {
             isNetworkSatisfied: { @MainActor [weak self] in self?.knownNetworkSatisfied == true },
             typePrunePolicyLoader: { pruneBox.get() }
         )
+        return HAHomeAdapter(provider: provider)
     }
 
     private func makeConfiguredHAProvider(baseURLString: String, token: String) -> any HomeProvider {
@@ -1173,7 +1174,7 @@ extension HomeStore {
             if let existingHA = activeHAProvider {
                 if forceHAReconnect || activeHAConfig?.url != normalizedURL || activeHAConfig?.token != token {
                     activeHAConfig = (url: normalizedURL, token: token)
-                    if let wsProvider = existingHA as? HAWebSocketProvider {
+                    if let wsProvider = existingHA.haWebSocketProvider {
                         haCredentialUpdate = (wsProvider, serverURLString, token)
                     } else {
                         let createdHA = makeConfiguredHAProvider(baseURLString: serverURLString, token: token)
@@ -1522,6 +1523,8 @@ extension HomeStore {
         revokeCloudConsent()
         HAPlaintextConsent.revokeAll(defaults: userDefaults)
         haPlaintextPrompt = nil
+        // The Spotlight index must not outlive the credentials that produced it (#575).
+        clearSpotlightIndex()
         if complete {
             _ = ConnectionRemovalStore.clearAll(defaults: userDefaults)
             syncPendingConnectionRemovals()
@@ -1564,7 +1567,7 @@ extension HomeStore {
         sourceStatuses.removeValue(forKey: .homeAssistant)
         connectedBackends.remove(.homeAssistant)
         if homeBackend != .demo {
-            scenes = []
+            scenes.removeAll { MiCloudScene.accountID(for: $0.entityId) == nil }
             tearDownHACameras(cameraTeardownIds)
         }
         if homeBackend != .demo, hasManagedHAProvider {
@@ -1814,7 +1817,7 @@ extension HomeStore {
         invalidateUndoContext()
         self.serverURLString = instance.baseURL
         if reconnectProvider, isHAConnectionEnabled {
-            if let haProvider = provider as? HAWebSocketProvider {
+            if let haProvider = provider.haWebSocketProvider {
                 let token = loadHAToken()
                 Task {
                     await haProvider.updateCredentials(baseURLString: instance.baseURL, token: token)

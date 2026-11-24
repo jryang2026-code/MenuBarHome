@@ -835,6 +835,24 @@ extension HomeStore {
         let spoken = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !spoken.isEmpty else { return nil }
         let startedAt = Date()
+        let delayed = DelayPhrase.extract(spoken)
+        let utterance = delayed?.remainder ?? spoken
+        if let query = LocalIntentParser.stateQuery(in: utterance) {
+            if case .thinking = assistantState { advanceAssistantEpoch() }
+            pendingCloudConsent = nil
+            assistantSuggestions = []
+            guard delayed == nil else {
+                setAssistantState(.failed(L10n.tr("定时查询仅支持查看当前状态", "State queries only read the current snapshot")))
+                return nil
+            }
+            let plan = query.answer(devices: categoryVisibleDevices)
+            if let plan {
+                setAssistantState(.done(plan.reply))
+            } else {
+                setAssistantState(.failed(L10n.tr("当前快照没有可回答的状态", "No matching state in the current snapshot")))
+            }
+            return plan
+        }
         if DelayPhrase.isCancel(spoken) {
             let count = cancelScheduledCommands()
             setAssistantState(
@@ -848,8 +866,6 @@ extension HomeStore {
             await undoLastAssistantAction()
             return nil
         }
-        let delayed = DelayPhrase.extract(spoken)
-        let utterance = delayed?.remainder ?? spoken
         setAssistantState(.thinking)
         assistantThinkingEpoch = assistantGeneration
 
@@ -1825,7 +1841,8 @@ extension HomeStore {
         habitSummary: String? = nil,
         automationGeneration: UInt64? = nil,
         timerGeneration: UInt64? = nil,
-        onAutomationCompletion: ((Int, Int, Int) -> Void)? = nil
+        automationCanContinue: (() -> Bool)? = nil,
+        onAutomationCompletion: ((Int, Int, Int, Bool) -> Void)? = nil
     ) async -> IntentPlan {
         if origin.blocksWhileScreenLocked, isControlBlockedByScreenLock {
             showToast(screenLockBlockedMessage, isError: true)
@@ -1856,7 +1873,10 @@ extension HomeStore {
 
         func runtimeAllowsWrites() -> Bool {
             if let timerGeneration { return scheduledCommandsCanWrite(generation: timerGeneration) }
-            if let automationGeneration { return automationCanWrite(generation: automationGeneration) }
+            if let automationGeneration {
+                return automationCanWrite(generation: automationGeneration)
+                    && automationCanContinue?() != false
+            }
             return true
         }
 
@@ -1884,14 +1904,13 @@ extension HomeStore {
                 outcomes.append(contentsOf: await task.value)
             }
         }
-        guard context == controlContextID else { return plan }
-
         var restoreCommands: [DeviceCommand] = []
         var failedNames: [String] = []
         var offlineNames: [String] = []
         var appliedDeviceIds: Set<String> = []
         var appliedSceneIds: Set<String> = []
         var succeededIntents: [DeviceIntent] = []
+        var cancelledCount = 0
         for outcome in outcomes {
             switch outcome {
             case .applied(let intent, let deviceId, let restore):
@@ -1901,6 +1920,8 @@ extension HomeStore {
             case .appliedScene(let intent, let sceneId):
                 succeededIntents.append(intent)
                 appliedSceneIds.insert(sceneId)
+            case .cancelled:
+                cancelledCount += 1
             case .failed(let name):
                 if !failedNames.contains(name) { failedNames.append(name) }
             case .offline(let name):
@@ -1910,7 +1931,11 @@ extension HomeStore {
             }
         }
 
-        onAutomationCompletion?(outcomes.count, succeededIntents.count, outcomes.count - succeededIntents.count)
+        onAutomationCompletion?(
+            outcomes.count, succeededIntents.count, outcomes.count - succeededIntents.count,
+            !offlineNames.isEmpty
+        )
+        guard context == controlContextID else { return plan }
         if outcomes.isEmpty, !runtimeAllowsWrites() { return plan }
 
         // Only explicit user actions become habits, and only for intents that actually succeeded (#34/#113).
@@ -1970,11 +1995,15 @@ extension HomeStore {
             if case .appliedScene = outcome { return false }
             return true
         }) {
-            let sep = L10n.isEnglish ? ", " : "、"
-            let reason = offlineNames.isEmpty
-                ? L10n.tr("没有可执行的设备操作", "No matching device actions")
-                : L10n.tr("\(offlineNames.joined(separator: sep)) 当前离线", "\(offlineNames.joined(separator: sep)) offline")
-            setAssistantState(.failed(reason))
+            if cancelledCount > 0, offlineNames.isEmpty {
+                setAssistantState(.done(L10n.tr("已取消", "Cancelled")))
+            } else {
+                let sep = L10n.isEnglish ? ", " : "、"
+                let reason = offlineNames.isEmpty
+                    ? L10n.tr("没有可执行的设备操作", "No matching device actions")
+                    : L10n.tr("\(offlineNames.joined(separator: sep)) 当前离线", "\(offlineNames.joined(separator: sep)) offline")
+                setAssistantState(.failed(reason))
+            }
         } else {
             assistantSuggestions = plan.suggestions.isEmpty ? proactiveDisplaySuggestions() : plan.suggestions
             let receipt = receiptStartedAt.map { start in
@@ -2001,6 +2030,8 @@ extension HomeStore {
         case applied(intent: DeviceIntent, deviceId: String?, restore: [DeviceCommand])
         /// A scene ran: it counts toward habit learning but offers no device undo (#113).
         case appliedScene(intent: DeviceIntent, sceneId: String)
+        /// The user declined the confirmation (or the context changed behind it); not a failure.
+        case cancelled
         case failed(String)
         case offline(String)
         case skipped
@@ -2028,6 +2059,9 @@ extension HomeStore {
                 try await executeDeviceCommand(.activateScene(entityId: scene.entityId))
                 guard context == controlContextID else { return .skipped }
                 return .appliedScene(intent: intent, sceneId: intent.targetId)
+            } catch is CancellationError {
+                // Declining the confirmation is a user choice, not a device failure.
+                return .cancelled
             } catch {
                 return .failed(scene.name)
             }

@@ -276,6 +276,113 @@ class MijiaCliTests(unittest.TestCase):
         self.assertEqual([device["id"] for device in payload["devices"]], ["dev_study_lamp", "dev_study_ac"])
         self.assertEqual(payload["devices"][0]["capabilities"]["canTogglePower"], True)
 
+    def test_list_format_json_matches_the_json_flag(self) -> None:
+        _, flag_out, _, _ = self.run_cli(["list", "--json"])
+        _, format_out, _, _ = self.run_cli(["list", "--format", "json"])
+        self.assertEqual(json.loads(format_out), json.loads(flag_out))
+
+    def test_list_alfred_format_emits_script_filter_items(self) -> None:
+        icon = Path(self.temp_dir.name) / "icon.png"
+        icon.write_bytes(b"")
+        code, out, _, app = self.run_cli(["list", "--format", "alfred", "--icon", str(icon)])
+        self.assertEqual(code, 0)
+        # 只读快照、拼链接，不拉起应用。
+        self.assertEqual(app.opened, [])
+        payload = json.loads(out)
+        self.assertEqual(len(payload["items"]), 5)
+
+        first = payload["items"][0]
+        self.assertEqual(first["title"], "客厅吸顶灯")
+        self.assertIn("客厅", first["subtitle"])
+        self.assertIn("已开 · 80%", first["subtitle"])
+        self.assertTrue(first["valid"])
+        self.assertEqual(first["icon"], {"type": "fileicon", "path": str(icon)})
+        self.assertTrue(first["uid"].endswith("dev_living_light"))
+
+        toggle_url = urlparse(first["arg"])
+        self.assertEqual(toggle_url.scheme, "menumijia")
+        # 回车是「翻转」，不带目标状态：由应用在执行时解析当前状态，快照过期也不会翻反。
+        self.assertEqual(toggle_url.netloc, "toggle")
+        toggle_query = parse_qs(toggle_url.query)
+        self.assertEqual(toggle_query["device"], ["dev_living_light"])
+        self.assertNotIn("on", toggle_query)
+        self.assertEqual(toggle_query["token"], [TOKEN])
+        self.assertEqual(len(toggle_query["id"][0]), 32)
+
+        focus_url = urlparse(first["mods"]["cmd"]["arg"])
+        self.assertEqual(focus_url.netloc, "focus")
+        self.assertEqual(parse_qs(focus_url.query)["device"], ["dev_living_light"])
+
+    def test_list_alfred_format_focuses_devices_without_a_switch_and_marks_offline(self) -> None:
+        code, out, _, _ = self.run_cli(["list", "--format", "alfred", "--room", "living"])
+        self.assertEqual(code, 0)
+        payload = json.loads(out)
+        self.assertEqual([item["title"] for item in payload["items"]], ["客厅吸顶灯", "客厅风扇", "阳台灯"])
+        offline = payload["items"][2]
+        self.assertIn("离线", offline["subtitle"])
+        # 没有主开关的设备不造假写指令，回车只是定位。
+        self.assertEqual(urlparse(offline["arg"]).netloc, "focus")
+
+    def test_alfred_payload_without_devices_still_returns_a_valid_item(self) -> None:
+        payload = mijia.build_alfred_payload(make_snapshot(), [])
+        self.assertEqual(len(payload["items"]), 1)
+        self.assertFalse(payload["items"][0]["valid"])
+        self.assertIn("没有", payload["items"][0]["title"])
+
+    def test_list_alfred_format_rejects_a_missing_icon_path(self) -> None:
+        missing = str(Path(self.temp_dir.name) / "nope.png")
+        code, _, err, _ = self.run_cli(["list", "--format", "alfred", "--icon", missing])
+        self.assertEqual(code, mijia.EXIT_LOCAL_ERROR)
+        self.assertIn("nope.png", err)
+
+    def test_list_swiftbar_format_emits_plugin_text(self) -> None:
+        code, out, _, app = self.run_cli(["list", "--format", "swiftbar"])
+        self.assertEqual(code, 0)
+        self.assertEqual(app.opened, [])
+        lines = out.splitlines()
+        self.assertEqual(lines[0], "MenuBarHome 3/5 开启")
+        self.assertEqual(lines[1], "---")
+        self.assertEqual(lines[-1], "刷新 | refresh=true size=11 sfimage=arrow.clockwise")
+
+        device_lines = [line for line in lines if "href=menumijia://" in line]
+        self.assertEqual(len(device_lines), 5)
+        first = device_lines[0]
+        self.assertTrue(first.startswith("客厅吸顶灯 已开 · 80% ★ | "))
+        self.assertIn("sfimage=lightbulb", first)
+        href = first.split("href=", 1)[1].split(" ", 1)[0]
+        self.assertTrue(href.startswith("menumijia://toggle?"))
+        href_query = parse_qs(href.split("?", 1)[1])
+        self.assertEqual(href_query["device"], ["dev_living_light"])
+        self.assertNotIn("on", href_query)
+        self.assertEqual(href_query["token"], [TOKEN])
+        # 离线设备变灰，且没有主开关时只做定位。
+        offline = device_lines[2]
+        self.assertTrue(offline.startswith("阳台灯 离线 | "))
+        self.assertIn("color=#8e8e93", offline)
+        self.assertIn("menumijia://focus?", offline)
+
+    def test_list_swiftbar_format_sanitizes_separators_and_submenu_dashes(self) -> None:
+        snapshot = make_snapshot()
+        snapshot["devices"][0]["name"] = "-客厅|吸顶灯\n第二行"
+        self.write_snapshot(snapshot)
+        code, out, _, _ = self.run_cli(["list", "--format", "swiftbar"])
+        self.assertEqual(code, 0)
+        line = next(line for line in out.splitlines() if "href=menumijia://" in line)
+        title, params = line.split(" | ", 1)
+        self.assertNotIn("|", title)
+        self.assertFalse(title.startswith("-"))
+        self.assertIn("客厅·吸顶灯", title)
+        self.assertTrue(params.startswith("href=menumijia://toggle?"))
+
+    def test_list_formats_require_the_bridge_token(self) -> None:
+        snapshot = make_snapshot()
+        snapshot["bridgeToken"] = ""
+        self.write_snapshot(snapshot)
+        for output_format in ("alfred", "swiftbar"):
+            code, _, err, _ = self.run_cli(["list", "--format", output_format])
+            self.assertEqual(code, mijia.EXIT_LOCAL_ERROR, output_format)
+            self.assertIn("令牌", err)
+
     def test_status_reports_connection_counts_and_readings(self) -> None:
         code, out, _, _ = self.run_cli(["status"])
         self.assertEqual(code, 0)

@@ -155,6 +155,12 @@ struct GoldenCorpusTests {
         }
 
         struct SensorPayload: Decodable {
+            struct Observation: Decodable {
+                let entityId: String
+                let kind: String
+                let alarming: Bool
+            }
+            let safetyObservations: [Observation]?
             let temperature: Double?
             let humidity: Double?
             let battery: Int?
@@ -381,7 +387,11 @@ struct GoldenCorpusTests {
                         temperature: p.temperature,
                         humidity: p.humidity,
                         battery: p.battery,
-                        statusText: p.statusText
+                        statusText: p.statusText,
+                        observations: (p.safetyObservations ?? []).compactMap {
+                            guard let kind = SensorAlertKind(rawValue: $0.kind) else { return nil }
+                            return SensorObservation(sourceId: $0.entityId, kind: kind, alarming: $0.alarming)
+                        }
                     )
                 )
             case .appliance(let p):
@@ -2310,5 +2320,16 @@ struct GoldenCorpusTests {
             )
             #expect(d == c.expectedDisposition, "\(c.id)")
         }
+    }
+}
+
+extension GoldenCorpusTests {
+    @Test("Mi cloud manual scene decoder tolerates missing and invalid fields")
+    func miCloudSceneGolden() throws {
+        let url = try Self.locateGoldenFixture("Tests/Fixtures/mi_cloud_scenes_golden.json")
+        let json = try JSONDecoder().decode(JSONValue.self, from: Data(contentsOf: url))
+        let scenes = MiCloudScene.decode(json, homeId: "home-1", ownerUid: "42")
+        #expect(scenes.map { $0.id } == ["11", "12", "13", "14", "15"])
+        #expect(scenes.map { $0.name } == ["回家", "晚安", "晨起", "夜读", "新名"])
     }
 }

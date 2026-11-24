@@ -369,7 +369,7 @@ public enum DeviceDeduplicator {
         var home = DeviceSynthesizer.assembleHome(
             devices: mergedDevices,
             readings: mergedDevices.compactMap(\.environmentReading),
-            scenes: homeAssistant?.scenes ?? [],
+            scenes: (homeAssistant?.scenes ?? []) + (xiaomiCloud?.scenes ?? []),
             roomNameOrder: roomNameOrder
         )
         home.homes = xiaomiCloud?.homes ?? []

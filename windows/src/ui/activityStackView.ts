@@ -1,3 +1,4 @@
+import { renderMiSceneConfirmation } from "./sceneConfirmation.js";
 import { QUICK_ACTION_TARGET_CATEGORIES } from "../core/capabilityReferenceVerdict.js";
 import { supportsClimateSleepOff, supportsLightsOff, supportsSoftNightLight } from "../core/quickActions.js";
 import { isEventAutomationEnabled } from "../core/freshInstallDefaults.js";
@@ -557,7 +558,13 @@ export function pruneOrphanedDeviceActivities(
 
 export async function dispatchDesktopNotification(
   host: MenuMijiaWindowsApp,
-  payload: { readonly id: string; readonly title: string; readonly body: string },
+  payload: {
+    readonly id: string;
+    readonly title: string;
+    readonly body: string;
+    readonly kind?: "doorbell" | "safety" | "leak" | "smoke" | "gas";
+    readonly deviceId?: string;
+  },
   nowMs = Date.now(),
 ): Promise<DesktopNotificationRecord> {
   const center = getHostActivityCenter(host);
@@ -570,6 +577,8 @@ export async function dispatchDesktopNotification(
         await invoke("send_desktop_notification", {
           title: payload.title,
           body: payload.body,
+          kind: payload.kind,
+          deviceId: payload.deviceId,
         });
         channel = "tauri";
       } catch {
@@ -643,7 +652,13 @@ export function recordSafetyAlerts(
     if (alert.priority === "high") {
       void dispatchDesktopNotification(
         host,
-        { id: alert.id, title: alert.title, body: alert.body },
+        {
+          id: alert.id,
+          title: alert.title,
+          body: alert.body,
+          kind: alert.sensorKind && sensorAlertIsHazard(alert.sensorKind) ? alert.sensorKind : "safety",
+          deviceId: alert.deviceId,
+        },
         nowMs,
       );
     }
@@ -1449,6 +1464,8 @@ export async function ingestHostHASnapshotForDoorbell(
       host,
       {
         id: `doorbell:${ring.key}`,
+        kind: "doorbell",
+        deviceId: ring.deviceId,
         title: tr3(
           "{name} 有人按铃",
           "{name} 有人按鈴",
@@ -2522,7 +2539,7 @@ function buildUpperCardFactories(host: MenuMijiaWindowsApp, nowMs = Date.now()):
       reply,
       markDevice ? ManualControlPolicy.wallSwitchMarkPromptHint(markDevice) : undefined,
     );
-    const replyFactory = wrapCard("reply:banner", "reply", isDismissible, `cc-live-banner cc-feedback-card${reply.isError ? " is-error" : ""}`, (btns) => `<div class="cc-feedback-row"><span class="cc-feedback-badge">${host.escapeHtml(reply.source)}</span><span class="cc-feedback-text">${host.escapeHtml(reply.text)}</span>${markPill}${!manualUndoRendered && host.undoButtonVisible(nowMs) ? `<button class="cc-inline-pill" id="btn-undo">${t("撤销")}</button>` : ""}${btns}</div>${hint}`, "", reply.isError ? "alert" : "status", "btn-dismiss-banner");
+    const replyFactory = wrapCard("reply:banner", "reply", isDismissible, `cc-live-banner cc-feedback-card${reply.isError ? " is-error" : ""}`, (btns) => `<div class="cc-feedback-row"><span class="cc-feedback-badge">${host.escapeHtml(reply.source)}</span><span class="cc-feedback-text">${host.escapeHtml(reply.text)}</span>${markPill}${renderMiSceneConfirmation(host)}${!manualUndoRendered && host.undoButtonVisible(nowMs) ? `<button class="cc-inline-pill" id="btn-undo">${t("撤销")}</button>` : ""}${btns}</div>${hint}`, "", reply.isError ? "alert" : "status", "btn-dismiss-banner");
     if (hasActiveHighRisk) factories.unshift(replyFactory);
     else factories.push(replyFactory);
   }

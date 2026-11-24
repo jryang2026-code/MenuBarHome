@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import CoreSpotlight
 import MijiaCore
 
 @main
@@ -29,6 +30,7 @@ struct MenuBarMijiaApp: App {
         XiaomiCameraBridge.scrubStaleConfigOnLaunch()
         Task { await XiaomiCameraBridge.shared.scrubStaleConfigOnStartup() }
         CameraLivePanelController.shared.install(with: sharedStore)
+        SpotlightIndexer.shared.start(with: sharedStore)
     }
 
     var body: some Scene {
@@ -105,6 +107,22 @@ enum ManualControlConfirmationPresenter {
 final class MenuBarMijiaAppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     func application(_ application: NSApplication, open urls: [URL]) {
         URLCommandHandler.shared.enqueue(urls)
+    }
+
+    /// A Spotlight result carries our item identifier; the deeplink it maps to goes through the
+    /// same `menumijia://` entry point as an external link, so no new control path exists (#575).
+    func application(
+        _ application: NSApplication,
+        continue userActivity: NSUserActivity,
+        restorationHandler: @escaping ([any NSUserActivityRestoring]) -> Void
+    ) -> Bool {
+        guard userActivity.activityType == CSSearchableItemActionType,
+              let identifier = userActivity.userInfo?[CSSearchableItemActivityIdentifier] as? String,
+              let url = SpotlightIndexPlan.route(forItemIdentifier: identifier) else {
+            return false
+        }
+        URLCommandHandler.shared.enqueue([url])
+        return true
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {

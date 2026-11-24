@@ -26,11 +26,14 @@ public enum AppURLCommand: Equatable, Sendable {
     case fan(deviceId: String, percent: Int?, preset: String?)
     /// `menumijia://focus?device=<id>` opens the panel on that device's drawer.
     case focus(deviceId: String)
+    /// `menumijia://focus?room=<id>` opens the panel filtered to that room. Spotlight uses it for
+    /// room hits, so a room result navigates instead of writing anything (#575).
+    case focusRoom(roomId: String)
 
     /// True when the link changes a device, so the confirmation gate must run first.
     public var controlsDevice: Bool {
         switch self {
-        case .focus: return false
+        case .focus, .focusRoom: return false
         case .toggle, .scene, .ask, .power, .brightness, .colorTemp, .temperature, .fan: return true
         }
     }
@@ -219,8 +222,20 @@ public enum AppURLParser {
             guard (percent != nil) != (preset != nil) else { return nil }
             command = .fan(deviceId: deviceId, percent: percent, preset: preset)
         case "focus":
-            guard let deviceId = query["device"], deviceId.count <= maximumNameLength else { return nil }
-            command = .focus(deviceId: deviceId)
+            // One route, two targets: `device` keeps the documented behaviour, `room` is the
+            // Spotlight room hit. Both only navigate, so neither reaches a device write. A link
+            // carrying both is ambiguous, and which one wins would depend on this parser's order
+            // rather than on the caller's intent, so it is rejected (same rule as `fan`).
+            switch (query["device"], query["room"]) {
+            case let (deviceId?, nil):
+                guard deviceId.count <= maximumNameLength else { return nil }
+                command = .focus(deviceId: deviceId)
+            case let (nil, roomId?):
+                guard roomId.count <= maximumNameLength else { return nil }
+                command = .focusRoom(roomId: roomId)
+            default:
+                return nil
+            }
         default:
             return nil
         }

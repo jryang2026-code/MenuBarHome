@@ -1,3 +1,4 @@
+import { miSceneAccount } from "./miCloud/scenes.js";
 import {
   HaBlockedRequestError,
   acquireHaTransportLease,
@@ -6,7 +7,7 @@ import {
   isHaBlockedRequestError,
 } from "./haTransportGate.js";
 import { HomeAssistantSynthesizer, type HAInvoke } from "./homeAssistant.js";
-import type { ExecuteOptions, HomeProvider } from "./homeProvider.js";
+import type { ExecuteOptions, HomeCommandProvider } from "./homeProvider.js";
 import { tr3, type LanguagePreference } from "./i18n.js";
 import { MiAccountScope, type AccountScopedHomeOption, type AccountScopedSmartDevice,
 } from "./miAccountsStore.js";
@@ -970,7 +971,7 @@ export const DeviceDeduplicator = {
     const mergedReadings: EnvironmentReading[] = [...mergedDevices]
       .sort((a, b) => environmentReadingPriority(a.kind) - environmentReadingPriority(b.kind))
       .flatMap((dev) => { const r = deviceEnvironmentReading(dev);
-        return r ? [r] : []; }); const scenes: HomeScene[] = [...(haInput?.home.scenes ?? [])];
+        return r ? [r] : []; }); const scenes: HomeScene[] = [...(haInput?.home.scenes ?? []), ...(miInput?.home.scenes ?? [])];
     const sourceSnapshots = [
       ["homeAssistant", haInput],
       ["xiaomiCloud", miInput],
@@ -1003,7 +1004,8 @@ export const DeviceDeduplicator = {
 } as const;
 
 export function commandTargetBackend(command: DeviceCommand): HomeBackend { const entityId = command.entityId;
-  if (command.kind === "setMiotProperty" ||
+  if ((command.kind === "activateScene" && miSceneAccount(entityId) !== null) ||
+    command.kind === "setMiotProperty" ||
     parseMiotAddress(entityId) !== null ||
     parseMiotActionAddress(entityId) !== null
   ) { return "xiaomiCloud";
@@ -1092,7 +1094,7 @@ export class DualSourceCoordinator { public canonical: CanonicalDeviceRegistry;
   }
 
   /** Last Xiaomi input committed by `refreshParallel`. Dual-source merge only forwards Home
-   * Assistant scenes to `merged.home.scenes`, so callers that need Xiaomi scenes read them here. */
+   * scenes to `merged.home.scenes`; account-specific callers can read them here. */
   getLastMiSnapshot(): DualSourceInputSnapshot | null { return this.lastMi;
   }
 
@@ -1481,11 +1483,11 @@ export class DualSourceCoordinator { public canonical: CanonicalDeviceRegistry;
     this.rooms.save(this.storage);
     this.lastMerged = merged;
     return merged; } } 
-export class DualSourceHomeProvider implements HomeProvider {
+export class DualSourceHomeProvider implements HomeCommandProvider {
   constructor(
     private readonly dependencies: {
-      readonly haProvider: HomeProvider;
-      readonly miProvider: HomeProvider;
+      readonly haProvider: HomeCommandProvider;
+      readonly miProvider: HomeCommandProvider;
       readonly routes?: Readonly<Record<string, DeviceMergeRoute>>;
       readonly deviceIdForEntity?: (entityId: string) => string | null;
     },

@@ -46,7 +46,7 @@ struct IntentCoverageBaselineTests {
     }
 
     /// Where a spoken command ends up, mirroring the stage order of `HomeStore.runAssistantCommand`:
-    /// timer cancel → voice undo → spoken delay → local parser → model.
+    /// snapshot query → timer cancel → voice undo → spoken delay → local parser → model.
     private enum Outcome: String, CaseIterable {
         /// `LocalIntentParser` answered (after any spoken delay was stripped). Zero network.
         case local
@@ -64,8 +64,12 @@ struct IntentCoverageBaselineTests {
     }
 
     private static func classify(_ text: String, devices: [SmartDevice], scenes: [HomeScene]) -> Outcome {
+        let delay = DelayPhrase.extract(text)
+        let utterance = delay?.remainder ?? text
+        if let query = LocalIntentParser.stateQuery(in: utterance) {
+            return delay == nil && query.answer(devices: devices) != nil ? .local : .none
+        }
         if DelayPhrase.isCancel(text) || UndoPhrase.isUndo(text) { return .none }
-        let utterance = DelayPhrase.extract(text)?.remainder ?? text
         return LocalIntentParser.parse(utterance, devices: devices, scenes: scenes) == nil ? .model : .local
     }
 
@@ -182,11 +186,11 @@ struct IntentCoverageBaselineTests {
 
             ## 口径
 
-            按 `HomeStore.runAssistantCommand` 的阶段顺序判：定时取消 → 语音撤销 → 口语延后（“10分钟后”）→ `LocalIntentParser` → 模型。
+            按 `HomeStore.runAssistantCommand` 的阶段顺序判：只读查询 → 定时取消 → 语音撤销 → 口语延后（“10分钟后”）→ `LocalIntentParser` → 模型。
 
-            - **local**：`LocalIntentParser` 给出了指令（已剥掉口语延后前缀）。零网络、可复现。
+            - **local**：`LocalIntentParser` 给出了快照答复或指令（已剥掉指令的口语延后前缀）。零网络、可复现。
             - **model**：本地解析器拒答，助手会把这句话交给大模型；成功率取决于模型，不在这张表里。表里不分原因：句式没覆盖、设备不支持该参数、目标有歧义，都会落到这一格。
-            - **none**：本地无解，而且在流水线里也不会发模型请求——句子被更早的专门阶段接走了（「取消定时」「撤销」）。
+            - **none**：本地无解，而且在流水线里也不会发模型请求——句子被更早的专门阶段接走了（如无数据的查询、「取消定时」「撤销」）。
 
             只跑不判：表里没有“期望值”，也还没有对错。这些数字是基线，不是门槛。
             面板房间（`panelRoom`）留空，所以“打开灯”这类裸类别句按全屋判定。

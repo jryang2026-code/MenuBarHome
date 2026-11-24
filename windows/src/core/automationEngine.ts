@@ -1,3 +1,4 @@
+import { AutomationRunHistory, AutomationRunState, type AutomationExecutionMode, type AutomationSkipReason } from "./automationRun.js";
 import { DEVICE_CATEGORY_IDS } from "./capabilityManifest.js";
 import { controlTargetRejectionMessage } from "./capabilityReferenceVerdict.js";
 import { ManualControlPolicy } from "./assistant/actionPolicy.js";
@@ -499,6 +500,7 @@ export interface AutomationRule {
   readonly action: AutomationAction;
   readonly triggerOptions: AutomationTriggerOptions;
   readonly conditions: AutomationConditions;
+  readonly mode?: AutomationExecutionMode;
   readonly highRiskApproved?: boolean;
   readonly pausedByCapabilities?: readonly string[];
 }
@@ -518,6 +520,7 @@ export function createAutomationRule(args: {
   readonly isEnabled?: boolean;
   readonly triggerOptions?: Partial<Parameters<typeof createAutomationTriggerOptions>[0]>;
   readonly conditions?: AutomationConditions;
+  readonly mode?: AutomationExecutionMode;
   readonly highRiskApproved?: boolean;
 }): AutomationRule {
   return {
@@ -527,6 +530,7 @@ export function createAutomationRule(args: {
     action: args.action,
     triggerOptions: createAutomationTriggerOptions(args.triggerOptions),
     conditions: createAutomationConditions(args.conditions?.wifi, args.conditions?.timeWindow),
+    ...(args.mode === "restart" ? { mode: "restart" as const } : {}),
     ...(args.highRiskApproved ? { highRiskApproved: true } : {}),
   };
 }
@@ -665,6 +669,7 @@ function parseStoredRule(raw: unknown): AutomationRule | null {
     action,
     triggerOptions,
     conditions,
+    ...(obj.mode === "restart" ? { mode: "restart" as const } : {}),
     ...(obj.highRiskApproved === true ? { highRiskApproved: true } : {}),
     ...(pausedByCapabilities.length > 0 ? { pausedByCapabilities } : {}),
   };
@@ -704,6 +709,7 @@ export class AutomationRuleStore {
           ...(r.triggerOptions.sensorCondition ? { sensorCondition: r.triggerOptions.sensorCondition } : {}),
         },
         conditions: r.conditions,
+        ...(r.mode === "restart" ? { mode: "restart" } : {}),
         ...(r.highRiskApproved ? { highRiskApproved: true } : {}),
         ...(r.pausedByCapabilities?.length ? { pausedByCapabilities: r.pausedByCapabilities } : {}),
       }));
@@ -1081,6 +1087,10 @@ function commandsForPowerIntent(
 }
 
 interface ExecuteAutomationRuleOptions {
+  readonly isLockBlocked?: () => boolean | Promise<boolean>;
+  readonly manual?: boolean;
+  readonly onSkip?: (reason: AutomationSkipReason) => void;
+  readonly onWrite?: () => void;
   readonly canContinue?: () => boolean;
   readonly nowMs?: number;
   readonly firedAtMs?: number;
@@ -1105,6 +1115,27 @@ export async function executeAutomationRule(
   const startingRevision = host.sourceRevision ?? 0;
   const preference = host.settings?.interfaceLanguage;
   const effectivePref = preference && preference !== "system" ? preference : undefined;
+
+  const skip = (reason: AutomationSkipReason): null => {
+    options.onSkip?.(reason);
+    return null;
+  };
+  const canWrite = (): boolean =>
+    options.canContinue?.() !== false && (host.sourceRevision ?? 0) === startingRevision;
+  let blocked: AutomationSkipReason | null = null;
+  const send = async (cmd: DeviceCommand): Promise<boolean> => {
+    if (options.isLockBlocked && await options.isLockBlocked()) {
+      blocked = "screenLocked";
+      return false;
+    }
+    if (!canWrite()) {
+      blocked = "writeGateDenied";
+      return false;
+    }
+    if (!(await host.applyCommand(cmd, true))) return false;
+    options.onWrite?.();
+    return true;
+  };
 
   let gateMsg = options.evaluateRuleWriteGate
     ? options.evaluateRuleWriteGate(rule)
@@ -1139,26 +1170,33 @@ export async function executeAutomationRule(
       isError: true,
     };
     host.queueBackgroundRender?.();
-    return null;
+    return skip("writeGateDenied");
   }
 
+  if (options.isLockBlocked && await options.isLockBlocked()) return skip("screenLocked");
+  if (!canWrite()) return skip("writeGateDenied");
   const steps: AutomationUndoStep[] = [];
   const kindSnapshots = new Map<string, SmartDevice["kind"]>();
   let attemptedCount = 0;
   let succeededCount = 0;
   let failedCount = 0;
+  let hasOfflineTargets = false;
 
   if (rule.action.kind === "quickAction") {
     const planned = planQuickAction(rule.action.quickAction, host.devices, host.lastManuallyUsedLightId ?? null);
+    if (planned.targets.length === 0) {
+      const offline = host.devices.filter((dev) => !dev.isOnline).map((dev) => ({ ...dev, isOnline: true }));
+      hasOfflineTargets = planQuickAction(rule.action.quickAction, offline).targets.length > 0;
+    }
     for (const target of planned.targets) {
-      if (options.canContinue?.() === false) break;
-      if ((host.sourceRevision ?? 0) !== startingRevision) return null;
+      if (blocked || options.canContinue?.() === false) break;
+      if ((host.sourceRevision ?? 0) !== startingRevision) return skip("writeGateDenied");
       if (target.commands.length === 0) continue;
       attemptedCount += 1;
       let accepted = 0;
       for (const cmd of target.commands) {
-        if (options.canContinue?.() === false) break;
-        if (await host.applyCommand(cmd, true)) accepted += 1;
+        if (blocked || options.canContinue?.() === false) break;
+        if (await send(cmd)) accepted += 1;
         else break;
       }
       if (accepted > 0) {
@@ -1180,12 +1218,13 @@ export async function executeAutomationRule(
         isError: true,
       };
       host.queueBackgroundRender?.();
-      return null;
+      return skip("writeGateDenied");
     }
     for (const deviceId of rule.action.deviceIds) {
-      if (options.canContinue?.() === false) break;
-      if ((host.sourceRevision ?? 0) !== startingRevision) return null;
+      if (blocked || options.canContinue?.() === false) break;
+      if ((host.sourceRevision ?? 0) !== startingRevision) return skip("writeGateDenied");
       const dev = host.devices.find((d) => d.id === deviceId);
+      if (dev && !dev.isOnline) hasOfflineTargets = true;
       if (!dev || !dev.isOnline || isDeviceActiveOn(dev) === rule.action.isOn) continue;
       const cmds = commandsForPowerIntent(dev, rule.action.isOn, policyDevices);
       if (cmds.length === 0) continue;
@@ -1194,8 +1233,8 @@ export async function executeAutomationRule(
       const snapshotDev: SmartDevice = { ...dev, kind: previousKind };
       const acceptedCmds: DeviceCommand[] = [];
       for (const cmd of cmds) {
-        if (options.canContinue?.() === false) break;
-        if (await host.applyCommand(cmd, true)) acceptedCmds.push(cmd);
+        if (blocked || options.canContinue?.() === false) break;
+        if (await send(cmd)) acceptedCmds.push(cmd);
         else break;
       }
       if (acceptedCmds.length > 0) {
@@ -1213,12 +1252,12 @@ export async function executeAutomationRule(
     const targetSceneId = rule.action.sceneId;
     const scene = host.scenes.find((s) => s.id === targetSceneId || s.entityId === targetSceneId);
     attemptedCount += 1;
-    const ok = await host.applyCommand({ kind: "activateScene", entityId: scene?.entityId ?? targetSceneId }, true);
+    const ok = await send({ kind: "activateScene", entityId: scene?.entityId ?? targetSceneId });
     if (ok) succeededCount += 1;
     else failedCount += 1;
   }
 
-  if ((host.sourceRevision ?? 0) !== startingRevision) return null;
+  if ((host.sourceRevision ?? 0) !== startingRevision) return skip("writeGateDenied");
 
   const actionSummary = summarizeAutomationAction(rule.action, options.displayDevices ?? host.devices, host.scenes, preference);
   if (succeededCount === 0) {
@@ -1230,7 +1269,7 @@ export async function executeAutomationRule(
       };
     }
     host.queueBackgroundRender?.();
-    return null;
+    return skip(blocked ?? (attemptedCount > 0 ? "error" : hasOfflineTargets ? "deviceOffline" : "noActionNeeded"));
   }
   const triggerLabel = automationTriggerTitle(rule.trigger, preference);
   const baseSummary = tr3("{trigger} · 已执行「{action}」", "{trigger} · 已執行「{action}」", "{trigger} · Executed \"{action}\"", { trigger: triggerLabel, action: actionSummary }, preference);
@@ -1281,6 +1320,11 @@ export async function executeAutomationRule(
 export class AutomationEngine {
   public readonly store: AutomationRuleStore;
   public readonly deduper: AutomationTriggerDeduper;
+  public readonly history: AutomationRunHistory;
+  private activeRuns = new Map<string, {
+    state: AutomationRunState;
+    done: Promise<RecordedAutomationRun | null>;
+  }>();
   public readonly arbitrator = new AwayArbitrator();
   private context: SystemContextSnapshot = createDefaultSystemContextSnapshot();
   private hasLockBaseline = false;
@@ -1291,6 +1335,7 @@ export class AutomationEngine {
 
   constructor(storage: KeyValueStorageLike = defaultSafetyStorage()) {
     this.store = new AutomationRuleStore(storage);
+    this.history = new AutomationRunHistory(storage);
     this.deduper = new AutomationTriggerDeduper(storage);
   }
 
@@ -1337,14 +1382,80 @@ export class AutomationEngine {
     };
   }
 
+  public async runRule(
+    host: AutomationExecutionHost,
+    rule: AutomationRule,
+    options: ExecuteAutomationRuleOptions = {},
+  ): Promise<RecordedAutomationRun | null> {
+    const nowMs = options.nowMs ?? Date.now();
+    const time = options.firedAtMs ?? nowMs;
+    const trigger = options.manual ? "manual" : rule.trigger;
+    const previous = this.activeRuns.get(rule.id);
+    const state = previous?.state ?? new AutomationRunState();
+    const id = Symbol();
+    if (!state.start(id, rule.mode ?? "single")) {
+      this.history.append({ ruleId: rule.id, trigger, time, result: "skipped", reason: "singleAlreadyRunning" });
+      return null;
+    }
+
+    const sourceRevision = host.sourceRevision ?? 0;
+    let complete!: (run: RecordedAutomationRun | null) => void;
+    const done = new Promise<RecordedAutomationRun | null>((resolve) => { complete = resolve; });
+    this.activeRuns.set(rule.id, { state, done });
+    const execute = async (): Promise<RecordedAutomationRun | null> => {
+      if (previous) await previous.done;
+      let reason: AutomationSkipReason = "error";
+      let wrote = false;
+      const canContinue = (): boolean => state.owns(id) && options.canContinue?.() !== false
+        && (host.sourceRevision ?? 0) === sourceRevision;
+      try {
+        if (!canContinue()) {
+          reason = "writeGateDenied";
+          return null;
+        }
+        return await executeAutomationRule(host, rule, {
+          ...options,
+          nowMs,
+          canContinue,
+          onSkip: (skip) => { reason = skip; },
+          onWrite: () => { wrote = true; },
+        });
+      } catch {
+        return null;
+      } finally {
+        this.history.append(wrote
+          ? { ruleId: rule.id, trigger, time, result: "executed" }
+          : { ruleId: rule.id, trigger, time, result: "skipped", reason: state.owns(id) ? reason : "superseded" });
+        if (state.owns(id)) {
+          state.finish(id);
+          this.activeRuns.delete(rule.id);
+        }
+      }
+    };
+    void execute().then(complete);
+    return done;
+  }
+
+  private recordSkip(rule: AutomationRule, time: number, reason: AutomationSkipReason): void {
+    this.history.append({ ruleId: rule.id, trigger: rule.trigger, time, result: "skipped", reason });
+  }
+
+  private cooldownAllows(rules: readonly AutomationRule[], key: string, time: number, cooldown?: number): AutomationRule[] {
+    if (rules.length === 0 || this.deduper.shouldFire(key, time, cooldown)) return [...rules];
+    for (const rule of rules) this.recordSkip(rule, time, "cooldown");
+    return [];
+  }
+
   private passesConditions(
     rule: AutomationRule,
     nowMs: number,
     wifiSSID: string | null,
     wifiAuthorized: boolean,
   ): boolean {
-    return automationTimeWindowContains(rule.conditions.timeWindow, nowMs)
+    const passes = automationTimeWindowContains(rule.conditions.timeWindow, nowMs)
       && evaluateWiFiCondition(rule.conditions.wifi, wifiSSID, wifiAuthorized).isSatisfied;
+    if (!passes) this.recordSkip(rule, nowMs, "conditionFalse");
+    return passes;
   }
 
   public async dispatchEvent(
@@ -1370,9 +1481,7 @@ export class AutomationEngine {
       predicate?: (rule: AutomationRule) => boolean,
     ): void => {
       const candidates = rules.filter((r) => r.trigger === trigger && (predicate ? predicate(r) : true) && conditionsOk(r));
-      if (candidates.length === 0) return;
-      if (!this.deduper.shouldFire(dedupeKey, nowMs, cooldownMs)) return;
-      matchedRules.push(...candidates);
+      matchedRules.push(...this.cooldownAllows(candidates, dedupeKey, nowMs, cooldownMs));
     };
 
     switch (event.kind) {
@@ -1414,9 +1523,7 @@ export class AutomationEngine {
                 lockSnapshot ? lockSnapshot.isAuthorized : this.context.wifiAuthorized,
               ),
           );
-          if (awayCandidates.length > 0 && this.deduper.shouldFire("away", nowMs)) {
-            matchedRules.push(...awayCandidates);
-          }
+          matchedRules.push(...this.cooldownAllows(awayCandidates, "away", nowMs));
           const outcome = this.arbitrator.ingest("screenLocked", lidClosed, nowMs);
           if (outcome) pushRulesFor(awayOutcomeTrigger(outcome));
         } else {
@@ -1458,10 +1565,8 @@ export class AutomationEngine {
         break;
       }
 
-      case "panelWake": {
-        if (!this.context.isLocked) this.evaluateLateNightRules(rules, nowMs, matchedRules, options.resumedAtMs);
+      case "panelWake":
         break;
-      }
 
       case "powerChanged": {
         const prevExternal = this.context.onExternalPower;
@@ -1482,7 +1587,7 @@ export class AutomationEngine {
             if (rule.trigger !== "powerSaverChanged") continue;
             if (rule.triggerOptions.powerSaverEnabled !== undefined && rule.triggerOptions.powerSaverEnabled !== nextSaver) continue;
             if (!conditionsOk(rule)) continue;
-            if (this.deduper.shouldFire(`powerSaver:${rule.id}:${nextSaver ? 1 : 0}`, nowMs)) matchedRules.push(rule);
+            matchedRules.push(...this.cooldownAllows([rule], `powerSaver:${rule.id}:${nextSaver ? 1 : 0}`, nowMs));
           }
         }
 
@@ -1493,9 +1598,7 @@ export class AutomationEngine {
             const prevBelow = this.batteryEdgeByRule.get(rule.id) ?? false;
             this.batteryEdgeByRule.set(rule.id, below);
             if (!below || prevBelow || !conditionsOk(rule)) continue;
-            if (this.deduper.shouldFire(`battery:${rule.id}:${rule.triggerOptions.batteryThresholdPercent}`, nowMs)) {
-              matchedRules.push(rule);
-            }
+            matchedRules.push(...this.cooldownAllows([rule], `battery:${rule.id}:${rule.triggerOptions.batteryThresholdPercent}`, nowMs));
           }
         } else if (nextBattery !== null) {
           for (const rule of rules) {
@@ -1529,7 +1632,7 @@ export class AutomationEngine {
             if (!conditionsOk(rule, prevSSID, prevAuthorized)) continue;
             // 去重键只含触发器与规则 ID（对照 macOS transitionEvent），不把观测
             // 到的 SSID 写进持久化存储。
-            if (this.deduper.shouldFire(`wifiLeft:${rule.id}`, nowMs)) matchedRules.push(rule);
+            matchedRules.push(...this.cooldownAllows([rule], `wifiLeft:${rule.id}`, nowMs));
           }
         }
         if (nextSSID !== null && nextSSID !== prevSSID) {
@@ -1537,7 +1640,7 @@ export class AutomationEngine {
             if (rule.trigger !== "wifiNetworkJoined") continue;
             if (rule.triggerOptions.wifiSSID && rule.triggerOptions.wifiSSID !== nextSSID) continue;
             if (!conditionsOk(rule, nextSSID, nextAuth)) continue;
-            if (this.deduper.shouldFire(`wifiJoined:${rule.id}`, nowMs)) matchedRules.push(rule);
+            matchedRules.push(...this.cooldownAllows([rule], `wifiJoined:${rule.id}`, nowMs));
           }
         }
         break;
@@ -1574,9 +1677,7 @@ export class AutomationEngine {
         for (const rule of rules) {
           if (rule.trigger !== "calendarMeetingStartingSoon") continue;
           if (event.startsInMinutes > rule.triggerOptions.calendarLeadMinutes || !conditionsOk(rule)) continue;
-          if (this.deduper.shouldFire(`calendar:${rule.id}:${event.eventId}`, nowMs, AUTOMATION_POLICY.nightlyCooldownMs)) {
-            matchedRules.push(rule);
-          }
+          matchedRules.push(...this.cooldownAllows([rule], `calendar:${rule.id}:${event.eventId}`, nowMs, AUTOMATION_POLICY.nightlyCooldownMs));
         }
         break;
       }
@@ -1604,14 +1705,15 @@ export class AutomationEngine {
           rule.trigger === trigger
           && this.passesConditions(rule, lockedAtMs, lockWifi.ssid, lockWifi.isAuthorized),
       );
-      if (candidates.length > 0 && this.deduper.shouldFire(trigger, lockedAtMs)) {
+      const eligible = this.cooldownAllows(candidates, trigger, lockedAtMs);
+      if (eligible.length > 0) {
         confirmedLockAtMs = lockedAtMs;
-        for (const rule of candidates) confirmedLockRuleIds.add(rule.id);
-        matchedRules.push(...candidates);
+        for (const rule of eligible) confirmedLockRuleIds.add(rule.id);
+        matchedRules.push(...eligible);
       }
     }
 
-    if (!this.context.isLocked && !this.context.isSystemAsleep && !this.context.isDisplayAsleep) {
+    if (!this.context.isLocked && (event.kind === "panelWake" || (!this.context.isSystemAsleep && !this.context.isDisplayAsleep))) {
       this.evaluateLateNightRules(rules, nowMs, matchedRules, options.resumedAtMs);
     }
     if (options.resumedAtMs === undefined || Math.floor(nowMs / 60_000) > Math.floor(options.resumedAtMs / 60_000)) {
@@ -1630,13 +1732,17 @@ export class AutomationEngine {
     const startingRevision = host.sourceRevision ?? 0;
     const runs: RecordedAutomationRun[] = [];
     for (const rule of uniqueRules) {
-      if (options.canStartRule?.() === false || (host.sourceRevision ?? 0) !== startingRevision) break;
-      const run = await executeAutomationRule(host, rule, {
-        ...options,
-        canContinue: options.canStartRule ?? options.canContinue,
-        nowMs,
-        ...(confirmedLockAtMs !== null && confirmedLockRuleIds.has(rule.id) ? { firedAtMs: confirmedLockAtMs } : {}),
-      });
+      const firedAtMs = confirmedLockAtMs !== null && confirmedLockRuleIds.has(rule.id)
+        ? confirmedLockAtMs : options.firedAtMs ?? nowMs;
+      const canContinue = (): boolean =>
+        options.canStartRule?.() !== false && options.canContinue?.() !== false
+        && (host.sourceRevision ?? 0) === startingRevision
+        && (options.rules !== undefined || this.store.load().some((r) => JSON.stringify(r) === JSON.stringify(rule)));
+      if (!canContinue()) {
+        this.recordSkip(rule, firedAtMs, "writeGateDenied");
+        continue;
+      }
+      const run = await this.runRule(host, rule, { ...options, canContinue, nowMs, firedAtMs });
       if (run) {
         runs.push(run);
       } else if (options.canStartRule?.() !== false && !options.rules && !rule.highRiskApproved && automationRuleHighRiskConfirmation(rule.action, options.displayDevices ?? host.devices) !== null) {
@@ -1652,9 +1758,7 @@ export class AutomationEngine {
       const anchorKey = lateNightAnchorKey(rule.triggerOptions.lateNightWindow, nowMs);
       if (!anchorKey || (resumedAtMs !== undefined && anchorKey === lateNightAnchorKey(rule.triggerOptions.lateNightWindow, resumedAtMs))) continue;
       if (!this.passesConditions(rule, nowMs, this.context.wifiSSID, this.context.wifiAuthorized)) continue;
-      if (this.deduper.shouldFire(`lateNight:${rule.id}:${anchorKey}`, nowMs, AUTOMATION_POLICY.nightlyCooldownMs)) {
-        out.push(rule);
-      }
+      out.push(...this.cooldownAllows([rule], `lateNight:${rule.id}:${anchorKey}`, nowMs, AUTOMATION_POLICY.nightlyCooldownMs));
     }
   }
 
@@ -1672,9 +1776,7 @@ export class AutomationEngine {
       if (!sched || sched.hour !== hour || sched.minute !== minute) continue;
       if (sched.weekdays && sched.weekdays.length > 0 && !sched.weekdays.includes(weekday)) continue;
       if (!this.passesConditions(rule, nowMs, this.context.wifiSSID, this.context.wifiAuthorized)) continue;
-      if (this.deduper.shouldFire(`sched:${rule.id}:${dateKey}:${pad(sched.hour)}:${pad(sched.minute)}`, nowMs, AUTOMATION_POLICY.nightlyCooldownMs)) {
-        out.push(rule);
-      }
+      out.push(...this.cooldownAllows([rule], `sched:${rule.id}:${dateKey}:${pad(sched.hour)}:${pad(sched.minute)}`, nowMs, AUTOMATION_POLICY.nightlyCooldownMs));
     }
   }
 
@@ -1710,7 +1812,7 @@ export class AutomationEngine {
       if (!active || previous) continue;
 
       if (!this.passesConditions(rule, nowMs, this.context.wifiSSID, this.context.wifiAuthorized)) continue;
-      if (this.deduper.shouldFire(`sensor:${edgeKey}`, nowMs)) out.push(rule);
+      out.push(...this.cooldownAllows([rule], `sensor:${edgeKey}`, nowMs));
     }
   }
 }

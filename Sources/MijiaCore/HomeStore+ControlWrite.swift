@@ -780,6 +780,28 @@ extension HomeStore {
     }
 
     func executeDeviceCommand(_ command: DeviceCommand) async throws {
+        if case .activateScene(let entityId) = command,
+           MiCloudScene.accountID(for: entityId) != nil {
+            guard !isControlBlockedByScreenLock,
+                  let scene = scenes.first(where: { $0.entityId == entityId }) else {
+                throw MiotCommandError.unsupported(entityId)
+            }
+            if let reason = evaluateSceneControlGate(sceneId: scene.id).rejectionReason {
+                throw CapabilityControlBlockedError(reason: reason)
+            }
+            let context = controlContextID
+            let approved = manualControlConfirmationHandler?(ManualControlConfirmation(
+                title: L10n.tr("确认执行场景？", "Run this scene?"),
+                message: scene.name,
+                confirmTitle: L10n.tr("确认执行", "Confirm"),
+                cancelTitle: L10n.tr("取消", "Cancel")
+            )) == true
+            guard approved, context == controlContextID,
+                  !isControlBlockedByScreenLock, scenes.contains(scene),
+                  evaluateSceneControlGate(sceneId: scene.id).allowed else {
+                throw CancellationError()
+            }
+        }
         if let ownerId = owningDeviceIdForCommand(command),
            let reason = capabilityWriteRejection(forDeviceId: ownerId) {
             throw CapabilityControlBlockedError(reason: reason)

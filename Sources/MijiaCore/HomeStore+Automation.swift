@@ -6,16 +6,18 @@ public struct AutomationExecutionOutcome: Equatable, Sendable {
     public let succeededCount: Int
     public let failedCount: Int
     public let errorMessage: String?
+    public let skipReason: AutomationSkipReason?
 
     public var reply: String { plan.reply }
     public var intents: [DeviceIntent] { plan.intents }
 
-    public init(plan: IntentPlan, attemptedCount: Int, succeededCount: Int, failedCount: Int, errorMessage: String? = nil) {
+    public init(plan: IntentPlan, attemptedCount: Int, succeededCount: Int, failedCount: Int, errorMessage: String? = nil, skipReason: AutomationSkipReason? = nil) {
         self.plan = plan
         self.attemptedCount = attemptedCount
         self.succeededCount = succeededCount
         self.failedCount = failedCount
         self.errorMessage = errorMessage
+        self.skipReason = skipReason
     }
 }
 
@@ -92,17 +94,27 @@ extension HomeStore {
             let categories = QuickActionReferenceKind(rawValue: action.rawValue)?.targetCategories ?? []
             return !deviceValuesAreStale && !pausedQuickActionIDs.contains(action.rawValue)
                 && categories.allSatisfy(capabilitySelection.enabledCategories.contains)
-                && devices.contains { device in
-                    guard device.isOnline, capabilityWriteRejection(for: device) == nil else { return false }
-                    switch (action, device.kind) {
-                    case (.lightsOff, .light(let spec)): return spec.powerWritable
-                    case (.softNightLight, .light(let spec)): return spec.brightnessWritable && spec.colorWritable
-                    case (.climateSleepOff, .climate(let spec)): return spec.powerWritable
-                    case (.climateSleepOff, .fan(let spec)): return spec.powerWritable
-                    default: return false
-                    }
-                }
+                && devices.contains { $0.isOnline && isAutomationQuickActionTarget($0, action: action) }
         }
+    }
+
+    private func isAutomationQuickActionTarget(_ device: SmartDevice, action: QuickAction) -> Bool {
+        guard capabilityWriteRejection(for: device) == nil else { return false }
+        switch (action, device.kind) {
+        case (.lightsOff, .light(let spec)): return spec.powerWritable
+        case (.softNightLight, .light(let spec)): return spec.brightnessWritable && spec.colorWritable
+        case (.climateSleepOff, .climate(let spec)): return spec.powerWritable
+        case (.climateSleepOff, .fan(let spec)): return spec.powerWritable
+        default: return false
+        }
+    }
+
+    public func automationQuickActionSkipReason(_ action: QuickAction) -> AutomationSkipReason {
+        if automationTargetsAreAvailable(.quickAction(action)) { return .noActionNeeded }
+        if devices.contains(where: { !$0.isOnline && isAutomationQuickActionTarget($0, action: action) }) {
+            return .deviceOffline
+        }
+        return .writeGateDenied
     }
 
     func automationCanWrite(generation: UInt64) -> Bool {
@@ -110,11 +122,16 @@ extension HomeStore {
     }
 
     @discardableResult
-    public func runAutomationQuickAction(_ action: QuickAction) -> Task<BulkWriteOutcome, Never>? {
+    public func runAutomationQuickAction(
+        _ action: QuickAction,
+        canContinue: (() -> Bool)? = nil,
+        onWrite: ((Bool) -> Void)? = nil
+    ) -> Task<BulkWriteOutcome, Never>? {
         guard eventAutomationEnabled else { return nil }
         return executeQuickAction(
             action, undoBannerDuration: AutomationPolicy.undoWindow, recordsHabits: false,
-            respectScreenLock: false, automationGeneration: automationGeneration
+            respectScreenLock: false, automationGeneration: automationGeneration,
+            automationCanContinue: canContinue, onAutomationWrite: onWrite
         )
     }
 
@@ -132,7 +149,7 @@ extension HomeStore {
     /// Scenes an external entry point may list and trigger: empty when Home Assistant is turned off
     /// outside demo mode.
     public var visibleScenes: [HomeScene] {
-        (homeBackend == .demo || isHAConnectionEnabled) ? scenes : []
+        scenes.filter { homeBackend == .demo || evaluateSceneControlGate(sceneId: $0.id).allowed }
     }
 
     /// Runs one automation rule through the same optimistic-update, dispatch, rollback, and undo
@@ -143,75 +160,54 @@ extension HomeStore {
     /// the panel is closed. Demo mode uses `DemoHomeProvider`, which applies commands to an
     /// in-memory home only — nothing is sent over the network (#47).
     @discardableResult
-    public func runAutomation(intents: [DeviceIntent], title: String) async -> AutomationExecutionOutcome {
+    public func runAutomation(
+        intents: [DeviceIntent], title: String, canContinue: (() -> Bool)? = nil
+    ) async -> AutomationExecutionOutcome {
         let plan = IntentPlan(intents: intents, reply: title, source: .local)
+        let generation = automationGeneration
         guard !intents.isEmpty else {
             return AutomationExecutionOutcome(
                 plan: plan, attemptedCount: 0, succeededCount: 0, failedCount: 0,
-                errorMessage: L10n.tr("没有可执行的设备操作", "No matching device actions")
+                errorMessage: L10n.tr("没有可执行的设备操作", "No matching device actions"),
+                skipReason: .noActionNeeded
             )
         }
-        let generation = automationGeneration
         guard automationCanWrite(generation: generation) else {
-            return AutomationExecutionOutcome(plan: plan, attemptedCount: 0, succeededCount: 0, failedCount: 0)
+            return AutomationExecutionOutcome(
+                plan: plan, attemptedCount: 0, succeededCount: 0, failedCount: 0, skipReason: .writeGateDenied
+            )
         }
-        var executed = (attempted: 0, succeeded: 0, failed: 0)
-        let offlineTargetNames = intents.compactMap { intent -> String? in
-            guard intent.operation != .activateScene,
-                  let dev = devices.first(where: { $0.id == intent.targetId }),
-                  !dev.isOnline else { return nil }
-            return dev.name
+        if let message = firstPlanCapabilityRejectionMessage(for: intents) {
+            showToast(message, isError: true)
+            setAssistantState(.failed(message))
+            return AutomationExecutionOutcome(
+                plan: plan, attemptedCount: 0, succeededCount: 0, failedCount: 0,
+                errorMessage: message, skipReason: .writeGateDenied
+            )
         }
-        let previousBannerId = undoBanner?.id
+        var executed = (attempted: 0, succeeded: 0, failed: 0, offline: false)
         setAssistantState(.idle)
         let resultPlan = await executeIntentPlan(
-            plan, recordedUtterance: nil, origin: .automation, automationGeneration: generation
-        ) { attempted, succeeded, failed in
-            executed = (attempted, succeeded, failed)
+            plan, recordedUtterance: nil, origin: .automation, automationGeneration: generation,
+            automationCanContinue: canContinue
+        ) { attempted, succeeded, failed, offline in
+            executed = (attempted, succeeded, failed, offline)
         }
-        if !automationCanWrite(generation: generation) {
-            return AutomationExecutionOutcome(
-                plan: resultPlan, attemptedCount: executed.attempted,
-                succeededCount: executed.succeeded, failedCount: executed.failed
-            )
+        let errorMessage = if case .failed(let message) = assistantState { message } else { nil as String? }
+        let skipReason: AutomationSkipReason?
+        if executed.succeeded > 0 {
+            skipReason = nil
+        } else if executed.offline {
+            skipReason = .deviceOffline
+        } else if !automationCanWrite(generation: generation) {
+            skipReason = .writeGateDenied
+        } else {
+            skipReason = .error
         }
-        let newBanner = (undoBanner?.id != previousBannerId) ? undoBanner : nil
-
-        switch assistantState {
-        case .failed(let message):
-            if let newBanner, newBanner.deviceCount > 0 {
-                let succeeded = newBanner.deviceCount
-                let failed = max(1, intents.count - succeeded)
-                return AutomationExecutionOutcome(
-                    plan: resultPlan, attemptedCount: succeeded + failed,
-                    succeededCount: succeeded, failedCount: failed, errorMessage: message
-                )
-            }
-            return AutomationExecutionOutcome(
-                plan: resultPlan, attemptedCount: intents.count,
-                succeededCount: 0, failedCount: intents.count, errorMessage: message
-            )
-        case .done:
-            if !offlineTargetNames.isEmpty {
-                let failed = offlineTargetNames.count
-                let succeeded = newBanner?.deviceCount ?? max(0, intents.count - failed)
-                let sep = L10n.isEnglish ? ", " : "、"
-                let reason = L10n.tr("\(offlineTargetNames.joined(separator: sep)) 当前离线", "\(offlineTargetNames.joined(separator: sep)) offline")
-                return AutomationExecutionOutcome(
-                    plan: resultPlan, attemptedCount: succeeded + failed,
-                    succeededCount: succeeded, failedCount: failed, errorMessage: reason
-                )
-            }
-            let succeeded = newBanner?.deviceCount ?? intents.count
-            return AutomationExecutionOutcome(
-                plan: resultPlan, attemptedCount: intents.count, succeededCount: succeeded, failedCount: 0
-            )
-        case .idle, .thinking, .awaitingChoice:
-            let succeeded = newBanner?.deviceCount ?? 0
-            return AutomationExecutionOutcome(
-                plan: resultPlan, attemptedCount: intents.count,
-                succeededCount: succeeded, failedCount: max(0, intents.count - succeeded)
-            )
-        }
+        return AutomationExecutionOutcome(
+            plan: resultPlan, attemptedCount: executed.attempted,
+            succeededCount: executed.succeeded, failedCount: executed.failed,
+            errorMessage: errorMessage, skipReason: skipReason
+        )
     }
 }

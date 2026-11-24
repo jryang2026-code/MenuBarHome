@@ -7,12 +7,15 @@ import {
   HomeAssistantProvider,
   MiCloudProvider,
   PowerReadBackError,
+  type HomeCommandProvider,
   type HomeProvider,
+  type HomeProviderEvent,
 } from "../src/core/homeProvider.js";
 import { MiCloudError, parseMiotDeviceSpec, propKeyString } from "../src/core/miCloudClient.js";
 import type { MiotActionCall, MiotPropKey, MiotPropWrite } from "../src/core/miCloudClient.js";
 import type { MiotDeviceSpec } from "../src/core/miCloudClient.js";
-import type { DeviceCommand, SmartDevice } from "../src/core/models.js";
+import { HomeAssistantClient } from "../src/core/homeAssistant.js";
+import type { DeviceCommand, SmartDevice, SynthesizedHome } from "../src/core/models.js";
 
 // Each backend behind the one `HomeProvider.execute` call, without the app (ADR-0020).
 
@@ -31,7 +34,7 @@ it("reports the active source set for zero, one, and two snapshots", () => {
 
 it("declares the existing capabilities of both Windows backends", () => {
   assert.deepEqual(HomeAssistantProvider.capabilities, new Set(["readSnapshot", "control", "scenes", "cameras"]));
-  assert.deepEqual(MiCloudProvider.capabilities, new Set(["readSnapshot", "control", "cameras"]));
+  assert.deepEqual(MiCloudProvider.capabilities, new Set(["readSnapshot", "control", "scenes", "cameras"]));
 });
 
 it("maps Home Assistant and Xiaomi errors to the same adapter codes", () => {
@@ -139,14 +142,66 @@ function miProvider(cloud: FakeCloud, deviceSpec = plugSpec, devices: SmartDevic
 describe("DemoHomeProvider", () => {
   it("sends nothing and never asks the caller whether the source is still current", async () => {
     let asked = false;
-    const provider: HomeProvider = new DemoHomeProvider();
+    const provider: HomeCommandProvider = new DemoHomeProvider();
     const result = await provider.execute(turnOn, { readBackPower: true, beforeSend: () => { asked = true; } });
     assert.equal(result, null);
     assert.equal(asked, false);
   });
 });
 
+const emptyHome: SynthesizedHome = { rooms: [], devices: [], environmentReadings: [], scenes: [] };
+
+describe("Windows HomeProvider", () => {
+  it("lets a host use a fake through the snapshot, subscription, and command contract", async () => {
+    const event = { kind: "snapshotUpdated", home: emptyHome } satisfies HomeProviderEvent;
+    const fake: HomeProvider = {
+      async snapshot() { return emptyHome; },
+      subscribe(listener) { listener(event); return () => {}; },
+      async execute() { return true; },
+    };
+    const seen: HomeProviderEvent[] = [];
+    const unsubscribe = fake.subscribe((update) => seen.push(update));
+    assert.equal(await fake.snapshot(), emptyHome);
+    assert.deepEqual(seen, [event]);
+    assert.equal(await fake.execute(turnOn), true);
+    unsubscribe();
+  });
+});
+
 describe("HomeAssistantProvider", () => {
+  it("publishes successful poll snapshots to subscribers until they unsubscribe", async () => {
+    const requests: string[] = [];
+    const raw = { areas: [], devices: [], entities: [], states: [] };
+    const client = new HomeAssistantClient("http://192.0.2.10:8123", "test-token", async <T>(command: string) => {
+      requests.push(command);
+      if (requests.length === 2) throw new Error("read failed");
+      return raw as T;
+    });
+    let release!: () => void;
+    const ready = new Promise<void>((resolve) => { release = resolve; });
+    const provider: HomeProvider = new HomeAssistantProvider(client, ready);
+    const updates: HomeProviderEvent[] = [];
+    const otherUpdates: HomeProviderEvent[] = [];
+    const unsubscribe = provider.subscribe((event) => { updates.push(event); });
+    const unsubscribeOther = provider.subscribe((event) => { otherUpdates.push(event); });
+
+    const pending = provider.snapshot();
+    assert.deepEqual(requests, []);
+    release();
+    const home = await pending;
+    assert.deepEqual(home.devices, []);
+    assert.deepEqual(updates, [{ kind: "snapshotUpdated", home }]);
+    assert.deepEqual(otherUpdates, updates);
+    await assert.rejects(provider.snapshot(), /read failed/);
+    assert.equal(updates.length, 1);
+    unsubscribe();
+    await provider.snapshot();
+    assert.equal(updates.length, 1);
+    assert.equal(otherUpdates.length, 2);
+    unsubscribeOther();
+    assert.deepEqual(requests, ["ha_snapshot", "ha_snapshot", "ha_snapshot"]);
+  });
+
   it("waits for the endpoint, then asks the caller, then sends", async () => {
     const log: string[] = [];
     let release: () => void = () => {};
@@ -154,7 +209,7 @@ describe("HomeAssistantProvider", () => {
       release = resolve;
     });
     const provider = new HomeAssistantProvider(
-      { async execute(command) { log.push(`execute:${command.kind}`); } },
+      { async execute(command) { log.push(`execute:${command.kind}`); }, async snapshot() { return emptyHome; } },
       ready.then(() => log.push("ready")),
     );
     const pending = provider.execute(turnOn, { beforeSend: () => log.push("beforeSend") });
@@ -167,7 +222,7 @@ describe("HomeAssistantProvider", () => {
 
   it("does not send when the caller refuses in beforeSend", async () => {
     let sent = false;
-    const provider = new HomeAssistantProvider({ async execute() { sent = true; } });
+    const provider = new HomeAssistantProvider({ async execute() { sent = true; }, async snapshot() { return emptyHome; } });
     await assert.rejects(
       provider.execute(turnOn, { beforeSend: () => { throw new Error("Connection source changed"); } }),
       /Connection source changed/,
@@ -178,7 +233,7 @@ describe("HomeAssistantProvider", () => {
   it("does not send when the endpoint submission failed", async () => {
     let sent = false;
     const provider = new HomeAssistantProvider(
-      { async execute() { sent = true; } },
+      { async execute() { sent = true; }, async snapshot() { return emptyHome; } },
       Promise.reject(new Error("endpoint refused")),
     );
     await assert.rejects(provider.execute(turnOn), /endpoint refused/);

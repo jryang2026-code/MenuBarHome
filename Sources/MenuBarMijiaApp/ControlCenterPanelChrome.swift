@@ -31,7 +31,7 @@ extension ControlCenterPanel {
             Button(expired
                 ? L10n.tr("扫码重新登录", "Scan to sign in")
                 : L10n.tr("现在重新扫码", "Re-scan now")) {
-                withAnimation(AppleMotion.snappySpring) { store.presentMiReauth() }
+                withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) { store.presentMiReauth() }
             }
             .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .accentColor))
         }
@@ -41,7 +41,7 @@ extension ControlCenterPanel {
 
     var miReauthOverlay: some View {
         promptBackdrop(onDismiss: {
-            withAnimation(AppleMotion.snappySpring) { store.dismissMiReauth() }
+            withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) { store.dismissMiReauth() }
         }) {
             VStack(alignment: .leading, spacing: 10) {
                 HStack(spacing: 8) {
@@ -54,7 +54,7 @@ extension ControlCenterPanel {
                         .font(.system(size: DesignTokens.TypeSize.body, weight: .semibold))
                     Spacer()
                     Button {
-                        withAnimation(AppleMotion.snappySpring) { store.dismissMiReauth() }
+                        withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) { store.dismissMiReauth() }
                     } label: {
                         Image(systemName: "xmark")
                             .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
@@ -120,7 +120,7 @@ extension ControlCenterPanel {
                                 helpText: [copy.tooltip, copy.helper].compactMap { $0 }.joined(separator: "\n"),
                                 onBeginHold: { store.beginAllOffHold() },
                                 onConfirm: { mode in
-                                    withAnimation(AppleMotion.snappySpring) { _ = store.confirmAllOffHold(mode: mode) }
+                                    withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) { _ = store.confirmAllOffHold(mode: mode) }
                                     SoundFeedback.playSuccess()
                                 },
                                 onTap: {
@@ -173,11 +173,11 @@ extension ControlCenterPanel {
             Divider()
             Toggle(L10n.tr("双列分体磁贴", "Two-column split tiles"), isOn: Binding(
                 get: { store.isCompactGridMode },
-                set: { value in withAnimation(AppleMotion.reveal) { store.isCompactGridMode = value } }
+                set: { value in withAnimation(AppleMotion.resolve(.reveal, reduceMotion: reduceMotion)) { store.isCompactGridMode = value } }
             ))
             Toggle(L10n.tr("只显示在线设备", "Online devices only"), isOn: Binding(
                 get: { store.hideOfflineDevices },
-                set: { value in withAnimation(AppleMotion.reveal) { store.hideOfflineDevices = value } }
+                set: { value in withAnimation(AppleMotion.resolve(.reveal, reduceMotion: reduceMotion)) { store.hideOfflineDevices = value } }
             ))
             Divider()
             if UndoAvailabilityTracker.shared.isAvailable {
@@ -222,7 +222,7 @@ extension ControlCenterPanel {
     private func updateCapsule(for release: AppRelease) -> some View {
         Button {
             if store.updateState.isReadyToRelaunch {
-                withAnimation(AppleMotion.snappySpring) { store.confirmRelaunchForUpdate() }
+                withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) { store.confirmRelaunchForUpdate() }
             } else {
                 SettingsWindowOpener.shared.show(tab: .about)
             }
@@ -306,7 +306,7 @@ extension ControlCenterPanel {
     }
 
     func handleEnvironmentChipTap(_ env: EnvironmentReading) {
-        withAnimation(AppleMotion.snappySpring) {
+        withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) {
             if search.isSearching {
                 search.clear()
             }
@@ -407,7 +407,7 @@ extension ControlCenterPanel {
         HStack(spacing: 6) {
             ForEach(QuickAction.allCases) { action in
                 Button {
-                    withAnimation(AppleMotion.snappySpring) {
+                    withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) {
                         _ = store.executeQuickAction(action)
                     }
                 } label: {
@@ -427,7 +427,7 @@ extension ControlCenterPanel {
 
             ForEach(store.scenes) { scene in
                 Button {
-                    withAnimation(AppleMotion.snappySpring) {
+                    withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) {
                         _ = store.triggerScene(scene)
                     }
                 } label: {
@@ -547,7 +547,7 @@ extension ControlCenterPanel {
                     .multilineTextAlignment(.center)
                 HStack(spacing: 8) {
                     Button(L10n.tr("打开新手引导", "Setup Guide")) {
-                        withAnimation(AppleMotion.snappySpring) {
+                        withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) {
                             store.reopenOnboarding()
                         }
                     }
@@ -577,7 +577,7 @@ extension ControlCenterPanel {
                     .multilineTextAlignment(.center)
                 HStack(spacing: 8) {
                     Button(L10n.tr("显示全部家庭", "Show All Homes")) {
-                        withAnimation(AppleMotion.snappySpring) { store.selectMiHome(nil) }
+                        withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) { store.selectMiHome(nil) }
                     }
                     .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .accentColor))
 
@@ -635,7 +635,7 @@ extension ControlCenterPanel {
                 .foregroundStyle(.secondary)
                 if store.hideOfflineDevices {
                     Button(L10n.tr("显示离线设备", "Show Offline Devices")) {
-                        withAnimation(AppleMotion.snappySpring) {
+                        withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) {
                             store.hideOfflineDevices = false
                         }
                     }
@@ -670,11 +670,11 @@ extension ControlCenterPanel {
             .foregroundStyle(.secondary)
             HStack(spacing: 8) {
                 Button(L10n.tr("切换", "Switch")) {
-                    withAnimation(AppleMotion.snappySpring) { store.acceptHAAddressSuggestion() }
+                    withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) { store.acceptHAAddressSuggestion() }
                 }
                 .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .accentColor))
                 Button(L10n.tr("不切换", "Don't Switch")) {
-                    withAnimation(AppleMotion.snappySpring) { store.dismissHAAddressSuggestion() }
+                    withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) { store.dismissHAAddressSuggestion() }
                 }
                 .buttonStyle(PillActionButtonStyle())
             }
@@ -720,13 +720,13 @@ extension ControlCenterPanel {
             HStack(spacing: 8) {
                 if !isDeclined {
                     Button(L10n.tr("不连接", "Don't Connect")) {
-                        withAnimation(AppleMotion.snappySpring) { store.declineHAPlaintext() }
+                        withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) { store.declineHAPlaintext() }
                     }
                     .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .orange))
                 }
                 Spacer(minLength: 8)
                 Button(L10n.tr("仍然连接", "Connect Anyway")) {
-                    withAnimation(AppleMotion.snappySpring) { store.allowHAPlaintext() }
+                    withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) { store.allowHAPlaintext() }
                 }
                 .buttonStyle(.plain)
                 .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
@@ -891,7 +891,7 @@ struct PanelConnectionStatusPresentation: Equatable, Sendable {
     @MainActor
     static func perform(_ action: PanelHealthAction, store: HomeStore) {
         switch action {
-        case .presentMiReauth: withAnimation(AppleMotion.snappySpring) { store.presentMiReauth() }
+        case .presentMiReauth: withAnimation(AppleMotion.resolve(.snappy)) { store.presentMiReauth() }
         case .openConnectionSettings: SettingsWindowOpener.shared.show(tab: .connection)
         case .openLocalNetworkSettings: LocalNetworkSystemSettings.open()
         case .retryIdentityMigration: _ = store.retryIdentityMigration()
@@ -901,9 +901,9 @@ struct PanelConnectionStatusPresentation: Equatable, Sendable {
     @MainActor
     static func performInline(_ action: PanelConnectionInlineAction, store: HomeStore) {
         switch action {
-        case .leaveDemo: withAnimation(AppleMotion.snappySpring) { _ = store.leaveDemo() }
+        case .leaveDemo: withAnimation(AppleMotion.resolve(.snappy)) { _ = store.leaveDemo() }
         case .openConnectionSettings: SettingsWindowOpener.shared.show(tab: .connection)
-        case .presentMiReauth: withAnimation(AppleMotion.snappySpring) { store.presentMiReauth() }
+        case .presentMiReauth: withAnimation(AppleMotion.resolve(.snappy)) { store.presentMiReauth() }
         case .openDetail: PanelConnectionDetailState.shared.toggle()
         case .openLocalNetworkSettings: LocalNetworkSystemSettings.open()
         case .retryIdentityMigration: _ = store.retryIdentityMigration()
@@ -1308,6 +1308,7 @@ struct PanelConnectionStatusControl: View {
 }
 
 struct PanelConnectionDetailPopover: View {
+    @Environment(\.effectiveReduceMotion) private var reduceMotion
     let store: HomeStore
     let theme: PanelTheme
     let status: PanelConnectionStatusPresentation
@@ -1367,7 +1368,7 @@ struct PanelConnectionDetailPopover: View {
                 if store.miSessionShowsExpired {
                     Button(L10n.tr("重新扫码", "Re-scan")) {
                         onClose()
-                        withAnimation(AppleMotion.snappySpring) { store.presentMiReauth() }
+                        withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) { store.presentMiReauth() }
                     }
                     .themedPillButtonStyle(theme, isSelected: true, tintColor: .orange)
                 }
@@ -1386,6 +1387,7 @@ struct PanelConnectionDetailPopover: View {
 }
 
 struct PanelConnectionFooterBar: View {
+    @Environment(\.effectiveReduceMotion) private var reduceMotion
     let store: HomeStore
     let theme: PanelTheme
     let updateBadgeTitle: (AppRelease) -> String
@@ -1403,7 +1405,7 @@ struct PanelConnectionFooterBar: View {
             if let release = store.updateState.badgeRelease {
                 Button {
                     if store.updateState.isReadyToRelaunch {
-                        withAnimation(AppleMotion.snappySpring) { store.confirmRelaunchForUpdate() }
+                        withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) { store.confirmRelaunchForUpdate() }
                     } else {
                         SettingsWindowOpener.shared.show(tab: .about)
                     }

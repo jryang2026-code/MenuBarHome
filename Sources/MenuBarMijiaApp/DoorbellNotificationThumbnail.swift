@@ -35,6 +35,12 @@ enum DoorbellNotificationThumbnail {
         return URLSession(configuration: configuration)
     }()
 
+    static func snapshotData(for device: SmartDevice, store: HomeStore) async -> Data? {
+        guard let picture = await picture(for: device, store: store) else { return nil }
+        defer { try? FileManager.default.removeItem(at: picture.fileURL) }
+        return try? Data(contentsOf: picture.fileURL)
+    }
+
     static func picture(for device: SmartDevice, store: HomeStore) async -> Picture? {
         guard case .camera = device.kind else { return nil }
         let deadline = ContinuousClock.now + budget

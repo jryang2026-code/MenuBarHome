@@ -265,6 +265,8 @@ macOS 版是 Swift 6 原生应用，Windows 11 版是另一套 Tauri v2 实现�
 | 命令 | 作用 |
 | :--- | :--- |
 | `scripts/mijia list [--room 书房] [--json]` | 按房间列出面板里可见的设备、在线状态与读数 |
+| `scripts/mijia list --format alfred [--room 书房]` | Alfred Script Filter JSON：每台设备一条，回车翻转主开关，⌘ 在面板里定位 |
+| `scripts/mijia list --format swiftbar [--room 书房]` | SwiftBar / xbar 插件文本：菜单栏标题 + 每台设备一行带状态的 `href=` 链接 |
 | `scripts/mijia status [--json]` | 连接状态、设备数量、环境读数与上一条命令的结果 |
 | `scripts/mijia toggle 书房台灯` | 翻转主开关，支持设备名、ID 或拼音首字母（`sftd`） |
 | `scripts/mijia on 客厅射灯` / `scripts/mijia off 客厅射灯` | 按目标状态开关，不再依赖当前状态 |
@@ -280,6 +282,27 @@ macOS 版是 Swift 6 原生应用，Windows 11 版是另一套 Tauri v2 实现�
 `scripts/menubarhome` 运行的是同一个程序：`scripts/menubarhome list` 就是 `scripts/mijia list`。
 
 退出码：`0` 成功；`1` 应用报告执行失败；`2` 本地错误（快照缺失、设备找不到、集成未开启）；`3` 等待结果超时。`--dry-run` 只打印链接（令牌打码），`--no-wait` 发完不等结果，`MENUBARMIJIA_SNAPSHOT_PATH` 可覆盖快照路径。
+
+### Alfred 与 SwiftBar
+
+`--format alfred` / `--format swiftbar` 渲染的是同一份只读快照：不写设备、不联网。每一条都带 `menumijia://` 链接，点下去仍然在应用内走外部链接确认、高风险设备二次确认与锁屏拦截。
+
+SwiftBar：在插件目录放一个两行脚本（文件名里的 `1m` 表示每分钟刷新），例如
+`~/Library/Application Support/SwiftBar/plugins/menubarhome.1m.sh`：
+
+```sh
+#!/bin/sh
+exec /ABSOLUTE/PATH/TO/MenuBarHome/scripts/mijia list --format swiftbar
+```
+
+Alfred：新建 **Script Filter**，关键字填 `mijia`，脚本命令写
+`/ABSOLUTE/PATH/TO/MenuBarHome/scripts/mijia list --format alfred`，再接一个 **Open URL** 动作打开选中的
+`arg`；每条的 ⌘ 变体是「在面板中查看」，不会翻转设备。应用不在 `/Applications` 下时用
+`--icon` 指定图标位置；不给就用已安装应用的图标，再退回 Alfred 工作流图标。
+
+两种格式的链接都带本机桥令牌，和其他 CLI 命令一致：令牌只免去「外部链接请求执行」那一次通用确认，
+高风险设备仍会先问，锁屏时照样拒绝。
+
 
 ### 本地 MCP 服务（Claude Desktop / Claude Code / Cursor）
 
@@ -299,7 +322,7 @@ macOS 版是 Swift 6 原生应用，Windows 11 版是另一套 Tauri v2 实现�
 
 ### Raycast 扩展
 
-`raycast/` 是标准 Raycast 扩展，提供三个命令：**搜索设备**、**场景与快捷动作**、**问 MenuBarHome**。在 Raycast 的扩展页按 `+` → **Import Extension** 选择 `raycast/` 即可，或在 Raycast 打开时运行 `cd raycast && npm ci && npm run dev`。开关、亮度、色温、目标温度与风速都按精确值下发（`menumijia://power`、`brightness`、`color-temp`、`temperature`、`fan`），滑条不会靠猜当前状态去翻转设备；每条命令都会先弹出「正在执行」的 toast，拿到结果后再更新为成功或失败。
+`raycast/` 是标准 Raycast 扩展，提供三个视图命令（**搜索设备**、**场景与快捷动作**、**问 MenuBarHome**）、三个可绑全局热键的 `no-view` 命令（**切换设备**、**执行场景**、**全部关闭**，最后一个会先确认），以及三个给 Raycast AI 的功能（`list-devices`、`get-device-state`、`control-device`）。在 Raycast 的扩展页按 `+` → **Import Extension** 选择 `raycast/` 即可，或在 Raycast 打开时运行 `cd raycast && npm ci && npm run dev`。开关、亮度、色温、目标温度与风速都按精确值下发（`menumijia://power`、`brightness`、`color-temp`、`temperature`、`fan`），滑条不会靠猜当前状态去翻转设备；视图命令先弹「正在执行」的 toast 再更新结果，`no-view` 命令用 HUD 反馈，`control-device` 在发链接前先由 Raycast 弹确认。
 
 </details>
 

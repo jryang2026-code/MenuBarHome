@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, it } from "node:test";
 import { DelayPhrase, LocalIntentParser, UndoPhrase } from "../src/core/assistant.js";
+import { answerStateQuery, parseStateQuery } from "../src/core/assistant/stateQuery.js";
 import type { HomeScene, SmartDevice } from "../src/core/models.js";
 
 /**
@@ -29,10 +30,13 @@ type Outcome = "local" | "model" | "none";
 
 const OUTCOMES: readonly Outcome[] = ["local", "model", "none"];
 
-/** Timer cancel → voice undo → spoken delay → local parser → model. */
+/** Snapshot query → timer cancel → voice undo → spoken delay → local parser → model. */
 function classify(text: string, devices: readonly SmartDevice[], scenes: readonly HomeScene[]): Outcome {
+  const delay = DelayPhrase.extract(text);
+  const utterance = delay?.remainder ?? text;
+  const query = parseStateQuery(utterance);
+  if (query) return !delay && answerStateQuery(query, devices) ? "local" : "none";
   if (DelayPhrase.isCancel(text) || UndoPhrase.isUndo(text)) return "none";
-  const utterance = DelayPhrase.extract(text)?.remainder ?? text;
   return LocalIntentParser.parse(utterance, devices, scenes) === null ? "model" : "local";
 }
 

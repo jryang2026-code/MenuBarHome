@@ -1,5 +1,10 @@
 import { decayedHabitWeight, type HabitEntry } from "../core/assistant.js";
 import {
+  DEFAULT_OVERVIEW_SLOT_BUDGET,
+  selectOverviewSlotBudget,
+  type OverviewSlotSize,
+} from "../core/overviewSlotBudget.js";
+import {
   deviceCanTogglePower,
   devicePresentsAsActive,
   deviceReadout,
@@ -9,10 +14,12 @@ import {
 } from "../core/models.js";
 import {
   applyOrder,
+  chosenSize,
   hiddenDeviceIds,
   isDevicePinned,
   pageSections,
   pinnedDeviceIds,
+  resolvedSize,
   tr3,
   withAliases,
   type LayoutPrefs,
@@ -23,6 +30,7 @@ import { SF_ICONS } from "./appConstants.js";
 import type { PendingHighRiskConfirmation } from "./appTypes.js";
 
 export const INITIAL_ALL_OVERVIEW_LIMIT = 8;
+export const INITIAL_ALL_OVERVIEW_SLOT_BUDGET = DEFAULT_OVERVIEW_SLOT_BUDGET;
 
 export type DeviceTilePrimaryAction = "togglePower" | "openCamera";
 
@@ -303,6 +311,8 @@ export interface PanelSplitGridHost {
   readonly valuesAreStale: boolean;
   readonly settings: {
     readonly hideOfflineDevices: boolean;
+    readonly isCompactGridMode?: boolean;
+    readonly climatePanel?: boolean;
     readonly habitEntries?: readonly HabitEntry[];
   };
   isLongTailExpanded: boolean;
@@ -437,38 +447,58 @@ export function buildPanelDeviceGridModel(
   let hiddenOnlineCount = 0;
   let showsLongTailBar = false;
 
-  if (isAllCut && totalOnlineCount > INITIAL_ALL_OVERVIEW_LIMIT) {
-    if (host.isLongTailExpanded) {
-      showsLongTailBar = true;
-    } else {
-      const keepVisibleIds = new Set<string>();
-      if (host.expandedDeviceId) {
-        keepVisibleIds.add(host.expandedDeviceId);
-      }
-      if (
-        host.pendingHighRisk &&
-        host.pendingHighRisk.expiresAtMs > nowMs &&
-        host.pendingHighRisk.deviceId
-      ) {
-        keepVisibleIds.add(host.pendingHighRisk.deviceId);
-      }
-      const allowedIds = new Set<string>();
-      flatOnline.forEach((dev, idx) => {
-        if (idx < INITIAL_ALL_OVERVIEW_LIMIT || keepVisibleIds.has(dev.id)) {
-          allowedIds.add(dev.id);
-        }
-      });
-      onlineSections = rawOnlineSections
-        .map((section) => ({
-          ...section,
-          devices: section.devices.filter((dev) => allowedIds.has(dev.id)),
-        }))
-        .filter((section) => section.devices.length > 0);
-      visibleOnlineCount = allowedIds.size;
-      hiddenOnlineCount = Math.max(0, totalOnlineCount - visibleOnlineCount);
-      showsLongTailBar = hiddenOnlineCount > 0;
+  if (isAllCut) {
+    const keepVisibleIds = new Set<string>();
+    if (host.expandedDeviceId) {
+      keepVisibleIds.add(host.expandedDeviceId);
     }
-  } else if (host.isLongTailExpanded && totalOnlineCount <= INITIAL_ALL_OVERVIEW_LIMIT) {
+    if (
+      host.pendingHighRisk &&
+      host.pendingHighRisk.expiresAtMs > nowMs &&
+      host.pendingHighRisk.deviceId
+    ) {
+      keepVisibleIds.add(host.pendingHighRisk.deviceId);
+    }
+    const pinnedSet = new Set(pinnedIds);
+    const compactGrid = host.settings.isCompactGridMode ?? true;
+    const climatePanel = host.settings.climatePanel ?? true;
+    const slotItems = flatOnline.map((dev) => {
+      const size: OverviewSlotSize = resolvedSize(
+        chosenSize(host.layout, host.selectedRoom, dev.id),
+        dev,
+        compactGrid,
+        climatePanel,
+      );
+      return {
+        id: dev.id,
+        size,
+        isPinned: pinnedSet.has(dev.id),
+      };
+    });
+    const budgetResult = selectOverviewSlotBudget({
+      items: slotItems,
+      budget: INITIAL_ALL_OVERVIEW_SLOT_BUDGET,
+      keepingVisibleIds: keepVisibleIds,
+    });
+    if (budgetResult.hasOverflow) {
+      if (host.isLongTailExpanded) {
+        showsLongTailBar = true;
+      } else {
+        const allowedIds = new Set(budgetResult.visibleIds);
+        onlineSections = rawOnlineSections
+          .map((section) => ({
+            ...section,
+            devices: section.devices.filter((dev) => allowedIds.has(dev.id)),
+          }))
+          .filter((section) => section.devices.length > 0);
+        visibleOnlineCount = allowedIds.size;
+        hiddenOnlineCount = Math.max(0, totalOnlineCount - visibleOnlineCount);
+        showsLongTailBar = hiddenOnlineCount > 0;
+      }
+    } else if (host.isLongTailExpanded) {
+      host.isLongTailExpanded = false;
+    }
+  } else if (host.isLongTailExpanded) {
     host.isLongTailExpanded = false;
   }
 

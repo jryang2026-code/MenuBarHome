@@ -35,11 +35,6 @@ enum StackedCardGeometry {
     }
 }
 
-extension AppleMotion {
-    static let stack = Animation.spring(response: 0.38, dampingFraction: 0.84)
-    static let dismiss = Animation.spring(response: 0.28, dampingFraction: 1)
-}
-
 /// GeometryReader supplies the front card's current bounds in the same layout pass.
 struct StackedCardBackplate: View {
     let depth: Int

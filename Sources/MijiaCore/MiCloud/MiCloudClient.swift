@@ -156,6 +156,8 @@ public enum MiCloudError: LocalizedError, Equatable, Sendable {
 public protocol MiCloudAPI: Sendable {
     func deviceList() async throws -> [MiDeviceRecord]
     func homeRooms() async throws -> [MiRoom]
+    func manualScenes(homeId: String, ownerUid: String) async throws -> [MiCloudScene]
+    func runManualScene(_ scene: MiCloudScene) async throws
     /// Looks up specific devices by did, including those in homes shared with this account.
     func devices(dids: [String]) async throws -> [MiDeviceRecord]
     /// Every device of one Mi Home, addressed by the pair (home id, owner uid). The unfiltered
@@ -182,6 +184,8 @@ public protocol MiCloudAPI: Sendable {
 }
 
 extension MiCloudAPI {
+    public func manualScenes(homeId: String, ownerUid: String) async throws -> [MiCloudScene] { [] }
+    public func runManualScene(_ scene: MiCloudScene) async throws { throw MiotCommandError.unsupported(scene.id) }
     public func devices(dids: [String]) async throws -> [MiDeviceRecord] { [] }
     /// Mocks and older conformances have no per-home lookup; the provider degrades to the did list.
     public func homeDevices(homeId: String, ownerUid: String) async throws -> [MiDeviceRecord] { [] }
@@ -789,7 +793,7 @@ public actor MiCloudClient: MiCloudAPI {
                 // invisible, which is the empty panel of #76 / #67.
                 if !homeId.isEmpty, homeDids.isEmpty,
                    (home["roomlist"]?.arrayValue ?? []).isEmpty,
-                   ownerUid != nil {
+                   (!shared || ownerUid != nil) {
                     rooms.append(MiRoom(
                         id: "home_\(homeId)",
                         name: "",

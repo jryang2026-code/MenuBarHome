@@ -105,6 +105,7 @@ export interface PersistedSettings {
   panelOpacity: number;
   climatePanel: boolean;
   showQuickActionsBar: boolean;
+  showHomeSummaryRow: boolean;
   layout: LayoutPrefs;
   /** Selected Mi Home id; null shows every home. */
   selectedHomeId: string | null;
@@ -187,6 +188,8 @@ export interface PendingHighRiskConfirmation {
   readonly actionKey: string;
   readonly expiresAtMs: number;
   readonly sourceRevision: number;
+  /** Set for home-bound confirmations (Mi cloud scenes); a home switch must void them. */
+  readonly homeRevision?: number;
   readonly origin?: "url";
   readonly confirm?: {
     readonly command: DeviceCommand;
