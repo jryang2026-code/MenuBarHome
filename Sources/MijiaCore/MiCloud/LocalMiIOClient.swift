@@ -387,6 +387,17 @@ public struct MiIOHandshakeInfo: Equatable, Sendable {
 /// Actor managing local miIO UDP (port 54321) handshakes, stamp skew tracking, serial
 /// per-device request queues, MTU-safe chunking, and AES-128-CBC packet exchange.
 public actor LocalMiIOClient {
+    /// Product-id (`pid` / `connect_type`) classes eligible for direct LAN miIO UDP 54321:
+    /// Wi-Fi (0), Wi-Fi+BLE (8), Combo/Matter-WiFi (12), Wi-Fi+BLE-Mesh (23).
+    /// Non-Wi-Fi subdevices (Zigbee, BLE, Mesh, IR, virtual/group) are excluded.
+    public static let lanEligiblePIDs: Set<Int> = [0, 8, 12, 23]
+
+    /// Returns `true` when `pid` is absent (deferring to IP/token checks) or in `lanEligiblePIDs`.
+    public static func isLANEligiblePID(_ pid: Int?) -> Bool {
+        guard let pid else { return true }
+        return lanEligiblePIDs.contains(pid)
+    }
+
     private let logger = Logger(subsystem: "com.jryang1997.MenuBarMijia", category: "LocalMiIO")
     private let transport: any MiIOUDPTransport
     private let port: UInt16

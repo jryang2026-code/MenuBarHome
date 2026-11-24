@@ -1,6 +1,7 @@
 import type { MiDeviceRecord } from "./client.js";
 import type { HttpTransport } from "./session.js";
 import fallbackSpecs from "./fallbackSpecs.json";
+import { applySpecPatches, SPEC_PATCHES, type SpecPatchesDocument } from "./specPatches.js";
 
 export interface MiotValueListItem {
   readonly value: number;
@@ -234,12 +235,21 @@ export function parseMiotDeviceSpec(raw: unknown): MiotDeviceSpec | null {
   };
 }
 
+function miotStatusRank(rawStatus: unknown): number {
+  if (typeof rawStatus !== "string") return 2;
+  const trimmed = rawStatus.trim().toLowerCase();
+  if (!trimmed) return 2;
+  if (trimmed === "released") return 3;
+  if (trimmed === "preview") return 1;
+  return 0;
+}
+
 export function parseMiotInstanceIndex(raw: unknown): Record<string, string> {
   if (!raw || typeof raw !== "object") return {};
   const instances = (raw as Record<string, unknown>)["instances"];
   if (!Array.isArray(instances)) return {};
 
-  const bestVersion = new Map<string, { version: number; type: string }>();
+  const best = new Map<string, { rank: number; version: number; type: string }>();
   for (const item of instances) {
     if (!item || typeof item !== "object") continue;
     const rec = item as Record<string, unknown>;
@@ -247,14 +257,15 @@ export function parseMiotInstanceIndex(raw: unknown): Record<string, string> {
     const type = typeof rec["type"] === "string" ? rec["type"] : "";
     const version = typeof rec["version"] === "number" ? rec["version"] : 0;
     if (!model || !type) continue;
-    const prev = bestVersion.get(model);
-    if (!prev || version > prev.version) {
-      bestVersion.set(model, { version, type });
+    const rank = miotStatusRank(rec["status"]);
+    const prev = best.get(model);
+    if (!prev || rank > prev.rank || (rank === prev.rank && version > prev.version)) {
+      best.set(model, { rank, version, type });
     }
   }
 
   const out: Record<string, string> = {};
-  for (const [model, info] of bestVersion.entries()) {
+  for (const [model, info] of best.entries()) {
     out[model] = info.type;
   }
   return out;
@@ -298,10 +309,12 @@ export function isFallbackSpec(spec: MiotDeviceSpec): boolean {
 }
 
 export class MiotSpecResolver {
+  static readonly indexCacheVersion = 2;
+
   private readonly specByModel = new Map<string, MiotDeviceSpec>();
   private readonly specByType = new Map<string, MiotDeviceSpec>();
   private readonly inFlightByType = new Map<string, Promise<MiotDeviceSpec | null>>();
-  /// Models served by the guessed table; every resolve() retries the released instance (#30).
+  /// Models served by the guessed table; every resolve() retries the upstream instance (#30).
   private readonly fallbackModels = new Set<string>();
   private typeIndex: Record<string, string> | null = null;
   private indexPromise: Promise<Record<string, string>> | null = null;
@@ -310,10 +323,11 @@ export class MiotSpecResolver {
     private readonly transport: HttpTransport,
     initialModelSpecs?: Readonly<Record<string, MiotDeviceSpec>>,
     initialModelTypes?: Readonly<Record<string, string>>,
+    private readonly patches: SpecPatchesDocument = SPEC_PATCHES,
   ) {
     if (initialModelSpecs) {
       for (const [m, s] of Object.entries(initialModelSpecs)) {
-        this.specByModel.set(m, s);
+        this.specByModel.set(m, applySpecPatches(s, m, this.patches));
         if (isFallbackSpec(s)) this.fallbackModels.add(m);
       }
     }
@@ -370,18 +384,36 @@ export class MiotSpecResolver {
     if (urn) {
       const fetched = await this.fetchInstance(urn);
       if (fetched) {
+        const patched = applySpecPatches(fetched, device.model, this.patches);
         this.fallbackModels.delete(device.model);
-        this.specByModel.set(device.model, fetched);
-        return fetched;
+        this.specByModel.set(device.model, patched);
+        return patched;
       }
     }
 
     // Keep the fallback the previous attempt returned; a later refresh tries the network again.
     if (existing) return existing;
-    const fallback = inferFallbackSpec(device);
+    const fallback = applySpecPatches(inferFallbackSpec(device), device.model, this.patches);
     this.specByModel.set(device.model, fallback);
     this.fallbackModels.add(device.model);
     return fallback;
+  }
+
+  private async fetchTypeIndexStatus(status: "all" | "released"): Promise<Record<string, string> | null> {
+    try {
+      const resp = await this.transport({
+        url: `https://miot-spec.org/miot-spec-v2/instances?status=${status}`,
+        method: "GET",
+        timeoutMs: 45000,
+      });
+      if (resp.status === 200) {
+        const parsed = parseMiotInstanceIndex(JSON.parse(resp.body));
+        if (Object.keys(parsed).length > 0) return parsed;
+      }
+    } catch {
+      // network fallback
+    }
+    return null;
   }
 
   private async loadTypeIndex(): Promise<Record<string, string>> {
@@ -392,19 +424,12 @@ export class MiotSpecResolver {
       return this.indexPromise;
     }
     this.indexPromise = (async () => {
-      try {
-        const resp = await this.transport({
-          url: "https://miot-spec.org/miot-spec-v2/instances?status=released",
-          method: "GET",
-          timeoutMs: 45000,
-        });
-        if (resp.status === 200) {
-          const parsed = parseMiotInstanceIndex(JSON.parse(resp.body));
-          this.typeIndex = { ...(this.typeIndex ?? {}), ...parsed };
-          return this.typeIndex;
-        }
-      } catch {
-        // network fallback
+      const parsed =
+        (await this.fetchTypeIndexStatus("all")) ??
+        (await this.fetchTypeIndexStatus("released"));
+      if (parsed) {
+        this.typeIndex = { ...(this.typeIndex ?? {}), ...parsed };
+        return this.typeIndex;
       }
       // A failed index fetch must not stay cached as the empty answer, or resolve() keeps
       // returning the fallback even after the network recovers (#30).
