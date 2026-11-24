@@ -503,6 +503,9 @@ struct RunQuickActionIntent: AppIntent {
 /// Safety alerts and the doorbell are never suppressed: `NotificationDeliveryPolicy` decides that
 /// per category and refuses to honour any profile for them, so a misconfigured filter cannot hide a
 /// leak, smoke or gas alert or a ringing doorbell.
+///
+/// Note: `LiveActivityIntent` is `@available(macOS, unavailable)` in Apple's macOS SDK, so macOS
+/// relies on `perform()` plus `MacContextObserver` / notification-time reconciliation via `Self.current`.
 struct MenuBarHomeFocusFilter: SetFocusFilterIntent {
     static let title: LocalizedStringResource = "MenuBarHome 专注模式"
     static let description: IntentDescription? = IntentDescription(
@@ -512,19 +515,36 @@ struct MenuBarHomeFocusFilter: SetFocusFilterIntent {
     @Parameter(title: "静音非安全通知", default: true)
     var suppressNonSafetyNotifications: Bool
 
+    @Parameter(title: "专注模式名称（可选）")
+    var focusModeName: String?
+
     @Parameter(title: "开始时执行的快捷动作")
     var quickAction: QuickActionEntity?
 
     var displayRepresentation: DisplayRepresentation {
-        DisplayRepresentation(title: "\(Self.title)")
+        if let modeName = FocusFilterProfile.normalizedModeName(focusModeName) {
+            return DisplayRepresentation(title: "\(Self.title)", subtitle: "\(modeName)")
+        }
+        return DisplayRepresentation(title: "\(Self.title)")
     }
 
     static var parameterSummary: some ParameterSummary {
         Summary("静音非安全通知 \(\.$suppressNonSafetyNotifications)")
     }
 
+    var profile: FocusFilterProfile {
+        FocusFilterProfile(
+            isEnabled: true,
+            suppressNonSafetyNotifications: suppressNonSafetyNotifications,
+            focusModeName: focusModeName
+        )
+    }
+
     func perform() async throws -> some IntentResult {
-        Self.applyProfile(suppressNonSafetyNotifications: suppressNonSafetyNotifications)
+        Self.applyProfile(
+            suppressNonSafetyNotifications: suppressNonSafetyNotifications,
+            focusModeName: focusModeName
+        )
         if let quickAction {
             // The system does not wait for a scene to finish, and neither does the user: the Focus
             // is already on. The action runs in the background and keeps every write gate.
@@ -535,16 +555,100 @@ struct MenuBarHomeFocusFilter: SetFocusFilterIntent {
         return .result()
     }
 
+    /// Asks the system for this app's active Focus filter (`Self.current`) so direct Focus A → B
+    /// switches (especially when Focus B has no filter configured) clear or replace stale profiles.
+    ///
+    /// Uses an explicit continuation race instead of `withTaskGroup` so an unresponsive XPC query
+    /// that ignores cancellation returns `.unavailable` immediately when `timeout` fires.
+    static func currentQueryResult(
+        timeout: Duration? = .seconds(5),
+        reading: @Sendable @escaping () async throws -> MenuBarHomeFocusFilter = { try await Self.current }
+    ) async -> FocusFilterQueryResult {
+        guard let timeout else {
+            return await readQueryResult(reading)
+        }
+        return await withCheckedContinuation { continuation in
+            let race = FocusQueryRace(continuation: continuation)
+            race.start(timeout: timeout, reading: reading)
+        }
+    }
+
+    private final class FocusQueryRace: @unchecked Sendable {
+        private let lock = NSLock()
+        private var continuation: CheckedContinuation<FocusFilterQueryResult, Never>?
+        private var readerTask: Task<Void, Never>?
+        private var timeoutTask: Task<Void, Never>?
+
+        init(continuation: CheckedContinuation<FocusFilterQueryResult, Never>) {
+            self.continuation = continuation
+        }
+
+        func start(
+            timeout: Duration,
+            reading: @Sendable @escaping () async throws -> MenuBarHomeFocusFilter
+        ) {
+            let reader = Task {
+                let result = await MenuBarHomeFocusFilter.readQueryResult(reading)
+                self.finish(result)
+            }
+            let sleeper = Task {
+                try? await Task.sleep(for: timeout)
+                self.finish(.unavailable)
+            }
+            let alreadyFinished = lock.withLock { () -> Bool in
+                guard continuation != nil else { return true }
+                readerTask = reader
+                timeoutTask = sleeper
+                return false
+            }
+            if alreadyFinished {
+                reader.cancel()
+                sleeper.cancel()
+            }
+        }
+
+        func finish(_ result: FocusFilterQueryResult) {
+            let (cont, tasks): (CheckedContinuation<FocusFilterQueryResult, Never>?, [Task<Void, Never>]) =
+                lock.withLock {
+                    guard let cont = continuation else { return (nil, []) }
+                    continuation = nil
+                    let tasks = [readerTask, timeoutTask].compactMap { $0 }
+                    readerTask = nil
+                    timeoutTask = nil
+                    return (cont, tasks)
+                }
+            for task in tasks {
+                task.cancel()
+            }
+            cont?.resume(returning: result)
+        }
+    }
+
+    private static func readQueryResult(
+        _ reading: @Sendable () async throws -> MenuBarHomeFocusFilter
+    ) async -> FocusFilterQueryResult {
+        do {
+            let intent = try await reading()
+            return .active(intent.profile)
+        } catch SetFocusFilterIntentError.notFound {
+            return .notFound
+        } catch {
+            return .unavailable
+        }
+    }
+
     /// Records what this Focus mode asked for. Split from `perform()` so the parameter-to-profile
     /// mapping can be asserted against a throwaway suite instead of the real defaults.
     @discardableResult
     static func applyProfile(
         suppressNonSafetyNotifications: Bool,
+        focusModeName: String? = nil,
         defaults: UserDefaults = .standard
     ) -> FocusFilterProfile {
         let profile = FocusFilterProfile(
             isEnabled: true,
-            suppressNonSafetyNotifications: suppressNonSafetyNotifications
+            suppressNonSafetyNotifications: suppressNonSafetyNotifications,
+            focusModeName: focusModeName
         )
         FocusFilterStorage.save(profile, defaults: defaults)
         return profile

@@ -40,6 +40,9 @@ public struct MacContextSnapshot: Equatable, Sendable {
     public var wifiSSID: String?
     public var isWiFiAuthorized: Bool
     public var isFocusActive: Bool?
+    /// User-assigned Focus mode label from `MenuBarHomeFocusFilter`, if a Focus with this app's
+    /// filter is active (`nil` when off, unknown, or unlabelled).
+    public var focusModeName: String?
     public var isUserPresent: Bool
     public var meetings: [CalendarMeeting]
 
@@ -51,6 +54,7 @@ public struct MacContextSnapshot: Equatable, Sendable {
         wifiSSID: String? = nil,
         isWiFiAuthorized: Bool = true,
         isFocusActive: Bool? = nil,
+        focusModeName: String? = nil,
         isUserPresent: Bool = true,
         meetings: [CalendarMeeting] = []
     ) {
@@ -61,6 +65,7 @@ public struct MacContextSnapshot: Equatable, Sendable {
         self.wifiSSID = wifiSSID
         self.isWiFiAuthorized = isWiFiAuthorized
         self.isFocusActive = isFocusActive
+        self.focusModeName = FocusFilterProfile.normalizedModeName(focusModeName)
         self.isUserPresent = isUserPresent
         self.meetings = meetings
     }
@@ -159,12 +164,28 @@ public enum MacContextAutomation {
             return [transitionEvent(rule)]
 
         case .focusModeEnabled:
-            guard let previous, previous.isFocusActive == false, current.isFocusActive == true else {
+            guard let previous else { return [] }
+            if let targetMode = options.focusModeName {
+                guard previous.isFocusActive != nil, current.isFocusActive != nil else { return [] }
+                let wasTarget = previous.isFocusActive == true && previous.focusModeName == targetMode
+                let isTarget = current.isFocusActive == true && current.focusModeName == targetMode
+                guard !wasTarget, isTarget else { return [] }
+                return [transitionEvent(rule)]
+            }
+            guard previous.isFocusActive == false, current.isFocusActive == true else {
                 return []
             }
             return [transitionEvent(rule)]
         case .focusModeDisabled:
-            guard let previous, previous.isFocusActive == true, current.isFocusActive == false else {
+            guard let previous else { return [] }
+            if let targetMode = options.focusModeName {
+                guard previous.isFocusActive != nil, current.isFocusActive != nil else { return [] }
+                let wasTarget = previous.isFocusActive == true && previous.focusModeName == targetMode
+                let isTarget = current.isFocusActive == true && current.focusModeName == targetMode
+                guard wasTarget, !isTarget else { return [] }
+                return [transitionEvent(rule)]
+            }
+            guard previous.isFocusActive == true, current.isFocusActive == false else {
                 return []
             }
             return [transitionEvent(rule)]

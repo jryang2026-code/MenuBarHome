@@ -22,10 +22,57 @@ public struct FocusFilterProfile: Codable, Equatable, Sendable {
     public var isEnabled: Bool
     /// "睡眠专注时不推送非安全通知" — the switch this feature exists for.
     public var suppressNonSafetyNotifications: Bool
+    /// Optional user-assigned Focus mode label from `MenuBarHomeFocusFilter` (for example "睡眠"
+    /// or "工作"), trimmed and `nil` when omitted or blank.
+    public var focusModeName: String?
 
-    public init(isEnabled: Bool = false, suppressNonSafetyNotifications: Bool = false) {
+    public init(
+        isEnabled: Bool = false,
+        suppressNonSafetyNotifications: Bool = false,
+        focusModeName: String? = nil
+    ) {
         self.isEnabled = isEnabled
         self.suppressNonSafetyNotifications = suppressNonSafetyNotifications
+        self.focusModeName = isEnabled ? Self.normalizedModeName(focusModeName) : nil
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case isEnabled
+        case suppressNonSafetyNotifications
+        case focusModeName
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            isEnabled: try container.decodeIfPresent(Bool.self, forKey: .isEnabled) ?? false,
+            suppressNonSafetyNotifications: try container.decodeIfPresent(
+                Bool.self,
+                forKey: .suppressNonSafetyNotifications
+            ) ?? false,
+            focusModeName: try container.decodeIfPresent(String.self, forKey: .focusModeName)
+        )
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(isEnabled, forKey: .isEnabled)
+        try container.encode(suppressNonSafetyNotifications, forKey: .suppressNonSafetyNotifications)
+        try container.encodeIfPresent(focusModeName, forKey: .focusModeName)
+    }
+
+    /// Trims whitespace and treats empty labels as `nil`.
+    public static func normalizedModeName(_ raw: String?) -> String? {
+        guard let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmed.isEmpty else {
+            return nil
+        }
+        return trimmed
+    }
+
+    /// Mode label only while this filter is enabled.
+    public var activeFocusModeName: String? {
+        isEnabled ? focusModeName : nil
     }
 
     /// No filter configured, or no Focus carrying it is on.
@@ -41,10 +88,120 @@ public struct FocusFilterProfile: Codable, Equatable, Sendable {
     }
 }
 
+/// Outcome of asking the system (`SetFocusFilterIntent.current`) which Focus filter is active.
+public enum FocusFilterQueryResult: Equatable, Sendable {
+    /// A Focus mode carrying this app's filter is active with this profile.
+    case active(FocusFilterProfile)
+    /// No active Focus carries this app's filter (`SetFocusFilterIntentError.notFound`).
+    case notFound
+    /// System query failed for another reason (transient IPC error or missing parameter).
+    case unavailable
+}
+
 public enum FocusFilterStorage {
     public static let key = "focus_filter_profile_v1"
+    private static let explicitSequenceKey = "focus_filter_explicit_write_sequence_v1"
+    private static let queryTicketKey = "focus_filter_query_ticket_v1"
+    private static let appliedQueryTicketKey = "focus_filter_applied_query_ticket_v1"
+    private static let lock = NSLock()
 
     public static func load(defaults: UserDefaults = .standard) -> FocusFilterProfile {
+        lock.withLock {
+            loadUnlocked(defaults: defaults)
+        }
+    }
+
+    public static func save(_ profile: FocusFilterProfile, defaults: UserDefaults = .standard) {
+        lock.withLock {
+            bumpIntUnlocked(forKey: explicitSequenceKey, defaults: defaults)
+            writeProfileUnlocked(profile, defaults: defaults)
+        }
+    }
+
+    public static func clear(defaults: UserDefaults = .standard) {
+        lock.withLock {
+            bumpIntUnlocked(forKey: explicitSequenceKey, defaults: defaults)
+            removeProfileUnlocked(defaults: defaults)
+        }
+    }
+
+    /// Reconciles stored Focus filter state with the system's active Focus and `SetFocusFilterIntent.current`.
+    ///
+    /// Switching directly from Focus A (with filter) to Focus B (without filter) leaves `isFocusActive`
+    /// at `true` and never triggers `perform()` again. Querying `currentFilter` surfaces `.notFound`
+    /// so Focus A's quiet profile is cleared immediately instead of silencing notifications under Focus B.
+    /// Explicit `save`/`clear` writes (`perform()` or `isFocusActive != true`) and async query tickets
+    /// are tracked separately so an older query finishing first cannot invalidate a newer query, while
+    /// neither can overwrite a newer explicit `perform()` write.
+    @discardableResult
+    public static func reconcile(
+        isolation: isolated (any Actor)? = #isolation,
+        isFocusActive: Bool?,
+        currentFilter: () async -> FocusFilterQueryResult,
+        defaults: UserDefaults = .standard
+    ) async -> FocusFilterProfile {
+        guard isFocusActive == true else {
+            clear(defaults: defaults)
+            return .inactive
+        }
+
+        let (startExplicitSeq, myTicket) = beginReconcileQuery(defaults: defaults)
+        let queryResult = await currentFilter()
+        return applyReconcileResult(
+            queryResult,
+            expectedExplicitSequence: startExplicitSeq,
+            queryTicket: myTicket,
+            defaults: defaults
+        )
+    }
+
+    private static func beginReconcileQuery(defaults: UserDefaults) -> (explicitSequence: Int, queryTicket: Int) {
+        lock.withLock {
+            let explicitSeq = defaults.integer(forKey: explicitSequenceKey)
+            let ticket = bumpIntUnlocked(forKey: queryTicketKey, defaults: defaults)
+            return (explicitSeq, ticket)
+        }
+    }
+
+    private static func applyReconcileResult(
+        _ queryResult: FocusFilterQueryResult,
+        expectedExplicitSequence: Int,
+        queryTicket: Int,
+        defaults: UserDefaults
+    ) -> FocusFilterProfile {
+        lock.withLock {
+            // An explicit `perform()` write or off-clear landed while `currentFilter()` was in flight.
+            guard defaults.integer(forKey: explicitSequenceKey) == expectedExplicitSequence else {
+                return loadUnlocked(defaults: defaults)
+            }
+            // A newer reconciliation query has already settled and applied its result.
+            guard queryTicket > defaults.integer(forKey: appliedQueryTicketKey) else {
+                return loadUnlocked(defaults: defaults)
+            }
+
+            switch queryResult {
+            case .active(let profile):
+                defaults.set(queryTicket, forKey: appliedQueryTicketKey)
+                writeProfileUnlocked(profile, defaults: defaults)
+                return profile
+            case .notFound:
+                defaults.set(queryTicket, forKey: appliedQueryTicketKey)
+                removeProfileUnlocked(defaults: defaults)
+                return .inactive
+            case .unavailable:
+                return loadUnlocked(defaults: defaults)
+            }
+        }
+    }
+
+    @discardableResult
+    private static func bumpIntUnlocked(forKey storageKey: String, defaults: UserDefaults) -> Int {
+        let next = defaults.integer(forKey: storageKey) &+ 1
+        defaults.set(next, forKey: storageKey)
+        return next
+    }
+
+    private static func loadUnlocked(defaults: UserDefaults) -> FocusFilterProfile {
         guard let data = defaults.data(forKey: key),
               let profile = try? JSONDecoder().decode(FocusFilterProfile.self, from: data) else {
             return .inactive
@@ -52,15 +209,15 @@ public enum FocusFilterStorage {
         return profile
     }
 
-    public static func save(_ profile: FocusFilterProfile, defaults: UserDefaults = .standard) {
+    private static func writeProfileUnlocked(_ profile: FocusFilterProfile, defaults: UserDefaults) {
         guard profile != .inactive, let data = try? JSONEncoder().encode(profile) else {
-            clear(defaults: defaults)
+            removeProfileUnlocked(defaults: defaults)
             return
         }
         defaults.set(data, forKey: key)
     }
 
-    public static func clear(defaults: UserDefaults = .standard) {
+    private static func removeProfileUnlocked(defaults: UserDefaults) {
         guard defaults.object(forKey: key) != nil else { return }
         defaults.removeObject(forKey: key)
     }
