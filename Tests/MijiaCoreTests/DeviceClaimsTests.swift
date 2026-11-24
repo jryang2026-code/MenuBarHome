@@ -44,14 +44,14 @@ struct DeviceClaimsTests {
         #expect(shared == bundled)
         #expect(DeviceClaims.shared.schemaVersion == DeviceClaims.supportedSchemaVersion)
         #expect(DeviceClaims.shared.ladder.count == 45)
-        // The two MIoT television rungs are Windows-only: macOS has no card builder for them.
-        #expect(DeviceClaims.shared.macosLadder.count == 43)
+        #expect(DeviceClaims.shared.macosLadder.count == 45)
     }
 
     @Test("The claim ladder is the shared order, filtered to the builders this platform has")
     func registryFollowsTheSharedLadder() {
         #expect(MiotSynthesizer.registry.map(\.service) == DeviceClaims.shared.macosLadder.map(\.service))
-        #expect(!MiotSynthesizer.registry.contains { $0.service == "television" })
+        #expect(MiotSynthesizer.registry.contains { $0.service == "television" })
+        #expect(MiotSynthesizer.registry.contains { $0.service == "stb" })
     }
 
     @Test("Device-type service aliases come from the document")

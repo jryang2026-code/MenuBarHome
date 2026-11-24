@@ -145,6 +145,27 @@ struct MenuBarStatusStateTests {
         #expect(state.pendingShrinkCount == 0)
     }
 
+    @Test("Repeated unchanged shorter readings commit a pending shrink without a new text change")
+    func widthStabilizerSettlesUnchangedReading() {
+        var state = MenuBarWidthStabilizer.update(state: MenuBarWidthState(), text: "24.5° 55%", measuredWidth: 82)
+
+        // 9 -> 5 characters arms the first of two hysteresis steps and asks for a settle tick.
+        state = MenuBarWidthStabilizer.update(state: state, text: "24.5°", measuredWidth: 53)
+        #expect(state.reservedWidth == 82)
+        #expect(state.pendingShrinkCount == 1)
+        #expect(MenuBarWidthStabilizer.needsSettle(state))
+
+        // The readout stops changing: the unchanged reading still commits the second step.
+        state = MenuBarWidthStabilizer.update(state: state, text: "24.5°", measuredWidth: 53)
+        #expect(state.reservedWidth == 53)
+        #expect(state.anchorCharCount == 5)
+        #expect(state.pendingShrinkCount == 0)
+        #expect(!MenuBarWidthStabilizer.needsSettle(state))
+
+        // Nothing left to settle, so further unchanged ticks are no-ops a caller can skip.
+        #expect(MenuBarWidthStabilizer.update(state: state, text: "24.5°", measuredWidth: 53) == state)
+    }
+
     @Test("Icon-only clears reserved width back to variable length")
     func widthStabilizerResetsOnEmpty() {
         let initial = MenuBarWidthStabilizer.update(state: MenuBarWidthState(), text: "24.5°", measuredWidth: 53)

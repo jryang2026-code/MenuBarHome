@@ -128,12 +128,18 @@ struct StateQuery {
             let contacts = sensor.observations.filter { $0.kind == .contact }
             return contacts.contains(where: \.alarming) ? L10n.tr("已打开", "Open") : L10n.tr("关好", "Closed")
         case .temperature:
-            return measurement(device.environmentReading?.temperature, unit: "°C")
+            // The reply speaks the display unit the user picked (#428), one decimal like the panel's
+            // temperature-only status; the stored value stays Celsius.
+            guard let temperature = device.environmentReading?.temperature, temperature.isFinite else { return nil }
+            return L10n.temperature(temperature, fractionDigits: 1)
         case .humidity:
-            return measurement(device.environmentReading?.humidity, unit: "%")
+            guard let humidity = device.environmentReading?.humidity, humidity.isFinite else { return nil }
+            return IntentReply.formatTemperature(humidity) + "%"
         case .setpoint:
             guard case .climate(let climate) = device.kind else { return nil }
-            return measurement(climate.targetTemperature, unit: "°C").map { L10n.format("设定 %@", "Set to %@", $0) }
+            let target = climate.targetTemperature
+            guard target.isFinite else { return nil }
+            return L10n.format("设定 %@", "Set to %@", L10n.temperature(target))
         case .fanSpeed:
             guard case .fan(let fan) = device.kind else { return nil }
             if !fan.isOn { return L10n.tr("关着", "Off") }
@@ -142,11 +148,6 @@ struct StateQuery {
         default:
             return nil
         }
-    }
-
-    private func measurement(_ value: Double?, unit: String) -> String? {
-        guard let value, value.isFinite else { return nil }
-        return IntentReply.formatTemperature(value) + unit
     }
 
     private func shortList(_ entries: [String]) -> String {

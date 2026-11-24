@@ -39,7 +39,7 @@ struct PausedQuickActionManualResumeTests {
         return store
     }
 
-    @Test("A group paused before #389 stays paused and names the manual resume")
+    @Test("A group paused before #389 stays paused and stays listed for manual release")
     func legacyEmptyScopeGroupStaysPaused() async throws {
         let store = try await Self.makeStore(defaults: InMemoryUserDefaults())
 
@@ -50,12 +50,6 @@ struct PausedQuickActionManualResumeTests {
         #expect(store.pausedQuickActionRequiresManualResume("group:hall"))
         #expect(store.pausedQuickActionsRequiringManualResume.map(\.id) == ["group:hall"])
         #expect(store.pausedQuickActionsRequiringManualResume.first?.title == "Hall")
-        L10n.$overrideLanguage.withValue(.zhHans) {
-            #expect(store.pausedQuickActionMessage(forPausedID: "group:hall", title: "Hall").contains("手动恢复"))
-        }
-        L10n.$overrideLanguage.withValue(.en) {
-            #expect(store.pausedQuickActionMessage(forPausedID: "group:hall", title: "Hall").contains("manually"))
-        }
     }
 
     @Test("Manual resume releases a legacy group and clears its pause markers")
@@ -103,6 +97,56 @@ struct PausedQuickActionManualResumeTests {
         #expect(!store.pausedQuickActionIDs.contains("group:hall"))
         #expect(store.pausedQuickActionsRequiringManualResume.isEmpty)
         #expect(defaults.stringArray(forKey: HomeStore.pausedQuickActionsKey) == nil)
+    }
+
+    @Test("Manual resume clears a marker whose group lost every member")
+    func manualResumeClearsEmptyGroup() async throws {
+        let defaults = InMemoryUserDefaults()
+        let store = try await Self.makeStore(defaults: defaults)
+        // The group row survives with no members, so there is nothing left to check availability for.
+        defaults.removeObject(forKey: ViewPreferenceKeys.groupMap)
+        #expect(store.pausedQuickActionRequiresManualResume("group:hall"))
+
+        #expect(store.resumePausedQuickAction(id: "group:hall"))
+
+        #expect(!store.pausedQuickActionIDs.contains("group:hall"))
+        #expect(store.pausedQuickActionsRequiringManualResume.isEmpty)
+        #expect(defaults.stringArray(forKey: HomeStore.pausedQuickActionsKey) == nil)
+    }
+
+    @Test("Revalidation drops group markers that have nothing left to resume")
+    func revalidationClearsStaleGroupMarkers() async throws {
+        // A group deleted after it was paused and one that lost its last member leave the same marker:
+        // stale bookkeeping the settings list would otherwise keep offering a Resume Now button for.
+        let deletedDefaults = InMemoryUserDefaults()
+        let deletedStore = try await Self.makeStore(defaults: deletedDefaults)
+        deletedDefaults.removeObject(forKey: "device_groups")
+        deletedDefaults.removeObject(forKey: ViewPreferenceKeys.groupMap)
+
+        let emptiedDefaults = InMemoryUserDefaults()
+        let emptiedStore = try await Self.makeStore(defaults: emptiedDefaults)
+        emptiedDefaults.removeObject(forKey: ViewPreferenceKeys.groupMap)
+
+        deletedStore.revalidatePausedItems()
+        emptiedStore.revalidatePausedItems()
+
+        #expect(deletedStore.pausedQuickActionIDs.isEmpty)
+        #expect(emptiedStore.pausedQuickActionIDs.isEmpty)
+        #expect(deletedDefaults.stringArray(forKey: HomeStore.pausedQuickActionsKey) == nil)
+        #expect(emptiedDefaults.stringArray(forKey: HomeStore.pausedQuickActionsKey) == nil)
+    }
+
+    @Test("Revalidation keeps a group marker while the group store is unreadable")
+    func revalidationKeepsMarkerOnUnreadableGroupStore() async throws {
+        let defaults = InMemoryUserDefaults()
+        let store = try await Self.makeStore(defaults: defaults)
+        // Nothing proves the group is gone, so the marker stays until the user releases it.
+        defaults.set("{not json", forKey: "device_groups")
+
+        store.revalidatePausedItems()
+
+        #expect(store.pausedQuickActionIDs.contains("group:hall"))
+        #expect(store.pausedQuickActionRequiresManualResume("group:hall"))
     }
 
     @Test("Manual resume keeps a group marker while the group store is unreadable")

@@ -20,10 +20,12 @@ public struct MiDeviceRecord: Codable, Equatable, Sendable {
     public var mac: String?
     public var token: String?
     public var isShared: Bool
+    /// The account's device-list flag, before shared-home discovery adds its own evidence.
+    var reportedIsShared: Bool?
 
     public init(did: String, name: String, model: String, isOnline: Bool, specType: String? = nil,
                 splitParentDid: String? = nil, splitSiid: Int? = nil, localIp: String? = nil,
-                mac: String? = nil, token: String? = nil, isShared: Bool = false,
+                mac: String? = nil, token: String? = nil, isShared: Bool? = nil,
                 parentDid: String? = nil, pid: Int? = nil) {
         self.did = did
         self.name = name
@@ -37,7 +39,8 @@ public struct MiDeviceRecord: Codable, Equatable, Sendable {
         self.localIp = localIp
         self.mac = mac
         self.token = token
-        self.isShared = isShared
+        self.isShared = isShared ?? false
+        self.reportedIsShared = isShared
     }
 
     /// The did MIoT property and action calls address.
@@ -588,13 +591,12 @@ public actor MiCloudClient: MiCloudAPI {
             let rawToken = item["token"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines)
             let token = (rawToken?.isEmpty == false) ? rawToken : nil
             let shareFlag: Bool? = {
-                if let n = item["share_flag"]?.intValue { return n != 0 }
+                if let n = item["share_flag"]?.doubleValue, n.isFinite { return n != 0 }
                 return item["share_flag"]?.boolValue
             }()
             let isShared = shareFlag
                 ?? item["isShared"]?.boolValue
                 ?? item["is_shared"]?.boolValue
-                ?? false
             let pid: Int?
             if case .number(let rawPid)? = item["pid"], abs(rawPid) <= 9_007_199_254_740_991 {
                 pid = Int(exactly: rawPid)

@@ -1134,6 +1134,9 @@ public struct ClassicDeviceCardView: View {
 
     private func tvDrawer(_ spec: TVSpec) -> some View {
         let isLG = LGWebOSProtocol.isLGEntity(spec.mediaEntityId)
+        let isMiot = MiotAddress.parse(spec.mediaEntityId) != nil
+        let showMute = isLG || !isMiot || spec.muteSwitchEntityId != nil
+        let showVolume = spec.volumeWritable && spec.volumePresent
         return VStack(alignment: .leading, spacing: 8) {
             if spec.isPairingPromptActive {
                 HStack(spacing: 8) {
@@ -1151,71 +1154,81 @@ public struct ClassicDeviceCardView: View {
                 }
             }
 
-            HStack(spacing: 8) {
-                Button {
-                    store.toggleTVMute(device.id)
-                } label: {
-                    Image(systemName: spec.isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
-                        .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
-                }
-                .buttonStyle(ClassicPillActionButtonStyle(isSelected: spec.isMuted, tintColor: accent))
-                .accessibilityLabel(Text(spec.isMuted
-                    ? L10n.tr("取消静音 \(device.name)", "Unmute \(device.name)")
-                    : L10n.tr("静音 \(device.name)", "Mute \(device.name)")))
-                .panelHelp(spec.isMuted ? L10n.tr("取消静音", "Unmute") : L10n.tr("静音", "Mute"))
-
-                ClassicLiquidGlassSlider(
-                    value: Binding(
-                        get: { Double(spec.volumePercent) },
-                        set: { store.setSpeakerVolume(device.id, percent: Int($0.rounded())) }
-                    ),
-                    in: 0...100,
-                    step: 1,
-                    iconName: "waveform",
-                    iconColor: statusColor,
-                    trackFill: LinearGradient(
-                        colors: [
-                            accent.opacity(0.60),
-                            accent.opacity(0.92)
-                        ],
-                        startPoint: .leading,
-                        endPoint: .trailing
-                    ),
-                    formattedValue: "\(spec.volumePercent)%"
-                )
-            }
-
-            ScrollView(.horizontal, showsIndicators: false) {
-                AdaptiveGlassContainer(spacing: 6) {
-                    HStack(spacing: 6) {
+            if showMute || showVolume {
+                HStack(spacing: 8) {
+                    if showMute {
                         Button {
-                            _ = store.togglePrimary(device)
-                            if device.isOnline { SoundFeedback.playSuccess() }
+                            store.toggleTVMute(device.id)
                         } label: {
-                            Label(device.isActiveOn ? L10n.tr("关机待机", "Standby") : L10n.tr("唤醒开机", "Wake"), systemImage: "power")
+                            Image(systemName: spec.isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                                .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
                         }
-                        .buttonStyle(ClassicPillActionButtonStyle(isSelected: device.isActiveOn, tintColor: accent))
+                        .buttonStyle(ClassicPillActionButtonStyle(isSelected: spec.isMuted, tintColor: accent))
+                        .accessibilityLabel(Text(spec.isMuted
+                            ? L10n.tr("取消静音 \(device.name)", "Unmute \(device.name)")
+                            : L10n.tr("静音 \(device.name)", "Mute \(device.name)")))
+                        .panelHelp(spec.isMuted ? L10n.tr("取消静音", "Unmute") : L10n.tr("静音", "Mute"))
+                    }
 
-                        if isLG {
-                            Button {
-                                store.toggleTVScreenOff(device.id)
-                            } label: {
-                                Label(spec.isScreenOff ? L10n.tr("点亮屏幕", "Screen On") : L10n.tr("OLED 熄屏", "Screen Off"), systemImage: "moon.fill")
-                            }
-                            .buttonStyle(ClassicPillActionButtonStyle(isSelected: spec.isScreenOff, tintColor: accent))
-                        }
-
-                        ForEach(spec.availableSources, id: \.self) { src in
-                            Button(src) {
-                                store.selectTVSource(device.id, source: src)
-                            }
-                            .buttonStyle(ClassicPillActionButtonStyle(isSelected: spec.currentSource == src, tintColor: accent))
-                        }
+                    if showVolume {
+                        ClassicLiquidGlassSlider(
+                            value: Binding(
+                                get: { Double(spec.volumePercent) },
+                                set: { store.setSpeakerVolume(device.id, percent: Int($0.rounded())) }
+                            ),
+                            in: 0...100,
+                            step: 1,
+                            iconName: "waveform",
+                            iconColor: statusColor,
+                            trackFill: LinearGradient(
+                                colors: [
+                                    accent.opacity(0.60),
+                                    accent.opacity(0.92)
+                                ],
+                                startPoint: .leading,
+                                endPoint: .trailing
+                            ),
+                            formattedValue: "\(spec.volumePercent)%"
+                        )
                     }
                 }
-                .padding(6)
             }
-            .padding(-6)
+
+            if spec.powerWritable || isLG || !spec.availableSources.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    AdaptiveGlassContainer(spacing: 6) {
+                        HStack(spacing: 6) {
+                            if spec.powerWritable {
+                                Button {
+                                    _ = store.togglePrimary(device)
+                                    if device.isOnline { SoundFeedback.playSuccess() }
+                                } label: {
+                                    Label(device.isActiveOn ? L10n.tr("关机待机", "Standby") : L10n.tr("唤醒开机", "Wake"), systemImage: "power")
+                                }
+                                .buttonStyle(ClassicPillActionButtonStyle(isSelected: device.isActiveOn, tintColor: accent))
+                            }
+
+                            if isLG {
+                                Button {
+                                    store.toggleTVScreenOff(device.id)
+                                } label: {
+                                    Label(spec.isScreenOff ? L10n.tr("点亮屏幕", "Screen On") : L10n.tr("OLED 熄屏", "Screen Off"), systemImage: "moon.fill")
+                                }
+                                .buttonStyle(ClassicPillActionButtonStyle(isSelected: spec.isScreenOff, tintColor: accent))
+                            }
+
+                            ForEach(spec.availableSources, id: \.self) { src in
+                                Button(src) {
+                                    store.selectTVSource(device.id, source: src)
+                                }
+                                .buttonStyle(ClassicPillActionButtonStyle(isSelected: spec.currentSource == src, tintColor: accent))
+                            }
+                        }
+                    }
+                    .padding(6)
+                }
+                .padding(-6)
+            }
         }
     }
 }

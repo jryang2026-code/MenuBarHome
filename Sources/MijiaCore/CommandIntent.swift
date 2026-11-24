@@ -375,8 +375,8 @@ public enum IntentValidator {
             return s.powerWritable ? operation : nil
         case (.power(let on), .valve(let s)):
             return on ? (s.openWritable ? operation : nil) : (s.closeWritable ? operation : nil)
-        case (.power, .tv):
-            return operation
+        case (.power, .tv(let s)):
+            return s.powerWritable ? operation : nil
 
         case (.brightness(let percent), .light(let s)):
             guard s.brightnessWritable else { return nil }

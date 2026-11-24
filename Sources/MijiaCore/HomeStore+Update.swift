@@ -30,9 +30,13 @@ extension HomeStore {
         }
     }
 
-    public func checkForUpdatesIfNeeded(now: Date = Date()) async {
-        guard nextAutomaticUpdateCheck(now: now) == now else { return }
+    /// Returns the next eligible date if the check was skipped because it was too early.
+    @discardableResult
+    public func checkForUpdatesIfNeeded(now: Date = Date()) async -> Date? {
+        guard let nextCheck = nextAutomaticUpdateCheck(now: now) else { return nil }
+        guard nextCheck <= now else { return nextCheck }
         await performUpdateCheck(userInitiated: false, now: now)
+        return nil
     }
 
     public func checkForUpdates(now: Date = Date()) async {

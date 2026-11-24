@@ -247,11 +247,21 @@ public enum AppleMotion {
         reduceMotion ? reducedBehavior(for: token).animation : standardAnimation(for: token)
     }
 
+    /// Test-only override for the non-View `resolve(_:)` below. Callers without a SwiftUI environment
+    /// cannot see `EnvironmentValues.reduceMotionOverride`, so a harness that forces Reduce Motion sets
+    /// this instead. `nil` — what production always sees — means "ask the system".
+    @MainActor
+    static var reduceMotionOverrideForTesting: Bool?
+
     /// Resolves a motion token against `NSWorkspace.shared.accessibilityDisplayShouldReduceMotion`
     /// for non-View AppKit / store call sites.
+    ///
+    /// `reduceMotionOverrideForTesting` stays `nil` in production, so these call sites follow the system
+    /// setting exactly as before; panel and snapshot harnesses pin it so the AppKit-owned paths answer
+    /// like the views that read `EnvironmentValues.effectiveReduceMotion`.
     @MainActor
     public static func resolve(_ token: Token) -> Animation? {
-        resolve(token, reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
+        resolve(token, reduceMotion: reduceMotionOverrideForTesting ?? NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
     }
 
     /// Slider progress animation: zero delay while the pointer is actively dragging,

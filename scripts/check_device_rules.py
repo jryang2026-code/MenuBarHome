@@ -62,9 +62,9 @@ SERVICE_NAME = re.compile(r"^[a-z][a-z0-9-]*$")
 # Ratchets. `windowsDivergences` is a debt table and may only shrink: lower the budget in the same
 # change that removes an entry. A claim rung only one end renders is the same kind of debt, so a new
 # macOS-only rung is refused outright and a new Windows-only rung needs this number raised on
-# purpose (the current two are the MIoT television/stb cards macOS has no builder for).
-WINDOWS_DIVERGENCE_BUDGET = 1
-WINDOWS_ONLY_CLAIM_BUDGET = 2
+# purpose.
+WINDOWS_DIVERGENCE_BUDGET = 0
+WINDOWS_ONLY_CLAIM_BUDGET = 0
 MACOS_ONLY_CLAIM_BUDGET = 0
 
 
@@ -563,7 +563,7 @@ def run_self_test() -> int:
     expect_claim_err(lambda _d, _s, g: g["windowsDivergences"].__setitem__("extra.model", {"category": "matched"}), "双端差异")
     expect_claim_err(
         lambda _d, _s, g: g["windowsDivergences"].__setitem__(
-            m := next(iter(g["windowsDivergences"])), dict(g["models"][m])
+            m := next(iter(g["windowsDivergences"]), next(iter(g["models"]))), dict(g["models"][m])
         ),
         "应删除",
     )

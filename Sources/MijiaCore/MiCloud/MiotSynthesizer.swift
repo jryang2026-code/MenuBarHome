@@ -19,7 +19,8 @@ public enum MiotAddress {
     public static func parse(_ entityId: String) -> (did: String, siid: Int)? {
         if let action = parseAction(entityId) { return (action.did, action.siid) }
         guard entityId.hasPrefix("miot:") else { return nil }
-        let rest = entityId.dropFirst("miot:".count)
+        let clean = entityId.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false).first.map(String.init) ?? entityId
+        let rest = clean.dropFirst("miot:".count)
         guard let sep = rest.lastIndex(of: ":"), let siid = Int(rest[rest.index(after: sep)...]) else { return nil }
         let did = String(rest[..<sep])
         return did.isEmpty ? nil : (did, siid)
@@ -33,8 +34,7 @@ public enum MiotSynthesizer {
 
     /// Service short name → card builder. Only the renderers live here: `Shared/deviceClaims.json`
     /// owns which services are claimable, in what order, and under which conditions, and
-    /// `scripts/check_device_rules.py` keeps this table and the document aligned. macOS has no MIoT
-    /// television card, so the document marks that rung Windows-only.
+    /// `scripts/check_device_rules.py` keeps this table and the document aligned.
     static let builders: [String: KindBuilder] = [
         "air-conditioner": buildClimate,
         "air-fresh": buildAirPurifier,
@@ -69,8 +69,10 @@ public enum MiotSynthesizer {
         "outlet": buildPlug,
         "oven": buildKitchenAppliance,
         "speaker": buildSpeaker,
+        "stb": buildTV,
         "submersion-sensor": buildSensor,
         "switch": buildPlug,
+        "television": buildTV,
         "temperature-humidity-sensor": buildSensor,
         "thermostat": buildClimate,
         "vacuum": buildVacuum,
@@ -693,6 +695,69 @@ public enum MiotSynthesizer {
             temperature: temperature?.value?.doubleValue,
             humidity: humidity?.value?.doubleValue,
             powerWritable: on?.property.isWritable == true
+        ))
+    }
+
+    static func buildTV(_ r: MiotReader, _ s: MiotService) -> DeviceKind {
+        let on = r.ref("on", in: s)
+        let status = r.ref("status", in: s)
+        let input = r.ref("input-control", in: s, includingWriteOnly: true)
+        let speakerSvc = r.spec.services(named: "speaker").first
+        let volume = speakerSvc.flatMap { r.ref("volume", in: $0) } ?? r.ref("volume", in: s)
+        let mute = speakerSvc.flatMap { r.ref("mute", in: $0) } ?? r.ref("mute", in: s)
+        let playing = r.first("playing-state", in: r.spec.services(named: "play-control"))
+
+        func findZeroArgAction(_ actionName: String) -> String? {
+            let ordered = [s] + r.spec.services.filter { $0.iid != s.iid }
+            for sv in ordered {
+                if let act = sv.action(named: actionName), act.inputProperties.isEmpty {
+                    return MiotAddress.makeAction(did: r.did, siid: sv.iid, aiid: act.iid)
+                }
+            }
+            return nil
+        }
+
+        let powerOnActionId = findZeroArgAction("turn-on")
+        let powerOffActionId = findZeroArgAction("turn-off")
+        let playingWord = playing?.valueDescription?.lowercased() ?? ""
+        let statusWord = status?.valueDescription?.lowercased() ?? ""
+        let onBool = on?.value?.miotBool
+        let isPlaying = playingWord == "playing" || playingWord == "play"
+        let standbyWords = ["off", "standby", "sleep", "shutdown", "closed", "close"]
+        let state: String = if onBool == false {
+            "off"
+        } else if onBool == true {
+            isPlaying ? "playing" : "on"
+        } else if !statusWord.isEmpty {
+            standbyWords.contains(where: { statusWord.contains($0) }) ? "standby" : (isPlaying ? "playing" : "on")
+        } else {
+            isPlaying ? "playing" : "standby"
+        }
+
+        let currentSource = input?.valueDescription
+        let availableSources = input?.property.isWritable == true ? (input?.property.valueList?.map(\.description) ?? []) : []
+        let rawVolume = volume?.value?.doubleValue
+        let volumePercent = volume.flatMap { ref in
+            rawVolume.map { MiotPercentScale.percent(fromRaw: $0, property: ref.property, curve: .proportional) }
+        } ?? 0
+        let powerWritable = on?.property.isWritable == true || powerOnActionId != nil || powerOffActionId != nil
+        let muteSwitchEntityId = mute.flatMap {
+            $0.property.isWritable ? "\(MiotAddress.make(did: r.did, siid: $0.service.iid))#mute" : nil
+        }
+
+        return .tv(TVSpec(
+            mediaEntityId: MiotAddress.make(did: r.did, siid: s.iid),
+            state: state,
+            volumePercent: volumePercent,
+            isMuted: mute?.value?.miotBool ?? false,
+            muteSwitchEntityId: muteSwitchEntityId,
+            currentSource: currentSource,
+            availableSources: availableSources,
+            powerOnActionId: powerOnActionId,
+            powerOffActionId: powerOffActionId,
+            powerWritable: powerWritable,
+            volumeWritable: volume?.property.isWritable == true,
+            volumePresent: rawVolume != nil
         ))
     }
 

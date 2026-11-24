@@ -1,9 +1,11 @@
 import Foundation
 import PreferencesTestSupport
+import StateTestSupport
 import Testing
 @testable import MijiaCore
 
 /// 定时任务属于创建它的数据源：换家庭 / 账号 / 数据源后不能误触发，也不能被别的数据源保存时删掉（ADR-0019）。
+@Suite(.timeLimit(.minutes(2)))
 struct ScheduledCommandScopeTests {
     private typealias SleepGate = ScheduledCommandTestSupport.SleepGate
 
@@ -604,9 +606,7 @@ struct ScheduledCommandScopeTests {
         store.assistantSleep = { _ in }
 
         _ = await store.runLocalCommand("10分钟后关闭书房吸顶灯")
-        for _ in 0..<100 where store.devices.first?.isActiveOn != false {
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        try await awaitState { store.devices.first?.isActiveOn == false }
 
         #expect(store.devices.first?.isActiveOn == false)
         #expect(await mock.executedCommands == [.setLightPower(entityId: "light.study_ceiling", isOn: false)])

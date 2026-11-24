@@ -189,7 +189,8 @@ struct MultiAccountHomeStoreTests {
             did: "shared-plug",
             name: "共享插座",
             model: "cuco.plug.v3",
-            isOnline: true
+            isOnline: true,
+            isShared: false
         )
         let cnApi = FailoverStubMiCloudAPI(
             devices: [sharedRecord],
@@ -276,13 +277,14 @@ struct MultiAccountHomeStoreTests {
         await provider.shutdown()
     }
 
-    @Test("Non-idempotent commands do not replay across accounts on ambiguous timeout or 5xx, but fail over on pre-transmit errors and 429")
+    @Test("Non-idempotent commands fall back only after a known refusal or pre-transmit failure")
     func nonIdempotentCommandAccountFallbackSafety() async throws {
         let sharedRecord = MiDeviceRecord(
             did: "shared-speaker-plug",
             name: "共享播报插座",
             model: "cuco.plug.v3",
-            isOnline: true
+            isOnline: true,
+            isShared: true
         )
         var spec = try #require(MiotFixtures.specs["cuco.plug.v3"])
         spec.services.append(
@@ -378,6 +380,11 @@ struct MultiAccountHomeStoreTests {
         #expect(await cnApi.setPropsCalls.count == 1)
         #expect(await deApi.setPropsCalls.count == 1)
 
+        await cnApi.setActionFailure(MiCloudError.deviceError(code: -704010000, message: "Unauthorized"))
+        try await provider.execute(ttsCommand)
+        #expect(await cnApi.actionCalls.count == 6)
+        #expect(await deApi.actionCalls.count == 3)
+
         await provider.shutdown()
     }
 
@@ -415,7 +422,8 @@ struct MultiAccountHomeStoreTests {
             did: "shared-plug",
             name: "共享插座",
             model: "cuco.plug.v3",
-            isOnline: true
+            isOnline: true,
+            isShared: false
         )
         let cnApi = FailoverStubMiCloudAPI(
             devices: [lanBulb, sharedPlug],

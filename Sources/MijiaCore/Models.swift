@@ -338,11 +338,15 @@ public struct TVSpec: Equatable, Sendable {
     public var state: String
     public var volumePercent: Int
     public var isMuted: Bool
+    public var muteSwitchEntityId: String?
     public var isScreenOff: Bool
     public var isPairingPromptActive: Bool
     public var currentSource: String?
     public var availableSources: [String]
     public var turnOnButtonId: String?
+    public var powerOnActionId: String?
+    public var powerOffActionId: String?
+    public var powerWritable: Bool
     public var volumeWritable: Bool
     public var volumePresent: Bool
 
@@ -351,11 +355,15 @@ public struct TVSpec: Equatable, Sendable {
         state: String,
         volumePercent: Int,
         isMuted: Bool = false,
+        muteSwitchEntityId: String? = nil,
         isScreenOff: Bool = false,
         isPairingPromptActive: Bool = false,
         currentSource: String? = nil,
         availableSources: [String] = [],
         turnOnButtonId: String? = nil,
+        powerOnActionId: String? = nil,
+        powerOffActionId: String? = nil,
+        powerWritable: Bool = true,
         volumeWritable: Bool = true,
         volumePresent: Bool = true
     ) {
@@ -363,11 +371,15 @@ public struct TVSpec: Equatable, Sendable {
         self.state = state
         self.volumePercent = volumePercent
         self.isMuted = isMuted
+        self.muteSwitchEntityId = muteSwitchEntityId
         self.isScreenOff = isScreenOff
         self.isPairingPromptActive = isPairingPromptActive
         self.currentSource = currentSource
         self.availableSources = availableSources
         self.turnOnButtonId = turnOnButtonId
+        self.powerOnActionId = powerOnActionId
+        self.powerOffActionId = powerOffActionId
+        self.powerWritable = powerWritable
         self.volumeWritable = volumeWritable
         self.volumePresent = volumePresent
     }
@@ -1243,7 +1255,7 @@ public enum DeviceKind: Equatable, Sendable {
         case .plug(let spec): return spec.powerWritable
         case .camera(let spec): return spec.powerWritable
         case .vacuum(let spec): return spec.actionsWritable
-        case .tv: return true
+        case .tv(let spec): return spec.powerWritable
         case .speaker, .fridge, .sensor: return false
         case .cover(let spec): return spec.canMove
         case .appliance(let spec): return spec.powerPresent && spec.powerWritable
@@ -1368,7 +1380,7 @@ public struct SmartDevice: Identifiable, Equatable, Sendable {
         case .speaker(let s):
             [s.mediaEntityId, s.muteSwitchEntityId, s.sleepModeEntityId,
              s.ttsNotifyEntityId, s.directiveNotifyEntityId, s.playMusicButtonId, s.stopAlarmButtonId]
-        case .tv(let s): [s.mediaEntityId, s.turnOnButtonId]
+        case .tv(let s): [s.mediaEntityId, s.muteSwitchEntityId, s.turnOnButtonId, s.powerOnActionId, s.powerOffActionId]
         case .camera(let s): [s.entityId, s.motionDetectionEntityId, s.streamEntityId]
         case .sensor: []
         case .cover(let s): [s.entityId]
@@ -1497,8 +1509,12 @@ public struct SmartDevice: Identifiable, Equatable, Sendable {
             return spec.powerWritable || !spec.availableNightShots.isEmpty || spec.motionDetectionEntityId != nil
         case .vacuum(let spec):
             return spec.actionsWritable
-        case .fridge, .speaker, .tv:
+        case .fridge, .speaker:
             return true
+        case .tv(let spec):
+            return spec.powerWritable || (spec.volumeWritable && spec.volumePresent)
+                || spec.muteSwitchEntityId != nil || !spec.availableSources.isEmpty
+                || spec.isPairingPromptActive
         case .plug(let s):
             return s.powerWatts != nil || s.energyKwh != nil || s.childLockEntityId != nil
         case .sensor:

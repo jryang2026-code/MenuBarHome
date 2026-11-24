@@ -2110,8 +2110,20 @@ extension HomeStore {
         }
     }
 
+    private static func tvPowerUndoOperation(for command: DeviceCommand, on device: SmartDevice) -> IntentOperation? {
+        guard case .pressButton(let entityId) = command,
+              case .tv(let spec) = device.kind else { return nil }
+        if entityId == spec.turnOnButtonId || entityId == spec.powerOnActionId {
+            return .power(true)
+        }
+        if entityId == spec.powerOffActionId {
+            return .power(false)
+        }
+        return nil
+    }
+
     static func undoEffect(of command: DeviceCommand, on device: SmartDevice) -> SmartDevice? {
-        guard let operation = undoOperation(for: command),
+        guard let operation = undoOperation(for: command) ?? tvPowerUndoOperation(for: command, on: device),
               let effect = assistantEffect(of: operation, on: device),
               effect.command.targetEntityId == command.targetEntityId else { return nil }
         if case .setClimatePower = command { return effect.updated }
@@ -2123,7 +2135,7 @@ extension HomeStore {
         of command: DeviceCommand,
         on device: SmartDevice
     ) -> (updated: SmartDevice, command: DeviceCommand)? {
-        guard let operation = undoOperation(for: command),
+        guard let operation = undoOperation(for: command) ?? tvPowerUndoOperation(for: command, on: device),
               let effect = assistantEffect(of: operation, on: device) else { return nil }
         if case .setClimatePower(_, let on, let mode) = command,
            case .climate(let spec) = device.kind {
@@ -2272,16 +2284,38 @@ extension HomeStore {
             )
 
         case (.power(let on), .tv(var s)):
+            guard s.powerWritable else { return nil }
             let wasOn = s.state != "off" && s.state != "standby"
-            let powerEntity = LGWebOSProtocol.isLGEntity(s.mediaEntityId) ? LGWebOSProtocol.powerEntityId : s.mediaEntityId
-            let restore = DeviceCommand.setSwitch(entityId: powerEntity, isOn: wasOn)
+            let isLG = LGWebOSProtocol.isLGEntity(s.mediaEntityId)
+            let powerCommand: DeviceCommand = if isLG {
+                .setSwitch(entityId: LGWebOSProtocol.powerEntityId, isOn: on)
+            } else if on, let btnId = s.turnOnButtonId {
+                .pressButton(entityId: btnId)
+            } else if on, let actionId = s.powerOnActionId {
+                .pressButton(entityId: actionId)
+            } else if !on, let actionId = s.powerOffActionId {
+                .pressButton(entityId: actionId)
+            } else {
+                .setSwitch(entityId: s.mediaEntityId, isOn: on)
+            }
+            let restoreCommand: DeviceCommand = if isLG {
+                .setSwitch(entityId: LGWebOSProtocol.powerEntityId, isOn: wasOn)
+            } else if wasOn, let btnId = s.turnOnButtonId {
+                .pressButton(entityId: btnId)
+            } else if wasOn, let actionId = s.powerOnActionId {
+                .pressButton(entityId: actionId)
+            } else if !wasOn, let actionId = s.powerOffActionId {
+                .pressButton(entityId: actionId)
+            } else {
+                .setSwitch(entityId: s.mediaEntityId, isOn: wasOn)
+            }
             s.state = on ? "on" : "standby"
             if on { s.isScreenOff = false }
             updated.kind = .tv(s)
             return AssistantEffect(
                 updated: updated,
-                command: .setSwitch(entityId: powerEntity, isOn: on),
-                restore: [restore]
+                command: powerCommand,
+                restore: [restoreCommand]
             )
 
 

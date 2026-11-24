@@ -36,6 +36,20 @@ export interface MiSceneSnapshot {
   readonly scenes: readonly MiCloudScene[];
 }
 
+/**
+ * The uid a scenes request for `room` must carry (#451): the home's own `uid` when the cloud named
+ * one; otherwise, for a home this account owns, the logged-in user id — that account is the owner
+ * there, so its scenes stay reachable when the room page omits `uid`. A shared home without `uid`
+ * stays skipped: substituting the logged-in user would query someone else's home.
+ */
+export function sceneOwnerUid(
+  room: Pick<MiRoom, "isSharedHome" | "ownerUid">,
+  userId: string,
+): string | null {
+  if (room.ownerUid) return room.ownerUid;
+  return room.isSharedHome === true || !userId ? null : userId;
+}
+
 export async function refreshMiScenes(
   client: Pick<MiCloudClient, "manualScenes">,
   rooms: readonly MiRoom[],
@@ -48,7 +62,7 @@ export async function refreshMiScenes(
   const seen = new Set<string>();
   for (const room of rooms) {
     const { homeId } = room;
-    const owner = room.ownerUid;
+    const owner = sceneOwnerUid(room, userId);
     if (!homeId || !owner || seen.has(homeId)) continue;
     seen.add(homeId);
     try {
