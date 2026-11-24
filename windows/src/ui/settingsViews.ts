@@ -1,11 +1,9 @@
 import {
   ASSISTANT_PROVIDER_PRESETS,
-  endpointAllowsSendingSecrets,
   inferAssistantPreset,
   isAiAssistantEnabled,
   isProactiveSuggestionsEnabled,
   listReadableHabits,
-  parseAssistantEndpoint,
   type HabitSequenceEntry,
 } from "../core/assistant.js";
 import { speechLocale, t, tr3 } from "../core/i18n.js";
@@ -19,6 +17,7 @@ import {
   type CompanionNotice,
   type UpdateDownloadProgress,
 } from "./speechGuard.js";
+import { isPlainHttpRemoteEndpoint } from "./haEndpoint.js";
 import type { GitHubRelease } from "../core/updateChecker.js";
 import type { QRLoginTicket } from "../core/miCloudClient.js";
 import {
@@ -727,15 +726,6 @@ function renderGeneralPanel(ctx: SettingsViewContext): string {
       </div>
     </div>
   `;
-}
-
-export function isPlainHttpRemoteEndpoint(rawURL: string): boolean {
-  const trimmed = rawURL.trim();
-  if (!trimmed) return false;
-  const withScheme = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(trimmed) ? trimmed : `http://${trimmed}`;
-  const parsed = parseAssistantEndpoint(withScheme);
-  if (!parsed) return false;
-  return !endpointAllowsSendingSecrets(withScheme);
 }
 
 function renderHomeAssistantCredentialsBlock(ctx: SettingsViewContext): string {

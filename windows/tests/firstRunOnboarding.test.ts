@@ -195,13 +195,7 @@ describe("P4a-W / WP4a · First-run 3-card onboarding, on-demand LAN gate, and l
     assert.ok(document.querySelector("#btn-start-qr"), "navigates to Mi QR step for second platform");
     assert.equal(isDualSourceEnabled(app), false, "does not enable dual-source before connecting second platform");
     let qrStarted = false;
-    app.startXiaomiQRLogin = async () => { qrStarted = true; };
-    await click("#btn-start-qr");
-    assert.equal(qrStarted, true);
-    assert.equal(app.dualSourceEnabledOverride, true, "clears prior dualSourceEnabledOverride");
-    assert.equal(app.settings.dualSourceEnabled, true);
-    assert.equal(localStorage.getItem(DUAL_SOURCE_ENABLED_STORAGE_KEY), "1");
-    app.settings.miSession = {
+    const miSession = {
       userId: "10086",
       cUserId: "c10086",
       passToken: "pt-secret",
@@ -209,6 +203,30 @@ describe("P4a-W / WP4a · First-run 3-card onboarding, on-demand LAN gate, and l
       ssecurity: "ss-secret",
       region: "cn",
     };
+    app.startXiaomiQRLogin = async () => {
+      qrStarted = true;
+    };
+    await click("#btn-start-qr");
+    assert.equal(qrStarted, true);
+    assert.equal(app.dualSourceEnabledOverride, true, "clears prior dualSourceEnabledOverride");
+    assert.equal(app.settings.dualSourceEnabled, true);
+    // Nit-4 (#293 comment): an abandoned scan must not seal the dual choice in storage.
+    assert.equal(
+      localStorage.getItem(DUAL_SOURCE_ENABLED_STORAGE_KEY),
+      null,
+      "the in-memory switch is enough until a Mi session actually arrives",
+    );
+
+    app.startXiaomiQRLogin = async () => {
+      app.settings.miSession = miSession;
+    };
+    await click("#btn-start-qr");
+    await setImmediate();
+    assert.equal(
+      localStorage.getItem(DUAL_SOURCE_ENABLED_STORAGE_KEY),
+      "1",
+      "a completed scan persists the dual-source choice",
+    );
     assert.equal(isDualSourceEnabled(app), true, "dual-source activates immediately once second platform session arrives");
   });
 

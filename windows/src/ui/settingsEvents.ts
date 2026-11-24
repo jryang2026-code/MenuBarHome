@@ -77,6 +77,7 @@ import { bindConnectionsAndDiagEvents, reportProblemOnHost, type ConnectionsAndD
 import { bindEnergySettingsEvents } from "./energySettingsView.js";
 import { bindDeviceTypeSelectionEvents, clearDeviceTypeSelectionSession } from "./deviceTypeSelectionView.js";
 import { getSettingsTabSpec, normalizeSettingsTab, type SettingsTab } from "./settingsViews.js";
+import { normalizeHaEndpoint } from "./haEndpoint.js";
 import type { GitHubRelease } from "../core/updateChecker.js";
 
 export interface SettingsEventsHost extends SourceSwitchHost {
@@ -233,16 +234,8 @@ export function hasUnsavedSettingsChanges(host: SettingsEventsHost): boolean {
   const root = host.root;
   if (!root.querySelector(".cc-settings-sheet")) return false;
 
-  const normalizeHaUrl = (raw: string): string => {
-    let endpoint = raw.trim();
-    if (endpoint && !/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(endpoint)) {
-      endpoint = `http://${endpoint}`;
-    }
-    return endpoint.replace(/\/api\/websocket\/?$/i, "").replace(/\/+$/, "");
-  };
-
   const haUrl = root.querySelector<HTMLInputElement>("#settings-ha-url");
-  if (haUrl && normalizeHaUrl(haUrl.value) !== normalizeHaUrl(host.settings.haBaseURL)) {
+  if (haUrl && normalizeHaEndpoint(haUrl.value) !== normalizeHaEndpoint(host.settings.haBaseURL)) {
     return true;
   }
 
@@ -560,6 +553,7 @@ export async function signOutAndRevokeAll(host: SettingsEventsHost): Promise<voi
   (host as { waitingDeviceIds?: Set<string> }).waitingDeviceIds?.clear();
   (host as { unresolvedRoomDids?: Set<string> }).unresolvedRoomDids?.clear();
   (host as { qrTicket?: unknown }).qrTicket = null;
+  (host as { qrPhase?: string }).qrPhase = "idle";
   (host as { qrStatusText?: string }).qrStatusText = t(
     "点击下方按钮获取安全二维码，用手机「米家 App → 扫一扫」即可同步真实全屋设备。",
   );
@@ -736,11 +730,7 @@ function commitSettingsSave(host: SettingsEventsHost): void {
   }
 
   if (haUrl) {
-    let endpoint = haUrl.value.trim();
-    if (endpoint && !/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(endpoint)) {
-      endpoint = `http://${endpoint}`;
-    }
-    endpoint = endpoint.replace(/\/api\/websocket\/?$/i, "").replace(/\/+$/, "");
+    const endpoint = normalizeHaEndpoint(haUrl.value);
     if (endpoint !== host.settings.haBaseURL) {
       switchSource(host, "settings-ha-endpoint-changed");
       host.settings.cachedHAHome = null;

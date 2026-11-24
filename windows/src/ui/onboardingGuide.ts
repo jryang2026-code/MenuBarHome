@@ -2,9 +2,7 @@ import {
   ASSISTANT_PROVIDER_PRESETS,
   ModelIntentResolver,
   assistantEndpointIdentity,
-  endpointAllowsSendingSecrets,
   inferAssistantPreset,
-  parseAssistantEndpoint,
   type AssistantConfig,
   type AssistantProviderPresetInfo,
 } from "../core/assistant.js";
@@ -12,10 +10,16 @@ import { DUAL_SOURCE_ENABLED_STORAGE_KEY, type DualSourceCoordinator } from "../
 import { homeAssistantIdentity } from "../core/homeAssistant.js";
 import { t, tr3 } from "../core/i18n.js";
 import { hasSecondaryMiAccountsInIndex } from "../core/miAccountsStore.js";
-import { MI_CLOUD_REGIONS, maskedMiUserId, normalizeMiCloudRegion } from "../core/miCloudClient.js";
-import { SF_ICONS } from "./appConstants.js";
-import type { ConnectionMode } from "./appTypes.js";
+import {
+  MI_CLOUD_REGIONS,
+  maskedMiUserId,
+  normalizeMiCloudRegion,
+  type QRLoginTicket,
+} from "../core/miCloudClient.js";
+import { ALL_OFF_HOLD_MS, SF_ICONS, UNDO_BANNER_MULTI_DEVICE_THRESHOLD, UNDO_BANNER_SECONDS, UNDO_BANNER_SECONDS_MULTI } from "./appConstants.js";
+import type { ConnectionMode, QrLoginPhase } from "./appTypes.js";
 import { demoDevices, demoScenes } from "./demo.js";
+import { isPlainHttpRemoteEndpoint, normalizeHaEndpoint } from "./haEndpoint.js";
 import {
   haCacheIfEnabled,
   isHostHaEnabled,
@@ -298,6 +302,8 @@ function clearGuideAnnouncement(host: OnboardingRenderViewHost): void {
 
 export interface OnboardingRenderViewHost extends SettingsEventsHost {
   readonly qrStatusText?: string;
+  /** Explicit QR-login outcome (Nit-5, #293); the guide never parses the status copy. */
+  readonly qrPhase?: QrLoginPhase;
   /** Set while startup credential hydration has not settled; the sheet is a loading state (P2-6). */
   readonly onboardingAwaitingCredentials?: boolean;
   dualSourceCoordinator?: DualSourceCoordinator | null;
@@ -369,15 +375,6 @@ function ensureSession(host: OnboardingRenderViewHost): OnboardingSessionState {
   };
   onboardingSessionByHost.set(host, created);
   return created;
-}
-
-function isPlainHttpRemoteURL(rawURL: string): boolean {
-  const trimmed = rawURL.trim();
-  if (!trimmed) return false;
-  const withScheme = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(trimmed) ? trimmed : `http://${trimmed}`;
-  const parsed = parseAssistantEndpoint(withScheme);
-  if (!parsed) return false;
-  return !endpointAllowsSendingSecrets(withScheme);
 }
 
 function mapHaErrorToPlainLanguage(rawError: string): string {
@@ -507,6 +504,166 @@ function applyAssistantDraftToHost(host: OnboardingRenderViewHost, session: Onbo
   return true;
 }
 
+/**
+ * Step 4's All Off reminder, built from the same constants the controls enforce (Nit-6, #293) so a
+ * future tweak to the hold or undo duration cannot leave the guide quoting the old numbers.
+ */
+export function onboardingAllOffTimingCopy(): string {
+  return tr3(
+    "按住「全关」{hold} 秒确认，可在 {undo} 秒内撤销，{multi} 台起为 {long} 秒。",
+    "按住「全關」{hold} 秒確認，可在 {undo} 秒內復原，{multi} 台起為 {long} 秒。",
+    "Hold All Off for {hold}s to confirm; Undo stays up for {undo}s ({long}s from {multi} devices).",
+    {
+      hold: ALL_OFF_HOLD_MS / 1000,
+      undo: UNDO_BANNER_SECONDS,
+      multi: UNDO_BANNER_MULTI_DEVICE_THRESHOLD,
+      long: UNDO_BANNER_SECONDS_MULTI,
+    },
+  );
+}
+
+/** Everything step 2 needs; extracted from `mountOnboardingGuide` so the markup is a pure function (Nit-3). */
+export interface OnboardingQrStepView {
+  readonly isPolling: boolean;
+  /** Explicit login outcome (Nit-5): never inferred from the localized status text. */
+  readonly expired: boolean;
+  readonly statusText: string;
+  readonly ticket: QRLoginTicket | null;
+}
+
+export interface OnboardingHaStepView {
+  readonly urlDraft: string;
+  readonly tokenDraft: string;
+  readonly connecting: boolean;
+  readonly error: string | null;
+  readonly connectedCount: number | null;
+}
+
+export interface OnboardingConnectStepInput {
+  readonly mode: ConnectionMode | null;
+  readonly miUserId: string | null;
+  readonly miCloudRegion: string;
+  readonly qr: OnboardingQrStepView;
+  readonly ha: OnboardingHaStepView;
+  readonly escapeHtml: (raw: string) => string;
+}
+
+export function renderOnboardingConnectStep(input: OnboardingConnectStepInput): string {
+  const esc = input.escapeHtml;
+  if (input.mode === null) return "";
+  if (input.mode === "xiaomiCloud") {
+    const { qr } = input;
+    const qrLabel = qr.isPolling
+      ? t("正在等待手机米家扫码确认...")
+      : qr.expired
+        ? t("刷新二维码")
+        : input.miUserId !== null
+          ? t("切换/重新扫码 (已登录 {user})", { user: maskedMiUserId(input.miUserId) })
+          : t("获取米家登录二维码");
+    return `
+      <div class="cc-field" data-onboarding-step="2">
+        <p class="cc-onboarding-warning" data-onboarding-mi-warning role="note">
+          ${esc(t("使用非官方连接方式。小米可能限制请求或风控账号，登录会过期，到期需重新扫码。凭据安全保存在本机。"))}
+        </p>
+        <details data-onboarding-mi-region-details class="cc-onboarding-block">
+          <summary class="cc-field-hint cc-onboarding-region-summary">${t("云端服务器地区")}</summary>
+          <div class="cc-onboarding-block is-compact">
+            <select class="cc-input" data-mi-region>
+              ${MI_CLOUD_REGIONS.map(
+                (region) =>
+                  `<option value="${region.code}" ${
+                    normalizeMiCloudRegion(input.miCloudRegion) === region.code ? "selected" : ""
+                  }>${esc(t(region.label))}</option>`,
+              ).join("")}
+            </select>
+            <p class="cc-field-hint">${t("欧洲、印度、俄罗斯、新加坡、美区的米家账号请先选择对应地区，再扫码登录。")}</p>
+          </div>
+        </details>
+        <div class="cc-qr-box cc-onboarding-block">
+          <button type="button" class="cc-btn-primary is-full" id="btn-start-qr" ${qr.isPolling ? "disabled" : ""}>
+            ${SF_ICONS.qrcode}
+            <span>${esc(qrLabel)}</span>
+          </button>
+          <div class="cc-qr-status">${esc(qr.statusText)}</div>
+          ${
+            qr.ticket
+              ? `<div class="cc-qr-frame"><img src="${esc(qr.ticket.qrImageURL)}" alt="${esc(t("米家登录二维码"))}" /></div>`
+              : ""
+          }
+        </div>
+        <div class="cc-onboarding-inline-actions">
+          <button type="button" class="cc-inline-pill" id="btn-onboarding-back">${t("返回选平台")}</button>
+          <button type="button" class="cc-inline-pill" id="btn-onboarding-skip">${t("稍后设置")}</button>
+        </div>
+      </div>
+    `;
+  }
+  if (input.mode === "homeAssistant") {
+    const { ha } = input;
+    const warnPlainHttp = isPlainHttpRemoteEndpoint(ha.urlDraft);
+    return `
+      <div class="cc-field" data-onboarding-step="2">
+        <p class="cc-field-hint cc-onboarding-hint is-above" data-onboarding-ha-hint>
+          ${esc(t("在 Home Assistant 网页设置里查看地址"))}
+        </p>
+        <label for="onboarding-ha-url">Home Assistant URL</label>
+        <input
+          id="onboarding-ha-url"
+          class="cc-input"
+          type="url"
+          placeholder="http://homeassistant.local:8123"
+          value="${esc(ha.urlDraft)}"
+        />
+        <p class="cc-onboarding-warning is-spaced" data-onboarding-ha-http-warning role="note" ${warnPlainHttp ? "" : "hidden"}>
+          ${esc(t("令牌将以明文在网络上传输，远程访问建议使用 HTTPS 或 Nabu Casa 地址。"))}
+        </p>
+        <label for="onboarding-ha-token" class="cc-onboarding-label is-spaced">${t("专属连接钥匙（长期访问令牌）")}</label>
+        <p class="cc-field-hint cc-onboarding-hint is-tight" data-onboarding-ha-token-guide>
+          ${esc(t("打开 Home Assistant 网页 → 个人资料 → 安全设置 → 创建长期访问令牌。"))}
+        </p>
+        <div class="cc-onboarding-row">
+          <input
+            id="onboarding-ha-token"
+            class="cc-input"
+            type="password"
+            autocomplete="off"
+            placeholder="${esc(tr3("粘贴 HA 长期访问令牌", "貼上 HA 長期存取權杖", "Paste HA Long-Lived Access Token"))}"
+            value="${esc(ha.tokenDraft)}"
+          />
+          <button type="button" class="cc-btn-primary" id="btn-onboarding-connect-ha" ${ha.connecting ? "disabled" : ""}>
+            ${esc(t("连接并验证"))}
+          </button>
+        </div>
+        ${
+          ha.error
+            ? `<p class="cc-onboarding-warning is-spaced" data-onboarding-ha-error role="alert">${esc(ha.error)}</p>`
+            : ha.connectedCount !== null
+              ? `<p class="cc-field-hint cc-onboarding-hint is-below" data-onboarding-ha-verified>${esc(t("已连接 Home Assistant · {count} 台设备", { count: ha.connectedCount }))}</p>`
+              : ""
+        }
+        <div class="cc-onboarding-inline-actions">
+          <button type="button" class="cc-inline-pill" id="btn-onboarding-back">${t("返回选平台")}</button>
+          <button type="button" class="cc-inline-pill" id="btn-onboarding-skip">${t("稍后设置")}</button>
+          ${
+            ha.error
+              ? `<button type="button" class="cc-inline-pill" id="btn-onboarding-use-demo">${t("先逛逛（不连接设备）")}</button>`
+              : ""
+          }
+        </div>
+      </div>
+    `;
+  }
+  return `
+    <div class="cc-field" data-onboarding-step="2" data-onboarding-demo-banner>
+      <p class="cc-sheet-note cc-onboarding-demo-title">${esc(t("示例家庭，不会控制真实设备"))}</p>
+      <p class="cc-field-hint cc-onboarding-hint">${esc(t("内置虚拟全屋设备，完全离线、零网络请求。随时可返回连接米家或 Home Assistant。"))}</p>
+      <div class="cc-onboarding-inline-actions">
+        <button type="button" class="cc-inline-pill" id="btn-onboarding-back">${t("返回选平台")}</button>
+      </div>
+    </div>
+  `;
+}
+
 export function mountOnboardingGuide(host: OnboardingRenderViewHost): void {
   if (host.activeSheet !== "onboarding") {
     clearOnboardingSession(host);
@@ -544,10 +701,6 @@ export function mountOnboardingGuide(host: OnboardingRenderViewHost): void {
   const miConnected = hasConnectedMi(host);
   const haConnected = hasConnectedHA(host);
   const hotkeyText = host.settings.globalHotkey || "Alt+M";
-  const isPollingQR = Boolean(host.isPollingQR);
-  const qrStatus = host.qrStatusText ?? "";
-  const qrTicket = host.qrTicket ?? null;
-  const qrExpired = !isPollingQR && /超时|过期|expired|timed out/i.test(qrStatus);
   const supportsEnvImport = presetSupportsEnvKeyImport(draft.selectedPreset) && draft.apiKey.trim() === "";
   const secondPlatformTarget: Exclude<ConnectionMode, "demo"> | null =
     miConnected && !haConnected
@@ -555,120 +708,26 @@ export function mountOnboardingGuide(host: OnboardingRenderViewHost): void {
       : haConnected && !miConnected
         ? "xiaomiCloud"
         : null;
+  const connectStep = renderOnboardingConnectStep({
+    mode: session.selectedMode,
+    miUserId: host.settings.miSession?.userId ?? null,
+    miCloudRegion: host.settings.miCloudRegion,
+    qr: {
+      isPolling: Boolean(host.isPollingQR),
+      expired: host.qrPhase === "expired",
+      statusText: host.qrStatusText ?? "",
+      ticket: host.qrTicket ?? null,
+    },
+    ha: {
+      urlDraft: session.haURLDraft,
+      tokenDraft: session.haTokenDraft,
+      connecting: session.haConnecting,
+      error: session.haConnectError,
+      connectedCount: session.haConnectedCount,
+    },
+    escapeHtml: esc,
+  });
 
-  const renderConnectStep = (): string => {
-    if (session.selectedMode === null) return "";
-    if (session.selectedMode === "xiaomiCloud") {
-      const qrLabel = isPollingQR
-        ? t("正在等待手机米家扫码确认...")
-        : qrExpired
-          ? t("刷新二维码")
-          : host.settings.miSession
-            ? t("切换/重新扫码 (已登录 {user})", { user: maskedMiUserId(host.settings.miSession.userId) })
-            : t("获取米家登录二维码");
-      return `
-        <div class="cc-field" data-onboarding-step="2">
-          <p class="cc-onboarding-warning" data-onboarding-mi-warning role="note">
-            ${esc(t("使用非官方连接方式。小米可能限制请求或风控账号，登录会过期，到期需重新扫码。凭据安全保存在本机。"))}
-          </p>
-          <details data-onboarding-mi-region-details style="margin-top: 8px;">
-            <summary class="cc-field-hint" style="cursor: pointer; margin: 0;">${t("云端服务器地区")}</summary>
-            <div style="margin-top: 6px;">
-              <select class="cc-input" data-mi-region>
-                ${MI_CLOUD_REGIONS.map(
-                  (region) =>
-                    `<option value="${region.code}" ${
-                      normalizeMiCloudRegion(host.settings.miCloudRegion) === region.code ? "selected" : ""
-                    }>${esc(t(region.label))}</option>`,
-                ).join("")}
-              </select>
-              <p class="cc-field-hint">${t("欧洲、印度、俄罗斯、新加坡、美区的米家账号请先选择对应地区，再扫码登录。")}</p>
-            </div>
-          </details>
-          <div class="cc-qr-box" style="margin-top: 8px;">
-            <button type="button" class="cc-btn-primary is-full" id="btn-start-qr" ${isPollingQR ? "disabled" : ""}>
-              ${SF_ICONS.qrcode}
-              <span>${esc(qrLabel)}</span>
-            </button>
-            <div class="cc-qr-status">${esc(qrStatus)}</div>
-            ${
-              qrTicket
-                ? `<div class="cc-qr-frame"><img src="${esc(qrTicket.qrImageURL)}" alt="${esc(t("米家登录二维码"))}" /></div>`
-                : ""
-            }
-          </div>
-          <div class="cc-onboarding-inline-actions">
-            <button type="button" class="cc-inline-pill" id="btn-onboarding-back">${t("返回选平台")}</button>
-            <button type="button" class="cc-inline-pill" id="btn-onboarding-skip">${t("稍后设置")}</button>
-          </div>
-        </div>
-      `;
-    }
-    if (session.selectedMode === "homeAssistant") {
-      const warnPlainHttp = isPlainHttpRemoteURL(session.haURLDraft);
-      return `
-        <div class="cc-field" data-onboarding-step="2">
-          <p class="cc-field-hint" data-onboarding-ha-hint style="margin: 0 0 6px 0;">
-            ${esc(t("在 Home Assistant 网页设置里查看地址"))}
-          </p>
-          <label for="onboarding-ha-url">Home Assistant URL</label>
-          <input
-            id="onboarding-ha-url"
-            class="cc-input"
-            type="url"
-            placeholder="http://homeassistant.local:8123"
-            value="${esc(session.haURLDraft)}"
-          />
-          <p class="cc-onboarding-warning" data-onboarding-ha-http-warning role="note" style="margin-top: 6px;" ${warnPlainHttp ? "" : "hidden"}>
-            ${esc(t("令牌将以明文在网络上传输，远程访问建议使用 HTTPS 或 Nabu Casa 地址。"))}
-          </p>
-          <label for="onboarding-ha-token" style="margin-top: 8px;">${t("专属连接钥匙（长期访问令牌）")}</label>
-          <p class="cc-field-hint" data-onboarding-ha-token-guide style="margin: 2px 0 4px 0;">
-            ${esc(t("打开 Home Assistant 网页 → 个人资料 → 安全设置 → 创建长期访问令牌。"))}
-          </p>
-          <div style="display: flex; gap: 6px; align-items: center;">
-            <input
-              id="onboarding-ha-token"
-              class="cc-input"
-              type="password"
-              autocomplete="off"
-              placeholder="${esc(tr3("粘贴 HA 长期访问令牌", "貼上 HA 長期存取權杖", "Paste HA Long-Lived Access Token"))}"
-              value="${esc(session.haTokenDraft)}"
-              style="flex: 1;"
-            />
-            <button type="button" class="cc-btn-primary" id="btn-onboarding-connect-ha" ${session.haConnecting ? "disabled" : ""}>
-              ${esc(t("连接并验证"))}
-            </button>
-          </div>
-          ${
-            session.haConnectError
-              ? `<p class="cc-onboarding-warning" data-onboarding-ha-error role="alert" style="margin-top: 8px;">${esc(session.haConnectError)}</p>`
-              : session.haConnectedCount !== null
-                ? `<p class="cc-field-hint" data-onboarding-ha-verified style="margin-top: 6px;">${esc(t("已连接 Home Assistant · {count} 台设备", { count: session.haConnectedCount }))}</p>`
-                : ""
-          }
-          <div class="cc-onboarding-inline-actions">
-            <button type="button" class="cc-inline-pill" id="btn-onboarding-back">${t("返回选平台")}</button>
-            <button type="button" class="cc-inline-pill" id="btn-onboarding-skip">${t("稍后设置")}</button>
-            ${
-              session.haConnectError
-                ? `<button type="button" class="cc-inline-pill" id="btn-onboarding-use-demo">${t("先逛逛（不连接设备）")}</button>`
-                : ""
-            }
-          </div>
-        </div>
-      `;
-    }
-    return `
-      <div class="cc-field" data-onboarding-step="2" data-onboarding-demo-banner>
-        <p class="cc-sheet-note" style="margin: 0 0 4px 0; font-weight: 600;">${esc(t("示例家庭，不会控制真实设备"))}</p>
-        <p class="cc-field-hint" style="margin: 0;">${esc(t("内置虚拟全屋设备，完全离线、零网络请求。随时可返回连接米家或 Home Assistant。"))}</p>
-        <div class="cc-onboarding-inline-actions">
-          <button type="button" class="cc-inline-pill" id="btn-onboarding-back">${t("返回选平台")}</button>
-        </div>
-      </div>
-    `;
-  };
 
   sheet.innerHTML = `
     <div class="cc-sheet-header">
@@ -736,7 +795,7 @@ export function mountOnboardingGuide(host: OnboardingRenderViewHost): void {
         </div>
         ${
           secondPlatformTarget
-            ? `<div style="margin-top: 8px;">
+            ? `<div class="cc-onboarding-block">
                 <button type="button" class="cc-inline-pill" id="btn-onboarding-add-second-platform" data-second-platform="${secondPlatformTarget}">
                   ${esc(t("继续添加 {platform}（启用双源）", { platform: secondPlatformTarget === "homeAssistant" ? "Home Assistant" : t("米家") }))}
                 </button>
@@ -745,13 +804,13 @@ export function mountOnboardingGuide(host: OnboardingRenderViewHost): void {
         }
       </div>
 
-      ${renderConnectStep()}
+      ${connectStep}
 
       ${
         deviceTypeSelectionIsAvailable(host)
           ? `<div class="cc-field" data-onboarding-step="3" data-onboarding-device-types>
-              <label style="font-weight: 600;">${esc(tr3("选设备类型与功能", "選裝置類型與功能", "Device Types"))}</label>
-              <p class="cc-field-hint" style="margin: 2px 0 6px 0;">${esc(
+              <label class="cc-onboarding-label">${esc(tr3("选设备类型与功能", "選裝置類型與功能", "Device Types"))}</label>
+              <p class="cc-field-hint cc-onboarding-hint is-tight">${esc(
                 tr3(
                   "默认显示全部已支持类型。只想看灯和开关，或自己逐类挑选，都在这里改。",
                   "預設顯示全部已支援類型。只想看燈和開關，或自己逐類挑選，都在這裡改。",
@@ -764,15 +823,15 @@ export function mountOnboardingGuide(host: OnboardingRenderViewHost): void {
       }
 
       <div class="cc-field" data-onboarding-step="4">
-        <label style="font-weight: 600;">${esc(t("快捷操作与托盘提示"))}</label>
-        <p class="cc-field-hint" style="margin: 3px 0;">• ${esc(t("点击右下角系统托盘图标或按 {hotkey} 随时呼出面板。", { hotkey: hotkeyText }))}</p>
-        <p class="cc-field-hint" style="margin: 3px 0;">• ${esc(t("磁贴左侧一键开关，右侧展开精细调节。"))}</p>
-        <p class="cc-field-hint" style="margin: 3px 0;">• ${esc(t("按住「全关」0.6 秒确认，可在 10 秒内撤销，3 台起为 15 秒。"))}</p>
+        <label class="cc-onboarding-label">${esc(t("快捷操作与托盘提示"))}</label>
+        <p class="cc-field-hint cc-onboarding-tip">• ${esc(t("点击右下角系统托盘图标或按 {hotkey} 随时呼出面板。", { hotkey: hotkeyText }))}</p>
+        <p class="cc-field-hint cc-onboarding-tip">• ${esc(t("磁贴左侧一键开关，右侧展开精细调节。"))}</p>
+        <p class="cc-field-hint cc-onboarding-tip">• ${esc(onboardingAllOffTimingCopy())}</p>
 
-        <div class="cc-field-row" style="margin-top: 8px;">
+        <div class="cc-field-row cc-onboarding-block">
           <div>
             <label for="onboarding-launch-at-login">${t("开机自动启动")}</label>
-            <p class="cc-field-hint" style="margin: 2px 0 0 0;">${esc(
+            <p class="cc-field-hint cc-onboarding-hint is-below">${esc(
               tr3(
                 "常驻系统托盘，重启电脑后自动就绪。",
                 "常駐系統匣，重新啟動電腦後自動就緒。",
@@ -785,8 +844,8 @@ export function mountOnboardingGuide(host: OnboardingRenderViewHost): void {
       </div>
 
       <div class="cc-field" data-onboarding-ai-section>
-        <label style="font-weight: 600;">${esc(t("开机自启与可选 AI 助手"))}</label>
-        <div class="cc-segmented-pills" style="flex-wrap: wrap; gap: 4px; margin: 6px 0 8px 0;">
+        <label class="cc-onboarding-label">${esc(t("开机自启与可选 AI 助手"))}</label>
+        <div class="cc-segmented-pills cc-onboarding-preset-pills">
           ${ASSISTANT_PROVIDER_PRESETS.map((preset) => {
             const isSelected = draft.selectedPreset === preset.id;
             const label = preset.id === "custom" ? tr3("自定义", "自訂", "Custom") : preset.shortTitle;
@@ -800,24 +859,24 @@ export function mountOnboardingGuide(host: OnboardingRenderViewHost): void {
         </div>
         ${
           draft.showsCustomEndpointFields
-            ? `<div id="onboarding-custom-endpoint-fields" style="display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px;">
+            ? `<div id="onboarding-custom-endpoint-fields" class="cc-onboarding-stack">
                 <input id="onboarding-base-url" class="cc-input" type="text" placeholder="${esc(tr3("输入自定义接口地址，如 https://api.example.com/v1", "輸入自訂介面位址，如 https://api.example.com/v1", "Custom endpoint URL, e.g. https://api.example.com/v1"))}" aria-label="${esc(tr3("AI 服务地址", "AI 服務位址", "AI Endpoint URL"))}" value="${esc(draft.baseURL)}" />
                 <input id="onboarding-model" class="cc-input" type="text" placeholder="gpt-4o-mini" aria-label="${esc(tr3("决策模型", "決策模型", "Decision Model"))}" value="${esc(draft.model)}" />
               </div>`
             : ""
         }
-        <div style="display: flex; gap: 6px; align-items: center;">
-          <input id="onboarding-api-key" class="cc-input" type="password" autocomplete="off" placeholder="${esc(activePreset.keyPlaceholder)}" value="${esc(draft.apiKey)}" style="flex: 1;" />
+        <div class="cc-onboarding-row">
+          <input id="onboarding-api-key" class="cc-input" type="password" autocomplete="off" placeholder="${esc(activePreset.keyPlaceholder)}" value="${esc(draft.apiKey)}" />
           <button type="button" class="cc-btn-secondary" id="btn-onboarding-save-ai">${esc(tr3("保存 AI", "儲存 AI", "Save AI"))}</button>
         </div>
         ${
           supportsEnvImport
-            ? `<div style="margin-top: 6px;"><button type="button" class="cc-inline-pill" id="btn-onboarding-import-env">${esc(tr3("从环境变量导入 Key", "從環境變數匯入 Key", "Import Key from Env"))}</button></div>`
+            ? `<div class="cc-onboarding-block is-compact"><button type="button" class="cc-inline-pill" id="btn-onboarding-import-env">${esc(tr3("从环境变量导入 Key", "從環境變數匯入 Key", "Import Key from Env"))}</button></div>`
             : ""
         }
         ${
           session.statusNote
-            ? `<p class="cc-field-hint" id="onboarding-status-note" style="margin-top: 6px; color: ${session.statusNote.isError ? "var(--win-caution, #c87400)" : "inherit"};">${esc(session.statusNote.text)}</p>`
+            ? `<p class="cc-field-hint cc-onboarding-status-note ${session.statusNote.isError ? "is-error" : ""}" id="onboarding-status-note">${esc(session.statusNote.text)}</p>`
             : ""
         }
       </div>
@@ -901,16 +960,27 @@ export function mountOnboardingGuide(host: OnboardingRenderViewHost): void {
   });
 
   sheet.querySelector("#btn-start-qr")?.addEventListener("click", () => {
-    if (session.addingSecondPlatform || hasConnectedHA(host)) {
-      setHostDualSourceEnabled(host as unknown as DualSourceMutableHost, true, { persist: true });
+    const wantsDualSource = session.addingSecondPlatform || hasConnectedHA(host);
+    if (wantsDualSource) {
+      // Nit-4 (#293 comment): switching the merge pipeline on before the scan is what puts the code
+      // on screen, but the *persisted* choice waits for a real Mi session below. A scan the user
+      // abandons must not leave "dual source is on" in storage with only one platform connected.
+      setHostDualSourceEnabled(host as unknown as DualSourceMutableHost, true, { persist: false });
     }
-    void host.startXiaomiQRLogin();
+    const hadMiBefore = hasConnectedMi(host);
+    void host.startXiaomiQRLogin().finally(() => {
+      if (!wantsDualSource) return;
+      const hasMiNow = hasConnectedMi(host);
+      if (!hasMiNow && !hadMiBefore) return;
+      setHostDualSourceEnabled(host as unknown as DualSourceMutableHost, true, { persist: true });
+      host.saveSettings();
+    });
   });
 
   sheet.querySelector<HTMLInputElement>("#onboarding-ha-url")?.addEventListener("input", (event) => {
     session.haURLDraft = (event.target as HTMLInputElement).value;
     const warnEl = sheet.querySelector<HTMLElement>("[data-onboarding-ha-http-warning]");
-    if (warnEl) warnEl.hidden = !isPlainHttpRemoteURL(session.haURLDraft);
+    if (warnEl) warnEl.hidden = !isPlainHttpRemoteEndpoint(session.haURLDraft);
   });
 
   sheet.querySelector<HTMLInputElement>("#onboarding-ha-token")?.addEventListener("input", (event) => {
@@ -918,11 +988,7 @@ export function mountOnboardingGuide(host: OnboardingRenderViewHost): void {
   });
 
   sheet.querySelector("#btn-onboarding-connect-ha")?.addEventListener("click", () => {
-    let endpoint = session.haURLDraft.trim();
-    if (endpoint && !/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(endpoint)) {
-      endpoint = `http://${endpoint}`;
-    }
-    endpoint = endpoint.replace(/\/api\/websocket\/?$/i, "").replace(/\/+$/, "");
+    const endpoint = normalizeHaEndpoint(session.haURLDraft);
     const token = session.haTokenDraft.trim();
     if (!endpoint || !token) {
       session.haConnectError = t("请填写完整的 Home Assistant 地址与专属连接钥匙。");
@@ -942,6 +1008,7 @@ export function mountOnboardingGuide(host: OnboardingRenderViewHost): void {
     const prevHaToken = host.settings.haToken;
     const prevCachedHAHome = host.settings.cachedHAHome;
     const prevConnectionMode = host.settings.connectionMode;
+    const prevPreDemoConnectionMode = host.settings.preDemoConnectionMode ?? null;
     const prevDualEnabled = host.settings.dualSourceEnabled;
     const prevDualOverride = dualHost.dualSourceEnabledOverride;
     const hadPersistedDualKey = (() => {
@@ -957,6 +1024,9 @@ export function mountOnboardingGuide(host: OnboardingRenderViewHost): void {
       host.settings.haToken = prevHaToken;
       host.settings.cachedHAHome = prevCachedHAHome;
       host.settings.connectionMode = prevConnectionMode;
+      // Nit-2 (#293 comment): a failed attempt from demo must not lose the platform demo came from,
+      // or "connect a real home" would forget a still-connected Mi/HA login.
+      host.settings.preDemoConnectionMode = prevPreDemoConnectionMode;
       host.haConnectionError = null;
     };
     /** Undoes the dual-source write; only meaningful when this attempt was the one enabling it. */
