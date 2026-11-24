@@ -2110,8 +2110,20 @@ extension HomeStore {
         }
     }
 
+    private static func tvPowerUndoOperation(for command: DeviceCommand, on device: SmartDevice) -> IntentOperation? {
+        guard case .pressButton(let entityId) = command,
+              case .tv(let spec) = device.kind else { return nil }
+        if entityId == spec.turnOnButtonId || entityId == spec.powerOnActionId {
+            return .power(true)
+        }
+        if entityId == spec.powerOffActionId {
+            return .power(false)
+        }
+        return nil
+    }
+
     static func undoEffect(of command: DeviceCommand, on device: SmartDevice) -> SmartDevice? {
-        guard let operation = undoOperation(for: command),
+        guard let operation = undoOperation(for: command) ?? tvPowerUndoOperation(for: command, on: device),
               let effect = assistantEffect(of: operation, on: device),
               effect.command.targetEntityId == command.targetEntityId else { return nil }
         if case .setClimatePower = command { return effect.updated }
@@ -2123,7 +2135,7 @@ extension HomeStore {
         of command: DeviceCommand,
         on device: SmartDevice
     ) -> (updated: SmartDevice, command: DeviceCommand)? {
-        guard let operation = undoOperation(for: command),
+        guard let operation = undoOperation(for: command) ?? tvPowerUndoOperation(for: command, on: device),
               let effect = assistantEffect(of: operation, on: device) else { return nil }
         if case .setClimatePower(_, let on, let mode) = command,
            case .climate(let spec) = device.kind {

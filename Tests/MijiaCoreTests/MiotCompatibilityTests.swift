@@ -365,4 +365,86 @@ struct MiotCompatibilityTests {
             == .setProps([.init(did: "tv2", siid: 2, piid: 1, value: .bool(false))]))
     }
 
+    @Test("TV volume write prefers companion speaker service to match buildTV, and TV power actions are undoable")
+    @MainActor
+    func tvVolumePrecedenceAndPowerActionUndo() async throws {
+        // 1. Companion speaker volume wins over television service volume in both buildTV and MiotCommandMapper.
+        let dualVolumeSpec = MiotDeviceSpec(
+            type: "urn:miot-spec-v2:device:television:0000A010:xiaomi-dualvol:1",
+            services: [
+                MiotService(
+                    iid: 2,
+                    type: "urn:miot-spec-v2:service:television:0000781B:xiaomi-dualvol:1",
+                    properties: [
+                        MiotProperty(iid: 1, type: "urn:miot-spec-v2:property:volume:00000013:xiaomi-dualvol:1", format: "uint8", access: ["read", "write"], valueRange: [0, 10, 1]),
+                    ]
+                ),
+                MiotService(
+                    iid: 4,
+                    type: "urn:miot-spec-v2:service:speaker:0000781C:xiaomi-dualvol:1",
+                    properties: [
+                        MiotProperty(iid: 1, type: "urn:miot-spec-v2:property:volume:00000013:xiaomi-dualvol:1", format: "uint8", access: ["read", "write"], valueRange: [0, 100, 1]),
+                    ]
+                ),
+            ]
+        )
+        let dualDev = MiDeviceRecord(did: "tv3", name: "测试电视", model: "xiaomi.tv.dualvol", isOnline: true)
+        let dualHome = MiotSynthesizer.synthesize(
+            devices: [dualDev], rooms: [], specs: [dualDev.model: dualVolumeSpec],
+            values: [
+                .init(did: "tv3", siid: 2, piid: 1): .number(5),
+                .init(did: "tv3", siid: 4, piid: 1): .number(40),
+            ]
+        )
+        guard case .tv(let dualTV) = dualHome.devices.first?.kind else {
+            Issue.record("expected .tv")
+            return
+        }
+        #expect(dualTV.volumePercent == 40)
+        #expect(try MiotCommandMapper.map(.mediaSetVolume(entityId: dualTV.mediaEntityId, volumeLevel: 0.65), spec: dualVolumeSpec)
+            == .setProps([.init(did: "tv3", siid: 4, piid: 1, value: .number(65))]))
+
+        // 2. Action-powered MIoT TV (123888.tv.xhzn11) resolves assistant undo and undo banner cleanly.
+        let tvSpec = try MiotCoverageBaselineTests.coverageSpec("123888.tv.xhzn11")
+        let tvRecord = MiDeviceRecord(did: "tv1", name: "客厅电视", model: "123888.tv.xhzn11", isOnline: true)
+        let tvHome = MiotSynthesizer.synthesize(
+            devices: [tvRecord],
+            rooms: [.init(id: "r1", name: "客厅", dids: ["tv1"])],
+            specs: [tvRecord.model: tvSpec],
+            values: [:]
+        )
+        let standbyTV = try #require(tvHome.devices.first)
+        #expect(!standbyTV.isActiveOn)
+
+        let turnOnSuggestion = AssistantSuggestion(
+            id: "s1",
+            title: "打开客厅电视",
+            intents: [DeviceIntent(targetId: standbyTV.id, operation: .power(true))]
+        )
+        #expect(HomeStore.isAssistantSuggestionReversible(turnOnSuggestion, devices: [standbyTV]))
+
+        let mock = MockHomeProvider(snapshot: SynthesizedHome(rooms: tvHome.rooms, devices: [standbyTV]))
+        let suite = "test.tvundo.\(UUID().uuidString)"
+        let store = HomeStore(provider: mock, defaultsSuiteName: suite)
+        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        store.assistantAutoResetTiming = .never
+        try await store.waitForTestSnapshot()
+        store.setAIAssistantEnabled(true)
+
+        await store.applyAssistantSuggestion(turnOnSuggestion, offersUndoBanner: true)
+        store.pauseUndoBannerCountdown()
+        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while await mock.executedCommands.isEmpty, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(await mock.executedCommands == [.pressButton(entityId: "miot-action:tv1:2:2")])
+        #expect(store.devices.first?.isActiveOn == true)
+        #expect(store.undoBanner?.restoreCommands == [.pressButton(entityId: "miot-action:tv1:2:1")])
+
+        let undoTask = try #require(store.undoTurnAllOff())
+        await undoTask.value
+        #expect(await mock.executedCommands.last == .pressButton(entityId: "miot-action:tv1:2:1"))
+        #expect(store.devices.first?.isActiveOn == false)
+    }
+
 }

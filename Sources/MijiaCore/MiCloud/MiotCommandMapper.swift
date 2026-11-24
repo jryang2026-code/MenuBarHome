@@ -224,13 +224,16 @@ public enum MiotCommandMapper {
             guard ["speaker", "television", "stb"].contains(service.shortName), level.isFinite else {
                 throw MiotCommandError.unsupported("volume")
             }
-            let volume: Context.Found
-            if let local = ctx.property("volume") {
-                volume = local
-            } else if let speaker = spec.services(named: "speaker").first,
-                      let prop = speaker.properties.first(where: { $0.shortName == "volume" && $0.isWritable }) {
-                volume = Context.Found(service: speaker, property: prop)
-            } else {
+            // Match `MiotSynthesizer.buildTV`: prefer the companion `speaker` service's `volume`
+            // over any `volume` on the primary service so reads, scaling, and writes agree.
+            let speakerVolume: Context.Found? = ["television", "stb"].contains(service.shortName)
+                ? spec.services(named: "speaker").first.flatMap { speaker in
+                    speaker.properties
+                        .first(where: { $0.shortName == "volume" && $0.isWritable })
+                        .map { Context.Found(service: speaker, property: $0) }
+                }
+                : nil
+            guard let volume = speakerVolume ?? ctx.property("volume") else {
                 throw MiotCommandError.unsupported("volume")
             }
             let raw = MiotPercentScale.raw(fromPercent: level * 100, property: volume.property, curve: .proportional)
