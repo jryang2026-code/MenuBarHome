@@ -151,7 +151,21 @@ describe("cloud refresh races guarded by SourceEpoch tokens", () => {
     assert.equal(app.isSyncingCloud, false, "the superseded run must not resurrect isSyncingCloud");
   });
 
-  it("drops a snapshot that arrives after a local control write; the run still clears its own isSyncingCloud", async () => {
+  it("rejects an offline click immediately without dispatch or an optimistic on state", async () => {
+    const { app, haExecuteCount } = mountRaceApp();
+    await flushAsync(4);
+    await baselineSync(app);
+    const light = app.devices.find((device) => device.id === "race-base")!;
+    Object.assign(light, { isOnline: false });
+
+    const result = app.applyCommand({ kind: "setLightPower", entityId: "light.race-base", isOn: true });
+    assert.equal(app.replyBanner?.isError, true);
+    assert.equal(light.kind.kind === "light" && light.kind.isOn, false);
+    assert.equal(await result, false);
+    assert.equal(haExecuteCount(), 0);
+  });
+
+  it("keeps the written field but adopts the rest of a poll captured before a local write", async () => {
     const { app, releaseParked, waitForParked, haExecuteCount } = mountRaceApp();
     await flushAsync(4);
     await baselineSync(app);
@@ -177,14 +191,11 @@ describe("cloud refresh races guarded by SourceEpoch tokens", () => {
 
     assert.equal(
       app.devices.some((device) => device.id === "manual-write-extra"),
-      false,
-      "the stale snapshot must not be adopted after a local write",
-    );
-    assert.equal(
-      light.kind.kind === "light" ? light.kind.isOn : false,
       true,
-      "the local write survives the dropped snapshot",
+      "the unrelated new device is adopted",
     );
+    const updated = app.devices.find((device) => device.id === "race-base")!;
+    assert.equal(updated.kind.kind === "light" && updated.kind.isOn, true, "the written power field survives");
     assert.equal(
       app.isSyncingCloud,
       false,
