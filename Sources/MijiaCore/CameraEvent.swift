@@ -6,6 +6,7 @@ public struct CameraEvent: Codable, Equatable, Sendable, Identifiable {
         case doorbell
         case motion
         case person
+        case package
     }
 
     public let id: UUID
@@ -69,6 +70,32 @@ public final class CameraEventStore: @unchecked Sendable {
     }
 
     @discardableResult
+    public func attachSnapshot(_ data: Data, to event: CameraEvent) -> CameraEvent? {
+        lock.withLock {
+            guard let index = events.firstIndex(where: { $0.id == event.id && $0.snapshotFile == nil }) else { return nil }
+            let name = "snapshot-\(event.id.uuidString).jpeg"
+            let updated = CameraEvent(id: event.id, cameraID: event.cameraID, kind: event.kind, timestamp: event.timestamp, snapshotFile: name)
+            do {
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                try data.write(to: directory.appendingPathComponent(name), options: .atomic)
+                events[index] = updated
+                try persistLocked()
+                return updated
+            } catch {
+                try? FileManager.default.removeItem(at: directory.appendingPathComponent(name))
+                return nil
+            }
+        }
+    }
+
+    public func clear() {
+        lock.withLock {
+            events.removeAll()
+            try? FileManager.default.removeItem(at: directory)
+        }
+    }
+
+    @discardableResult
     public func record(
         cameraID: String,
         kind: CameraEvent.Kind,
@@ -86,12 +113,16 @@ public final class CameraEventStore: @unchecked Sendable {
                 }
                 events.insert(event, at: 0)
                 pruneLocked(now: now)
-                try JSONEncoder.cameraEvent.encode(events).write(to: eventsURL, options: .atomic)
+                try persistLocked()
             } catch {
                 if let snapshotFile { try? FileManager.default.removeItem(at: directory.appendingPathComponent(snapshotFile)) }
             }
             return event
         }
+    }
+
+    private func persistLocked() throws {
+        try JSONEncoder.cameraEvent.encode(events).write(to: eventsURL, options: .atomic)
     }
 
     private func load() {

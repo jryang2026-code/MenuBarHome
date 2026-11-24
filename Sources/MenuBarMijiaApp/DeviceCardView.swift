@@ -1252,12 +1252,14 @@ public struct DeviceCardView: View {
 
 private struct CameraStillWall: View {
     let store: HomeStore
+    @Environment(\.effectiveReduceMotion) private var reduceMotion
 
     private var cameras: [SmartDevice] {
         store.devices.filter { if case .camera = $0.kind { return true }; return false }.prefix(4).map { $0 }
     }
 
     var body: some View {
+        let _ = store.cameraEventStoreRevision
         if cameras.contains(where: { store.cameraEventStore.latestEvent(for: $0.id) != nil }) {
             LazyVGrid(columns: [GridItem(.flexible(), spacing: 6), GridItem(.flexible(), spacing: 6)], spacing: 6) {
                 ForEach(cameras) { camera in
@@ -1270,6 +1272,7 @@ private struct CameraStillWall: View {
             }
             .accessibilityElement(children: .contain)
             .accessibilityLabel(L10n.tr("摄像头事件画面", "Camera event stills"))
+            .animation(AppleMotion.resolve(.reveal, reduceMotion: reduceMotion), value: store.cameraEventStoreRevision)
         }
     }
 }

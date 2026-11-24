@@ -657,6 +657,10 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
         store?.onMissedScheduledCommand = { [weak self] entry in
             self?.deliverMissedTimerNotification(for: entry)
         }
+        store?.onDoorbellSnapshot = { [weak self] deviceId in
+            guard let store = self?.store, let device = store.devices.first(where: { $0.id == deviceId }) else { return nil }
+            return await DoorbellNotificationThumbnail.snapshotData(for: device, store: store)
+        }
         store?.onDoorbellNotification = { [weak self] event in
             self?.deliverDoorbellNotification(event)
         }

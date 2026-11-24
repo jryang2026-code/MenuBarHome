@@ -93,6 +93,8 @@ extension HomeStore {
         // already hidden in the next one (§13).
         recentSafetyAlerts = []
         recentDoorbellRings = []
+        cameraEventStore.clear()
+        cameraEventStoreRevision &+= 1
         dismissedActivityIds = []
         corruptRemovalDiscardFailure = nil
     }

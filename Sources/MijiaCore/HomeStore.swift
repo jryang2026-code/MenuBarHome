@@ -451,6 +451,7 @@ public final class HomeStore {
     /// `panelActivities`.
     public internal(set) var recentDoorbellRings: [DoorbellRing] = []
     public let cameraEventStore: CameraEventStore
+    public var cameraEventStoreRevision = 0
     /// Safety alerts the panel's activity stack shows, newest first, at most
     /// `recentSafetyAlertLimit`. Written by the snapshot path in `HomeStore+Backend.swift`, which is
     /// also where the notification handler fires, so the panel keeps its copy when no handler is
@@ -466,6 +467,8 @@ public final class HomeStore {
     /// (#10). The chime and popup switches gate it through `wantsDoorbellNotification`, and
     /// `swift test` never sets it, so no test touches the notification centre.
     public var onDoorbellNotification: (@MainActor (DoorbellNotification) -> Void)?
+    /// Installed by the app to capture the event still without opening a new stream.
+    public var onDoorbellSnapshot: (@MainActor (String) async -> Data?)?
 
     /// Refuse user-initiated device control while the Mac screen is locked (#143). Defaults on:
     /// the only paths that can still fire while locked are external ones (URL links, App Intents,

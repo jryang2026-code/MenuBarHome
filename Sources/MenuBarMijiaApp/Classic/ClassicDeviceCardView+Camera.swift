@@ -6,6 +6,7 @@ extension ClassicDeviceCardView {
 
     func cameraDrawer(_ spec: CameraSpec) -> some View {
         VStack(alignment: .leading, spacing: 9) {
+            ClassicCameraStillWall(store: store)
             ScrollView(.horizontal, showsIndicators: false) {
                 AdaptiveGlassContainer(spacing: 6) {
                     HStack(spacing: 6) {
@@ -70,6 +71,40 @@ extension ClassicDeviceCardView {
                     .padding(6)
                 }
                 .padding(-6)
+            }
+        }
+    }
+}
+
+
+private struct ClassicCameraStillWall: View {
+    let store: HomeStore
+    private var cameras: [SmartDevice] {
+        store.visibleDevices.filter { if case .camera = $0.kind { return true }; return false }.prefix(4).map { $0 }
+    }
+    var body: some View {
+        let _ = store.cameraEventStoreRevision
+        if cameras.contains(where: { store.cameraEventStore.latestEvent(for: $0.id) != nil }) {
+            LazyVGrid(columns: [GridItem(.flexible(), spacing: 6), GridItem(.flexible(), spacing: 6)], spacing: 6) {
+                ForEach(cameras) { camera in
+                    Button { store.openCameraLiveView(camera.id) } label: {
+                        if let event = store.cameraEventStore.latestEvent(for: camera.id),
+                           let data = store.cameraEventStore.snapshotData(for: event),
+                           let image = NSImage(data: data) {
+                            Image(nsImage: image).resizable().aspectRatio(16 / 9, contentMode: .fill)
+                        } else {
+                            Rectangle().fill(Color.black.opacity(0.18)).overlay {
+                                Image(systemName: "camera.viewfinder").foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!camera.isOnline)
+                    .frame(minHeight: 74, maxHeight: 110)
+                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.white.opacity(0.12)))
+                    .accessibilityLabel(L10n.tr("查看 \(camera.name) 实时画面", "View live feed for \(camera.name)"))
+                }
             }
         }
     }
