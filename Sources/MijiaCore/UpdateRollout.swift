@@ -102,15 +102,24 @@ public enum UpdateRollout {
     }
 
     private static func parseInteger(_ raw: Any) -> Int? {
-        if raw is Bool { return nil }
+        #if os(macOS)
+        // On Darwin, JSONSerialization returns NSNumber for both numbers and booleans, and
+        // `NSNumber(0) is Bool` / `NSNumber(1) is Bool` evaluate to true. Check CFBooleanGetTypeID
+        // so numeric 0 and 1 are preserved while JSON true/false are rejected.
         if let number = raw as? NSNumber {
-            #if canImport(CoreFoundation)
             if CFGetTypeID(number) == CFBooleanGetTypeID() {
                 return nil
             }
-            #endif
             return Int(exactly: number)
         }
-        return raw as? Int
+        return nil
+        #else
+        if raw is Bool { return nil }
+        if let intValue = raw as? Int { return intValue }
+        if let number = raw as? NSNumber {
+            return Int(exactly: number)
+        }
+        return nil
+        #endif
     }
 }

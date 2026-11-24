@@ -135,10 +135,37 @@
       "expectedRolloutPercentage": 60
     },
     {
+      "label": "top-level numeric zero pauses rollout",
+      "json": {
+        "tag_name": "v1.5.0",
+        "rollout_percentage": 0,
+        "body": "Paused release"
+      },
+      "expectedRolloutPercentage": 0
+    },
+    {
+      "label": "top-level numeric one enables 1 percent rollout",
+      "json": {
+        "tag_name": "v1.5.0",
+        "rollout_percentage": 1,
+        "body": "Canary release"
+      },
+      "expectedRolloutPercentage": 1
+    },
+    {
       "label": "boolean rollout_percentage is ignored",
       "json": {
         "tag_name": "v1.5.0",
         "rollout_percentage": true,
+        "body": "No directive"
+      },
+      "expectedRolloutPercentage": null
+    },
+    {
+      "label": "false boolean rollout_percentage is ignored",
+      "json": {
+        "tag_name": "v1.5.0",
+        "rollout_percentage": false,
         "body": "No directive"
       },
       "expectedRolloutPercentage": null
