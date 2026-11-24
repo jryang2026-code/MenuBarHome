@@ -406,4 +406,55 @@ struct MacContextAutomationTests {
         #expect(deduper.shouldFire("calendar.1", at: start.addingTimeInterval(600), cooldown: 600))
         #expect(deduper.shouldFire("calendar.2", at: start.addingTimeInterval(10), cooldown: 600))
     }
+
+    @Test("macOS trigger source registry exhaustively maps every supported trigger including scheduledTime")
+    func macOSTriggerRegistryExhaustive() {
+        #expect(!AutomationTrigger.macOSSupportedTriggers.isEmpty)
+        #expect(Set(AutomationTrigger.macOSSupportedTriggers).count == AutomationTrigger.macOSSupportedTriggers.count)
+        #expect(Set(AutomationTrigger.macOSSupportedTriggers) == Set(AutomationTrigger.allCases))
+        #expect(Set(AutomationTrigger.macOSTriggerSources.keys) == Set(AutomationTrigger.macOSSupportedTriggers))
+
+        for trigger in AutomationTrigger.macOSSupportedTriggers {
+            let sources = AutomationTrigger.macOSTriggerSources[trigger] ?? []
+            #expect(!sources.isEmpty)
+            #expect(Set(sources).count == sources.count)
+            #expect(trigger.isSupportedOnMacOS)
+        }
+
+        #expect(AutomationTrigger.scheduledTime.macOSSources == [.macContextObserver])
+        #expect(AutomationTrigger.scheduledTime.usesMacContextObserver)
+        #expect(AutomationTrigger.away.macOSSources == [
+            .workspaceWillSleep, .workspaceScreensDidSleep, .distributedScreenLocked
+        ])
+        #expect(AutomationTrigger.back.macOSSources == [
+            .workspaceDidWake, .workspaceScreensDidWake, .distributedScreenUnlocked
+        ])
+        #expect(AutomationTrigger.screenLocked.macOSSources == [.distributedScreenLocked, .awayArbitrator])
+        #expect(AutomationTrigger.lidClosedSleep.macOSSources == [.workspaceWillSleep, .awayArbitrator])
+        #expect(AutomationTrigger.systemSleep.macOSSources == [.workspaceWillSleep, .awayArbitrator])
+        #expect(AutomationTrigger.externalDisplayConnected.macOSSources == [.screenParametersChanged])
+        #expect(AutomationTrigger.externalDisplayDisconnected.macOSSources == [.screenParametersChanged])
+    }
+
+    @Test("Unavailable camera, microphone, or unknown power/battery readings never fabricate transitions")
+    func unavailableSignalsBlockTransitions() {
+        let camUnavailable = MacContextSnapshot(cameraInUse: false, isCameraUsageAvailable: false)
+        let camActive = MacContextSnapshot(cameraInUse: true, isCameraUsageAvailable: true)
+        #expect(event(.cameraInUse, previous: camUnavailable, current: camActive) == nil)
+        #expect(event(.cameraNotInUse, previous: camActive, current: camUnavailable) == nil)
+
+        let micUnavailable = MacContextSnapshot(microphoneInUse: false, isMicrophoneUsageAvailable: false)
+        let micActive = MacContextSnapshot(microphoneInUse: true, isMicrophoneUsageAvailable: true)
+        #expect(event(.microphoneInUse, previous: micUnavailable, current: micActive) == nil)
+        #expect(event(.microphoneNotInUse, previous: micActive, current: micUnavailable) == nil)
+
+        let unknownPower = MacContextSnapshot(powerSource: .unknown, batteryPercent: nil)
+        let batteryMissingPercent = MacContextSnapshot(powerSource: .battery, batteryPercent: nil)
+        let batteryLow = MacContextSnapshot(powerSource: .battery, batteryPercent: 10)
+        let ac = MacContextSnapshot(powerSource: .ac, batteryPercent: 80)
+        #expect(event(.powerConnected, previous: unknownPower, current: ac) == nil)
+        #expect(event(.powerDisconnected, previous: unknownPower, current: batteryLow) == nil)
+        #expect(event(.batteryBelowThreshold, previous: unknownPower, current: batteryLow) == nil)
+        #expect(event(.batteryBelowThreshold, previous: batteryMissingPercent, current: batteryLow) == nil)
+    }
 }

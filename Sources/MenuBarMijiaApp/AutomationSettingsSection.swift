@@ -570,7 +570,7 @@ struct AutomationSettingsSection: View {
                     .font(.system(size: DesignTokens.TypeSize.caption))
                     .foregroundStyle(DesignTokens.secondaryText)
                 Picker(L10n.tr("触发", "When"), selection: $newTrigger) {
-                    ForEach(AutomationTrigger.allCases) { trigger in
+                    ForEach(AutomationTrigger.macOSSupportedTriggers) { trigger in
                         Text(trigger.title).tag(trigger)
                     }
                 }

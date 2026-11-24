@@ -107,7 +107,7 @@ public enum MacContextAutomation {
         at now: Date,
         calendar: Calendar = .current
     ) -> [AutomationTriggerEvent] {
-        guard rule.isEnabled else { return [] }
+        guard rule.isEnabled, rule.trigger.isSupportedOnMacOS else { return [] }
         let options = rule.triggerOptions
 
         switch rule.trigger {
@@ -132,16 +132,32 @@ public enum MacContextAutomation {
             return []
 
         case .cameraInUse:
-            guard let previous, !previous.cameraInUse, current.cameraInUse else { return [] }
+            guard let previous,
+                  previous.isCameraUsageAvailable,
+                  current.isCameraUsageAvailable,
+                  !previous.cameraInUse,
+                  current.cameraInUse else { return [] }
             return [transitionEvent(rule)]
         case .cameraNotInUse:
-            guard let previous, previous.cameraInUse, !current.cameraInUse else { return [] }
+            guard let previous,
+                  previous.isCameraUsageAvailable,
+                  current.isCameraUsageAvailable,
+                  previous.cameraInUse,
+                  !current.cameraInUse else { return [] }
             return [transitionEvent(rule)]
         case .microphoneInUse:
-            guard let previous, !previous.microphoneInUse, current.microphoneInUse else { return [] }
+            guard let previous,
+                  previous.isMicrophoneUsageAvailable,
+                  current.isMicrophoneUsageAvailable,
+                  !previous.microphoneInUse,
+                  current.microphoneInUse else { return [] }
             return [transitionEvent(rule)]
         case .microphoneNotInUse:
-            guard let previous, previous.microphoneInUse, !current.microphoneInUse else { return [] }
+            guard let previous,
+                  previous.isMicrophoneUsageAvailable,
+                  current.isMicrophoneUsageAvailable,
+                  previous.microphoneInUse,
+                  !current.microphoneInUse else { return [] }
             return [transitionEvent(rule)]
 
         case .powerConnected:
@@ -156,12 +172,14 @@ public enum MacContextAutomation {
             return [transitionEvent(rule)]
         case .batteryBelowThreshold:
             guard let previous,
+                  previous.powerSource != .unknown,
                   current.powerSource == .battery,
                   let percent = current.batteryPercent,
                   percent < options.batteryThresholdPercent else { return [] }
-            let wasAlreadyBelow = previous.powerSource == .battery
-                && (previous.batteryPercent ?? Int.max) < options.batteryThresholdPercent
-            guard !wasAlreadyBelow else { return [] }
+            if previous.powerSource == .battery {
+                guard let previousPercent = previous.batteryPercent,
+                      previousPercent >= options.batteryThresholdPercent else { return [] }
+            }
             return [transitionEvent(rule)]
 
         case .wifiNetworkJoined:

@@ -12,13 +12,28 @@ struct AutomationEnvironmentProbe {
     var isLidClosed: () -> Bool
     var currentWiFi: () -> (ssid: String?, isAuthorized: Bool)
     var isScreenLocked: () -> Bool = { false }
+    var externalDisplayCount: () -> Int = { AutomationEngine.activeExternalDisplayCount() }
 
     static let live = AutomationEnvironmentProbe(
         isLidClosed: { MacHardwareProbe.isLidClosed() },
         currentWiFi: { MacHardwareProbe.currentWiFi() },
         isScreenLocked: {
             ScreenLockPolicy.isLocked(session: CGSessionCopyCurrentDictionary() as? [String: Any])
-        }
+        },
+        externalDisplayCount: { AutomationEngine.activeExternalDisplayCount() }
+    )
+}
+
+@MainActor
+struct AutomationNotificationCenters {
+    var workspace: NotificationCenter
+    var distributed: NotificationCenter
+    var app: NotificationCenter
+
+    static let live = AutomationNotificationCenters(
+        workspace: NSWorkspace.shared.notificationCenter,
+        distributed: DistributedNotificationCenter.default(),
+        app: .default
     )
 }
 
@@ -57,6 +72,7 @@ final class AutomationEngine {
     /// tests inject a fixed calendar. Internal rather than private so a test can assert the default.
     let calendar: Calendar
     private let environment: AutomationEnvironmentProbe
+    private let notificationCenters: AutomationNotificationCenters
     private let logger = Logger(subsystem: "com.jryang1997.MenuBarMijia", category: "Automation")
     private weak var store: HomeStore?
     private var tokens: [(NotificationCenter, any NSObjectProtocol)] = []
@@ -68,6 +84,7 @@ final class AutomationEngine {
     private var resumeSuppressionUntil: [String: Date] = [:]
     private let now: () -> Date
     var isObservingSystem: Bool { !tokens.isEmpty }
+    var hasPendingAwayLock: Bool { arbitrator.hasPendingLock }
     private var lastExternalDisplayCount = 0
     private var activeContextProvider: (any MacContextProviding)?
     private var lastContext: MacContextSnapshot?
@@ -119,6 +136,7 @@ final class AutomationEngine {
         contextProvider: (any MacContextProviding)? = nil,
         calendar: Calendar = .autoupdatingCurrent,
         environment: AutomationEnvironmentProbe = .live,
+        notificationCenters: AutomationNotificationCenters = .live,
         now: @escaping () -> Date = { Date() },
         elapsedTime: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
     ) {
@@ -127,6 +145,7 @@ final class AutomationEngine {
         self.injectedContextProvider = contextProvider
         self.calendar = calendar
         self.environment = environment
+        self.notificationCenters = notificationCenters
         self.now = now
         self.elapsedTime = elapsedTime
         self.isUserPresent = !environment.isScreenLocked()
@@ -144,16 +163,16 @@ final class AutomationEngine {
 
     private func startSystemObservation() {
         guard observesSystem, tokens.isEmpty else { return }
-        lastExternalDisplayCount = Self.activeExternalDisplayCount()
+        lastExternalDisplayCount = environment.externalDisplayCount()
         isUserPresent = !environment.isScreenLocked()
         isSystemAsleep = false
-        let workspace = NSWorkspace.shared.notificationCenter
+        let workspace = notificationCenters.workspace
         observe(workspace, NSWorkspace.willSleepNotification, .away, systemSleeping: true)
         observe(workspace, NSWorkspace.screensDidSleepNotification, .away)
         observe(workspace, NSWorkspace.didWakeNotification, .back, systemSleeping: false)
         observe(workspace, NSWorkspace.screensDidWakeNotification, .back)
 
-        let distributed = DistributedNotificationCenter.default()
+        let distributed = notificationCenters.distributed
         observe(distributed, Notification.Name("com.apple.screenIsLocked"), .away)
         observe(distributed, Notification.Name("com.apple.screenIsUnlocked"), .back)
 
@@ -166,7 +185,8 @@ final class AutomationEngine {
         // AppKit has no public “display connected” notification; enumerating active displays is the
         // documented substitute. Resolution-only changes keep the same count and are ignored.
         let generation = observationGeneration
-        let screenToken = NotificationCenter.default.addObserver(
+        let appCenter = notificationCenters.app
+        let screenToken = appCenter.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification,
             object: nil,
             queue: .main
@@ -176,7 +196,7 @@ final class AutomationEngine {
                 self.screenConfigurationChanged()
             }
         }
-        tokens.append((.default, screenToken))
+        tokens.append((appCenter, screenToken))
     }
 
     /// Test seam: binds the store without subscribing to system notifications, so `handle(trigger:)`
@@ -195,22 +215,8 @@ final class AutomationEngine {
     /// external display count) with unconditional Wi-Fi run purely off system notifications.
     static func needsContextPolling(_ rules: [AutomationRule]) -> Bool {
         rules.contains { rule in
-            guard rule.isEnabled else { return false }
-            if rule.conditions.wifi.isNetworkSpecific { return true }
-            switch rule.trigger {
-            case .scheduledTime:
-                return true
-            case .away, .back, .screenLocked, .lidClosedSleep, .systemSleep,
-                 .externalDisplayConnected, .externalDisplayDisconnected:
-                return false
-            case .cameraInUse, .cameraNotInUse,
-                 .microphoneInUse, .microphoneNotInUse,
-                 .powerConnected, .powerDisconnected, .batteryBelowThreshold,
-                 .wifiNetworkJoined, .wifiNetworkLeft,
-                 .focusModeEnabled, .focusModeDisabled,
-                 .calendarMeetingStartingSoon, .lateNightUsage:
-                return true
-            }
+            guard rule.isEnabled, rule.trigger.isSupportedOnMacOS else { return false }
+            return rule.conditions.wifi.isNetworkSpecific || rule.trigger.usesMacContextObserver
         }
     }
 
@@ -288,7 +294,7 @@ final class AutomationEngine {
     /// Test seam: notifying systems cannot post in unit tests, so the mapping is exercised by
     /// calling this directly. Observers above do exactly the same thing.
     func handle(trigger: AutomationTrigger, at now: Date = Date()) async {
-        guard let store, store.eventAutomationEnabled else { return }
+        guard let store, store.eventAutomationEnabled, trigger.isSupportedOnMacOS else { return }
         let generation = observationGeneration
         switch trigger {
         case .away, .screenLocked, .lidClosedSleep, .systemSleep:
@@ -392,7 +398,7 @@ final class AutomationEngine {
             self.resumedAt = nil
         }
         var candidates: [(rule: AutomationRule, events: [AutomationTriggerEvent], lastingSince: TimeInterval?)] = []
-        for rule in rules where rule.isEnabled {
+        for rule in rules where rule.isEnabled && rule.trigger.isSupportedOnMacOS {
             let events = MacContextAutomation.events(
                 for: rule, previous: previous, current: effective, at: now, calendar: calendar
             )
@@ -512,9 +518,10 @@ final class AutomationEngine {
             MainActor.assumeIsolated {
                 guard let self, self.observationGeneration == generation else { return }
                 if let systemSleeping { self.setSystemSleeping(systemSleeping) }
+                let firedAt = self.now()
                 Task { @MainActor in
                     guard self.observationGeneration == generation else { return }
-                    await self.handle(trigger: trigger)
+                    await self.handle(trigger: trigger, at: firedAt)
                 }
             }
         }
@@ -531,10 +538,11 @@ final class AutomationEngine {
         let generation = observationGeneration
         let token = center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated {
-                guard let self else { return }
+                guard let self, self.observationGeneration == generation else { return }
+                let arrivedAt = self.now()
                 Task { @MainActor in
                     guard self.observationGeneration == generation else { return }
-                    await self.ingestAway(signal)
+                    await self.ingestAway(signal, at: arrivedAt)
                 }
             }
         }
@@ -593,11 +601,11 @@ final class AutomationEngine {
     private func scheduleArbitrationFlush() {
         arbitrationTask?.cancel()
         guard let deadline = arbitrator.pendingDeadline else { return }
-        let delay = max(0, deadline.timeIntervalSinceNow)
+        let delay = max(0, deadline.timeIntervalSince(now()))
         arbitrationTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(delay))
-            guard !Task.isCancelled else { return }
-            await self?.flushArbitration(at: Date())
+            guard let self, !Task.isCancelled else { return }
+            await self.flushArbitration(at: self.now())
         }
     }
 
@@ -640,22 +648,23 @@ final class AutomationEngine {
     }
 
     private func screenConfigurationChanged() {
-        let count = Self.activeExternalDisplayCount()
+        let count = environment.externalDisplayCount()
         defer { lastExternalDisplayCount = count }
         guard count != lastExternalDisplayCount else { return }
         let trigger: AutomationTrigger = count > lastExternalDisplayCount
             ? .externalDisplayConnected
             : .externalDisplayDisconnected
         let generation = observationGeneration
+        let changedAt = now()
         Task { @MainActor in
             guard observationGeneration == generation else { return }
-            await handle(trigger: trigger)
+            await handle(trigger: trigger, at: changedAt)
         }
     }
 
     /// Counts active displays that are not built into the Mac. Using total `NSScreen.screens.count`
     /// would report a disconnect when a laptop lid closes while an external display stays on.
-    private static func activeExternalDisplayCount() -> Int {
+    static func activeExternalDisplayCount() -> Int {
         var count: UInt32 = 0
         guard CGGetActiveDisplayList(0, nil, &count) == .success, count > 0 else { return 0 }
         var displays = [CGDirectDisplayID](repeating: 0, count: Int(count))
