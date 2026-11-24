@@ -1,6 +1,7 @@
 import Foundation
 import KeychainTestSupport
 import PreferencesTestSupport
+import StateTestSupport
 import Testing
 @testable import MijiaCore
 
@@ -196,7 +197,7 @@ struct MiAccountDisableTests {
         #expect(expStore.miSessionShowsExpired && expStore.miSessionBlocksControl)
     }
 
-    @Test("Disabling one Xiaomi account stops its cloud, camera, follow-up, and write activity while keeping the other online")
+    @Test("Disabling one Xiaomi account stops its cloud, camera, follow-up, and write activity while keeping the other online", .timeLimit(.minutes(1)))
     func disablingOneAccountProducesZeroPostDisableActivityAndHandlesInFlightRequests() async throws {
         let defaults = InMemoryUserDefaults()
         let vault = CredentialVault(storage: MemoryVaultStorage().storage)
@@ -239,7 +240,8 @@ struct MiAccountDisableTests {
 
         var disabledCallbacks: [(String, Set<String>)] = []
         store.onMiAccountDisabled = { disabledCallbacks.append(($0, $1)) }
-        await waitUntil { Set(store.devices.map(\.id)) == ["cn-light", "cn-cam", "de-plug"] }
+        try await awaitState { store.hasReceivedInitialSnapshot }
+        try #require(Set(store.devices.map(\.id)) == ["cn-light", "cn-cam", "de-plug"])
 
         _ = try await store.resolveCameraStream(for: "cn-cam")
         #expect(await cnBridge.startCalls.count == 1)
@@ -270,8 +272,10 @@ struct MiAccountDisableTests {
         store.manualControlConfirmationHandler = { _ in true }
         _ = store.togglePrimary(cnLightSnapshot)
         await #expect(throws: Error.self) { _ = try await store.resolveCameraStream(for: "cn-cam") }
+        await deApi.setValue(MiotFixtures.key("de-plug", 2, 1), .bool(true))
         store.refreshNow()
-        await waitUntil { await deApi.deviceListCalls >= 2 }
+        try await awaitState { store.devices.first { $0.id == "de-plug" }?.isActiveOn == true }
+        #expect(await deApi.deviceListCalls >= 2)
 
         #expect(await cnApi.deviceListCalls == postDisableDeviceListCalls)
         #expect(await cnApi.getPropsCalls.count == postDisableGetPropsCalls)
@@ -279,8 +283,9 @@ struct MiAccountDisableTests {
         #expect(await cnBridge.startCalls.count == postDisableCameraStarts)
 
         let dePlugDevice = try #require(store.devices.first { $0.id == "de-plug" })
-        _ = await store.togglePrimary(dePlugDevice)?.value
-        await waitUntil { await deApi.setPropsCalls.count == 1 }
+        let write = try #require(store.togglePrimary(dePlugDevice))
+        #expect(await write.value)
+        #expect(await deApi.setPropsCalls.count == 1)
         #expect(await cnApi.setPropsCalls.count == postDisableSetPropsCalls)
     }
 
