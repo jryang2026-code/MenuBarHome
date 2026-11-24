@@ -623,6 +623,7 @@ export function scheduleEchoReadBack(
         ...MiotSynthesizer.facetProps(record, spec),
       ]);
       const client = xiaomiClientForHost(host, session);
+      const { pollCapturedEpoch } = host.sourceEpoch.capture();
       const values =
         propKeys.length > 0 ? await client.getProps(propKeys) : new Map<string, unknown>();
       if (!isStillCurrent() || !isHostMiSessionEnabled(host, session)) return;
@@ -705,6 +706,7 @@ export function scheduleEchoReadBack(
         nextIncomingFacets,
         Date.now(),
         new Set([deviceId]),
+        pollCapturedEpoch,
       );
       host.devices = merged.devices;
       host.deviceFacets = merged.deviceFacets;
@@ -819,7 +821,9 @@ function beginCoverOptimisticWrite(
     effectiveCommandBackend(host, command),
     facets,
   );
+  host.sourceEpoch.advance("localWrite");
   lockOptimistic(host, device.id, COVER_OPTIMISTIC_LOCK_DURATION_MS, {
+    writeEpoch: host.sourceEpoch.capture().pollCapturedEpoch,
     coverOriginPosition: originPosition,
     baselineDevice: priorDevice,
     baselineFacets: priorFacets,
@@ -924,6 +928,16 @@ export async function applyCommand(
   }
   const targetDev =
     targetDeviceId !== null ? (host.devices.find((d) => d.id === targetDeviceId) ?? null) : null;
+  if (targetDev && !targetDev.isOnline) {
+    const text = controlFailureUserMessage(null, {
+      deviceName: displayNameForDevice(host, targetDev),
+      isDeviceOnline: false,
+      languagePreference: host.settings.interfaceLanguage,
+    });
+    host.replyBanner = { text: text ?? t("控制失败"), source: t("控制失败"), isError: true };
+    renderHostImmediate(host);
+    return false;
+  }
   const claim = targetDeviceId !== null ? claimDeviceWrite(host, targetDeviceId) : null;
   const coverWrite = beginCoverOptimisticWrite(host, command);
   const effectiveMode = effectiveCommandBackend(host, command);
@@ -1047,6 +1061,7 @@ export async function applyCommand(
     });
   }
   host.sourceEpoch.advance("localWrite");
+  const writeEpoch = host.sourceEpoch.capture().pollCapturedEpoch;
   if (coverWrite) {
     const device = host.devices.find((item) => item.id === coverWrite.deviceId);
     if (device) restoreKindInPlace(device, coverWrite.priorDevice);
@@ -1094,6 +1109,7 @@ export async function applyCommand(
         dev.id,
         dev.kind.kind === "cover" ? COVER_OPTIMISTIC_LOCK_DURATION_MS : OPTIMISTIC_LOCK_DURATION_MS,
         {
+          writeEpoch,
           coverOriginPosition: prior.coverOrigin,
           baselineDevice: prior.baselineDevice,
           baselineFacets: prior.baselineFacets,

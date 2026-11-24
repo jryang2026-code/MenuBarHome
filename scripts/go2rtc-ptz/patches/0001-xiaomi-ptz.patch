@@ -2163,7 +2163,7 @@ index 3113632..0f58bd0 100644
  }
  
 diff --git a/pkg/xiaomi/miss/cs2/conn.go b/pkg/xiaomi/miss/cs2/conn.go
-index 2c1b395..0fa718b 100644
+index 2c1b395..c93a154 100644
 --- a/pkg/xiaomi/miss/cs2/conn.go
 +++ b/pkg/xiaomi/miss/cs2/conn.go
 @@ -20,11 +20,17 @@ func Dial(host, transport string) (*Conn, error) {
@@ -2205,7 +2205,22 @@ index 2c1b395..0fa718b 100644
  			channel := c.channels[ch]
  
  			if c.isTCP {
-@@ -197,7 +209,7 @@ func (c *Conn) ReadCommand() (cmd uint32, data []byte, err error) {
+@@ -192,12 +204,22 @@ func (c *Conn) Error() error {
+ 	return io.EOF
+ }
+ 
++// Close tells the camera to end the session before closing the socket.
++// Otherwise, on UDP, the camera keeps the session, and one of its few
++// streaming slots, until its own timeout (~20 s).
++// Backported from https://github.com/AlexxIT/go2rtc/commit/41ce11e4c0bfedd87824f1464b541845611856cf
++func (c *Conn) Close() error {
++	_ = c.Conn.SetWriteDeadline(time.Now().Add(time.Second))
++	_, _ = c.Conn.Write([]byte{magic, msgClose, 0, 0})
++	return c.Conn.Close()
++}
++
+ func (c *Conn) ReadCommand() (cmd uint32, data []byte, err error) {
+ 	buf, ok := c.channels[0].Pop()
  	if !ok {
  		return 0, nil, c.Error()
  	}
@@ -2214,7 +2229,7 @@ index 2c1b395..0fa718b 100644
  	data = buf[4:]
  	return
  }
-@@ -225,11 +237,16 @@ func (c *Conn) WriteCommand(cmd uint32, data []byte) error {
+@@ -225,11 +247,16 @@ func (c *Conn) WriteCommand(cmd uint32, data []byte) error {
  		timeout.Reset(1)
  	}
  
@@ -2232,7 +2247,7 @@ index 2c1b395..0fa718b 100644
  		r := repeat.Add(-1)
  		if r < 0 {
  			return nil
-@@ -240,6 +257,44 @@ func (c *Conn) WriteCommand(cmd uint32, data []byte) error {
+@@ -240,6 +267,44 @@ func (c *Conn) WriteCommand(cmd uint32, data []byte) error {
  	}
  }
  
@@ -2279,10 +2294,10 @@ index 2c1b395..0fa718b 100644
  func (c *Conn) ReadPacket() (hdr, payload []byte, err error) {
 diff --git a/pkg/xiaomi/miss/cs2/conn_test.go b/pkg/xiaomi/miss/cs2/conn_test.go
 new file mode 100644
-index 0000000..d795acc
+index 0000000..f5c63e6
 --- /dev/null
 +++ b/pkg/xiaomi/miss/cs2/conn_test.go
-@@ -0,0 +1,101 @@
+@@ -0,0 +1,225 @@
 +package cs2
 +
 +import (
@@ -2382,6 +2397,130 @@ index 0000000..d795acc
 +		}
 +	case <-time.After(2 * time.Second):
 +		t.Fatal("WriteCommand did not return after AbortWaits")
++	}
++}
++
++func TestCloseSendsMsgCloseBeforeClosingSocket(t *testing.T) {
++	local, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
++	if err != nil {
++		t.Fatal(err)
++	}
++	peer, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
++	if err != nil {
++		_ = local.Close()
++		t.Fatal(err)
++	}
++	defer peer.Close()
++
++	c := &Conn{
++		Conn: &udpConn{UDPConn: local, addr: peer.LocalAddr().(*net.UDPAddr)},
++		channels: [4]*dataChannel{
++			newDataChannel(0, 1), nil, newDataChannel(0, 1), nil,
++		},
++	}
++
++	if err := c.Close(); err != nil {
++		t.Fatalf("Close returned error: %v", err)
++	}
++
++	buf := make([]byte, 16)
++	_ = peer.SetReadDeadline(time.Now().Add(time.Second))
++	n, _, err := peer.ReadFromUDP(buf)
++	if err != nil {
++		t.Fatalf("peer did not receive msgClose: %v", err)
++	}
++	want := []byte{magic, msgClose, 0, 0}
++	if !bytes.Equal(buf[:n], want) {
++		t.Fatalf("close frame %x, want %x", buf[:n], want)
++	}
++}
++
++// TestReopenAfterCloseLatencyFixture simulates a single-slot Xiaomi CS2 camera
++// that holds its streaming slot for 20s on silent disconnect, but frees it
++// immediately upon receiving msgClose. Reopening right after Close must finish
++// well below the camera's 20s slot timeout.
++func TestReopenAfterCloseLatencyFixture(t *testing.T) {
++	camera, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer camera.Close()
++
++	const slotHoldWithoutClose = 20 * time.Second
++	done := make(chan struct{})
++	defer close(done)
++
++	go func() {
++		var activeAddr string
++		var slotFreeAt time.Time
++		buf := make([]byte, 256)
++		for {
++			_ = camera.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
++			n, addr, err := camera.ReadFromUDP(buf)
++			if err != nil {
++				select {
++				case <-done:
++					return
++				default:
++					continue
++				}
++			}
++			if n < 2 || buf[0] != magic {
++				continue
++			}
++			now := time.Now()
++			if activeAddr != "" && now.After(slotFreeAt) {
++				activeAddr = ""
++			}
++			switch buf[1] {
++			case msgLanSearch:
++				if activeAddr != "" && activeAddr != addr.String() {
++					continue
++				}
++				pkt := make([]byte, 20)
++				pkt[0] = magic
++				pkt[1] = msgPunchPkt
++				pkt[3] = 16
++				_, _ = camera.WriteToUDP(pkt, addr)
++			case msgPunchPkt:
++				if activeAddr != "" && activeAddr != addr.String() {
++					continue
++				}
++				activeAddr = addr.String()
++				slotFreeAt = now.Add(slotHoldWithoutClose)
++				pkt := make([]byte, 20)
++				pkt[0] = magic
++				pkt[1] = msgP2PRdyUDP
++				pkt[3] = 16
++				_, _ = camera.WriteToUDP(pkt, addr)
++			case msgClose:
++				if activeAddr == addr.String() {
++					activeAddr = ""
++					slotFreeAt = time.Time{}
++				}
++			}
++		}
++	}()
++
++	host := camera.LocalAddr().String()
++	first, err := Dial(host, "udp")
++	if err != nil {
++		t.Fatalf("first Dial failed: %v", err)
++	}
++	if err := first.Close(); err != nil {
++		t.Fatalf("first Close failed: %v", err)
++	}
++
++	reopenStart := time.Now()
++	second, err := Dial(host, "udp")
++	if err != nil {
++		t.Fatalf("reopen Dial failed after Close: %v", err)
++	}
++	reopenElapsed := time.Since(reopenStart)
++	_ = second.Close()
++
++	if reopenElapsed > 500*time.Millisecond {
++		t.Fatalf("reopen-after-close latency %s exceeded 500ms budget", reopenElapsed)
 +	}
 +}
 diff --git a/pkg/xiaomi/miss/motor_test.go b/pkg/xiaomi/miss/motor_test.go
@@ -2723,7 +2862,7 @@ index 0000000..56b0a59
 +	}
 +}
 diff --git a/pkg/xiaomi/miss/producer.go b/pkg/xiaomi/miss/producer.go
-index dcea284..6f1f777 100644
+index dcea284..8fc178c 100644
 --- a/pkg/xiaomi/miss/producer.go
 +++ b/pkg/xiaomi/miss/producer.go
 @@ -17,6 +17,20 @@ type Producer struct {
@@ -2747,3 +2886,157 @@ index dcea284..6f1f777 100644
  func Dial(rawURL string) (core.Producer, error) {
  	client, err := NewClient(rawURL)
  	if err != nil {
+@@ -134,6 +148,10 @@ func (p *Producer) Start() error {
+ 		_ = p.client.SetDeadline(time.Now().Add(10 * time.Second))
+ 		pkt, err := p.client.ReadPacket()
+ 		if err != nil {
++			// Free the camera slot now: streams stops this producer only after
++			// the reconnect succeeds, and the reconnect may need that slot.
++			// Backported from https://github.com/AlexxIT/go2rtc/commit/41ce11e4c0bfedd87824f1464b541845611856cf
++			_ = p.client.Close()
+ 			return err
+ 		}
+ 
+diff --git a/pkg/xiaomi/miss/producer_close_test.go b/pkg/xiaomi/miss/producer_close_test.go
+new file mode 100644
+index 0000000..1decdb2
+--- /dev/null
++++ b/pkg/xiaomi/miss/producer_close_test.go
+@@ -0,0 +1,137 @@
++package miss
++
++import (
++	"bytes"
++	"net"
++	"testing"
++	"time"
++
++	"github.com/AlexxIT/go2rtc/pkg/core"
++	"github.com/AlexxIT/go2rtc/pkg/xiaomi/miss/cs2"
++)
++
++func dialLoopbackCS2ForProducerTest(t *testing.T) (*cs2.Conn, *net.UDPConn, <-chan []byte) {
++	t.Helper()
++	camera, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
++	if err != nil {
++		t.Fatal(err)
++	}
++	t.Cleanup(func() { _ = camera.Close() })
++
++	closeReceived := make(chan []byte, 4)
++	done := make(chan struct{})
++	t.Cleanup(func() { close(done) })
++
++	go func() {
++		buf := make([]byte, 256)
++		for {
++			_ = camera.SetReadDeadline(time.Now().Add(50 * time.Millisecond))
++			n, addr, err := camera.ReadFromUDP(buf)
++			if err != nil {
++				select {
++				case <-done:
++					return
++				default:
++					continue
++				}
++			}
++			if n < 2 || buf[0] != 0xF1 {
++				continue
++			}
++			switch buf[1] {
++			case 0x30: // msgLanSearch
++				pkt := make([]byte, 20)
++				pkt[0] = 0xF1
++				pkt[1] = 0x41
++				pkt[3] = 16
++				_, _ = camera.WriteToUDP(pkt, addr)
++			case 0x41: // msgPunchPkt
++				pkt := make([]byte, 20)
++				pkt[0] = 0xF1
++				pkt[1] = 0x42
++				pkt[3] = 16
++				_, _ = camera.WriteToUDP(pkt, addr)
++			case 0xD0: // msgDrw (e.g. cmdVideoStop) - ACK so StopMedia returns immediately
++				if n >= 8 {
++					_, _ = camera.WriteToUDP([]byte{0xF1, 0xD1, 0, 6, 0xD1, buf[5], 0, 1, buf[6], buf[7]}, addr)
++				}
++			case 0xF0: // msgClose
++				frame := append([]byte(nil), buf[:n]...)
++				select {
++				case closeReceived <- frame:
++				default:
++				}
++			}
++		}
++	}()
++
++	conn, err := cs2.Dial(camera.LocalAddr().String(), "udp")
++	if err != nil {
++		t.Fatalf("cs2.Dial failed: %v", err)
++	}
++	return conn, camera, closeReceived
++}
++
++func TestProducerStopSendsMsgClose(t *testing.T) {
++	conn, _, closeReceived := dialLoopbackCS2ForProducerTest(t)
++	client := &Client{Conn: conn, key: make([]byte, 16)}
++	producer := &Producer{
++		Connection: core.Connection{Transport: client},
++		client:     client,
++	}
++
++	if err := producer.Stop(); err != nil {
++		t.Fatalf("Producer.Stop returned error: %v", err)
++	}
++
++	select {
++	case frame := <-closeReceived:
++		want := []byte{0xF1, 0xF0, 0, 0}
++		if !bytes.Equal(frame, want) {
++			t.Fatalf("close frame %x, want %x", frame, want)
++		}
++	case <-time.After(time.Second):
++		t.Fatal("timed out waiting for msgClose on Producer.Stop")
++	}
++}
++
++func TestProducerStartCancellationSendsMsgClose(t *testing.T) {
++	conn, _, closeReceived := dialLoopbackCS2ForProducerTest(t)
++	client := &Client{Conn: conn, key: make([]byte, 16)}
++	producer := &Producer{
++		Connection: core.Connection{Transport: client},
++		client:     client,
++	}
++
++	// Simulate stream cancellation by closing the read channel / underlying conn
++	// while Start() is waiting for the next packet. Start() must close the client
++	// immediately so msgClose is sent before returning.
++	startErr := make(chan error, 1)
++	go func() {
++		startErr <- producer.Start()
++	}()
++
++	// Wait briefly for Start() to set its initial 10s read deadline and enter ReadPacket,
++	// then shorten the read deadline to simulate stream cancellation / timeout.
++	time.Sleep(30 * time.Millisecond)
++	_ = conn.SetReadDeadline(time.Now().Add(20 * time.Millisecond))
++
++	select {
++	case err := <-startErr:
++		if err == nil {
++			t.Fatal("expected Producer.Start to return read error")
++		}
++	case <-time.After(2 * time.Second):
++		t.Fatal("Producer.Start did not exit after deadline cancellation")
++	}
++
++	select {
++	case frame := <-closeReceived:
++		want := []byte{0xF1, 0xF0, 0, 0}
++		if !bytes.Equal(frame, want) {
++			t.Fatalf("close frame %x, want %x", frame, want)
++		}
++	case <-time.After(time.Second):
++		t.Fatal("timed out waiting for msgClose after Producer.Start error")
++	}
++}

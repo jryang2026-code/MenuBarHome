@@ -185,3 +185,124 @@ actor ProcessSupervisor {
         state = .circuitOpen
     }
 }
+
+extension ProcessSupervisor {
+    /// Consolidated go2rtc config paths, module allow-list, and YAML rendering (#446).
+    /// Must stay identical to `Shared/go2rtcConfig.json` and Windows `process_supervisor.rs`.
+    /// Never persists or logs credentials in event history or supervisor state.
+    enum Go2RTCConfig {
+        static let configFileName = "go2rtc.yaml"
+        static let ownerFileName = "go2rtc.owner"
+        static let pidFileName = "go2rtc.pid"
+        static let logFileName = "go2rtc.log"
+        static let forbiddenListenPorts: Set<UInt16> = [1984, 8554, 8555]
+        static let allowedModules: [String] = [
+            "api",
+            "ws",
+            "http",
+            "rtsp",
+            "webrtc",
+            "mp4",
+            "hls",
+            "mjpeg",
+            "exec",
+            "ffmpeg",
+            "xiaomi",
+        ]
+
+        struct Paths: Equatable, Sendable {
+            let binDirectory: URL
+            var configFile: URL { binDirectory.appendingPathComponent(Go2RTCConfig.configFileName) }
+            var ownerFile: URL { binDirectory.appendingPathComponent(Go2RTCConfig.ownerFileName) }
+            var pidFile: URL { binDirectory.appendingPathComponent(Go2RTCConfig.pidFileName) }
+            var logFile: URL { binDirectory.appendingPathComponent(Go2RTCConfig.logFileName) }
+
+            init(binDirectory: URL) {
+                self.binDirectory = binDirectory
+            }
+
+            static func discover() -> Paths {
+                let appSupport = FileManager.default
+                    .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+                    .appendingPathComponent("MenuBarMijia/bin", isDirectory: true)
+                return Paths(binDirectory: appSupport)
+            }
+        }
+
+        static func isAcceptableListen(_ value: String) -> Bool {
+            let prefix = "127.0.0.1:"
+            guard value.hasPrefix(prefix),
+                  let port = UInt16(value.dropFirst(prefix.count)),
+                  port > 0,
+                  !forbiddenListenPorts.contains(port) else {
+                return false
+            }
+            return value == "127.0.0.1:\(port)"
+        }
+
+        static func sanitizedListen(_ value: String) -> String {
+            isAcceptableListen(value) ? value : "127.0.0.1:9"
+        }
+
+        static func yamlDoubleQuoted(_ value: String) -> String {
+            var out = "\""
+            for scalar in value.unicodeScalars {
+                switch scalar {
+                case "\\":
+                    out += "\\\\"
+                case "\"":
+                    out += "\\\""
+                case "\n", "\r":
+                    continue
+                default:
+                    out.unicodeScalars.append(scalar)
+                }
+            }
+            out += "\""
+            return out
+        }
+
+        /// `app.modules` restricts go2rtc to the exact modules MenuBarHome uses (`exec` stays
+        /// enabled because go2rtc's `ffmpeg:` source delegates to `exec:`, bounded by
+        /// `exec.allow_paths`, while `echo`, `expr`, `debug`, `ngrok`, etc. stay disabled).
+        /// `webrtc: listen: ""` keeps go2rtc from opening port 8555. `local_auth` is required
+        /// because v1.9.15 skips Basic auth for every loopback request when it is false.
+        static func renderConfig(
+            apiListen: String,
+            rtspListen: String,
+            username: String,
+            password: String,
+            nonce: String,
+            ffmpegBin: String
+        ) -> String {
+            let moduleLines = allowedModules.map { "    - \($0)" }.joined(separator: "\n")
+            let ffmpeg = yamlDoubleQuoted(ffmpegBin)
+            let api = sanitizedListen(apiListen)
+            let rtsp = sanitizedListen(rtspListen)
+            return """
+            app:
+              modules:
+            \(moduleLines)
+            api:
+              listen: \(api)
+              username: \(yamlDoubleQuoted(username))
+              password: \(yamlDoubleQuoted(password))
+              local_auth: true
+            rtsp:
+              listen: \(rtsp)
+            webrtc:
+              listen: ""
+            log:
+              level: info
+              ffmpeg: error
+            ffmpeg:
+              bin: \(ffmpeg)
+            exec:
+              allow_paths:
+                - \(ffmpeg)
+            menubarmijia:
+              nonce: \(yamlDoubleQuoted(nonce))
+            """
+        }
+    }
+}

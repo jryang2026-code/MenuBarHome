@@ -4,6 +4,7 @@ import { switchSource } from "./sourceSwitch.js";
 import { processScheduledCommands, scheduledCommandIdentity } from "./scheduledCommands.js";
 import { ScheduledCommandStore, isScheduledCommandsEnabled } from "../core/scheduledCommands.js";
 import type { MenuMijiaWindowsApp } from "./app.js";
+import { resetLocalMiIOHealth } from "../core/miCloud/localMiIO.js";
 import { t } from "../core/i18n.js";
 import { isHostAttachedToActiveWindow, type OptimisticLockRootLike } from "../core/optimisticLock.js";
 import {
@@ -827,7 +828,7 @@ export interface LifecycleEventTarget {
   removeEventListener(type: string, listener: (event: Event) => void): void;
 }
 
-export type ResumeTrigger = "visibility" | "focus" | "online" | "resume";
+export type ResumeTrigger = "visibility" | "focus" | "online" | "resume" | "network";
 
 export interface ResumeRecoveryHost {
   readonly settings: {
@@ -994,7 +995,7 @@ export class ResumeRecoveryController {
         return;
       }
       this.sawOffline = false;
-    } else if (kind === "resume" && this.isNavigatorOnline()) {
+    } else if ((kind === "resume" || kind === "network") && this.isNavigatorOnline()) {
       this.sawOffline = false;
     }
 
@@ -1024,7 +1025,8 @@ export class ResumeRecoveryController {
     }
     if (triggers.size === 0 || !canRefreshDevicesInBackground(this.host)) return;
 
-    const hasNetworkOrSystemResume = triggers.has("online") || triggers.has("resume");
+    const hasNetworkChange = triggers.has("network");
+    const hasNetworkOrSystemResume = triggers.has("online") || triggers.has("resume") || hasNetworkChange;
     const docVisible = this.isDocumentVisible();
     const winFocused = this.isWindowFocused();
 
@@ -1039,6 +1041,7 @@ export class ResumeRecoveryController {
 
     const now = this.scheduler.now();
     if (
+      !hasNetworkChange &&
       this.lastRecoveryTriggeredAtMs !== null &&
       now - this.lastRecoveryTriggeredAtMs < this.recoveryCooldownMs
     ) {
@@ -1048,6 +1051,7 @@ export class ResumeRecoveryController {
     const isStaleOrErrored = this.host.cloudValuesStale || this.host.haConnectionError !== null;
     if (hasNetworkOrSystemResume) {
       if (
+        !hasNetworkChange &&
         !isStaleOrErrored &&
         this.host.lastCloudRefreshAt !== null &&
         now - this.host.lastCloudRefreshAt < this.recoveryCooldownMs
@@ -1255,9 +1259,19 @@ export function bindLifecycleRecovery(
       disposeAppLifecycle(host);
       return;
     }
+    resetLocalMiIOHealth();
     notifyPanelWakeLifecycle(host);
     state.syncTimerSchedule?.();
     controller.trigger("resume");
+  };
+  const onNetworkChanged = () => {
+    if (state.disposed || !isLifecycleHostAttached(host)) {
+      disposeAppLifecycle(host);
+      return;
+    }
+    resetLocalMiIOHealth();
+    state.syncTimerSchedule?.();
+    controller.trigger("network");
   };
   const onPageHide = () => {
     if (options.onPageHide) {
@@ -1306,6 +1320,7 @@ export function bindLifecycleRecovery(
     listen(ownerWin, "online", onOnline),
     listen(ownerWin, "offline", onOffline),
     listen(ownerWin, "menumijia:resume", onResume),
+    listen(ownerWin, "menumijia:network-changed", onNetworkChanged),
     listen(ownerWin, "pagehide", onPageHide),
   );
 

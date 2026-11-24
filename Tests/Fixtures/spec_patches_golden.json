@@ -1,0 +1,122 @@
+{
+  "model": "acme.aircondition.patch1",
+  "patches": {
+    "schemaVersion": 1,
+    "models": {
+      "acme.aircondition.patch1": {
+        "note": "Golden fixture exercising hideProperties plus access, unit, valueRange, valueList, and description overrides.",
+        "hideProperties": [
+          { "siid": 2, "piid": 9 }
+        ],
+        "properties": [
+          {
+            "siid": 2,
+            "piid": 2,
+            "access": ["read", "write"],
+            "valueList": [
+              { "value": 0, "description": "Auto" },
+              { "value": 2, "description": "Cool" },
+              { "value": 5, "description": "Heat" }
+            ]
+          },
+          {
+            "siid": 2,
+            "piid": 4,
+            "unit": "celsius",
+            "valueRange": [16, 31, 0.5],
+            "description": "Target Temperature"
+          }
+        ]
+      }
+    }
+  },
+  "input": {
+    "type": "urn:miot-spec-v2:device:air-conditioner:0000A004:acme-patch1:1",
+    "description": "AC Patch Fixture",
+    "services": [
+      {
+        "iid": 2,
+        "type": "urn:miot-spec-v2:service:air-conditioner:0000780F:acme-patch1:1",
+        "description": "Air Conditioner",
+        "properties": [
+          {
+            "iid": 1,
+            "type": "urn:miot-spec-v2:property:on:00000006:acme-patch1:1",
+            "description": "Switch Status",
+            "format": "bool",
+            "access": ["read", "write", "notify"]
+          },
+          {
+            "iid": 2,
+            "type": "urn:miot-spec-v2:property:mode:00000008:acme-patch1:1",
+            "description": "Mode",
+            "format": "uint8",
+            "access": ["read"],
+            "value-list": [
+              { "value": 2, "description": "Cool" }
+            ]
+          },
+          {
+            "iid": 4,
+            "type": "urn:miot-spec-v2:property:target-temperature:00000021:acme-patch1:1",
+            "description": "Temp",
+            "format": "float",
+            "access": ["read", "write"],
+            "unit": "none",
+            "value-range": [16, 30, 1]
+          },
+          {
+            "iid": 9,
+            "type": "urn:miot-spec-v2:property:fault:00000009:acme-patch1:1",
+            "description": "Broken Fault Prop",
+            "format": "uint8",
+            "access": ["read"]
+          }
+        ],
+        "actions": []
+      }
+    ]
+  },
+  "expected": {
+    "type": "urn:miot-spec-v2:device:air-conditioner:0000A004:acme-patch1:1",
+    "description": "AC Patch Fixture",
+    "services": [
+      {
+        "iid": 2,
+        "type": "urn:miot-spec-v2:service:air-conditioner:0000780F:acme-patch1:1",
+        "description": "Air Conditioner",
+        "properties": [
+          {
+            "iid": 1,
+            "type": "urn:miot-spec-v2:property:on:00000006:acme-patch1:1",
+            "description": "Switch Status",
+            "format": "bool",
+            "access": ["read", "write", "notify"]
+          },
+          {
+            "iid": 2,
+            "type": "urn:miot-spec-v2:property:mode:00000008:acme-patch1:1",
+            "description": "Mode",
+            "format": "uint8",
+            "access": ["read", "write"],
+            "value-list": [
+              { "value": 0, "description": "Auto" },
+              { "value": 2, "description": "Cool" },
+              { "value": 5, "description": "Heat" }
+            ]
+          },
+          {
+            "iid": 4,
+            "type": "urn:miot-spec-v2:property:target-temperature:00000021:acme-patch1:1",
+            "description": "Target Temperature",
+            "format": "float",
+            "access": ["read", "write"],
+            "unit": "celsius",
+            "value-range": [16, 31, 0.5]
+          }
+        ],
+        "actions": []
+      }
+    ]
+  }
+}

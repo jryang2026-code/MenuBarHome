@@ -349,14 +349,15 @@ pub(crate) fn scrub_persisted_streams_from_config() {
 }
 
 pub(crate) fn scrub_stale_camera_config_in_dir(bin_dir: &std::path::Path) -> bool {
-    let owner_alive = std::fs::read_to_string(bin_dir.join("go2rtc.owner"))
+    let paths = crate::process_supervisor::Go2RtcPaths::from_bin_dir(bin_dir.to_path_buf());
+    let owner_alive = std::fs::read_to_string(&paths.owner_file)
         .ok()
         .and_then(|text| parse_owner(&text))
         .is_some_and(|record| owner_process_matches(&record));
     if owner_alive {
         return false;
     }
-    scrub_persisted_streams_in_file(&bin_dir.join("go2rtc.yaml"))
+    scrub_persisted_streams_in_file(&paths.config_file)
 }
 
 pub(crate) fn scrub_stale_camera_config_on_startup() {
@@ -533,16 +534,14 @@ pub(crate) fn decide_go2rtc_action(probe: Go2RtcOwnershipProbe) -> Go2RtcAction 
     }
 }
 
-/// v1.9.15 skips Basic auth on loopback unless `local_auth` is true.
 pub(crate) fn desired_go2rtc_config(session: &Go2RtcSession, ffmpeg_bin: &str) -> String {
-    let ffmpeg = yaml_double_quoted(ffmpeg_bin);
-    let api = sanitized_listen(&session.api_listen);
-    let rtsp = sanitized_listen(&session.rtsp_listen);
-    format!(
-        "api:\n  listen: {api}\n  username: {user}\n  password: {password}\n  local_auth: true\nrtsp:\n  listen: {rtsp}\nwebrtc:\n  listen: \"\"\nlog:\n  level: info\n  ffmpeg: error\nffmpeg:\n  bin: {ffmpeg}\nexec:\n  allow_paths:\n    - {ffmpeg}\nmenubarmijia:\n  nonce: {nonce}\n",
-        user = yaml_double_quoted(&session.username),
-        password = yaml_double_quoted(&session.password),
-        nonce = yaml_double_quoted(&session.nonce),
+    crate::process_supervisor::render_go2rtc_config(
+        &session.api_listen,
+        &session.rtsp_listen,
+        &session.username,
+        &session.password,
+        &session.nonce,
+        ffmpeg_bin,
     )
 }
 
@@ -890,16 +889,19 @@ pub(crate) fn store_go2rtc_session(record: Go2RtcOwnerRecord) {
 }
 
 pub(crate) fn bin_directory() -> Result<std::path::PathBuf, String> {
-    let local = std::env::var("LOCALAPPDATA").map_err(|_| "无法读取 LOCALAPPDATA 目录".to_string())?;
-    Ok(std::path::PathBuf::from(local).join("MenuBarMijia").join("bin"))
+    crate::process_supervisor::Go2RtcPaths::discover().map(|paths| paths.bin_dir)
 }
 
 pub(crate) fn go2rtc_config_path() -> Option<std::path::PathBuf> {
-    bin_directory().ok().map(|dir| dir.join("go2rtc.yaml"))
+    crate::process_supervisor::Go2RtcPaths::discover()
+        .ok()
+        .map(|paths| paths.config_file)
 }
 
 pub(crate) fn go2rtc_owner_path() -> Option<std::path::PathBuf> {
-    bin_directory().ok().map(|dir| dir.join("go2rtc.owner"))
+    crate::process_supervisor::Go2RtcPaths::discover()
+        .ok()
+        .map(|paths| paths.owner_file)
 }
 
 pub(crate) fn write_secret_file(path: &std::path::Path, contents: &str) -> Result<(), String> {
@@ -983,17 +985,7 @@ pub(crate) fn base64_encode(data: &[u8]) -> String {
 }
 
 pub(crate) fn yaml_double_quoted(value: &str) -> String {
-    let mut out = String::from("\"");
-    for ch in value.chars() {
-        match ch {
-            '\\' => out.push_str("\\\\"),
-            '"' => out.push_str("\\\""),
-            '\n' | '\r' => {}
-            _ => out.push(ch),
-        }
-    }
-    out.push('"');
-    out
+    crate::process_supervisor::yaml_double_quoted(value)
 }
 
 pub(crate) fn is_credential_token(value: &str) -> bool {
@@ -1001,21 +993,11 @@ pub(crate) fn is_credential_token(value: &str) -> bool {
 }
 
 pub(crate) fn is_acceptable_go2rtc_listen(value: &str) -> bool {
-    let Some(port_text) = value.strip_prefix("127.0.0.1:") else {
-        return false;
-    };
-    let Ok(port) = port_text.parse::<u16>() else {
-        return false;
-    };
-    port > 0 && !FORBIDDEN_GO2RTC_PORTS.contains(&port) && value == format!("127.0.0.1:{port}")
+    crate::process_supervisor::is_acceptable_go2rtc_listen(value)
 }
 
 pub(crate) fn sanitized_listen(value: &str) -> String {
-    if is_acceptable_go2rtc_listen(value) {
-        value.to_string()
-    } else {
-        "127.0.0.1:9".to_string()
-    }
+    crate::process_supervisor::sanitized_go2rtc_listen(value)
 }
 
 pub(crate) fn random_credential_token() -> Result<String, String> {
@@ -1052,7 +1034,7 @@ pub(crate) fn reserve_loopback_ports(count: usize) -> Result<Vec<u16>, String> {
             continue;
         };
         let port = listener.local_addr().map_err(|e| e.to_string())?.port();
-        if FORBIDDEN_GO2RTC_PORTS.contains(&port) || ports.contains(&port) {
+        if crate::process_supervisor::go2rtc_forbidden_ports().contains(&port) || ports.contains(&port) {
             drop(listener);
             continue;
         }
@@ -1551,8 +1533,9 @@ pub(crate) async fn spawn_fresh_go2rtc(
         preparation.run_until_cancelled(download_go2rtc_win64(bin_dir, &exe_path))
             .await.ok_or("该设备类型已关闭")??;
     }
-    let cfg_path = bin_dir.join("go2rtc.yaml");
-    let owner_path = bin_dir.join("go2rtc.owner");
+    let paths = crate::process_supervisor::Go2RtcPaths::from_bin_dir(bin_dir.to_path_buf());
+    let cfg_path = paths.config_file;
+    let owner_path = paths.owner_file;
     for _ in 0..4 {
         if preparation.is_cancelled() {
             return Err("该设备类型已关闭".to_string());

@@ -111,6 +111,8 @@ interface HostOptimisticState {
   readonly revisions: Map<string, number>;
   /** Per-device write sequence, bumped by every command that addresses the row. */
   readonly writeSeqs: Map<string, number>;
+  readonly fieldWriteEpochs: Map<string, Map<string, number>>;
+  readonly facetWriteEpochs: Map<string, Map<string, number>>;
   /** Device → lock revision whose read-back is in flight and may replace the locked row. */
   readonly readBackInFlight: Map<string, ReadBackConfirmation>;
   nextTicketId: number;
@@ -127,6 +129,8 @@ function ensureHostState(host: OptimisticLockHost): HostOptimisticState {
       locks: new Map(),
       revisions: new Map(),
       writeSeqs: new Map(),
+      fieldWriteEpochs: new Map(),
+      facetWriteEpochs: new Map(),
       readBackInFlight: new Map(),
       nextTicketId: 0,
       activeTickets: new Map(),
@@ -142,6 +146,8 @@ function ensureHostState(host: OptimisticLockHost): HostOptimisticState {
     state.locks.clear();
     state.revisions.clear();
     state.writeSeqs.clear();
+    state.fieldWriteEpochs.clear();
+    state.facetWriteEpochs.clear();
     state.readBackInFlight.clear();
     state.sourceRevision = host.sourceRevision;
   }
@@ -195,6 +201,7 @@ export function lockOptimistic(
   durationMs = OPTIMISTIC_LOCK_DURATION_MS,
   options?: {
     readonly nowMs?: number;
+    readonly writeEpoch?: number;
     readonly coverOriginPosition?: number | null;
     readonly baselineDevice?: SmartDevice | null;
     readonly baselineFacets?: readonly FacetControl[];
@@ -222,11 +229,21 @@ export function lockOptimistic(
   const dirtyFields = new Set<string>(prevActive ? prev.dirtyFields : []);
   const dirtyFacetIds = new Set<string>(prevActive ? prev.dirtyFacetIds : []);
   const current = host.devices.find((item) => item.id === deviceId);
-  if (options?.baselineDevice && current) {
-    for (const key of changedKindFields(options.baselineDevice, current)) dirtyFields.add(key);
-  }
-  for (const id of changedFacetIds(options?.baselineFacets, host.deviceFacets?.[deviceId])) {
-    dirtyFacetIds.add(id);
+  const writtenFields = options?.baselineDevice && current ? changedKindFields(options.baselineDevice, current) : [];
+  const writtenFacets = changedFacetIds(options?.baselineFacets, host.deviceFacets?.[deviceId]);
+  for (const key of writtenFields) dirtyFields.add(key);
+  for (const id of writtenFacets) dirtyFacetIds.add(id);
+  if (options?.writeEpoch !== undefined) {
+    const writeEpoch = options.writeEpoch;
+    for (const [epochs, written] of [
+      [state.fieldWriteEpochs, writtenFields],
+      [state.facetWriteEpochs, writtenFacets],
+    ] as const) {
+      if (written.length === 0) continue;
+      const rowEpochs = epochs.get(deviceId) ?? new Map<string, number>();
+      for (const key of written) rowEpochs.set(key, writeEpoch);
+      epochs.set(deviceId, rowEpochs);
+    }
   }
   state.locks.set(deviceId, {
     expiresAtMs: nowMs + durationMs,
@@ -653,6 +670,7 @@ export function mergeHomeSnapshotRespectingLocks(
   incomingFacets: Readonly<Record<string, readonly FacetControl[]>> | undefined,
   nowMs = Date.now(),
   onlyDeviceIds?: ReadonlySet<string>,
+  capture?: number | Readonly<Record<string, number>>,
 ): {
   devices: SmartDevice[];
   deviceFacets: Record<string, FacetControl[]>;
@@ -691,7 +709,8 @@ export function mergeHomeSnapshotRespectingLocks(
     }
   };
 
-  for (const incoming of incomingDevices) {
+  for (const reported of incomingDevices) {
+    let incoming = reported;
     if (onlyDeviceIds && !onlyDeviceIds.has(incoming.id)) {
       const local = existingById.get(incoming.id);
       mergedDevices.push(local ?? incoming);
@@ -700,11 +719,43 @@ export function mergeHomeSnapshotRespectingLocks(
     }
     const lock = state.locks.get(incoming.id);
     const local = existingById.get(incoming.id);
+    const pollCapturedEpoch = typeof capture === "number" ? capture : capture?.[incoming.id];
+    const staleFields = new Set<string>();
+    const staleFacets = new Set<string>();
+    if (pollCapturedEpoch !== undefined) {
+      for (const [key, epoch] of state.fieldWriteEpochs.get(incoming.id) ?? []) {
+        if (pollCapturedEpoch < epoch) staleFields.add(key);
+      }
+      for (const [key, epoch] of state.facetWriteEpochs.get(incoming.id) ?? []) {
+        if (pollCapturedEpoch < epoch) staleFacets.add(key);
+      }
+    }
+    if (local && local.kind.kind === incoming.kind.kind && staleFields.size > 0) {
+      const kind = { ...incoming.kind } as unknown as Record<string, unknown>;
+      const localKind = local.kind as unknown as Record<string, unknown>;
+      for (const key of staleFields) {
+        if (Object.hasOwn(localKind, key)) kind[key] = localKind[key];
+        else delete kind[key];
+      }
+      incoming = { ...incoming, kind: kind as unknown as SmartDevice["kind"] };
+    }
+    const adoptReadyFacets = () => {
+      adoptIncomingFacets(incoming.id);
+      if (staleFacets.size === 0) return;
+      const localById = new Map((localFacetsById[incoming.id] ?? []).map((facet) => [facet.id, facet]));
+      const facets = mergedFacets[incoming.id];
+      if (facets) {
+        mergedFacets[incoming.id] = facets.map((facet) => {
+          const localFacet = localById.get(facet.id);
+          return staleFacets.has(facet.id) && localFacet ? { ...facet, value: localFacet.value } : facet;
+        });
+      }
+    };
     if (!lock || nowMs >= lock.expiresAtMs || !local) {
       state.locks.delete(incoming.id);
       state.readBackInFlight.delete(incoming.id);
       mergedDevices.push(incoming);
-      adoptIncomingFacets(incoming.id);
+      adoptReadyFacets();
       continue;
     }
 
@@ -712,10 +763,10 @@ export function mergeHomeSnapshotRespectingLocks(
       // A cover is write-only: only its own travel confirms the command, and a snapshot cannot
       // stand in for it (`standards-store-locks-timers.md` §14).
       state.readBackInFlight.delete(incoming.id);
-      if (coverTravelTakesOver(lock.coverOriginPosition, local.kind, incoming.kind)) {
+      if (staleFields.size === 0 && coverTravelTakesOver(lock.coverOriginPosition, local.kind, incoming.kind)) {
         state.locks.delete(incoming.id);
         mergedDevices.push(incoming);
-        adoptIncomingFacets(incoming.id);
+        adoptReadyFacets();
       } else {
         mergedDevices.push(local);
         keepLocalFacets(incoming.id);
@@ -732,22 +783,18 @@ export function mergeHomeSnapshotRespectingLocks(
       nowMs <= confirmation.expiresAtMs &&
       confirmation.revision === lock.revision &&
       confirmation.revision === (state.revisions.get(incoming.id) ?? 0);
-    if (readBackDecides) state.readBackInFlight.delete(incoming.id);
-
-    if (
-      readBackDecides ||
-      deviceMatchesOptimistic(
-        local,
-        incoming,
-        localFacetsById[incoming.id],
-        incomingFacets?.[incoming.id],
-        lock,
-      )
-    ) {
+    const mayConfirm = staleFields.size === 0 && staleFacets.size === 0;
+    if (mayConfirm && (readBackDecides || deviceMatchesOptimistic(
+      local,
+      incoming,
+      localFacetsById[incoming.id],
+      incomingFacets?.[incoming.id],
+      lock,
+    ))) {
       state.locks.delete(incoming.id);
       state.readBackInFlight.delete(incoming.id);
       mergedDevices.push(incoming);
-      adoptIncomingFacets(incoming.id);
+      adoptReadyFacets();
     } else {
       mergedDevices.push(local);
       keepLocalFacets(incoming.id);

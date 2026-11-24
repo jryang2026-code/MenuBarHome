@@ -40,6 +40,8 @@ FIXTURE = ROOT / "Tests/Fixtures/device_labels_golden.json"
 
 SHARED_CLAIMS = ROOT / "Shared/deviceClaims.json"
 SWIFT_CLAIMS_COPY = ROOT / "Sources/MijiaCore/Resources/deviceClaims.json"
+SHARED_SPEC_PATCHES = ROOT / "Shared/specPatches.json"
+SWIFT_SPEC_PATCHES_COPY = ROOT / "Sources/MijiaCore/Resources/specPatches.json"
 SWIFT_SYNTH = ROOT / "Sources/MijiaCore/MiCloud/MiotSynthesizer.swift"
 TS_SYNTH = ROOT / "windows/src/core/miCloud/synthesis.ts"
 COVERAGE_GOLDEN = ROOT / "Tests/Fixtures/miot_coverage_golden.json"
@@ -58,6 +60,13 @@ SERVICE_PROPERTY_KEYS = frozenset({"service", "property"})
 FALLBACK_TOKEN_KEYS = frozenset({"service", "tokens"})
 PLATFORMS = ("macos", "windows")
 SERVICE_NAME = re.compile(r"^[a-z][a-z0-9-]*$")
+SPEC_PATCHES_SCHEMA_VERSION = 1
+SPEC_PATCHES_ROOT_KEYS = frozenset({"schemaVersion", "models"})
+SPEC_PATCH_MODEL_KEYS = frozenset({"hideProperties", "properties", "note"})
+SPEC_PATCH_REF_KEYS = frozenset({"siid", "piid"})
+SPEC_PATCH_PROP_KEYS = frozenset({"siid", "piid", "access", "unit", "valueRange", "valueList", "description", "note"})
+SPEC_PATCH_ACCESS = frozenset({"read", "write", "notify"})
+SPEC_PATCH_VALUE_ITEM_KEYS = frozenset({"value", "description"})
 
 # Ratchets. `windowsDivergences` is a debt table and may only shrink: lower the budget in the same
 # change that removes an entry. A claim rung only one end renders is the same kind of debt, so a new
@@ -459,9 +468,123 @@ def validate_resource_copies() -> list[str]:
         except OSError as exc:
             errs.append(f"{label} 不可读: {exc}")
             continue
-        for name in ("deviceLabels.json", "deviceClaims.json"):
+        for name in ("deviceLabels.json", "deviceClaims.json", "specPatches.json"):
             if f'Resources/{name}' not in text:
                 errs.append(f"资源缺失: {label} 没有复制 Resources/{name}")
+    return errs
+
+
+def _is_positive_int(val: Any) -> bool:
+    return isinstance(val, int) and not isinstance(val, bool) and val > 0
+
+
+def validate_spec_patches_document(document: Any) -> list[str]:
+    errs: list[str] = []
+    if not isinstance(document, dict):
+        return ["specPatches.json 顶层必须是对象"]
+    extra = set(document) - SPEC_PATCHES_ROOT_KEYS
+    if extra:
+        errs.append(f"specPatches.json 顶层含未授权字段: {', '.join(sorted(extra))}")
+    if document.get("schemaVersion") != SPEC_PATCHES_SCHEMA_VERSION:
+        errs.append(
+            f"specPatches.json schemaVersion 必须是 {SPEC_PATCHES_SCHEMA_VERSION}，"
+            f"实际为 {document.get('schemaVersion')!r}"
+        )
+    models = document.get("models")
+    if not isinstance(models, dict):
+        errs.append("specPatches.json models 必须是对象")
+        return errs
+    for model, entry in models.items():
+        if not isinstance(model, str) or not model.strip() or model != model.strip():
+            errs.append(f"specPatches.json models 含非法型号名: {model!r}")
+            continue
+        if not isinstance(entry, dict):
+            errs.append(f"specPatches.json models.{model} 必须是对象")
+            continue
+        entry_extra = set(entry) - SPEC_PATCH_MODEL_KEYS
+        if entry_extra:
+            errs.append(f"specPatches.json models.{model} 含未授权字段: {', '.join(sorted(entry_extra))}")
+        if "note" in entry and not isinstance(entry["note"], str):
+            errs.append(f"specPatches.json models.{model}.note 必须是字符串")
+        seen_hidden: set[tuple[int, int]] = set()
+        if "hideProperties" in entry:
+            hidden = entry["hideProperties"]
+            if not isinstance(hidden, list):
+                errs.append(f"specPatches.json models.{model}.hideProperties 必须是数组")
+            else:
+                for idx, ref in enumerate(hidden):
+                    if not isinstance(ref, dict) or set(ref) != SPEC_PATCH_REF_KEYS:
+                        errs.append(f"specPatches.json models.{model}.hideProperties[{idx}] 只能包含 siid 与 piid")
+                        continue
+                    if not (_is_positive_int(ref["siid"]) and _is_positive_int(ref["piid"])):
+                        errs.append(f"specPatches.json models.{model}.hideProperties[{idx}] 的 siid/piid 必须是正整数")
+                        continue
+                    pair = (ref["siid"], ref["piid"])
+                    if pair in seen_hidden:
+                        errs.append(f"specPatches.json models.{model}.hideProperties 重复引用 {pair}")
+                    seen_hidden.add(pair)
+        seen_props: set[tuple[int, int]] = set()
+        if "properties" in entry:
+            props = entry["properties"]
+            if not isinstance(props, list):
+                errs.append(f"specPatches.json models.{model}.properties 必须是数组")
+            else:
+                for idx, prop in enumerate(props):
+                    scope = f"specPatches.json models.{model}.properties[{idx}]"
+                    if not isinstance(prop, dict):
+                        errs.append(f"{scope} 必须是对象")
+                        continue
+                    p_extra = set(prop) - SPEC_PATCH_PROP_KEYS
+                    if p_extra:
+                        errs.append(f"{scope} 含未授权字段: {', '.join(sorted(p_extra))}")
+                    if not (_is_positive_int(prop.get("siid")) and _is_positive_int(prop.get("piid"))):
+                        errs.append(f"{scope} 的 siid/piid 必须是正整数")
+                        continue
+                    pair = (prop["siid"], prop["piid"])
+                    if pair in seen_props:
+                        errs.append(f"specPatches.json models.{model}.properties 重复覆写 {pair}")
+                    seen_props.add(pair)
+                    if pair in seen_hidden:
+                        errs.append(f"specPatches.json models.{model} 同时隐藏并覆写了 {pair}")
+                    if "access" in prop:
+                        acc = prop["access"]
+                        if (
+                            not isinstance(acc, list)
+                            or not acc
+                            or any(not isinstance(a, str) or a not in SPEC_PATCH_ACCESS for a in acc)
+                            or len(set(acc)) != len(acc)
+                        ):
+                            errs.append(f"{scope}.access 必须是由 read/write/notify 组成的非空不重复数组")
+                    if "unit" in prop and not isinstance(prop["unit"], str):
+                        errs.append(f"{scope}.unit 必须是字符串")
+                    if "description" in prop and not isinstance(prop["description"], str):
+                        errs.append(f"{scope}.description 必须是字符串")
+                    if "note" in prop and not isinstance(prop["note"], str):
+                        errs.append(f"{scope}.note 必须是字符串")
+                    if "valueRange" in prop:
+                        vr = prop["valueRange"]
+                        if (
+                            not isinstance(vr, list)
+                            or len(vr) not in (2, 3)
+                            or any(isinstance(v, bool) or not isinstance(v, (int, float)) for v in vr)
+                            or vr[0] > vr[1]
+                            or (len(vr) == 3 and vr[2] <= 0)
+                        ):
+                            errs.append(f"{scope}.valueRange 必须是合法的 [min, max] 或 [min, max, step]")
+                    if "valueList" in prop:
+                        vl = prop["valueList"]
+                        if not isinstance(vl, list):
+                            errs.append(f"{scope}.valueList 必须是数组")
+                        else:
+                            for vidx, item in enumerate(vl):
+                                if (
+                                    not isinstance(item, dict)
+                                    or set(item) != SPEC_PATCH_VALUE_ITEM_KEYS
+                                    or isinstance(item.get("value"), bool)
+                                    or not isinstance(item.get("value"), int)
+                                    or not isinstance(item.get("description"), str)
+                                ):
+                                    errs.append(f"{scope}.valueList[{vidx}] 必须包含整数 value 和字符串 description")
     return errs
 
 
@@ -567,6 +690,18 @@ def run_self_test() -> int:
         ),
         "应删除",
     )
+    spec_patches = load_strict_json(SHARED_SPEC_PATCHES.read_text("utf-8"))
+    assert not validate_spec_patches_document(spec_patches), "基线 specPatches 应通过"
+    assert any("未授权字段" in e for e in validate_spec_patches_document({"schemaVersion": 1, "models": {}, "extra": 1}))
+    assert any("schemaVersion" in e for e in validate_spec_patches_document({"schemaVersion": 2, "models": {}}))
+    assert any("access" in e for e in validate_spec_patches_document({
+        "schemaVersion": 1,
+        "models": {"a.b.c": {"properties": [{"siid": 2, "piid": 1, "access": ["exec"]}]}},
+    }))
+    assert any("同时隐藏并覆写" in e for e in validate_spec_patches_document({
+        "schemaVersion": 1,
+        "models": {"a.b.c": {"hideProperties": [{"siid": 2, "piid": 1}], "properties": [{"siid": 2, "piid": 1, "unit": "celsius"}]}},
+    }))
     print("✅ check_device_rules.py --self-test 通过")
     return 0
 
@@ -587,6 +722,10 @@ def main() -> int:
         errors.extend(validate_resource_copies())
         if SHARED_CLAIMS.read_bytes() != SWIFT_CLAIMS_COPY.read_bytes():
             errors.append("副本不一致: Sources/MijiaCore/Resources/deviceClaims.json 必须与 Shared/deviceClaims.json 逐字节相同")
+        spec_patches = load_strict_json(SHARED_SPEC_PATCHES.read_text("utf-8"))
+        errors.extend(validate_spec_patches_document(spec_patches))
+        if SHARED_SPEC_PATCHES.read_bytes() != SWIFT_SPEC_PATCHES_COPY.read_bytes():
+            errors.append("副本不一致: Sources/MijiaCore/Resources/specPatches.json 必须与 Shared/specPatches.json 逐字节相同")
     except Exception as exc:  # noqa: BLE001 - the message is the gate output
         print(f"❌ 设备规则门禁解析失败：{exc}", file=sys.stderr)
         return 1

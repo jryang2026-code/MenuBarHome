@@ -309,7 +309,13 @@ export class MiCloudClient {
       asIdString(extra["parentDid"]) ??
       asIdString(extra["parent_id"]) ??
       asIdString(extra["parentId"]);
-    const pid = rec["pid"];
+    const rawPid = rec["pid"];
+    const pid =
+      typeof rawPid === "number" && Number.isSafeInteger(rawPid)
+        ? rawPid
+        : typeof rawPid === "string" && /^\s*\d+\s*$/.test(rawPid)
+          ? Number(rawPid.trim())
+          : undefined;
     const localIp = normalizeDeviceLocalIp(rec["localip"] ?? rec["localIp"]);
     const mac = normalizeDeviceMac(rec["mac"]);
     const shareFlag = rec["share_flag"];
@@ -324,7 +330,7 @@ export class MiCloudClient {
       specType: typeof rec["spec_type"] === "string" ? rec["spec_type"] : null,
       ...(splitParentDid && splitSiid !== null ? { splitParentDid, splitSiid } : {}),
       ...(parentDid !== null ? { parentDid } : {}),
-      ...(typeof pid === "number" && Number.isSafeInteger(pid) ? { pid } : {}),
+      ...(pid !== undefined && Number.isSafeInteger(pid) ? { pid } : {}),
       ...(localIp !== null ? { localIp } : {}),
       ...(isShared ? { isShared: true } : {}),
       ...(mac !== null ? { mac } : {}),
