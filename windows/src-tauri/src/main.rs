@@ -289,6 +289,7 @@ fn main() {
             get_env_var,
             is_workstation_locked,
             system_power_status,
+            awake_time_ms,
             external_display_count,
             wifi_current,
             set_tray_tooltip, send_desktop_notification,
