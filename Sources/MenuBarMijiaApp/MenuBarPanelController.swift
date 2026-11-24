@@ -1779,6 +1779,7 @@ final class MenuBarPanelController: NSObject {
     /// and status-item clicks.
     func handlePanelDidResignKey() {
         PanelTransientUIState.shared.cancelAllOffHold()
+        PanelTransientUIState.shared.cancelDeviceControlGesture()
         let now = statusItemUptime()
         let context = PanelResignKeyDecision.Context(
             isPanelVisible: isPanelVisible,

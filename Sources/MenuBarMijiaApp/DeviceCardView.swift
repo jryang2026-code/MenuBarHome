@@ -288,6 +288,7 @@ public struct DeviceCardView: View {
 
     private var headerRow: some View {
         let canAdjust = device.isOnline && store.hasDetailDrawer(for: device)
+        let requiresSlide = store.panelConfirmationLevel(for: device, action: .primary) == .slide
         return HStack(spacing: 10) {
             Button {
                 guard !isEditingLayout else { return }
@@ -317,6 +318,7 @@ public struct DeviceCardView: View {
                     : canAdjust
                         ? L10n.tr("展开调节", "Adjust controls")
                         : L10n.tr("只读状态", "Read only"))
+            .panelControlGesture(for: device, store: store, opensCameraLive: true, label: device.name)
 
             // The text block opens the drawer; only a card without one falls back to the switch.
             Button {
@@ -375,6 +377,9 @@ public struct DeviceCardView: View {
                 : device.isPrimaryToggleable
                     ? L10n.tr("点击直接切换开关", "Click to toggle power")
                     : device.name)
+            .panelControlGesture(for: device, store: store, when: !canAdjust && !requiresSlide,
+                                 ringDiameter: 28, opensCameraLive: true, label: device.name)
+            .allowsHitTesting(canAdjust || !requiresSlide)
 
             if let quickIndex, shouldShowQuickBadge {
                 QuickIndexPill(index: quickIndex, tint: statusColor)
@@ -603,6 +608,7 @@ public struct DeviceCardView: View {
                 }
                 .buttonStyle(PressableCardButtonStyle())
                 .accessibilityLabel(Text(L10n.tr("降低目标温度", "Lower target temperature")))
+                .panelControlGesture(.temperatureStep(-L10n.celsiusStep(spec.step)), for: device, store: store)
                 .disabled(!device.isOnline)
 
                 Spacer()
@@ -634,6 +640,7 @@ public struct DeviceCardView: View {
                 }
                 .buttonStyle(PressableCardButtonStyle())
                 .accessibilityLabel(Text(L10n.tr("升高目标温度", "Raise target temperature")))
+                .panelControlGesture(.temperatureStep(L10n.celsiusStep(spec.step)), for: device, store: store)
                 .disabled(!device.isOnline)
             }
             .padding(.horizontal, 8)
@@ -650,6 +657,7 @@ public struct DeviceCardView: View {
                                 store.setClimateMode(device.id, mode: mode)
                             }
                             .buttonStyle(PillActionButtonStyle(isSelected: selected, tintColor: accent))
+                            .panelControlGesture(.mode(mode), for: device, store: store)
                             .disabled(!device.isOnline)
                         }
                     }
@@ -1206,6 +1214,7 @@ public struct DeviceCardView: View {
                             Label(L10n.tr("放大实时画面", "Open Live View"), systemImage: "pip.enter")
                         }
                         .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: accent))
+                        .panelControlGesture(for: device, store: store, opensCameraLive: true)
                         .disabled(!device.isOnline)
 
                         if spec.powerWritable {
@@ -1219,6 +1228,7 @@ public struct DeviceCardView: View {
                             )
                         }
                         .buttonStyle(PillActionButtonStyle(isSelected: !spec.isOn, tintColor: accent))
+                        .panelControlGesture(for: device, store: store)
                         .disabled(!device.isOnline)
                         }
 

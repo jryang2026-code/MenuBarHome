@@ -19,6 +19,7 @@ extension ClassicDeviceCardView {
                             Label(L10n.tr("放大实时画面", "Open Live View"), systemImage: "pip.enter")
                         }
                         .buttonStyle(ClassicPillActionButtonStyle(isSelected: true, tintColor: accent))
+                        .panelControlGesture(for: device, store: store, opensCameraLive: true)
                         .disabled(!device.isOnline)
 
                         if spec.powerWritable {
@@ -32,6 +33,7 @@ extension ClassicDeviceCardView {
                                 )
                             }
                             .buttonStyle(ClassicPillActionButtonStyle(isSelected: !spec.isOn, tintColor: accent))
+                            .panelControlGesture(for: device, store: store)
                             .disabled(!device.isOnline)
                         }
 
