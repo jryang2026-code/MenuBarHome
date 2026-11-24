@@ -1,5 +1,6 @@
 import Testing
 import SwiftUI
+import AppKit
 @testable import MenuBarMijiaApp
 
 @Suite("AppleMotion token & reduce-motion resolution")
@@ -40,6 +41,29 @@ struct AppleMotionTests {
         for token in AppleMotion.Token.allCases {
             #expect(AppleMotion.resolve(token, reduceMotion: false) == AppleMotion.standardAnimation(for: token))
         }
+    }
+
+    @Test("The no-argument resolve follows the test override and otherwise the system setting")
+    @MainActor
+    func noArgumentResolveFollowsTestOverride() {
+        let previous = AppleMotion.reduceMotionOverrideForTesting
+        defer { AppleMotion.reduceMotionOverrideForTesting = previous }
+
+        // The hook is what panel/snapshot harnesses set in place of the SwiftUI environment, so the
+        // non-View callers (stores, the status-item controller) answer like the views do.
+        AppleMotion.reduceMotionOverrideForTesting = true
+        #expect(AppleMotion.resolve(.surface) == AppleMotion.resolve(.surface, reduceMotion: true))
+        #expect(AppleMotion.resolve(.surface) == .easeOut(duration: 0.20))
+        #expect(AppleMotion.resolve(.snappy) == nil)
+
+        AppleMotion.reduceMotionOverrideForTesting = false
+        #expect(AppleMotion.resolve(.snappy) == AppleMotion.standardAnimation(for: .snappy))
+
+        // Production never sets the hook: the system setting is the fallback, unchanged.
+        AppleMotion.reduceMotionOverrideForTesting = nil
+        #expect(AppleMotion.resolve(.reveal) == AppleMotion.resolve(
+            .reveal, reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        ))
     }
 
     @Test("Slider progress animates ~180 ms on click and has zero delay while dragging")

@@ -91,8 +91,8 @@ import {
   type RoomOption,
 } from "./listCut.js";
 
-import { type LoadedSettings, type PendingHighRiskConfirmation, type PersistedSettings, type ReplyBannerState, type UndoAction, type UndoStep } from "./appTypes.js";
-import { SF_ICONS, STORAGE_KEY } from "./appConstants.js";
+import { type LoadedSettings, type PendingHighRiskConfirmation, type PersistedSettings, type QrLoginPhase, type ReplyBannerState, type UndoAction, type UndoStep } from "./appTypes.js";
+import { ALL_OFF_HOLD_MS, SF_ICONS, STORAGE_KEY } from "./appConstants.js";
 import { demoDevices, demoScenes } from "./demo.js";
 import { finishMiSceneConfirmation } from "./sceneConfirmation.js";
 import { createTransport, invokeTauriVoid } from "./transport.js";
@@ -586,6 +586,10 @@ export class MenuMijiaWindowsApp {
   public qrTicket: QRLoginTicket | null = null;
   public qrStatusText = t("点击下方按钮获取安全二维码，用手机「米家 App → 扫一扫」即可同步真实全屋设备。");
   public isPollingQR = false;
+  /** Explicit QR-login outcome for the views (Nit-5, #293); never derived from translated copy. */
+  public qrPhase: QrLoginPhase = "idle";
+  /** Deadline of the current QR wait; the only signal the UI needs to call a code expired. */
+  private qrWaitDeadlineMs: number | null = null;
   /** Latest GitHub release found by the daily check (#39); shown in settings and the tray menu. */
   public availableUpdate: GitHubRelease | null = null;
   public updateState: UpdateState = { lastCheckedAtMs: null, release: null };
@@ -1242,7 +1246,7 @@ export class MenuMijiaWindowsApp {
           this.allOffHoldConsumed = true;
           allOff.classList.remove("is-holding");
           void this.turnAllOff();
-        }, 600);
+        }, ALL_OFF_HOLD_MS);
       };
       // A keyup after the button was rebuilt has no pending timer, so it must not show the short-press hint.
       const endHold = (hint: "never" | "if-pending" | "always") => {
@@ -1697,6 +1701,8 @@ export class MenuMijiaWindowsApp {
     const sourceRevAtStart = this.sourceRevision;
     const requestedRegion = normalizeMiCloudRegion(this.settings.miCloudRegion);
     this.isPollingQR = true;
+    this.qrPhase = "requesting";
+    this.qrWaitDeadlineMs = null;
     this.qrStatusText = t("正在获取小米安全登录二维码...");
     invokeTauriVoid("set_pin_popover", { pin: true });
     this.render();
@@ -1706,6 +1712,10 @@ export class MenuMijiaWindowsApp {
       const ticket = await login.start();
       if (this.sourceRevision !== sourceRevAtStart) return;
       this.qrTicket = ticket;
+      this.qrPhase = "waiting";
+      // `waitForScan` gives up at this same deadline, so comparing against it tells an expired code
+      // apart from any other failure without reading the (translated) error message.
+      this.qrWaitDeadlineMs = Date.now() + ticket.timeout * 1000;
       this.qrStatusText = t("请打开手机「米家 App → 我的 → 右上角扫一扫」确认登录");
       this.render();
 
@@ -1737,6 +1747,8 @@ export class MenuMijiaWindowsApp {
       this.activeSheet = "none";
       this.qrTicket = null;
       this.isPollingQR = false;
+      this.qrPhase = "idle";
+      this.qrWaitDeadlineMs = null;
       // switchSource() moved sourceRevision on, so the `finally` below no longer
       // matches; release the pin taken at the start here or the flyout stops dismissing.
       invokeTauriVoid("set_pin_popover", { pin: this.shouldKeepPopoverPinned() });
@@ -1760,6 +1772,9 @@ export class MenuMijiaWindowsApp {
     } catch (err) {
       if (this.sourceRevision === sourceRevAtStart) {
         const msg = err instanceof Error ? err.message : String(err);
+        const deadline = this.qrWaitDeadlineMs;
+        this.qrPhase = deadline !== null && Date.now() >= deadline ? "expired" : "failed";
+        this.qrWaitDeadlineMs = null;
         this.qrStatusText = t("扫码未完成：{message}", { message: msg });
       }
     } finally {

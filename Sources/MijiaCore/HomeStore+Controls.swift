@@ -240,7 +240,7 @@ extension HomeStore {
             updated.kind = .vacuum(s)
             command = .vacuumAction(entityId: s.entityId, action: startCleaning ? .start : .returnToBase)
 
-        case (.tv(let mediaEid, let turnOn), .tv(var s)) where s.mediaEntityId == mediaEid:
+        case (.tv(let mediaEid, let turnOn), .tv(var s)) where s.mediaEntityId == mediaEid && s.powerWritable:
             s.state = turnOn ? "on" : "standby"
             if turnOn { s.isScreenOff = false }
             updated.kind = .tv(s)
@@ -248,6 +248,12 @@ extension HomeStore {
                 command = .setSwitch(entityId: LGWebOSProtocol.powerEntityId, isOn: turnOn)
             } else if turnOn, let btnId = s.turnOnButtonId {
                 command = .pressButton(entityId: btnId)
+            } else if turnOn, let actionId = s.powerOnActionId {
+                command = .pressButton(entityId: actionId)
+            } else if !turnOn, let actionId = s.powerOffActionId {
+                command = .pressButton(entityId: actionId)
+            } else if MiotAddress.parse(s.mediaEntityId) != nil {
+                command = .setSwitch(entityId: s.mediaEntityId, isOn: turnOn)
             } else {
                 toggleExpanded(current.id)
                 return nil
@@ -2062,6 +2068,7 @@ extension HomeStore {
             updated.kind = .speaker(s)
             mediaEid = s.mediaEntityId
         case .tv(var s):
+            guard s.volumeWritable else { return }
             s.volumePercent = clamped
             s.volumePresent = true
             updated.kind = .tv(s)
@@ -2111,11 +2118,20 @@ extension HomeStore {
 
     public func toggleTVMute(_ deviceId: String) {
         guard let previous = controllableDevice(deviceId), case .tv(var s) = previous.kind else { return }
+        let entityId: String
+        if LGWebOSProtocol.isLGEntity(s.mediaEntityId) {
+            entityId = LGWebOSProtocol.muteEntityId
+        } else if let muteEid = s.muteSwitchEntityId {
+            entityId = muteEid
+        } else if MiotAddress.parse(s.mediaEntityId) != nil {
+            return
+        } else {
+            entityId = s.mediaEntityId
+        }
         let nextMuted = !s.isMuted
         var updated = previous
         s.isMuted = nextMuted
         updated.kind = .tv(s)
-        let entityId = LGWebOSProtocol.isLGEntity(s.mediaEntityId) ? LGWebOSProtocol.muteEntityId : s.mediaEntityId
         commitManualWrite(
             from: previous, to: updated,
             command: .setSwitch(entityId: entityId, isOn: nextMuted),

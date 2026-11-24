@@ -71,8 +71,10 @@
       "deviceType" : "stb"
     },
     "123888.tv.xhzn11" : {
-      "category" : "genericControllable",
-      "deviceType" : "television"
+      "category" : "matched",
+      "deviceType" : "television",
+      "service" : "television",
+      "unexposedWritable" : 3
     },
     "1245.airfresh.cj300" : {
       "category" : "matched",
@@ -975,22 +977,17 @@
     "categories" : {
       "droppedControllable" : 0,
       "droppedReadOnly" : 0,
-      "genericControllable" : 94,
+      "genericControllable" : 93,
       "genericReadOnly" : 14,
-      "matched" : 69,
+      "matched" : 70,
       "misclaimed" : 0,
       "noUsableProperties" : 31
     },
     "deviceTypes" : 177,
     "specs" : 208,
-    "unexposedWritableTotal" : 470
+    "unexposedWritableTotal" : 473
   },
   "windowsDivergences" : {
-    "123888.tv.xhzn11" : {
-      "category" : "matched",
-      "deviceType" : "television",
-      "service" : "television",
-      "unexposedWritable" : 3
-    }
+
   }
 }

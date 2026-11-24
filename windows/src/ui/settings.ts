@@ -178,6 +178,34 @@ export function evaluateLegacyOnboardingMigration(
   return { shouldShowOnboarding: true, isLegacyStraightThrough: false, identityReadFailure: null };
 }
 
+export interface LegacyOnboardingFlagInput {
+  readonly hasExplicitFlag: boolean;
+  readonly storedFlag: boolean;
+  readonly hasLegacyDataSource: boolean;
+  readonly hasPersistedLocalData: boolean;
+  readonly hasPersistedSettings: boolean;
+  /** The raw persisted mode, before any default is applied. */
+  readonly storedConnectionMode: unknown;
+}
+
+/**
+ * Nit-7 (#293): the legacy fallback for "this install was already set up".
+ *
+ * An explicit flag always wins. Without one, any trace of a past connection — a legacy data source,
+ * auxiliary local data, or a persisted platform choice — seals the guide, so an old install is never
+ * mistaken for a fresh one. Extracted from `loadSettings` so the rule is unit-testable on its own.
+ */
+export function resolveLegacyOnboardingFlag(input: LegacyOnboardingFlagInput): boolean {
+  if (input.hasExplicitFlag) return input.storedFlag;
+  if (input.hasLegacyDataSource || input.hasPersistedLocalData) return true;
+  return (
+    input.hasPersistedSettings &&
+    (input.storedConnectionMode === "xiaomiCloud" ||
+      input.storedConnectionMode === "homeAssistant" ||
+      input.storedConnectionMode === "demo")
+  );
+}
+
 export function loadSettings(): LoadedSettings {
   let raw: string | null = null;
   try {
@@ -257,14 +285,14 @@ export function loadSettings(): LoadedSettings {
           ? parsed.assistantLegacyKeyEndpoint
           : resolvedKeyEndpoint;
       const askWhenUnsure = typeof parsed.askWhenUnsure === "boolean" ? parsed.askWhenUnsure : true;
-      const hasCompletedOnboarding = hasExplicitOnboardingFlag
-        ? (parsed.hasCompletedOnboarding as boolean)
-        : hasLegacyDataSource ||
-          hasPersistedLocalData ||
-          (hasPersistedSettings &&
-            (parsed.connectionMode === "xiaomiCloud" ||
-              parsed.connectionMode === "homeAssistant" ||
-              parsed.connectionMode === "demo"));
+      const hasCompletedOnboarding = resolveLegacyOnboardingFlag({
+        hasExplicitFlag: hasExplicitOnboardingFlag,
+        storedFlag: parsed.hasCompletedOnboarding === true,
+        hasLegacyDataSource,
+        hasPersistedLocalData,
+        hasPersistedSettings,
+        storedConnectionMode: parsed.connectionMode,
+      });
       const preDemoConnectionMode =
         parsed.preDemoConnectionMode === "xiaomiCloud" || parsed.preDemoConnectionMode === "homeAssistant"
           ? parsed.preDemoConnectionMode

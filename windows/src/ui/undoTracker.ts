@@ -1,6 +1,7 @@
 import { t, tr3 } from "../core/i18n.js";
 import type { MenuMijiaWindowsApp } from "./app.js";
 import type { UndoAction } from "./appTypes.js";
+import { UNDO_BANNER_MULTI_DEVICE_THRESHOLD, UNDO_BANNER_SECONDS, UNDO_BANNER_SECONDS_MULTI } from "./appConstants.js";
 import { isUndoHoverPaused } from "./speechGuard.js";
 
 export { tr3 };
@@ -8,7 +9,7 @@ export { tr3 };
 export const UNDO_AVAILABILITY_WINDOW_MS = 10 * 60 * 1000;
 
 export function undoBannerMs(deviceCount: number): number {
-  return (deviceCount >= 3 ? 15 : 10) * 1000;
+  return (deviceCount >= UNDO_BANNER_MULTI_DEVICE_THRESHOLD ? UNDO_BANNER_SECONDS_MULTI : UNDO_BANNER_SECONDS) * 1000;
 }
 
 export function undoDeviceCount(steps: readonly { readonly deviceId: string }[]): number {

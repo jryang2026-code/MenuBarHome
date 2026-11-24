@@ -165,7 +165,9 @@ function makeBasicMiTransport(opts: {
   return async (req) => {
     const user = reqUser(req), path = reqPath(req);
     await opts.onBefore?.(user, path);
-    if (path === "miotspec/prop/set" || path === "miotspec/action" || path.includes("scene")) {
+    // GetSimpleSceneList is a scene *read* (#451: owned homes without uid now fetch scenes with
+    // the logged-in uid); only the run endpoint is a write worth recording.
+    if (path === "miotspec/prop/set" || path === "miotspec/action" || path.includes("NewRunScene")) {
       opts.writes?.push(path);
       return okMi([{ did: primaryDid, siid: 2, piid: 1, code: 0 }]);
     }

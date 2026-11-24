@@ -48,6 +48,12 @@ export interface SpeechRecognitionInstance {
 
 export type ConnectionMode = "demo" | "xiaomiCloud" | "homeAssistant";
 
+/**
+ * Xiaomi QR-login state exposed to the UI (Nit-5, #293). The guide must never decide whether a
+ * code expired by matching localized status copy, so the login flow publishes the outcome instead.
+ */
+export type QrLoginPhase = "idle" | "requesting" | "waiting" | "expired" | "failed";
+
 export interface LearnedShortcut {
   readonly phrase: string;
   readonly reply: string;

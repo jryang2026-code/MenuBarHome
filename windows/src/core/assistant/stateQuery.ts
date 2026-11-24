@@ -1,6 +1,7 @@
 import { t } from "../i18n.js";
 import { deviceEnvironmentReading, isDeviceActiveOn, type IntentPlan, type SmartDevice } from "../models.js";
 import { normalizeSearch, searchEntries, searchMatches } from "../panelSearch.js";
+import { formatTemperature } from "../temperature.js";
 import { normalizeChineseUtterance } from "./chineseIntentTables.js";
 import { deviceCategory } from "./deviceCategory.js";
 import { IntentReply } from "./intent.js";
@@ -66,9 +67,8 @@ function shortList(entries: readonly string[]): string {
   return entries.length > 3 ? t("{list} 等 {count} 台", { list: first, count: entries.length }) : first;
 }
 
-function measurement(value: number | null | undefined, unit: string): string | null {
-  if (value == null || !Number.isFinite(value)) return null;
-  return (Number.isInteger(value) ? String(value) : value.toFixed(1)) + unit;
+function finite(value: number | null | undefined): value is number {
+  return value != null && Number.isFinite(value);
 }
 
 function deviceStatus(query: StateQuery, device: SmartDevice): string | null {
@@ -85,12 +85,21 @@ function deviceStatus(query: StateQuery, device: SmartDevice): string | null {
     case "contact":
       return kind.kind === "sensor" && kind.safetyObservations?.some((o) => o.kind === "contact" && o.alarming)
         ? t("已打开") : t("关好");
-    case "temperature":
-      return measurement(deviceEnvironmentReading(device)?.temperature, "°C");
-    case "humidity":
-      return measurement(deviceEnvironmentReading(device)?.humidity, "%");
+    case "temperature": {
+      // The reply speaks the display unit the user picked (#428), one decimal like the panel's
+      // temperature-only status; the stored value stays Celsius.
+      const temperature = deviceEnvironmentReading(device)?.temperature;
+      return finite(temperature) ? formatTemperature(temperature, undefined, 1) : null;
+    }
+    case "humidity": {
+      const humidity = deviceEnvironmentReading(device)?.humidity;
+      if (!finite(humidity)) return null;
+      return (Number.isInteger(humidity) ? String(humidity) : humidity.toFixed(1)) + "%";
+    }
     case "setpoint": {
-      const value = kind.kind === "climate" ? measurement(kind.targetTemperature, "°C") : null;
+      const value = kind.kind === "climate" && finite(kind.targetTemperature)
+        ? formatTemperature(kind.targetTemperature)
+        : null;
       return value === null ? null : t("设定 {value}", { value });
     }
     case "fanSpeed":

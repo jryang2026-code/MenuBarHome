@@ -66,7 +66,8 @@ import { cancelEchoReadBack } from "./commandDispatch.js";
 import { applyOrder, type HomeOption, type LayoutPrefs } from "./panelPrefs.js";
 import { markTimerSnapshotReady, scheduledCommandIdentity } from "./scheduledCommands.js";
 import { switchHome, switchSource, type SourceSwitchHost } from "./sourceSwitch.js";
-import { isPlainHttpRemoteEndpoint, type SettingsTab, type SettingsViewContext } from "./settingsViews.js";
+import { isPlainHttpRemoteEndpoint } from "./haEndpoint.js";
+import type { SettingsTab, SettingsViewContext } from "./settingsViews.js";
 import { dismissPendingUrlConfirmation, hasPendingMiVaultDeletion, hasPendingUrlConfirmation, setPendingMiVaultDeletion } from "./speechGuard.js";
 import { createTransport, invokeTauriVoid } from "./transport.js";
 

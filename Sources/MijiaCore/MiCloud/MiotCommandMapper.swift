@@ -97,10 +97,12 @@ public enum MiotCommandMapper {
             // from, keyed by its own short name (#300 review, laundry added in #3).
             let isApplianceAction = applianceServices.contains(service.shortName)
                 && ApplianceActionKind.matching(action.shortName) != nil
+            let isTvPowerAction = spec.services.contains { ["television", "stb"].contains($0.shortName) }
+                && ["turn-on", "turn-off"].contains(action.shortName)
             let inputs: [JSONValue]
             switch command {
             case .pressButton where action.inputProperties.isEmpty
-                && (["play-music", "stop-alarm"].contains(action.shortName) || isApplianceAction):
+                && (["play-music", "stop-alarm"].contains(action.shortName) || isApplianceAction || isTvPowerAction):
                 inputs = []
             case .sendNotifyMessage(_, let text):
                 let expected = action.shortName == "play-text" ? ["text-content"]
@@ -172,7 +174,11 @@ public enum MiotCommandMapper {
         case .setFanOscillating(_, let oscillating):
             return .setProps([try ctx.write("horizontal-swing", .bool(oscillating))])
 
-        case .setSwitch(_, let isOn):
+        case .setSwitch(let eid, let isOn):
+            if eid.hasSuffix("#mute") {
+                let muteProp = try ctx.require("mute")
+                return .setProps([ctx.write(muteProp, .bool(isOn))])
+            }
             let localToggle = ctx.property("on")
                 ?? (service.shortName == "speaker" ? ctx.property("mute") : nil)
                 ?? (service.shortName == "intelligent-speaker" ? ctx.property("sleep-mode") : nil)
@@ -186,7 +192,9 @@ public enum MiotCommandMapper {
                 ?? ctx.writableProperty("heating", in: applianceServices) {
                 return .setProps([ctx.write(appliancePower, .bool(isOn))])
             }
-            let candidates = isOn ? ["start-cook", "resume-cook"] : ["cancel-cooking", "pause"]
+            let candidates = ["television", "stb"].contains(service.shortName)
+                ? (isOn ? ["turn-on"] : ["turn-off"])
+                : (isOn ? ["start-cook", "resume-cook"] : ["cancel-cooking", "pause"])
             if let call = try? ctx.action(candidates, requireEmptyInputs: true) {
                 return .action(call)
             }
@@ -213,10 +221,26 @@ public enum MiotCommandMapper {
             return .action(try ctx.action(candidates))
 
         case .mediaSetVolume(_, let level):
-            guard service.shortName == "speaker", level.isFinite else { throw MiotCommandError.unsupported("volume") }
-            let volume = try ctx.require("volume")
+            guard ["speaker", "television", "stb"].contains(service.shortName), level.isFinite else {
+                throw MiotCommandError.unsupported("volume")
+            }
+            // Match `MiotSynthesizer.buildTV`: prefer the companion `speaker` service's `volume`
+            // over any `volume` on the primary service so reads, scaling, and writes agree.
+            let speakerVolume: Context.Found? = ["television", "stb"].contains(service.shortName)
+                ? spec.services(named: "speaker").first.flatMap { speaker in
+                    speaker.properties
+                        .first(where: { $0.shortName == "volume" && $0.isWritable })
+                        .map { Context.Found(service: speaker, property: $0) }
+                }
+                : nil
+            guard let volume = speakerVolume ?? ctx.property("volume") else {
+                throw MiotCommandError.unsupported("volume")
+            }
             let raw = MiotPercentScale.raw(fromPercent: level * 100, property: volume.property, curve: .proportional)
             return .setProps([ctx.write(volume, .number(raw))])
+
+        case .mediaSelectSource(_, let source):
+            return .setProps([try ctx.writeListValue("input-control", description: source, searchDevice: true)])
 
         case .setNumberValue(_, let value):
             if let target = ctx.property("target-position") {
@@ -228,7 +252,7 @@ public enum MiotCommandMapper {
             }
             return .setProps([try ctx.write("target-temperature", .number(value))])
 
-        case .setClimateSwingMode, .mediaSelectSource,
+        case .setClimateSwingMode,
              .pressButton, .sendNotifyMessage, .activateScene,
              .setMiotProperty, .callMiotAction, .setHumidity:
             throw MiotCommandError.unsupported(String(describing: command).components(separatedBy: "(").first ?? "")

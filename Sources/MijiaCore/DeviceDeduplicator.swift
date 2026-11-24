@@ -502,7 +502,7 @@ public enum DeviceDeduplicator {
             return score
         case .tv(let spec):
             var score = 0
-            if spec.turnOnButtonId != nil { score += 1 }
+            if spec.turnOnButtonId != nil || spec.powerOnActionId != nil { score += 1 }
             if !spec.availableSources.isEmpty { score += 1 }
             return score
         case .camera(let spec):
