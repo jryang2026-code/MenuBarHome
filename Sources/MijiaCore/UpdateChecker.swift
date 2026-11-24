@@ -113,17 +113,20 @@ public struct AppRelease: Equatable, Sendable {
     public let pageURL: URL
     public let notes: String
     public let packageAsset: PackageAsset?
+    public let rolloutPercentage: Int?
 
     public init(
         version: String,
         pageURL: URL,
         notes: String,
-        packageAsset: PackageAsset? = nil
+        packageAsset: PackageAsset? = nil,
+        rolloutPercentage: Int? = nil
     ) {
         self.version = version
         self.pageURL = pageURL
         self.notes = notes
         self.packageAsset = packageAsset
+        self.rolloutPercentage = rolloutPercentage
     }
 }
 
@@ -510,7 +513,14 @@ public struct UpdateChecker: Sendable {
         let notes = object["body"] as? String ?? ""
         let rawAssets = object["assets"] as? [[String: Any]] ?? []
         let packageAsset = Self.selectPackageAsset(version: shown, from: rawAssets)
-        return AppRelease(version: shown, pageURL: url, notes: notes, packageAsset: packageAsset)
+        let rolloutPercentage = UpdateRollout.parseRolloutPercentage(fromReleaseObject: object)
+        return AppRelease(
+            version: shown,
+            pageURL: url,
+            notes: notes,
+            packageAsset: packageAsset,
+            rolloutPercentage: rolloutPercentage
+        )
     }
 
     fileprivate static func fetchBoundedData(

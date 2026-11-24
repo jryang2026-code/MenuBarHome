@@ -72,9 +72,29 @@ app** so a failed install returns the user to the version they had instead of le
 running. It is a constant string so `UpdateCheckerTests` can assert those guarantees without
 executing it.
 
+## Scheduling, launch jitter, and staged rollout (#30)
+
+- **macOS background scheduling** (`Sources/MijiaCore/UpdateScheduler.swift`): automatic checks run
+  through `NSBackgroundActivityScheduler` (`repeats = true`, `interval = 6 h`, `tolerance = 1 h`,
+  `qualityOfService = .utility`, honoring `shouldDefer`) plus a 0–30 minute random post-launch
+  jitter delay. Manual "check now" calls `HomeStore.checkForUpdates()` directly and is unaffected.
+- **Staged rollout metadata** (`Sources/MijiaCore/UpdateRollout.swift`,
+  `windows/src/core/updateChecker.ts`): the GitHub release metadata read during update checks may
+  carry an optional `rollout_percentage` (0–100) either as a top-level JSON integer
+  (`rollout_percentage` / `rolloutPercentage`) or as an HTML comment in the release `body`
+  (`<!-- rollout_percentage: 25 -->` or `<!-- rollout: 25 -->`). Missing defaults to `100`.
+  - The signed `.update.json` manifest schema is intentionally unchanged so older clients continue
+    to verify releases without rejecting unknown keys.
+  - Each installation generates a random local install ID once (`UserDefaults` on macOS,
+    `localStorage` on Windows), never derived from hardware or account data and never sent over
+    the network.
+  - Automatic checks offer the update only when `SHA256("menubarhome-update-rollout-v1:<version>:<installId>")[0..<8] % 100 < rollout_percentage`.
+    Manual "check now" always sees the update regardless of rollout percentage.
+  - Cross-platform parity is pinned in `Tests/Fixtures/update_rollout_golden.json`.
+
 ## Verification
 
-- `swift test --filter "UpdateCheckerTests|UpdateManifestTests|UpdateProgressAndRecoveryTests"`
+- `swift test --filter "UpdateCheckerTests|UpdateManifestTests|UpdateProgressAndRecoveryTests|UpdateRolloutAndSchedulerTests"`
 - `bash scripts/check.sh` — full gate, including the cross-platform public-key consistency check.
 - Real release, read-only: download the published manifest and signature and run
   `swift scripts/sign_update.swift --verify <manifest> <sig>`.

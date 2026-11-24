@@ -62,9 +62,18 @@ extension HomeStore {
 
         updateState = .checking
         do {
-            let release = try await updater.checkLatestRelease()
+            let candidate = try await updater.checkLatestRelease()
             guard case .checking = updateState else { return }
             lastUpdateCheckDate = now
+            let installID = UpdateRollout.installID(in: userDefaults)
+            let release = candidate.flatMap { found in
+                UpdateRollout.isEligible(
+                    installID: installID,
+                    version: found.version,
+                    rolloutPercentage: found.rolloutPercentage,
+                    manual: userInitiated
+                ) ? found : nil
+            }
             if let release {
                 if let previousStaged,
                    Self.matchesStagedRelease(release, staged: previousStaged),
