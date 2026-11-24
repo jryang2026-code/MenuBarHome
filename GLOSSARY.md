@@ -19,7 +19,7 @@ _Avoid_: Device（设备）、Card（卡片）
 _Avoid_: Data mapping（数据映射）、Parsing（解析）
 
 **HomeBackend（连接后端）**：
-驱动 `HomeStore` 的底层数据源（macOS 支持 HA `HAWebSocketProvider` 与米家云端 `MiCloudProvider` 单源或双源自动合并及 `DemoHomeProvider`；Windows 为互斥单选）。
+驱动 `HomeStore` 的底层数据源（macOS 与 Windows 均支持 Home Assistant 与米家云端单源、多小米账号聚合、双源自动合并及演示模式：macOS 为 `HAWebSocketProvider`、`MiCloudProvider` / `MiAccountsProvider`、`DeviceDeduplicator` 与 `DemoHomeProvider`；Windows 为按需 WebSocket 的 `HomeAssistantClient`、`MultiAccountMiCloudProvider`、`DualSourceHomeProvider` 与 `demo` 模式）。
 _Avoid_: Server type（服务器类型）、Mode（模式）
 
 **HomeBackendDescriptor（后端描述）**：

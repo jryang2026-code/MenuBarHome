@@ -127,7 +127,7 @@ Get-FileHash -Algorithm SHA256 .\MenuBarHome-1.4.0-windows-x64.msi
 
 Click the menu bar (or tray) icon to open the panel, open Settings `⚙️`, and pick one:
 
-- **Mi Cloud Connect (recommended):** choose "Mi Cloud Connect", scan the QR code with the Mi Home app on your phone, and your homes, rooms, and devices sync in. CN, SG, DE, US, and RU servers are supported. On macOS you can add more accounts and see all their devices in one panel. If your sign-in is about to expire, the panel warns you 3 days ahead, and a quick re-scan in the panel renews it.
+- **Mi Cloud Connect (recommended):** choose "Mi Cloud Connect", scan the QR code with the Mi Home app on your phone, and your homes, rooms, and devices sync in. CN, SG, DE, US, and RU servers are supported. On both macOS and Windows you can add more accounts and see all their devices in one panel. If your sign-in is about to expire, the panel warns you 3 days ahead, and a quick re-scan in the panel renews it.
 - **Home Assistant:** enter your instance address (for example `http://192.168.1.100:8123`; reverse-proxy subpaths work too) and a long-lived access token. macOS can also find Home Assistant on your local network. The token is kept in the macOS Keychain or Windows Credential Manager.<br>
   If macOS says "Local network connection blocked by macOS", allow MenuBarHome under **System Settings → Privacy & Security → Local Network**.
 - **Demo mode:** try the whole interface with virtual devices, no account needed.
@@ -234,8 +234,10 @@ macOS is a native Swift 6 app; Windows 11 is a separate Tauri v2 implementation.
 | Local commands and optional AI | ✅ | ✅ |
 | All Off and Undo | ✅ | ✅ |
 | Camera live view | ✅ | ✅ |
-| Several Xiaomi accounts at once | ✅ | — one account |
-| Mac event automation, Shortcuts | ✅ | — |
+| Several Xiaomi accounts at once | ✅ | ✅ |
+| Mi Home + Home Assistant dual source | ✅ | ✅ |
+| Event automation | ✅ | ⚠️ partial |
+| Apple Shortcuts | ✅ | — |
 | Signed installer | ⚠️ self-signed | ⚠️ unsigned |
 
 The full device-by-device table, with every capability and its status, is in [docs/platform-matrix.md](docs/platform-matrix.md).
@@ -336,7 +338,7 @@ Every control tool carries `destructiveHint: true`, so MCP clients that honour t
 - **Mi Cloud Connect uses an unofficial client API.** It is not an official Xiaomi integration. Xiaomi can rate-limit requests or flag an account (risk control) at any time, and this project cannot promise it won't happen. The app polls less when the panel is closed or the screen is locked to keep traffic low. If you'd rather not take that risk, connect Home Assistant with Xiaomi's official [xiaomi_home](https://github.com/XiaoMi/ha_xiaomi_home) integration instead.
 - **You will need to scan again.** The app does not store the long-lived `passToken` and does not renew a sign-in silently ([ADR-0004](docs/adr/0004-no-pass-token-storage.md)). How long a sign-in lasts is decided by Xiaomi's server and is shown in Settings when it is known; the panel warns you 3 days before it ends, and re-scanning takes a few seconds.
 - **The apps are not code-signed commercially.** macOS needs **Open Anyway** on first launch and Windows shows a SmartScreen prompt (see [Install](#1-install)).
-- **Windows is not at feature parity.** Windows 11 only; voice is hands-free only (no hold-to-talk); one Xiaomi account; no Mac event automation or Apple Shortcuts. See the [platform comparison](#platform-comparison).
+- **Windows is not at feature parity.** Windows 11 only; voice is hands-free only (no hold-to-talk); event automation covers lock/power/display/sleep/Wi-Fi/schedule/sensor rules (no camera/mic, Focus, Calendar, or lid-closed sleep triggers); Home Assistant uses on-demand WebSocket snapshots/calls rather than a persistent event stream or mDNS discovery; no Apple Shortcuts. See the [platform comparison](#platform-comparison).
 
 ### Safety and privacy
 
@@ -355,7 +357,7 @@ MenuBarHome is an independent open-source project, not an official Xiaomi app. M
 
 | Secret | What is stored | Where |
 | :--- | :--- | :--- |
-| Xiaomi Home / Mijia | Signed-in account `userId`, `cUserId`, `ssecurity`, `serviceToken`, cloud region, and declared expiry (`passToken` is dropped on login; multi-account on macOS, single-account on Windows) | macOS Keychain (one generic-password item) or Windows Credential Manager (`mi_session`) |
+| Xiaomi Home / Mijia | Signed-in account `userId`, `cUserId`, `ssecurity`, `serviceToken`, cloud region, and declared expiry (`passToken` is dropped on login; multi-account on both macOS and Windows) | macOS Keychain (one generic-password item) or Windows Credential Manager (`mi_session` and `mi_session_<slotId>`) |
 | Home Assistant | The long-lived access token (the instance URL is not secret) | macOS Keychain or Windows Credential Manager (`ha_token`) |
 | AI assistants | Per-provider API keys, plus non-secret imported-key labels, custom-endpoint bindings, and remembered cloud-consent endpoints | Per-provider API keys in macOS Keychain or Windows Credential Manager (`assistant_api_key_<preset>`); non-secret metadata in app preferences |
 | LG webOS TV | The pairing client key issued by the TV | macOS Keychain |
