@@ -1325,6 +1325,7 @@ export class MenuMijiaWindowsApp {
     sourceLabel: string,
     options: ExecuteIntentsOptions = {},
   ): Promise<boolean> {
+    this.clearPendingHighRisk();
     if (this.settings?.connectionMode !== "demo" || isDualSourceEnabled(this)) {
       const gateMsg = evaluateIntentsWriteGate({
         intents,
