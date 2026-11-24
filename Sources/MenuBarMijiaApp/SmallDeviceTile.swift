@@ -216,6 +216,8 @@ struct SmallDeviceTile<MenuContent: View>: View {
         .accessibilityLabel(Text(spokenSummary))
         .accessibilityHint(Text(helpText))
         .panelHelp(tooltipText)
+        .panelControlGesture(for: device, store: store, ringDiameter: SmallTileMetrics.orbDiameter,
+                             opensCameraLive: true, label: spokenSummary)
         .contextMenu { menuContent() }
     }
 }

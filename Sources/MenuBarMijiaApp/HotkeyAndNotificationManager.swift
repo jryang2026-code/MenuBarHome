@@ -465,7 +465,7 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
         return PanelKeyRouter.Context(
             isPanelWindow: MenuBarPanelController.shared.isPanelWindow(NSApp.keyWindow),
             isShowingMiReauth: store.isShowingMiReauth,
-            isAllOffHoldActive: transient.isAllOffHoldActive,
+            isAllOffHoldActive: transient.isConfirmationGestureActive,
             hasPendingConfirmation: store.pendingCloudConsent != nil,
             isShowingConnectionDetail: PanelConnectionDetailState.shared.isPresented,
             isConnectionStatusFocused: PanelConnectionDetailState.shared.isStatusControlFocused,
@@ -503,6 +503,7 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
             store.dismissMiReauth()
         case .cancelAllOffHold:
             PanelTransientUIState.shared.cancelAllOffHold()
+            PanelTransientUIState.shared.cancelDeviceControlGesture()
         case .cancelPendingConfirmation:
             store.declinePendingCloudRequest()
         case .dismissConnectionDetail:

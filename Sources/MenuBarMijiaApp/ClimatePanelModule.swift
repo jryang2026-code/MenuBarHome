@@ -119,6 +119,7 @@ struct ClimatePanelModule: View {
             .buttonStyle(PressableCardButtonStyle())
             .accessibilityLabel(Text(Self.powerAccessibilityLabel(deviceName: device.name, spec: spec)))
             .panelHelp(Self.powerHelpText(spec))
+            .panelControlGesture(for: device, store: store, label: device.name)
             } else {
                 iconBadge
             }
@@ -248,6 +249,7 @@ struct ClimatePanelModule: View {
         .buttonStyle(PressableCardButtonStyle(scaleAmount: 0.86))
         .accessibilityLabel(Text(label))
         .panelHelp(label)
+        .panelControlGesture(.temperatureStep(delta), for: device, store: store, label: label)
     }
 
     // MARK: Modes
@@ -280,6 +282,7 @@ struct ClimatePanelModule: View {
                     .contentShape(Capsule(style: .continuous))
                 }
                 .buttonStyle(PressableCardButtonStyle(scaleAmount: 0.94))
+                .panelControlGesture(.mode(mode), for: device, store: store)
             }
         }
         .padding(3)

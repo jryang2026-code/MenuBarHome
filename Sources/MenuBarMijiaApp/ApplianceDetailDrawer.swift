@@ -24,7 +24,7 @@ struct ApplianceDetailDrawer: View {
 
             if !spec.availableModes.isEmpty, spec.modeWritable {
                 // More than four programmes clip in one row. A menu keeps every name on screen.
-                if spec.availableModes.count > 4 {
+                if spec.availableModes.count > 4, !spec.heats || spec.isOn {
                     modeMenu
                 } else {
                     ScrollView(.horizontal, showsIndicators: false) {
@@ -39,6 +39,7 @@ struct ApplianceDetailDrawer: View {
                                         isSelected: spec.currentMode == mode,
                                         tintColor: accent
                                     )
+                                    .panelControlGesture(.mode(mode), for: device, store: store)
                                     .disabled(!device.isOnline || !spec.modeWritable)
                                 }
                             }
@@ -176,6 +177,7 @@ struct ApplianceDetailDrawer: View {
             }
             .buttonStyle(PressableCardButtonStyle())
             .accessibilityLabel(Text(L10n.tr("降低目标温度", "Lower target temperature")))
+            .panelControlGesture(.temperatureStep(-L10n.celsiusStep(spec.step)), for: device, store: store)
             .disabled(!device.isOnline || !spec.temperatureWritable)
 
             Spacer()
@@ -207,6 +209,7 @@ struct ApplianceDetailDrawer: View {
             }
             .buttonStyle(PressableCardButtonStyle())
             .accessibilityLabel(Text(L10n.tr("升高目标温度", "Raise target temperature")))
+            .panelControlGesture(.temperatureStep(L10n.celsiusStep(spec.step)), for: device, store: store)
             .disabled(!device.isOnline || !spec.temperatureWritable)
         }
         .padding(.horizontal, 8)
@@ -253,6 +256,7 @@ struct ApplianceDetailDrawer: View {
             store.runApplianceAction(device.id, action: action)
         }
         .themedPillButtonStyle(theme, tintColor: accent)
+        .panelControlGesture(.applianceAction(action), for: device, store: store, label: action.title)
         .disabled(!device.isOnline)
     }
 }

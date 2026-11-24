@@ -495,6 +495,8 @@ struct DeviceFacetSection: View {
                                 portion: portion(for: control)
                             )
                         }
+                        .panelControlGesture(.facetAction(control, portion: portion(for: control)),
+                                             for: device, store: store, label: title)
                         .disabled(!enabled)
                     }
                     if let values = portionValues(control) {
