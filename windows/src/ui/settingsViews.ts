@@ -1302,6 +1302,24 @@ function renderAboutPanel(ctx: SettingsViewContext): string {
           )}</button>
         </div>
       </div>
+
+      <div class="cc-field">
+        <div class="cc-field-row">
+          <div>
+            <label>${ctx.escapeHtml(tr3("反馈问题", "回饋問題", "Report a Problem"))}</label>
+            <p class="cc-field-hint" style="margin: 2px 0 0 0;">${ctx.escapeHtml(
+              tr3(
+                "在浏览器打开 GitHub Issue，版本、系统、各数据源设备数与错误码已自动填好；提交前你可以改。同一段内容也会复制到剪贴板。",
+                "在瀏覽器開啟 GitHub Issue，版本、系統、各資料來源裝置數與錯誤碼已自動填好；提交前你可以改。同一段內容也會複製到剪貼簿。",
+                "Opens a GitHub issue in the browser with version, OS, per-source device counts and error codes prefilled. You review and submit it; the same block lands on the clipboard.",
+              ),
+            )}</p>
+          </div>
+          <button type="button" class="cc-btn-primary" id="btn-about-report-problem">${ctx.escapeHtml(
+            tr3("反馈问题（预填诊断）", "回饋問題（預填診斷）", "Report a Problem"),
+          )}</button>
+        </div>
+      </div>
     </div>
 
     <div class="cc-settings-group-card">

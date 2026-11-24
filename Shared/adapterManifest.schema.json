@@ -1,0 +1,380 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://menubarhome.local/schemas/adapter-manifest.v0.schema.json",
+  "title": "MenuBarHome Out-of-Process Adapter Manifest (v0)",
+  "description": "Declarative manifest contract for read-only out-of-process adapters (ADR-0024). Policy verdicts, write permissions, alert severities, global device IDs, and raw secrets are strictly forbidden.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "manifestVersion",
+    "adapterId",
+    "name",
+    "version",
+    "hostApi",
+    "runtime",
+    "platforms",
+    "capabilities",
+    "permissions"
+  ],
+  "x-forbiddenKeys": [
+    "riskLevel",
+    "requiresConfirmation",
+    "safetyClass",
+    "bypassConfirmation",
+    "canWrite",
+    "writeAllowed",
+    "allowControl",
+    "autoExecute",
+    "notificationChannel",
+    "severity",
+    "interruptionLevel",
+    "suppressAlerts",
+    "muteAlerts",
+    "globalDeviceId",
+    "canonicalId",
+    "secret",
+    "secrets",
+    "token",
+    "accessToken",
+    "refreshToken",
+    "password",
+    "apiKey",
+    "cookie",
+    "session",
+    "credentials"
+  ],
+  "properties": {
+    "manifestVersion": {
+      "type": "integer",
+      "const": 1
+    },
+    "adapterId": {
+      "type": "string",
+      "minLength": 5,
+      "maxLength": 128,
+      "pattern": "^[a-z][a-z0-9-]*(\\.[a-z][a-z0-9-]*){2,}$",
+      "description": "Reverse-DNS unique identifier used for sourceScope = adapter:<adapterId>."
+    },
+    "name": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["zh", "en"],
+      "properties": {
+        "zh": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "en": { "type": "string", "minLength": 1, "maxLength": 64 }
+      }
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?$"
+    },
+    "hostApi": {
+      "type": "string",
+      "pattern": "^(\\^|~|>=)?(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)$",
+      "description": "Semver range for host protocol compatibility (e.g. ^0.1.0 for v0)."
+    },
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "entry", "arch"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["binary", "node", "python"]
+        },
+        "entry": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^(?!/)(?!.*\\.\\.)[A-Za-z0-9._/-]+$"
+        },
+        "arch": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": ["arm64", "x86_64"]
+          }
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "platforms": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "enum": ["macos", "windows"]
+      }
+    },
+    "vendor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "docs": { "type": "string", "pattern": "^https://.+" },
+        "hosts": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$"
+          }
+        }
+      }
+    },
+    "auth": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "type", "label"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_-]{0,31}$"
+          },
+          "type": {
+            "type": "string",
+            "enum": ["none", "apiKey", "oauthDevice", "qr"]
+          },
+          "label": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["zh", "en"],
+            "properties": {
+              "zh": { "type": "string", "minLength": 1, "maxLength": 64 },
+              "en": { "type": "string", "minLength": 1, "maxLength": 64 }
+            }
+          },
+          "scopes": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": { "type": "string", "minLength": 1, "maxLength": 64 }
+          },
+          "prompts": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["key", "inputType", "writeOnly"],
+              "properties": {
+                "key": { "type": "string", "pattern": "^[a-zA-Z][a-zA-Z0-9_-]{0,31}$" },
+                "inputType": { "type": "string", "enum": ["text", "secret", "url"] },
+                "writeOnly": { "type": "boolean" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "discovery": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["modes"],
+      "properties": {
+        "modes": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": ["cloudApi", "lanMdns", "lanSsdp", "lanUdp"]
+          }
+        },
+        "mdns": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "ssdp": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "udpPorts": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "integer", "minimum": 1, "maximum": 65535 }
+        }
+      }
+    },
+    "capabilities": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["readOnly", "deviceKinds"],
+      "properties": {
+        "readOnly": {
+          "type": "boolean",
+          "const": true,
+          "description": "v0 protocol is strictly read-only."
+        },
+        "deviceKinds": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": [
+              "light",
+              "climate",
+              "fan",
+              "plug",
+              "fridge",
+              "vacuum",
+              "speaker",
+              "tv",
+              "camera",
+              "sensor",
+              "cover",
+              "appliance",
+              "generic",
+              "humidifier",
+              "valve"
+            ]
+          }
+        },
+        "commands": {
+          "type": "array",
+          "maxItems": 0,
+          "items": { "type": "string" },
+          "description": "Write commands are forbidden in v0; must be omitted or empty."
+        },
+        "readings": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": [
+              "temperature",
+              "humidity",
+              "battery",
+              "illuminance",
+              "pm25",
+              "co2",
+              "power",
+              "energy"
+            ]
+          }
+        },
+        "alerts": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": [
+              "leak",
+              "smoke",
+              "gas",
+              "lock",
+              "contact",
+              "motion",
+              "vibration",
+              "doorbell"
+            ]
+          }
+        },
+        "pushEvents": { "type": "boolean" },
+        "history": { "type": "boolean" }
+      }
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "maxDevices": { "type": "integer", "minimum": 1, "maximum": 2000 },
+        "maxConcurrentCalls": { "type": "integer", "minimum": 1, "maximum": 32 },
+        "requestsPerMinute": { "type": "integer", "minimum": 1, "maximum": 600 }
+      }
+    },
+    "permissions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["network"],
+      "properties": {
+        "network": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["internet", "lan"],
+          "properties": {
+            "internet": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "pattern": "^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$"
+              }
+            },
+            "lan": { "type": "boolean" }
+          }
+        },
+        "files": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "read": {
+              "type": "array",
+              "maxItems": 0,
+              "items": { "type": "string" }
+            },
+            "write": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": { "type": "string", "enum": ["cache"] }
+            }
+          }
+        },
+        "subprocess": {
+          "type": "boolean",
+          "const": false,
+          "description": "v0 read-only adapters may not spawn child processes."
+        }
+      }
+    },
+    "health": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "intervalSec": { "type": "integer", "minimum": 15, "maximum": 600 },
+        "timeoutMs": { "type": "integer", "minimum": 500, "maximum": 15000 }
+      }
+    },
+    "ui": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "icon": {
+          "type": "string",
+          "pattern": "^(?!/)(?!.*\\.\\.)[A-Za-z0-9._/-]+\\.(png|svg)$"
+        },
+        "configSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "properties"],
+          "properties": {
+            "type": { "type": "string", "const": "object" },
+            "properties": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["type"],
+                "properties": {
+                  "type": { "type": "string", "enum": ["string", "number", "integer", "boolean"] },
+                  "title": { "type": "string", "minLength": 1, "maxLength": 64 },
+                  "writeOnly": { "type": "boolean" }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

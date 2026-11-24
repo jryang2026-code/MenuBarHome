@@ -1,0 +1,19 @@
+{
+  "manifestVersion": 1,
+  "name": {
+    "zh": "缺字段适配器",
+    "en": "Missing Fields Adapter"
+  },
+  "version": "not-semver",
+  "hostApi": "^0.1.0",
+  "runtime": {
+    "type": "binary",
+    "entry": "../escape/bin",
+    "arch": ["arm64"]
+  },
+  "platforms": ["linux"],
+  "capabilities": {
+    "readOnly": true,
+    "deviceKinds": ["unknownKind"]
+  }
+}

@@ -1,0 +1,182 @@
+{
+  "schemaVersion": 1,
+  "bucketCases": [
+    {
+      "installId": "550e8400-e29b-41d4-a716-446655440000",
+      "version": "1.5.0",
+      "expectedBucket": 18
+    },
+    {
+      "installId": "550e8400-e29b-41d4-a716-446655440000",
+      "version": "v1.5.0",
+      "expectedBucket": 18
+    },
+    {
+      "installId": "550e8400-e29b-41d4-a716-446655440000",
+      "version": "1.6.0",
+      "expectedBucket": 16
+    },
+    {
+      "installId": "a1b2c3d4-0000-4000-8000-000000000001",
+      "version": "1.5.0",
+      "expectedBucket": 74
+    },
+    {
+      "installId": "ffffffff-ffff-4fff-bfff-ffffffffffff",
+      "version": "2.0.0",
+      "expectedBucket": 20
+    },
+    {
+      "installId": "00000000-0000-4000-8000-000000000000",
+      "version": "1.4.2",
+      "expectedBucket": 22
+    }
+  ],
+  "eligibilityCases": [
+    {
+      "installId": "550e8400-e29b-41d4-a716-446655440000",
+      "version": "1.5.0",
+      "rolloutPercentage": null,
+      "manual": false,
+      "expectedEligible": true
+    },
+    {
+      "installId": "550e8400-e29b-41d4-a716-446655440000",
+      "version": "1.5.0",
+      "rolloutPercentage": 18,
+      "manual": false,
+      "expectedEligible": false
+    },
+    {
+      "installId": "550e8400-e29b-41d4-a716-446655440000",
+      "version": "1.5.0",
+      "rolloutPercentage": 19,
+      "manual": false,
+      "expectedEligible": true
+    },
+    {
+      "installId": "a1b2c3d4-0000-4000-8000-000000000001",
+      "version": "1.5.0",
+      "rolloutPercentage": 50,
+      "manual": false,
+      "expectedEligible": false
+    },
+    {
+      "installId": "a1b2c3d4-0000-4000-8000-000000000001",
+      "version": "1.5.0",
+      "rolloutPercentage": 0,
+      "manual": true,
+      "expectedEligible": true
+    },
+    {
+      "installId": "550e8400-e29b-41d4-a716-446655440000",
+      "version": "1.5.0",
+      "rolloutPercentage": 0,
+      "manual": false,
+      "expectedEligible": false
+    },
+    {
+      "installId": "a1b2c3d4-0000-4000-8000-000000000001",
+      "version": "1.5.0",
+      "rolloutPercentage": 100,
+      "manual": false,
+      "expectedEligible": true
+    }
+  ],
+  "metadataCases": [
+    {
+      "label": "missing rollout defaults to nil",
+      "json": {
+        "tag_name": "v1.5.0",
+        "body": "Bug fixes"
+      },
+      "expectedRolloutPercentage": null
+    },
+    {
+      "label": "top-level snake_case rollout_percentage",
+      "json": {
+        "tag_name": "v1.5.0",
+        "rollout_percentage": 25,
+        "body": "Bug fixes"
+      },
+      "expectedRolloutPercentage": 25
+    },
+    {
+      "label": "top-level camelCase rolloutPercentage",
+      "json": {
+        "tag_name": "v1.5.0",
+        "rolloutPercentage": 40
+      },
+      "expectedRolloutPercentage": 40
+    },
+    {
+      "label": "body html comment with rollout_percentage",
+      "json": {
+        "tag_name": "v1.5.0",
+        "body": "Notes\n<!-- rollout_percentage: 15 -->"
+      },
+      "expectedRolloutPercentage": 15
+    },
+    {
+      "label": "body html comment with short rollout and percent sign",
+      "json": {
+        "tag_name": "v1.5.0",
+        "body": "<!-- ROLLOUT: 30% -->\nRelease notes"
+      },
+      "expectedRolloutPercentage": 30
+    },
+    {
+      "label": "top-level takes precedence over body comment",
+      "json": {
+        "tag_name": "v1.5.0",
+        "rollout_percentage": 60,
+        "body": "<!-- rollout: 10 -->"
+      },
+      "expectedRolloutPercentage": 60
+    },
+    {
+      "label": "top-level numeric zero pauses rollout",
+      "json": {
+        "tag_name": "v1.5.0",
+        "rollout_percentage": 0,
+        "body": "Paused release"
+      },
+      "expectedRolloutPercentage": 0
+    },
+    {
+      "label": "top-level numeric one enables 1 percent rollout",
+      "json": {
+        "tag_name": "v1.5.0",
+        "rollout_percentage": 1,
+        "body": "Canary release"
+      },
+      "expectedRolloutPercentage": 1
+    },
+    {
+      "label": "boolean rollout_percentage is ignored",
+      "json": {
+        "tag_name": "v1.5.0",
+        "rollout_percentage": true,
+        "body": "No directive"
+      },
+      "expectedRolloutPercentage": null
+    },
+    {
+      "label": "false boolean rollout_percentage is ignored",
+      "json": {
+        "tag_name": "v1.5.0",
+        "rollout_percentage": false,
+        "body": "No directive"
+      },
+      "expectedRolloutPercentage": null
+    },
+    {
+      "label": "out-of-range percentage clamps to 0..100",
+      "json": {
+        "tag_name": "v1.5.0",
+        "rollout_percentage": 150
+      },
+      "expectedRolloutPercentage": 100
+    }
+  ]
+}

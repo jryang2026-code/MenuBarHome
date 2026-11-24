@@ -73,7 +73,7 @@ import { copyCompanionConfig, detectCompanionIntegration, setCompanionNotice, se
 import { switchSource, type SourceSwitchHost } from "./sourceSwitch.js";
 import { createTransport, invokeTauriVoid } from "./transport.js";
 import { bindAutomationSettingsEvents } from "./automationSettingsView.js";
-import { bindConnectionsAndDiagEvents } from "./connectionsAndDiagView.js";
+import { bindConnectionsAndDiagEvents, reportProblemOnHost, type ConnectionsAndDiagHost } from "./connectionsAndDiagView.js";
 import { bindEnergySettingsEvents } from "./energySettingsView.js";
 import { bindDeviceTypeSelectionEvents, clearDeviceTypeSelectionSession } from "./deviceTypeSelectionView.js";
 import { getSettingsTabSpec, normalizeSettingsTab, type SettingsTab } from "./settingsViews.js";
@@ -1190,6 +1190,10 @@ export function bindSettingsEvents(host: SettingsEventsHost): void {
   });
   host.root.querySelector("#btn-about-jump-diagnostics")?.addEventListener("click", () => {
     commitAnchorJump("copyDiagnostics");
+  });
+  host.root.querySelector("#btn-about-report-problem")?.addEventListener("click", () => {
+    // The settings host is the app object, which is also the diagnostics host (#29).
+    void reportProblemOnHost(host as unknown as ConnectionsAndDiagHost);
   });
 
   const renderSearchDropdown = () => {
