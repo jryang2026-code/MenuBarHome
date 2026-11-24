@@ -270,8 +270,8 @@ pub(crate) fn schedule_panel_low_memory(app: &AppHandle) {
     });
 }
 
-/// Immediately restores the main WebView2 to `MemoryUsageTargetLevel::Normal` (e.g. on
-/// `TrayIconEvent::Enter` or before presenting the panel).
+/// Immediately restores the main WebView2 to `MemoryUsageTargetLevel::Normal` (e.g. before
+/// presenting the panel).
 pub(crate) fn restore_panel_normal_memory(app: &AppHandle) {
     let needs_restore = PANEL_MEMORY_STATE
         .lock()
@@ -286,6 +286,14 @@ pub(crate) fn restore_panel_normal_memory(app: &AppHandle) {
             apply_webview_memory_level(&window, false);
         }
     });
+}
+
+/// Restores `Normal` memory on `TrayIconEvent::Enter` for instant open, and arms a fresh
+/// low-memory timer so a hover without clicking does not leave the hidden WebView2 stuck in
+/// `Normal` indefinitely.
+pub(crate) fn warm_panel_on_tray_hover(app: &AppHandle) {
+    restore_panel_normal_memory(app);
+    schedule_panel_low_memory(app);
 }
 
 pub(crate) fn settings_mark_open() {
@@ -448,10 +456,13 @@ mod tests {
         assert!(mem.restore_normal());
         assert!(!mem.restore_normal());
 
-        // Hovering before the 15 s timer expires cancels the pending Low transition.
+        // Hovering before the 15 s timer expires cancels the old timer and re-arms a fresh one
+        // so a hover without opening still returns the hidden panel to Low.
         let gen3 = mem.schedule_low();
         assert!(!mem.restore_normal());
+        let gen4 = mem.schedule_low();
         assert!(!mem.should_enter_low(gen3, false));
+        assert!(mem.should_enter_low(gen4, false));
     }
 
     #[test]

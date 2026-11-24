@@ -395,7 +395,7 @@ fn main() {
                 })
                 .on_tray_icon_event(|tray, event| match event {
                     TrayIconEvent::Enter { .. } => {
-                        webview_lifecycle::restore_panel_normal_memory(tray.app_handle());
+                        webview_lifecycle::warm_panel_on_tray_hover(tray.app_handle());
                     }
                     TrayIconEvent::Click {
                         button: MouseButton::Left,
