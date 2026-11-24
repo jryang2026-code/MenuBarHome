@@ -4,6 +4,23 @@ import Testing
 
 /// The provider seam: the store stops whatever provider it replaces through `HomeProvider`.
 struct ProviderSeamTests {
+    @Test("HA reconnect backoff uses away segments and resets after a topology restart")
+    func reconnectBackoffSegmentsAndReset() {
+        var backoff = HAReconnectBackoff()
+        #expect(backoff.next() == .milliseconds(800))
+        #expect(backoff.next() == .seconds(2))
+        #expect(backoff.next() == .seconds(4))
+        #expect(backoff.next() == .seconds(8))
+        #expect(backoff.next() == .seconds(30))
+        #expect(backoff.next() == .seconds(60))
+        #expect(backoff.next() == .seconds(120))
+        #expect(backoff.next() == .seconds(300))
+        #expect(backoff.next() == .seconds(300))
+        backoff.reset()
+        #expect(backoff.next() == .milliseconds(800))
+        #expect(backoff.next(localEndpoint: false) == .seconds(2))
+    }
+
     @Test("The composite stops both sources through the protocol")
     @MainActor
     func compositeShutsDownChildren() async throws {
