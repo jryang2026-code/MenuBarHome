@@ -292,6 +292,9 @@ fn main() {
             system_power_status,
             awake_time_ms,
             external_display_count,
+            media_capture_status,
+            focus_mode_status,
+            set_system_event_watchers,
             wifi_current,
             set_tray_tooltip, send_desktop_notification,
             set_companion_integration,
@@ -379,6 +382,7 @@ fn main() {
                         }
                     }
                     "quit" => {
+                        shutdown_system_event_watchers();
                         shutdown_companion_runtime();
                         shutdown_camera_daemons();
                         app.exit(0);
@@ -418,6 +422,7 @@ fn main() {
         .expect("error while building MenuBarHome Windows application")
         .run(|_app, event| {
             if matches!(event, tauri::RunEvent::Exit) {
+                shutdown_system_event_watchers();
                 shutdown_companion_runtime();
                 shutdown_camera_daemons();
             }

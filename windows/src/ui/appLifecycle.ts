@@ -49,9 +49,12 @@ import {
   isFullPanelHost,
   nextBackgroundActivityCadenceMs,
   notifyDisplayPowerChanged,
+  notifyFocusModeChanged,
+  notifyMediaCaptureChanged,
   notifyPanelWakeLifecycle,
   notifySystemSleep,
   notifySystemWake,
+  syncSystemEventWatchers,
   tickSafetyHealthAndAutomation,
 } from "./activityStackView.js";
 import { proactiveHasConsumer } from "./proactive.js";
@@ -1295,6 +1298,27 @@ export function bindLifecycleRecovery(
     const detail = (event as CustomEvent<{ readonly asleep?: unknown } | null>).detail;
     notifyDisplayPowerChanged(host, detail?.asleep === true);
   };
+  const onMediaCapture = (event: Event) => {
+    if (state.disposed || !isLifecycleHostAttached(host)) return;
+    const detail = (
+      event as CustomEvent<{ readonly cameraInUse?: unknown; readonly microphoneInUse?: unknown } | null>
+    ).detail;
+    if (!detail) return;
+    const cameraInUse = typeof detail.cameraInUse === "boolean" ? detail.cameraInUse : undefined;
+    const microphoneInUse =
+      typeof detail.microphoneInUse === "boolean" ? detail.microphoneInUse : undefined;
+    if (cameraInUse === undefined && microphoneInUse === undefined) return;
+    notifyMediaCaptureChanged(host, {
+      ...(cameraInUse !== undefined ? { cameraInUse } : {}),
+      ...(microphoneInUse !== undefined ? { microphoneInUse } : {}),
+    });
+  };
+  const onFocusMode = (event: Event) => {
+    if (state.disposed || !isLifecycleHostAttached(host)) return;
+    const detail = (event as CustomEvent<{ readonly enabled?: unknown } | null>).detail;
+    if (typeof detail?.enabled !== "boolean") return;
+    notifyFocusModeChanged(host, detail.enabled);
+  };
 
   const automationDisposers: Array<() => void> = [];
   const stopAutomationListeners = () => {
@@ -1308,8 +1332,11 @@ export function bindLifecycleRecovery(
         listen(ownerWin, "menumijia:system-sleep", onSystemSleep),
         listen(ownerWin, "menumijia:system-wake", onSystemWake),
         listen(ownerWin, "menumijia:display-power", onDisplayPower),
+        listen(ownerWin, "menumijia:media-capture", onMediaCapture),
+        listen(ownerWin, "menumijia:focus-mode", onFocusMode),
       );
     }
+    void syncSystemEventWatchers(host);
   };
   state.syncAutomationListeners();
   state.recoveryDisposers.push(
