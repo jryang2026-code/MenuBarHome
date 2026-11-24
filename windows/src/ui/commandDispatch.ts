@@ -900,7 +900,17 @@ export async function applyCommand(
     ) {
       return false;
     }
-    if (!(await requestMiSceneConfirmation(host, scene, command))) return false;
+    if (!(await requestMiSceneConfirmation(host, scene, command))) {
+      // Cancel, the 8 s expiry and a home/source switch behind the prompt are deliberate
+      // cancellations. The batch runner recognizes this banner and restores the previous one,
+      // so a declined scene is not reported as a failed write.
+      host.replyBanner = {
+        text: tr3("操作已取消", "操作已取消", "Action cancelled"),
+        source: t("已取消"),
+        isError: true,
+      };
+      return false;
+    }
     if (await isWorkstationLockBlockingControl(host) || sourceRevision !== host.sourceRevision ||
         homeRevision !== host.homeRevision || !miSceneBelongsToSelectedHome(host, scene) ||
         !host.scenes.some((row) => row.entityId === scene.entityId && row.miScene &&

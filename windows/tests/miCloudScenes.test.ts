@@ -265,4 +265,23 @@ describe("Mi cloud scenes stay scoped to the selected home", () => {
     assert.equal(await running, false);
     assert.equal(runSceneCalls, 0);
   });
+
+  it("reports a declined scene confirmation as cancelled, not as a failed write", async () => {
+    const app = await mountApp();
+    const bannerBefore = app.replyBanner;
+
+    const running = app.executeIntents(
+      [{ targetId: sceneEntityId("home-a", "11"), operation: { kind: "activateScene" } }],
+      "执行回家场景",
+      "测试",
+    );
+    await waitFor(() => app.pendingHighRisk !== null, "the scene confirmation to arm");
+    finishMiSceneConfirmation(app, false);
+
+    assert.equal(await running, false);
+    assert.equal(runSceneCalls, 0);
+    assert.notEqual(app.replyBanner?.isError, true, "a deliberate cancel must not surface a failure banner");
+    assert.equal(app.replyBanner?.text, bannerBefore?.text);
+    assert.equal(app.replyBanner?.text.includes("设备未响应"), false);
+  });
 });
