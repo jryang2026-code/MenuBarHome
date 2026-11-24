@@ -590,16 +590,20 @@ struct AssistantTests {
     @MainActor
     func finishedReplyAutoResets() async throws {
         let (store, _) = try await makeStore()
-        // A tiny seam delay keeps the auto-reset itself under test without a 3.2 s real-clock wait.
-        store.assistantAutoResetTiming = .fixed(.milliseconds(20))
+        let (reset, advance) = AsyncStream<Void>.makeStream()
+        defer { advance.finish() }
+        store.assistantAutoResetTiming = .controlledSleep { delay in
+            #expect(delay == .seconds(3.2))
+            var iterator = reset.makeAsyncIterator()
+            _ = await iterator.next()
+        }
         _ = await store.runAssistantCommand("打开书房灯")
+        let resetTask = try #require(store.assistantResetTask)
         #expect(store.assistantState == .done("已打开书房吸顶灯、书房台灯"))
         #expect(store.lastAssistantReceipt != nil)
 
-        let deadline = ContinuousClock.now + .seconds(5)
-        while store.assistantState != .idle, ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        advance.finish()
+        await resetTask.value
         #expect(store.assistantState == .idle)
         #expect(store.lastAssistantReceipt == nil)
     }
