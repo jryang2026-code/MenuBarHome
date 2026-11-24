@@ -324,6 +324,61 @@ struct NotificationDeliveryPolicyTests {
         #expect(FocusFilterStorage.load(defaults: defaults) == .inactive)
     }
 
+    @MainActor
+    @Test("Older reconciliation completing first does not invalidate a newer overlapping .notFound query")
+    func olderQueryCompletingFirstDoesNotBlockNewerNotFound() async throws {
+        let suite = "test.focus.overlap.order.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let sleepProfile = FocusFilterProfile(
+            isEnabled: true,
+            suppressNonSafetyNotifications: true,
+            focusModeName: "睡眠"
+        )
+
+        var releaseOlder: CheckedContinuation<FocusFilterQueryResult, Never>?
+        var olderStarted: CheckedContinuation<Void, Never>?
+
+        let olderTask = Task {
+            await FocusFilterStorage.reconcile(
+                isFocusActive: true,
+                currentFilter: {
+                    await withCheckedContinuation { continuation in
+                        releaseOlder = continuation
+                        olderStarted?.resume()
+                        olderStarted = nil
+                    }
+                },
+                defaults: defaults
+            )
+        }
+
+        await withCheckedContinuation { started in
+            olderStarted = started
+            if releaseOlder != nil {
+                olderStarted = nil
+                started.resume()
+            }
+        }
+
+        // Start a newer reconciliation before the older one resolves, then resolve the older query
+        // FIRST with Focus A (`sleepProfile`) and the newer query SECOND with `.notFound` (Focus B).
+        let newerResult = await FocusFilterStorage.reconcile(
+            isFocusActive: true,
+            currentFilter: {
+                releaseOlder?.resume(returning: .active(sleepProfile))
+                releaseOlder = nil
+                _ = await olderTask.value
+                return .notFound
+            },
+            defaults: defaults
+        )
+
+        #expect(newerResult == .inactive)
+        #expect(FocusFilterStorage.load(defaults: defaults) == .inactive)
+    }
+
     private func expectPolicy(
         for category: NotificationCategory,
         ordinary: NotificationInterruptionLevel,

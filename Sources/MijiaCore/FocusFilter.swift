@@ -100,25 +100,29 @@ public enum FocusFilterQueryResult: Equatable, Sendable {
 
 public enum FocusFilterStorage {
     public static let key = "focus_filter_profile_v1"
-    private static let sequenceKey = "focus_filter_write_sequence_v1"
+    private static let explicitSequenceKey = "focus_filter_explicit_write_sequence_v1"
+    private static let queryTicketKey = "focus_filter_query_ticket_v1"
+    private static let appliedQueryTicketKey = "focus_filter_applied_query_ticket_v1"
     private static let lock = NSLock()
 
     public static func load(defaults: UserDefaults = .standard) -> FocusFilterProfile {
-        lock.lock()
-        defer { lock.unlock() }
-        return loadUnlocked(defaults: defaults)
+        lock.withLock {
+            loadUnlocked(defaults: defaults)
+        }
     }
 
     public static func save(_ profile: FocusFilterProfile, defaults: UserDefaults = .standard) {
-        lock.lock()
-        defer { lock.unlock() }
-        saveUnlocked(profile, defaults: defaults)
+        lock.withLock {
+            bumpIntUnlocked(forKey: explicitSequenceKey, defaults: defaults)
+            writeProfileUnlocked(profile, defaults: defaults)
+        }
     }
 
     public static func clear(defaults: UserDefaults = .standard) {
-        lock.lock()
-        defer { lock.unlock() }
-        clearUnlocked(defaults: defaults)
+        lock.withLock {
+            bumpIntUnlocked(forKey: explicitSequenceKey, defaults: defaults)
+            removeProfileUnlocked(defaults: defaults)
+        }
     }
 
     /// Reconciles stored Focus filter state with the system's active Focus and `SetFocusFilterIntent.current`.
@@ -126,7 +130,9 @@ public enum FocusFilterStorage {
     /// Switching directly from Focus A (with filter) to Focus B (without filter) leaves `isFocusActive`
     /// at `true` and never triggers `perform()` again. Querying `currentFilter` surfaces `.notFound`
     /// so Focus A's quiet profile is cleared immediately instead of silencing notifications under Focus B.
-    /// A write sequence check ensures a slow system query never overwrites a newer `perform()` run.
+    /// Explicit `save`/`clear` writes (`perform()` or `isFocusActive != true`) and async query tickets
+    /// are tracked separately so an older query finishing first cannot invalidate a newer query, while
+    /// neither can overwrite a newer explicit `perform()` write.
     @discardableResult
     public static func reconcile(
         isolation: isolated (any Actor)? = #isolation,
@@ -139,28 +145,48 @@ public enum FocusFilterStorage {
             return .inactive
         }
 
-        let startSequence = currentSequence(defaults: defaults)
+        let (startExplicitSeq, myTicket) = beginReconcileQuery(defaults: defaults)
         let queryResult = await currentFilter()
-        return applyReconcileResult(queryResult, expectedSequence: startSequence, defaults: defaults)
+        return applyReconcileResult(
+            queryResult,
+            expectedExplicitSequence: startExplicitSeq,
+            queryTicket: myTicket,
+            defaults: defaults
+        )
+    }
+
+    private static func beginReconcileQuery(defaults: UserDefaults) -> (explicitSequence: Int, queryTicket: Int) {
+        lock.withLock {
+            let explicitSeq = defaults.integer(forKey: explicitSequenceKey)
+            let ticket = bumpIntUnlocked(forKey: queryTicketKey, defaults: defaults)
+            return (explicitSeq, ticket)
+        }
     }
 
     private static func applyReconcileResult(
         _ queryResult: FocusFilterQueryResult,
-        expectedSequence: Int,
+        expectedExplicitSequence: Int,
+        queryTicket: Int,
         defaults: UserDefaults
     ) -> FocusFilterProfile {
         lock.withLock {
-            guard sequenceUnlocked(defaults: defaults) == expectedSequence else {
-                // A `perform()` write landed while `currentFilter()` was in flight; keep the newer state.
+            // An explicit `perform()` write or off-clear landed while `currentFilter()` was in flight.
+            guard defaults.integer(forKey: explicitSequenceKey) == expectedExplicitSequence else {
+                return loadUnlocked(defaults: defaults)
+            }
+            // A newer reconciliation query has already settled and applied its result.
+            guard queryTicket > defaults.integer(forKey: appliedQueryTicketKey) else {
                 return loadUnlocked(defaults: defaults)
             }
 
             switch queryResult {
             case .active(let profile):
-                saveUnlocked(profile, defaults: defaults)
+                defaults.set(queryTicket, forKey: appliedQueryTicketKey)
+                writeProfileUnlocked(profile, defaults: defaults)
                 return profile
             case .notFound:
-                clearUnlocked(defaults: defaults)
+                defaults.set(queryTicket, forKey: appliedQueryTicketKey)
+                removeProfileUnlocked(defaults: defaults)
                 return .inactive
             case .unavailable:
                 return loadUnlocked(defaults: defaults)
@@ -168,18 +194,11 @@ public enum FocusFilterStorage {
         }
     }
 
-    private static func currentSequence(defaults: UserDefaults) -> Int {
-        lock.lock()
-        defer { lock.unlock() }
-        return sequenceUnlocked(defaults: defaults)
-    }
-
-    private static func sequenceUnlocked(defaults: UserDefaults) -> Int {
-        defaults.integer(forKey: sequenceKey)
-    }
-
-    private static func bumpSequenceUnlocked(defaults: UserDefaults) {
-        defaults.set(sequenceUnlocked(defaults: defaults) &+ 1, forKey: sequenceKey)
+    @discardableResult
+    private static func bumpIntUnlocked(forKey storageKey: String, defaults: UserDefaults) -> Int {
+        let next = defaults.integer(forKey: storageKey) &+ 1
+        defaults.set(next, forKey: storageKey)
+        return next
     }
 
     private static func loadUnlocked(defaults: UserDefaults) -> FocusFilterProfile {
@@ -190,19 +209,15 @@ public enum FocusFilterStorage {
         return profile
     }
 
-    private static func saveUnlocked(_ profile: FocusFilterProfile, defaults: UserDefaults) {
+    private static func writeProfileUnlocked(_ profile: FocusFilterProfile, defaults: UserDefaults) {
         guard profile != .inactive, let data = try? JSONEncoder().encode(profile) else {
-            clearUnlocked(defaults: defaults)
+            removeProfileUnlocked(defaults: defaults)
             return
         }
-        bumpSequenceUnlocked(defaults: defaults)
         defaults.set(data, forKey: key)
     }
 
-    private static func clearUnlocked(defaults: UserDefaults) {
-        // Advance the sequence even when storage is already empty so an older in-flight
-        // reconciliation cannot resurrect a stale profile after an authoritative `.notFound` clear.
-        bumpSequenceUnlocked(defaults: defaults)
+    private static func removeProfileUnlocked(defaults: UserDefaults) {
         guard defaults.object(forKey: key) != nil else { return }
         defaults.removeObject(forKey: key)
     }
