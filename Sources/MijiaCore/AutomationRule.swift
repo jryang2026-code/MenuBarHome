@@ -149,6 +149,70 @@ public enum AutomationTrigger: String, CaseIterable, Codable, Identifiable, Send
         default: return nil
         }
     }
+
+    /// Production event sources that drive this trigger on macOS. Exhaustive over every case so a
+    /// newly added trigger cannot silently appear in Settings without a wired producer.
+    public var macOSSources: [AutomationTriggerSource] {
+        switch self {
+        case .scheduledTime:
+            return [.macContextObserver]
+        case .away:
+            return [.workspaceWillSleep, .workspaceScreensDidSleep, .distributedScreenLocked]
+        case .back:
+            return [.workspaceDidWake, .workspaceScreensDidWake, .distributedScreenUnlocked]
+        case .screenLocked:
+            return [.distributedScreenLocked, .awayArbitrator]
+        case .lidClosedSleep, .systemSleep:
+            return [.workspaceWillSleep, .awayArbitrator]
+        case .externalDisplayConnected, .externalDisplayDisconnected:
+            return [.screenParametersChanged]
+        case .cameraInUse, .cameraNotInUse,
+             .microphoneInUse, .microphoneNotInUse,
+             .powerConnected, .powerDisconnected, .batteryBelowThreshold,
+             .wifiNetworkJoined, .wifiNetworkLeft,
+             .focusModeEnabled, .focusModeDisabled,
+             .calendarMeetingStartingSoon, .lateNightUsage:
+            return [.macContextObserver]
+        }
+    }
+
+    public var isSupportedOnMacOS: Bool {
+        !macOSSources.isEmpty
+    }
+
+    public var usesMacContextObserver: Bool {
+        macOSSources.contains(.macContextObserver)
+    }
+
+    /// Triggers backed by at least one production event source on macOS.
+    public static let macOSSupportedTriggers: [AutomationTrigger] = allCases.filter(\.isSupportedOnMacOS)
+
+    /// Registry mapping each supported macOS trigger to its declared production event sources.
+    public static let macOSTriggerSources: [AutomationTrigger: [AutomationTriggerSource]] = Dictionary(
+        uniqueKeysWithValues: macOSSupportedTriggers.map { ($0, $0.macOSSources) }
+    )
+}
+
+/// Production event sources capable of dispatching `AutomationTrigger` values on macOS.
+public enum AutomationTriggerSource: String, CaseIterable, Hashable, Sendable {
+    /// `NSWorkspace.willSleepNotification`
+    case workspaceWillSleep
+    /// `NSWorkspace.screensDidSleepNotification`
+    case workspaceScreensDidSleep
+    /// `NSWorkspace.didWakeNotification`
+    case workspaceDidWake
+    /// `NSWorkspace.screensDidWakeNotification`
+    case workspaceScreensDidWake
+    /// `DistributedNotificationCenter` `com.apple.screenIsLocked`
+    case distributedScreenLocked
+    /// `DistributedNotificationCenter` `com.apple.screenIsUnlocked`
+    case distributedScreenUnlocked
+    /// `AwayArbitrator` (`screenLockedOnly`, `lidClosedSleep`, `systemSleep`)
+    case awayArbitrator
+    /// `NSApplication.didChangeScreenParametersNotification`
+    case screenParametersChanged
+    /// `MacContextObserver` (10 s poll evaluated via `MacContextAutomation.events`)
+    case macContextObserver
 }
 
 /// Permissions the Mac context observer may ask for. They are requested only when the user has an
