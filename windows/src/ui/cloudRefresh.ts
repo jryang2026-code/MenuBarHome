@@ -952,7 +952,7 @@ export async function refreshHADevices(host: MenuMijiaWindowsApp, silent = false
             hiddenDevices: synthesized.hiddenIndexedDevices,
             safetySignalsByDeviceId: synthesized.safetySignalsByDeviceId,
           });
-      host.scenes = [...home.scenes];
+      host.scenes = [...host.scenes.filter((scene) => scene.sourceBackend === "xiaomiCloud" || scene.accountId !== undefined || !scene.id.startsWith("scene.")), ...home.scenes];
       if (haClient.lastRawSnapshot && typeof haClient.lastRawSnapshot === "object") {
         void ingestHostHASnapshotForDoorbell(host, haClient.lastRawSnapshot as HASnapshotLike);
       }
