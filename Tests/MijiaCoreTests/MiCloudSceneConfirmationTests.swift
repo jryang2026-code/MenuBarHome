@@ -58,4 +58,22 @@ struct MiCloudSceneConfirmationTests {
         #expect(store.toastNotice?.isError == false)
         #expect(await mock.executedCommands == [.activateScene(entityId: Self.scene.entityId)])
     }
+
+    @Test("Declining a scene from an intent plan is not reported as a device failure")
+    func intentPlanDeclineIsCancelled() async throws {
+        let (store, mock) = try await makeStore()
+        store.manualControlConfirmationHandler = { _ in false }
+        let plan = IntentPlan(
+            intents: [DeviceIntent(targetId: Self.scene.id, operation: .activateScene)],
+            reply: "执行回家场景",
+            source: .local
+        )
+
+        _ = await store.executeIntentPlan(plan, recordedUtterance: nil, origin: .userInitiated)
+
+        if case .failed = store.assistantState {
+            Issue.record("a declined confirmation must not become a device failure")
+        }
+        #expect(await mock.executedCommands.isEmpty)
+    }
 }
