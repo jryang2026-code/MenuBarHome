@@ -36,6 +36,7 @@ macOS 菜单栏（Swift / AppKit + SwiftUI）与 Windows 托盘（Tauri + TypeSc
   - 派活给其他模型时的固定说明行：[`docs/agents/delegation-brief.md`](docs/agents/delegation-brief.md)
   - Windows 摄像机实时流、go2rtc/FFmpeg 与 Tauri 打包：[`docs/agents/windows-camera.md`](docs/agents/windows-camera.md)
   - 应用内自更新链路与 Ed25519 验签：[`docs/agents/in-app-update.md`](docs/agents/in-app-update.md)
+  - 大陆镜像 Release（Gitee/GitCode 同步、token 与仓库配置）：[`docs/agents/release-mirrors.md`](docs/agents/release-mirrors.md)
   - Linux 容器与云端环境（Antigravity Cloud / Cursor Cloud）：[`docs/agents/cursor-cloud.md`](docs/agents/cursor-cloud.md)
   - 本地隔离 macOS CI VM 运维：[`docs/agents/local-macos-runner.md`](docs/agents/local-macos-runner.md)
 
