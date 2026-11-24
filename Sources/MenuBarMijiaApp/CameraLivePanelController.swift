@@ -147,6 +147,8 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
     private var pendingStopGenerations: [String: Int] = [:]
     private var activeCameraEntityID: String?
     private var doorbellDismissTask: Task<Void, Never>?
+    private var pendingAudioOptInFallbackDeviceID: String?
+    private var listenOnlyOptInFailed = false
     var mjpegStableWindow: Duration = .seconds(10)
     var mjpegStallTimeout: Duration = .seconds(15)
     var mjpegWatchdogInterval: Duration = .seconds(1)
@@ -717,7 +719,13 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
         errorMessage = errorText
     }
 
-    private func stopStreamTasks() {
+    private func stopStreamTasks(keepingAudioOptInFallback: Bool = false, keepingListenOnlyFailed: Bool = false) {
+        if !keepingAudioOptInFallback {
+            pendingAudioOptInFallbackDeviceID = nil
+        }
+        if !keepingListenOnlyFailed {
+            listenOnlyOptInFailed = false
+        }
         clearPTZ()
         videoOnlyNoticeTask?.cancel()
         videoOnlyNoticeTask = nil
@@ -886,7 +894,8 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
             streamSource: streamSource,
             detectedAudioTrack: detectedAudioTrack,
             isMuted: isMuted,
-            allowsMutedPreviewOptIn: !hasCustomURL
+            allowsMutedPreviewOptIn: !hasCustomURL && !listenOnlyOptInFailed,
+            listenOnlyFailed: listenOnlyOptInFailed
         )
     }
 
@@ -900,8 +909,25 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
         isMuted = nextMuted
         videoPlayer?.setMuted(nextMuted)
         if !nextMuted, let source = streamSource, isAppMutedPreviewSource(source) {
-            reloadStream(preservingMute: true)
+            pendingAudioOptInFallbackDeviceID = activeDeviceId
+            reloadStream(preservingMute: true, keepingAudioOptInFallback: true)
+        } else {
+            pendingAudioOptInFallbackDeviceID = nil
         }
+    }
+
+    @discardableResult
+    private func recoverMutedVideoOnlyPreview(for deviceID: String) -> Bool {
+        guard pendingAudioOptInFallbackDeviceID == deviceID, activeDeviceId == deviceID else {
+            return false
+        }
+        pendingAudioOptInFallbackDeviceID = nil
+        listenOnlyOptInFailed = true
+        isMuted = true
+        videoPlayer?.setMuted(true)
+        showVideoOnlyNotice()
+        reloadStream(preservingMute: false, keepingListenOnlyFailed: true)
+        return true
     }
 
     private func isAppMutedPreviewSource(_ source: CameraStreamSource) -> Bool {
@@ -1024,11 +1050,18 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
         reloadStream()
     }
 
-    public func reloadStream(preservingMute: Bool = false) {
+    public func reloadStream(
+        preservingMute: Bool = false,
+        keepingAudioOptInFallback: Bool = false,
+        keepingListenOnlyFailed: Bool = false
+    ) {
         if !preservingMute {
             isMuted = true
         }
-        stopStreamTasks()
+        stopStreamTasks(
+            keepingAudioOptInFallback: keepingAudioOptInFallback,
+            keepingListenOnlyFailed: keepingListenOnlyFailed
+        )
         errorMessage = nil
 
         guard let store, let device = currentDevice, case .camera(let spec) = device.kind else {
@@ -1076,6 +1109,9 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
                 }
             } catch {
                 guard !Task.isCancelled else { return }
+                if self.recoverMutedVideoOnlyPreview(for: deviceId) {
+                    return
+                }
                 self.isLoadingStream = false
                 self.errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
             }
@@ -1133,6 +1169,7 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
 
         playback.onFirstFrame = { [weak self, weak playback] in
             guard let self, let playback, self.activePlayback === playback else { return }
+            self.pendingAudioOptInFallbackDeviceID = nil
             self.hasLiveVideoFrame = true
         }
 
@@ -1143,6 +1180,9 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
 
         playback.onFallback = { [weak self, weak playback] url in
             guard let self, let playback, self.activePlayback === playback else { return }
+            if self.recoverMutedVideoOnlyPreview(for: deviceID) {
+                return
+            }
             self.clearPTZ()
             self.activePlayback = nil
             self.videoPlayer = nil
@@ -1154,6 +1194,9 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
 
         playback.onFailure = { [weak self, weak playback] detail in
             guard let self, let playback, self.activePlayback === playback else { return }
+            if self.recoverMutedVideoOnlyPreview(for: deviceID) {
+                return
+            }
             self.clearPTZ()
             self.activePlayback = nil
             self.videoPlayer = nil
@@ -1599,11 +1642,14 @@ struct CameraHLSPlayerView: NSViewRepresentable {
         var currentURL: URL?
         private var statusObservation: NSKeyValueObservation?
         private var tracksObservation: NSKeyValueObservation?
+        private var observationGeneration: UInt64 = 0
 
         func observe(item: AVPlayerItem, onAudioAvailabilityChanged: (@MainActor (Bool?) -> Void)?) {
             clearObservations()
-            let report: @MainActor (AVPlayerItem?) -> Void = { item in
-                guard let item else { return }
+            observationGeneration &+= 1
+            let generation = observationGeneration
+            let report: @MainActor (AVPlayerItem?) -> Void = { [weak self] item in
+                guard let self, self.observationGeneration == generation, let item else { return }
                 let hasAudio = item.tracks.contains { $0.assetTrack?.mediaType == .audio }
                 if hasAudio {
                     onAudioAvailabilityChanged?(true)
@@ -1622,6 +1668,7 @@ struct CameraHLSPlayerView: NSViewRepresentable {
         }
 
         func clearObservations() {
+            observationGeneration &+= 1
             statusObservation?.invalidate()
             statusObservation = nil
             tracksObservation?.invalidate()
@@ -1661,23 +1708,16 @@ enum CameraLiveAudioStatus: Equatable {
         streamSource: CameraStreamSource?,
         detectedAudioTrack: Bool? = nil,
         isMuted: Bool,
-        allowsMutedPreviewOptIn: Bool = true
+        allowsMutedPreviewOptIn: Bool = true,
+        listenOnlyFailed: Bool = false
     ) {
         switch streamSource {
         case nil:
             self = .hidden
-        case .hls(let url)?:
+        case .hls(let url)?, .liveMP4(let url, _, _)?:
             if (allowsMutedPreviewOptIn && XiaomiCameraBridge.isMutedPreviewURL(url)) || detectedAudioTrack == true {
                 self = .audio(isMuted: isMuted)
-            } else if detectedAudioTrack == false {
-                self = .videoOnly
-            } else {
-                self = .hidden
-            }
-        case .liveMP4(let url, _, _)?:
-            if (allowsMutedPreviewOptIn && XiaomiCameraBridge.isMutedPreviewURL(url)) || detectedAudioTrack == true {
-                self = .audio(isMuted: isMuted)
-            } else if detectedAudioTrack == false {
+            } else if detectedAudioTrack == false || listenOnlyFailed {
                 self = .videoOnly
             } else {
                 self = .hidden

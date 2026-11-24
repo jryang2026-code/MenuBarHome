@@ -1033,13 +1033,6 @@ export class CameraLiveController {
         if (typeof video.webkitAudioDecodedByteCount !== "number") return;
         if (video.webkitAudioDecodedByteCount > 0) {
           updateVideoOnly(true);
-        } else if (
-          !video.muted &&
-          typeof video.webkitVideoDecodedByteCount === "number" &&
-          video.webkitVideoDecodedByteCount > 0 &&
-          video.currentTime >= 0.5
-        ) {
-          updateVideoOnly(false);
         }
       });
       rawMedia.addEventListener("volumechange", () => {
