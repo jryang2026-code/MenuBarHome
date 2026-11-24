@@ -1980,25 +1980,24 @@ public actor MiCloudProvider: HomeProvider {
         }
     }
 
-    func canExecute(_ command: DeviceCommand, requireConfirmedOwnership: Bool) -> Bool {
-        guard !isShutDown, !isSessionRejected, api != nil else { return false }
-        let entityId = command.targetEntityId
-        guard let did = MiotAddress.parseAction(entityId)?.did ?? MiotAddress.parse(entityId)?.did,
-              let record = commandRecord(for: did),
-              record.isOnline,
-              !requireConfirmedOwnership || hasConfirmedWriteOwnership(of: record),
-              let spec = specsByModel[record.model],
-              (try? MiotCommandMapper.map(command, spec: spec)) != nil else {
-            return false
+    func writeEligibility(for command: DeviceCommand, did: String) -> (canExecute: Bool, confirmed: Bool) {
+        guard !isShutDown, !isSessionRejected, api != nil, let record = commandRecord(for: did) else {
+            return (false, false)
         }
-        return true
+        let confirmed = hasConfirmedWriteOwnership(of: record)
+        guard record.isOnline, let spec = specsByModel[record.model] else { return (false, confirmed) }
+        return ((try? MiotCommandMapper.map(command, spec: spec)) != nil, confirmed)
+    }
+
+    struct CloudWriteDenied: Error {
+        let error: MiCloudError
     }
 
     public func execute(_ command: DeviceCommand) async throws {
-        try await execute(command, requireConfirmedOwnership: false)
+        try await execute(command, reportCloudWriteDenial: false)
     }
 
-    func execute(_ command: DeviceCommand, requireConfirmedOwnership: Bool) async throws {
+    func execute(_ command: DeviceCommand, reportCloudWriteDenial: Bool) async throws {
         let entityId = command.targetEntityId
         if case .activateScene = command,
            let scope = MiCloudScene.accountID(for: entityId) {
@@ -2014,11 +2013,7 @@ public actor MiCloudProvider: HomeProvider {
         }
         guard let (did, _) = MiotAddress.parse(entityId) else { throw MiotCommandError.invalidAddress(entityId) }
         guard let api else { throw MiCloudError.notLoggedIn }
-        let record = commandRecord(for: did)
-        if requireConfirmedOwnership, record.map(hasConfirmedWriteOwnership) != true {
-            throw MiotCommandError.noWritableSession(did)
-        }
-        guard let record, let spec = specsByModel[record.model] else {
+        guard let record = commandRecord(for: did), let spec = specsByModel[record.model] else {
             throw MiotCommandError.unsupported("设备规格未加载")
         }
         let write = try MiotCommandMapper.map(command, spec: spec)
@@ -2054,9 +2049,6 @@ public actor MiCloudProvider: HomeProvider {
         }
 
         if !executedViaLAN {
-            if requireConfirmedOwnership, commandRecord(for: did).map(hasConfirmedWriteOwnership) != true {
-                throw MiotCommandError.noWritableSession(did)
-            }
             do {
                 try await performCloudCall {
                     switch write {
@@ -2068,11 +2060,23 @@ public actor MiCloudProvider: HomeProvider {
                 report(MiCloudError.sessionExpired)
                 throw MiCloudError.sessionExpired
             } catch MiCloudError.deviceError(let code, let message) {
+                let error = MiCloudError.deviceError(code: code, message: message)
+                if reportCloudWriteDenial {
+                    switch write {
+                    // A multi-property response can report a refusal after another property was accepted.
+                    case .setProps(let writes) where writes.count != 1: break
+                    default:
+                        // Xiaomi MIoT: unauthorized, device unauthorized, property not writable.
+                        if [-704010000, -704012904, -704030023].contains(code) {
+                            throw CloudWriteDenied(error: error)
+                        }
+                    }
+                }
                 if case .setLightEffect = command, code == Self.propertyUnsupportedCode {
                     effectsUnsupported.insert(record.did)
                     emitSnapshot()
                 }
-                throw MiCloudError.deviceError(code: code, message: message)
+                throw error
             }
         }
 

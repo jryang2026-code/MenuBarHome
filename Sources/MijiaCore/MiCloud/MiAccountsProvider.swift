@@ -889,9 +889,6 @@ public actor MiAccountsProvider: HomeProvider {
         }
         let owners = preferredOwners(for: did)
         guard !owners.isEmpty else { throw MiotCommandError.unsupported(entityId) }
-        // With a single known account, let the cloud arbitrate writes to shared devices.
-        let requireConfirmedOwnership = owners.count > 1
-
         let initialCandidates = owners.compactMap { captureWriteCandidate(for: $0) }
         if initialCandidates.isEmpty {
             if owners.allSatisfy({ expiredAccounts.contains($0) }) {
@@ -900,33 +897,35 @@ public actor MiAccountsProvider: HomeProvider {
             throw MiotCommandError.noWritableSession(did)
         }
 
-        var writableCandidates: [WriteCandidate] = []
-        writableCandidates.reserveCapacity(initialCandidates.count)
+        var availableCandidates: [(candidate: WriteCandidate, confirmed: Bool)] = []
+        var writableCandidates: [(candidate: WriteCandidate, confirmed: Bool)] = []
         for candidate in initialCandidates {
-            guard isWriteCandidateStillValid(candidate),
-                  !isDisconnected(candidate.ownerId),
-                  hasFreshOnlineDevice(accountId: candidate.ownerId, did: did),
-                  await candidate.child.canExecute(command, requireConfirmedOwnership: requireConfirmedOwnership),
-                  isWriteCandidateStillValid(candidate) else {
-                continue
+            guard isWriteCandidateStillValid(candidate) else { continue }
+            let eligibility = await candidate.child.writeEligibility(for: command, did: did)
+            guard isWriteCandidateStillValid(candidate) else { continue }
+            let route = (candidate, eligibility.confirmed)
+            availableCandidates.append(route)
+            if eligibility.canExecute,
+               !isDisconnected(candidate.ownerId),
+               hasFreshOnlineDevice(accountId: candidate.ownerId, did: did) {
+                writableCandidates.append(route)
             }
-            writableCandidates.append(candidate)
         }
 
-        let candidatesToTry: [WriteCandidate]
+        let candidatesToTry: [(candidate: WriteCandidate, confirmed: Bool)]
         if !writableCandidates.isEmpty {
             candidatesToTry = writableCandidates
         } else {
             if owners.allSatisfy({ expiredAccounts.contains($0) }) {
                 throw MiCloudError.sessionExpired
             }
-            let fallbackCandidates = initialCandidates.filter { isWriteCandidateStillValid($0) }
+            let fallbackCandidates = availableCandidates.filter { isWriteCandidateStillValid($0.candidate) }
             guard !fallbackCandidates.isEmpty else {
                 throw MiotCommandError.noWritableSession(did)
             }
             let hasGracedMultiAccountSplit = fallbackCandidates.count > 1
-                && fallbackCandidates.contains(where: { isDisconnected($0.ownerId) })
-                && fallbackCandidates.contains(where: { !isDisconnected($0.ownerId) })
+                && fallbackCandidates.contains(where: { isDisconnected($0.candidate.ownerId) })
+                && fallbackCandidates.contains(where: { !isDisconnected($0.candidate.ownerId) })
             if hasGracedMultiAccountSplit {
                 throw MiotCommandError.noWritableSession(did)
             }
@@ -934,7 +933,7 @@ public actor MiAccountsProvider: HomeProvider {
         }
 
         var lastFallbackError: (any Error)?
-        for candidate in candidatesToTry {
+        for (candidate, confirmed) in candidatesToTry.sorted(by: { $0.confirmed && !$1.confirmed }) {
             guard isWriteCandidateStillValid(candidate) else { continue }
             let nonIdempotent: Bool
             if !command.isIdempotentForAccountFallback {
@@ -944,10 +943,12 @@ public actor MiAccountsProvider: HomeProvider {
             }
             guard isWriteCandidateStillValid(candidate) else { continue }
             do {
-                try await candidate.child.execute(command, requireConfirmedOwnership: requireConfirmedOwnership)
+                try await candidate.child.execute(command, reportCloudWriteDenial: !confirmed)
                 return
-            } catch MiotCommandError.noWritableSession {
-                continue
+            } catch let denial as MiCloudProvider.CloudWriteDenied {
+                if (lastFallbackError as? MiCloudError) != .sessionExpired {
+                    lastFallbackError = denial.error
+                }
             } catch MiCloudError.sessionExpired {
                 lastFallbackError = MiCloudError.sessionExpired
             } catch MiCloudError.notLoggedIn {

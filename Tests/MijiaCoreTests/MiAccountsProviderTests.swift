@@ -251,6 +251,81 @@ struct MiAccountsProviderTests {
         await provider.shutdown()
     }
 
+    @Test("Shared accounts can write and only explicit cloud denials enable fallback", arguments: [
+        nil,
+        MiCloudError.deviceError(code: -704012904, message: "Device unauthorized"),
+        MiCloudError.deviceError(code: -704083036, message: "Operation timeout"),
+    ] as [MiCloudError?])
+    func sharedAccountWrites(failure: MiCloudError?) async throws {
+        let record = MiDeviceRecord(did: "shared", name: "客厅灯", model: "yeelink.light.ceiling22", isOnline: true, isShared: true)
+        let room = MiRoom(id: "r1", name: "客厅", dids: [record.did], homeId: "h1")
+        let values = [MiotFixtures.key(record.did, 2, 1): JSONValue.bool(true)]
+        let cnAPI = StubMiCloudAPI(devices: [record], rooms: [room], values: values)
+        let deAPI = StubMiCloudAPI(devices: [record], rooms: [room], values: values)
+        await cnAPI.setSetPropsFailure(failure)
+        let provider = Self.makeProvider([Self.cn, Self.de], cnAPI: cnAPI, deAPI: deAPI)
+        let (log, task) = consume(provider)
+        defer { task.cancel() }
+        let ready = await log.wait { events in await events.snapshots.last?.homes.count == 2 }
+        try #require(ready)
+
+        let command = DeviceCommand.setSwitch(entityId: "miot:shared:2", isOn: false)
+        let expectedWrite = [[MiotPropWrite(did: record.did, siid: 2, piid: 1, value: .bool(false))]]
+        if case .deviceError(-704083036, _) = failure {
+            let timeout = try #require(failure)
+            await #expect(throws: timeout) { try await provider.execute(command) }
+        } else {
+            try await provider.execute(command)
+        }
+        #expect(await cnAPI.setPropsCalls == expectedWrite)
+        let expectedFallback = failure == .deviceError(code: -704012904, message: "Device unauthorized")
+        #expect(await deAPI.setPropsCalls == (expectedFallback ? expectedWrite : []))
+        await provider.shutdown()
+    }
+
+    @Test("Two cached accounts can write before either completes live topology refresh")
+    func cachedAccountsCanWrite() async throws {
+        let cache = MiTopologyCache(directory: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString))
+        defer { cache.removeAll() }
+        let tokenHex = "00112233445566778899aabbccddeeff"
+        let token = try #require(MiIOPacket.validateToken(tokenHex))
+        let record = MiDeviceRecord(
+            did: "101", name: "客厅灯", model: "yeelink.light.ceiling22", isOnline: true,
+            localIp: "192.168.1.40", token: tokenHex, isShared: false
+        )
+        let room = MiRoom(id: "r1", name: "客厅", dids: [record.did], homeId: "h1")
+        let topology = CachedMiTopology(savedAt: Date(), devices: [record], rooms: [room])
+        cache.save(topology, for: Self.cn.session)
+        cache.save(topology, for: Self.de.session)
+
+        let api = StubMiCloudAPI(devices: [], rooms: [], values: [:], failure: .http(502))
+        let transport = MockUDPTransport { packet, _, _ in
+            if packet == MiIOPacket.helloPacket { return makeHelloResponse(deviceId: 101, stamp: 10) }
+            let (header, plaintext) = try MiIOPacket.decode(packet, token: token)
+            let request = try JSONDecoder().decode(JSONValue.self, from: plaintext)
+            if request["method"]?.stringValue == "set_properties" { throw MiIOError.transportUnavailable }
+            let reply = #"{"id":\#(request["id"]?.intValue ?? 0),"result":[{"did":"101","siid":2,"piid":1,"value":true,"code":0}]}"#
+            return try MiIOPacket.encode(deviceId: header.deviceId, stamp: header.stamp, token: token, payload: Data(reply.utf8))
+        }
+        let provider = MiAccountsProvider(
+            accounts: [Self.cn, Self.de],
+            apiFactory: { _ in api },
+            specSource: StubSpecSource(),
+            localClientFactory: { LocalMiIOClient(transport: transport, maxRetries: 0) },
+            topologyCache: cache,
+            pollInterval: .seconds(3600),
+            closedPollInterval: .seconds(3600),
+            selectedHomeLoader: { nil }
+        )
+        let (log, task) = consume(provider)
+        defer { task.cancel() }
+        let ready = await log.wait { events in await events.snapshots.last?.homes.count == 2 }
+        try #require(ready)
+        try await provider.execute(.setSwitch(entityId: "miot:101:2", isOn: false))
+        #expect(await api.setPropsCalls == [[MiotPropWrite(did: record.did, siid: 2, piid: 1, value: .bool(false))]])
+        await provider.shutdown()
+    }
+
     @Test("Selected home filters inside the right account")
     func selectedHomeFiltersInsideAccount() async throws {
         let cnApi = StubMiCloudAPI(

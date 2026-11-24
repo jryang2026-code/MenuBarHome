@@ -755,7 +755,7 @@ struct DualSourceFallbackGraceTests {
         }
     }
 
-    @Test("Same-spec writes skip accounts without confirmed device ownership", arguments: [true, false, nil] as [Bool?])
+    @Test("Same-spec writes prefer confirmed device ownership", arguments: [true, false, nil] as [Bool?])
     func sameSpecWriteRoutesToConfirmedOwner(shareFlag: Bool?) async throws {
         try await withTeardown { teardown in
             let accountA = MiAccount(session: MiSession(userId: "10001", cUserId: "c-a", ssecurity: "ssec-a", serviceToken: "tok-a", region: "cn"))
@@ -778,7 +778,8 @@ struct DualSourceFallbackGraceTests {
             let apiA = makeAPI(isShared: false)
             let apiB = makeAPI(isShared: shareFlag, sharedHome: shareFlag == false)
             let apiC = makeAPI(isShared: nil, ownerUid: accountC.session.userId)
-            await apiB.setSetPropsFailure(.deviceError(code: -1, message: "Read only"))
+            let denial = MiCloudError.deviceError(code: -704030023, message: "Property not writable")
+            await apiB.setSetPropsFailure(denial)
             let provider = MiAccountsProvider(
                 accounts: [accountA, accountB, accountC],
                 apiFactory: { session in
@@ -820,15 +821,15 @@ struct DualSourceFallbackGraceTests {
 
             await provider.updateAccounts([accountB, accountC])
             provider.markAccountDisabled(accountC.id)
-            await #expect(throws: MiotCommandError.noWritableSession(Self.did)) {
+            await #expect(throws: denial) {
                 try await provider.execute(command)
             }
-            #expect(await apiB.setPropsCalls.isEmpty)
+            #expect(await apiB.setPropsCalls == expected)
 
             await provider.updateAccounts([accountB])
             await apiB.setSetPropsFailure(nil)
             try await provider.execute(command)
-            #expect(await apiB.setPropsCalls == expected)
+            #expect(await apiB.setPropsCalls == expected + expected)
         }
     }
 
