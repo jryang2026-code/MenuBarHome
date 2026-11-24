@@ -844,6 +844,9 @@ export class MenuMijiaWindowsApp {
     this.bindLifecycleRecovery();
     this.restoreUpdateState();
     this.render();
+    if (!this.isStandaloneSettingsWindow) {
+      this.notifyPanelReady();
+    }
     if (this.isStandaloneSettingsWindow && initialSettingsAnchor) {
       highlightSettingsAnchor(this.root, initialSettingsAnchor);
     }
@@ -2653,6 +2656,20 @@ export class MenuMijiaWindowsApp {
 
   public applyPanelHeight(): void {
     this.syncPanelGeometry();
+  }
+
+  private notifyPanelReady(): void {
+    const invoke = window.__TAURI_INTERNALS__?.invoke;
+    if (!invoke) return;
+    const signal = () => {
+      if (!this.root.isConnected) return;
+      void invoke("panel_ready").catch(() => undefined);
+    };
+    if (typeof requestAnimationFrame === "function") {
+      requestAnimationFrame(() => signal());
+    } else {
+      setTimeout(signal, 0);
+    }
   }
 
   /** The saved API key, isolated per provider preset and bound to custom host (#19, §6). */

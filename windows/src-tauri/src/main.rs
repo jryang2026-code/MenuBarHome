@@ -14,6 +14,7 @@ mod network_monitor;
 mod placement;
 mod system_events;
 mod update;
+mod webview_lifecycle;
 mod wifi;
 mod win_theme;
 mod window;
@@ -312,7 +313,9 @@ fn main() {
             resume_camera_runtime,
             go2rtc_jpeg_frame,
             go2rtc_supervisor_status,
-            win_theme::win_theme_state
+            win_theme::win_theme_state,
+            webview_lifecycle::panel_ready,
+            webview_lifecycle::settings_keepalive
         ])
         .setup(move |app| {
             sweep_stale_update_installers();
@@ -333,6 +336,7 @@ fn main() {
                 sync_main_window_chrome(&main_win, false);
                 set_window_cloaked(&main_win, true);
                 let _ = position_popover(&main_win, None, None);
+                webview_lifecycle::schedule_panel_low_memory(app.handle());
                 let app_for_events = app.handle().clone();
                 let main_win_for_events = main_win.clone();
                 main_win.on_window_event(move |event| match event {
@@ -390,6 +394,9 @@ fn main() {
                     _ => {}
                 })
                 .on_tray_icon_event(|tray, event| match event {
+                    TrayIconEvent::Enter { .. } => {
+                        webview_lifecycle::restore_panel_normal_memory(tray.app_handle());
+                    }
                     TrayIconEvent::Click {
                         button: MouseButton::Left,
                         button_state: MouseButtonState::Down,
