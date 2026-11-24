@@ -344,18 +344,21 @@ final class SystemActivityMonitor {
     private var transportSuspended: Bool { asleep || waitingForInteractiveWake }
     private var isSystemActive: Bool { !(transportSuspended || displayAsleep || locked || sessionInactive) }
 
-    private func publishTransportState() {
+    private func publishTransportState(systemActive: Bool? = nil) {
         let wakeRestart = !transportSuspended && pendingTransportRestart
         let topologyRestart = isSystemActive && pendingTopologyRestart
         if wakeRestart { pendingTransportRestart = false }
         if topologyRestart { pendingTopologyRestart = false }
-        store?.setHATransportSuspended(transportSuspended, topologyChanged: wakeRestart || topologyRestart)
+        store?.setHATransportSuspended(
+            transportSuspended,
+            topologyChanged: wakeRestart || topologyRestart,
+            systemActive: systemActive
+        )
     }
 
     private func publish() {
-        publishTransportState()
         store?.setScreenLocked(locked)
-        store?.setSystemActive(isSystemActive)
+        publishTransportState(systemActive: isSystemActive)
         store?.setLowPowerMode(ProcessInfo.processInfo.isLowPowerModeEnabled)
     }
 

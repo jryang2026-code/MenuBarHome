@@ -47,7 +47,8 @@ struct SystemActivityMonitorTests {
     @Test("HA topology changes coalesce until the display is awake and the screen is unlocked")
     @MainActor
     func topologyChangesWaitForActivity() async throws {
-        let (store, _) = try await makeStore()
+        let provider = MockHomeProvider(snapshot: DemoHomeProvider.defaultHome())
+        let (store, _) = try await makeStore(provider: provider)
         defer { store.stop() }
         let monitor = SystemActivityMonitor()
         monitor.start(with: store, observeSystemEvents: false)
@@ -77,6 +78,9 @@ struct SystemActivityMonitorTests {
         #expect(store.pollingContext.haTransportRevision == initialRevision + 1)
         monitor.apply(.displayAsleep(false))
         #expect(store.pollingContext.haTransportRevision == initialRevision + 2)
+        await store.pollingContextSync?.value
+        let firstRestart = await provider.pollingContexts.first { $0.haTransportRevision == initialRevision + 1 }
+        #expect(firstRestart?.systemActive == true)
     }
 
     // MARK: - SystemWakePolicy
@@ -306,10 +310,12 @@ struct SystemActivityMonitorTests {
     // MARK: - Helpers
 
     @MainActor
-    private func makeStore() async throws -> (HomeStore, ResumeCounter) {
+    private func makeStore(
+        provider: MockHomeProvider = MockHomeProvider(snapshot: DemoHomeProvider.defaultHome())
+    ) async throws -> (HomeStore, ResumeCounter) {
         let defaults = InMemoryUserDefaults()
         let store = HomeStore(
-            provider: MockHomeProvider(snapshot: DemoHomeProvider.defaultHome()),
+            provider: provider,
             defaults: defaults
         )
         let counter = ResumeCounter()
