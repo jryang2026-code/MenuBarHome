@@ -138,6 +138,36 @@ function unavailableText(host: MenuMijiaWindowsApp, platform = platformName(host
 }
 const haErrorMessage = (host: MenuMijiaWindowsApp): string => host.haConnectionError ?? "";
 
+/**
+ * One owner for the retryable identity-migration copy (Nit-8, #293). The footer label, its recovery
+ * action and the detail card all read this, so the three trilingual strings cannot drift apart.
+ */
+export interface IdentityMigrationPresentation {
+  readonly text: string;
+  readonly sourceName: string;
+  readonly sourceStatus: string;
+  readonly retryLabel: string;
+}
+
+export function identityMigrationPresentation(host: MenuMijiaWindowsApp): IdentityMigrationPresentation | null {
+  const diagnostic = host.identityMigrationDiagnostic;
+  if (!diagnostic) return null;
+  // The vault and the settings payload fail for different reasons, so the copy names which one.
+  const isVaultFailure = diagnostic === "credential_vault_read_failed";
+  return {
+    text: isVaultFailure
+      ? tr(host, "凭据读取失败，可重试", "憑據讀取失敗，可重試", "Could not read credentials; retry")
+      : tr(host, "本机配置读取失败，可重试", "本機設定讀取失敗，可重試", "Could not read local settings; retry"),
+    sourceName: isVaultFailure
+      ? tr(host, "本机凭据库", "本機憑據庫", "Credential store")
+      : tr(host, "本机配置", "本機設定", "Local settings"),
+    sourceStatus: isVaultFailure
+      ? tr(host, "无法读取已保存凭据 · 请重试", "無法讀取已儲存憑據 · 請重試", "Could not read saved credentials · retry")
+      : tr(host, "无法读取已保存配置 · 请重试", "無法讀取已儲存設定 · 請重試", "Could not read saved settings · retry"),
+    retryLabel: tr(host, "重试读取", "重試讀取", "Retry"),
+  };
+}
+
 interface SourcePresentation {
   readonly badge: ConnectionBadge;
   readonly text: string;
@@ -238,6 +268,19 @@ function haSourcePresentation(host: MenuMijiaWindowsApp, dual: boolean, statuses
     : { badge: "online", text: tr(host, "已连接 · {count} 台设备", "已連線 · {count} 台裝置", "Connected · {count} devices", { count: host.devices.length }) };
 }
 export function resolveConnectionStatus(host: MenuMijiaWindowsApp): ConnectionStatusPresentation {
+  // Nit-1 (#293 comment): a read failure outranks demo mode. A demo home whose settings or vault
+  // could not be read must still offer `retryIdentity`, or the footer strands the user in a sample
+  // home with no way to learn why their real configuration is missing.
+  const identity = identityMigrationPresentation(host);
+  if (identity) {
+    return {
+      tone: "offline",
+      icon: SF_ICONS.exclamationTriangleFill,
+      text: identity.text,
+      action: { kind: "retryIdentity", label: identity.retryLabel },
+      sources: [{ id: "identity", name: identity.sourceName, statusText: identity.sourceStatus, badge: "offline" }],
+    };
+  }
   if (host.settings.connectionMode === "demo") {
     return {
       tone: "demo",
@@ -245,25 +288,6 @@ export function resolveConnectionStatus(host: MenuMijiaWindowsApp): ConnectionSt
       text: tr(host, "示例家庭，不会控制真实设备", "範例家庭，不會控制真實裝置", "Demo home; won't control real devices"),
       action: { kind: "leaveDemo", label: tr(host, "连接真实家庭", "連線真實家庭", "Connect a real home") },
       sources: [{ id: "demo", name: tr(host, "示例家庭", "範例家庭", "Demo home"), statusText: tr(host, "本地演示数据", "本機示範資料", "Local demo data"), badge: "demo" }],
-    };
-  }
-  if (host.identityMigrationDiagnostic) {
-    const isVaultFailure = host.identityMigrationDiagnostic === "credential_vault_read_failed";
-    const text = isVaultFailure
-      ? tr(host, "凭据读取失败，可重试", "憑據讀取失敗，可重試", "Could not read credentials; retry")
-      : tr(host, "本机配置读取失败，可重试", "本機設定讀取失敗，可重試", "Could not read local settings; retry");
-    const sourceName = isVaultFailure
-      ? tr(host, "本机凭据库", "本機憑據庫", "Credential store")
-      : tr(host, "本机配置", "本機設定", "Local settings");
-    const sourceStatus = isVaultFailure
-      ? tr(host, "无法读取已保存凭据 · 请重试", "無法讀取已儲存憑據 · 請重試", "Could not read saved credentials · retry")
-      : tr(host, "无法读取已保存配置 · 请重试", "無法讀取已儲存設定 · 請重試", "Could not read saved settings · retry");
-    return {
-      tone: "offline",
-      icon: SF_ICONS.exclamationTriangleFill,
-      text,
-      action: { kind: "retryIdentity", label: tr(host, "重试读取", "重試讀取", "Retry") },
-      sources: [{ id: "identity", name: sourceName, statusText: sourceStatus, badge: "offline" }],
     };
   }
   if (!hasMi(host) && !hasHA(host)) {
@@ -412,8 +436,9 @@ export function renderConnectionStatus(host: MenuMijiaWindowsApp, resolved?: Con
   const sources = status.sources.length
     ? status.sources.map((source) => `<li class="cc-conn-source" data-connection-source="${source.id}"><span class="cc-conn-badge" data-connection-badge="${source.badge}" aria-label="${host.escapeHtml(tr3(...BADGE_LABEL[source.badge], undefined, prefOf(host)))}">${BADGE_ICON[source.badge]}</span><span class="cc-conn-name">${host.escapeHtml(source.name)}</span><span class="cc-conn-state">${host.escapeHtml(source.statusText)}</span></li>`).join("")
     : `<li class="cc-conn-source is-empty">${host.escapeHtml(tr(host, "还没连接家居平台", "還沒連線家居平台", "No smart home platform connected"))}</li>`;
-  const retryLabel = host.identityMigrationDiagnostic
-    ? tr(host, "重试读取", "重試讀取", "Retry")
+  const identity = identityMigrationPresentation(host);
+  const retryLabel = identity
+    ? identity.retryLabel
     : tr(host, "重试连接", "重試連線", "Retry connection");
   const details = open
     ? `<div class="cc-conn-popover" id="cc-connection-details" data-connection-details role="dialog" aria-label="${title}">

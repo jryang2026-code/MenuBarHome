@@ -3667,6 +3667,89 @@ button.cc-footer-label.is-action { color: var(--win-critical); text-decoration: 
   margin-top: 8px;
 }
 
+/* Onboarding spacing primitives (Nit-2, #293): the guide markup carries classes, not inline styles. */
+.cc-onboarding-label {
+  font-weight: 600;
+}
+
+.cc-onboarding-label.is-spaced {
+  margin-top: 8px;
+}
+
+.cc-onboarding-hint {
+  margin: 0;
+}
+
+.cc-onboarding-hint.is-above {
+  margin-bottom: 6px;
+}
+
+.cc-onboarding-hint.is-below {
+  margin-top: 6px;
+}
+
+.cc-onboarding-hint.is-tight {
+  margin: 2px 0 6px;
+}
+
+.cc-onboarding-tip {
+  margin: 3px 0;
+}
+
+.cc-onboarding-block {
+  margin-top: 8px;
+}
+
+.cc-onboarding-block.is-compact {
+  margin-top: 6px;
+}
+
+.cc-onboarding-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.cc-onboarding-row > .cc-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.cc-onboarding-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.cc-onboarding-preset-pills {
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 6px 0 8px;
+}
+
+.cc-onboarding-region-summary {
+  cursor: pointer;
+  margin: 0;
+}
+
+.cc-onboarding-warning.is-spaced {
+  margin-top: 6px;
+}
+
+.cc-onboarding-status-note {
+  margin-top: 6px;
+}
+
+.cc-onboarding-status-note.is-error {
+  color: var(--win-caution, #c87400);
+}
+
+.cc-onboarding-demo-title {
+  margin: 0 0 4px;
+  font-weight: 600;
+}
+
 .cc-camera-stage {
   position: relative;
   overflow: hidden;

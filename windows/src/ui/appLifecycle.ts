@@ -502,6 +502,7 @@ export function signOutXiaomiAccount(host: MenuMijiaWindowsApp): void {
     host.lastMiCloudSyncFailed = false;
     host.unresolvedRoomDids.clear();
     host.qrTicket = null;
+    host.qrPhase = "idle";
     host.qrStatusText = t("点击下方按钮获取安全二维码，用手机「米家 App → 扫一扫」即可同步真实全屋设备。");
     host.replyBanner = {
       text: tr3("已退出米家账号", "已登出米家帳號", "Signed out of Xiaomi Home"),

@@ -15,6 +15,16 @@ export const CAMERA_QUALITY_TITLES: Record<CameraStreamQuality, string> = {
   max: "超清",
 };
 
+/**
+ * Panel timings a user is told about (Nit-6, #293), so the guide's copy and the controls that
+ * enforce them cannot drift. `ALL_OFF_HOLD_MS` mirrors macOS `allOffHoldSeconds`; the undo banner
+ * keeps its control up for 10s, or 15s once three devices change (macOS `undoBannerSeconds`).
+ */
+export const ALL_OFF_HOLD_MS = 600;
+export const UNDO_BANNER_SECONDS = 10;
+export const UNDO_BANNER_SECONDS_MULTI = 15;
+export const UNDO_BANNER_MULTI_DEVICE_THRESHOLD = 3;
+
 // Injected at build time by vite.config.ts from the repository's VERSION file (#39).
 export const APP_VERSION =
   typeof __APP_VERSION__ === "string" && __APP_VERSION__.trim() !== "" ? __APP_VERSION__.trim() : "0.0.0";
