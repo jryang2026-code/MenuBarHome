@@ -674,6 +674,11 @@ public struct AutomationRule: Codable, Identifiable, Equatable, Sendable {
     /// Connection scopes whose loss paused this rule. Re-enabling one of them is not enough while
     /// another is still off, and the resume decision compares these against the current selection.
     public var pausedScopes: [String]
+    /// When enabled, the engine snapshots the fields changed by this rule and restores them when
+    /// `restoreTrigger` arrives. Older rules keep the previous one-shot behavior.
+    public var restoreWhenContextEnds: Bool
+    /// The paired exit signal for a context rule. A missing value means no automatic restore.
+    public var restoreTrigger: AutomationTrigger?
 
     public init(
         id: UUID = UUID(),
@@ -685,7 +690,9 @@ public struct AutomationRule: Codable, Identifiable, Equatable, Sendable {
         mode: AutomationExecutionMode = .single,
         highRiskApproved: Bool = false,
         pausedCapabilities: [CapabilityID] = [],
-        pausedScopes: [String] = []
+        pausedScopes: [String] = [],
+        restoreWhenContextEnds: Bool = false,
+        restoreTrigger: AutomationTrigger? = nil
     ) {
         self.id = id
         self.trigger = trigger
@@ -697,6 +704,8 @@ public struct AutomationRule: Codable, Identifiable, Equatable, Sendable {
         self.highRiskApproved = highRiskApproved
         self.pausedCapabilities = pausedCapabilities
         self.pausedScopes = pausedScopes
+        self.restoreWhenContextEnds = restoreWhenContextEnds
+        self.restoreTrigger = restoreTrigger
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -710,6 +719,8 @@ public struct AutomationRule: Codable, Identifiable, Equatable, Sendable {
         case highRiskApproved
         case pausedCapabilities
         case pausedScopes
+        case restoreWhenContextEnds
+        case restoreTrigger
     }
 
     public init(from decoder: any Decoder) throws {
@@ -727,6 +738,8 @@ public struct AutomationRule: Codable, Identifiable, Equatable, Sendable {
         highRiskApproved = try container.decodeIfPresent(Bool.self, forKey: .highRiskApproved) ?? false
         pausedCapabilities = try container.decodeIfPresent([CapabilityID].self, forKey: .pausedCapabilities) ?? []
         pausedScopes = try container.decodeIfPresent([String].self, forKey: .pausedScopes) ?? []
+        restoreWhenContextEnds = try container.decodeIfPresent(Bool.self, forKey: .restoreWhenContextEnds) ?? false
+        restoreTrigger = try container.decodeIfPresent(AutomationTrigger.self, forKey: .restoreTrigger)
     }
 
     public func encode(to encoder: any Encoder) throws {
@@ -744,6 +757,10 @@ public struct AutomationRule: Codable, Identifiable, Equatable, Sendable {
         }
         if !pausedScopes.isEmpty {
             try container.encode(pausedScopes, forKey: .pausedScopes)
+        }
+        if restoreWhenContextEnds {
+            try container.encode(true, forKey: .restoreWhenContextEnds)
+            try container.encodeIfPresent(restoreTrigger, forKey: .restoreTrigger)
         }
     }
 

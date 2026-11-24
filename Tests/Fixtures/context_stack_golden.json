@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "maxAgeHours": 12,
+  "cases": [
+    {
+      "name": "enter-exit-restores-baseline",
+      "enter": { "device": "lamp", "before": true, "applied": false },
+      "exit": { "live": false, "restored": true }
+    },
+    {
+      "name": "manual-takeover-wins",
+      "enter": { "device": "lamp", "before": true, "applied": false },
+      "exit": { "live": true, "restored": null }
+    },
+    {
+      "name": "nested-contexts-restore-lifo",
+      "enter": [
+        { "device": "lamp", "before": true, "applied": false },
+        { "device": "lamp", "before": false, "applied": true }
+      ],
+      "exit": { "live": true, "restored": false }
+    }
+  ]
+}
