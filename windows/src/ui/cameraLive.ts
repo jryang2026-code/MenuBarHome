@@ -1643,7 +1643,9 @@ export class CameraLiveController {
                 quality: this.cameraStreamQualities[dev.id] ?? DEFAULT_CAMERA_STREAM_QUALITY,
                 ...(channel > 0 ? { channel } : {}),
                 ...(subdid ? { subdid } : {}),
-                audioEnabled: !this.liveCameraMuted,
+                // Windows P2P renders MJPEG frames via go2rtc_jpeg_frame (`p2p-mjpeg`, video-only),
+                // so keep audio suppressed (`audio=0`) on the bridge stream.
+                audioEnabled: false,
               }, token);
               if (stale()) {
                 // The close path already tore down once; this late start re-created a
