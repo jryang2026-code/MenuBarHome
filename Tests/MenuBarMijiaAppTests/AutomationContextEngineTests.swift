@@ -363,6 +363,39 @@ struct AutomationContextEngineTests {
         #expect(await mock.executedCommands == [onCommand(), offCommand()])
     }
 
+    @Test("Focus mode-name rules trigger on direct Focus A -> Focus B switches and ignore unknown mode names")
+    func focusModeNameRuleEndToEnd() async throws {
+        let defaults = InMemoryUserDefaults()
+        let sleepEnabled = AutomationRule(
+            trigger: .focusModeEnabled,
+            action: .devices(ids: [Self.lightId], isOn: false),
+            triggerOptions: AutomationTriggerOptions(focusModeName: "睡眠")
+        )
+        let sleepDisabled = AutomationRule(
+            trigger: .focusModeDisabled,
+            action: .devices(ids: [Self.lightId], isOn: true),
+            triggerOptions: AutomationTriggerOptions(focusModeName: "睡眠")
+        )
+        let (engine, store, mock, provider) = try await makeEngine(
+            rules: [sleepEnabled, sleepDisabled],
+            defaults: defaults,
+            lightOn: true
+        )
+        defer { withExtendedLifetime(engine) { store.stop() } }
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+
+        await provider.emit(MacContextSnapshot(isFocusActive: false, focusModeName: nil), at: start)
+        // Unknown mode name does not trigger the "睡眠" rule.
+        await provider.emit(MacContextSnapshot(isFocusActive: true, focusModeName: "未知模式"), at: start.addingTimeInterval(10))
+        #expect(await mock.executedCommands.isEmpty)
+
+        // Direct switch: unknown Focus -> "睡眠" triggers sleepEnabled (turns light off).
+        await provider.emit(MacContextSnapshot(isFocusActive: true, focusModeName: "睡眠"), at: start.addingTimeInterval(20))
+        // Direct switch: "睡眠" -> "工作" triggers sleepDisabled (turns light on).
+        await provider.emit(MacContextSnapshot(isFocusActive: true, focusModeName: "工作"), at: start.addingTimeInterval(30))
+        #expect(await mock.executedCommands == [offCommand(), onCommand()])
+    }
+
     @Test("A calendar meeting runs once and leaves the normal undo banner")
     func calendarMeetingRule() async throws {
         let defaults = InMemoryUserDefaults()

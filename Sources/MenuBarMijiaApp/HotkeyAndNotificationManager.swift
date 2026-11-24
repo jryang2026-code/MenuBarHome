@@ -851,15 +851,20 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
     /// Weekly home health report summary (#182); the full report is exported from Settings.
     private func deliverWeeklyHealthReport(_ report: WeeklyHealthReport) {
         guard Bundle.main.bundleURL.pathExtension == "app" else { return }
-        guard let content = notificationContent(for: .weeklyHealthReport) else { return }
-        content.title = L10n.tr("家庭健康周报", "Weekly Home Health Report")
-        content.body = report.notificationSummary()
-        let request = UNNotificationRequest(
-            identifier: "weekly-health-report-\(Int(Date().timeIntervalSince1970))",
-            content: content,
-            trigger: nil
-        )
-        UNUserNotificationCenter.current().add(request)
+        Task { @MainActor [weak self] in
+            guard let self,
+                  let content = await self.notificationContentReconcilingFocus(for: .weeklyHealthReport) else {
+                return
+            }
+            content.title = L10n.tr("家庭健康周报", "Weekly Home Health Report")
+            content.body = report.notificationSummary()
+            let request = UNNotificationRequest(
+                identifier: "weekly-health-report-\(Int(Date().timeIntervalSince1970))",
+                content: content,
+                trigger: nil
+            )
+            try? await UNUserNotificationCenter.current().add(request)
+        }
     }
 
     /// Banner for actions invoked from outside the panel (URL Scheme / App Intents, #57).
@@ -869,16 +874,20 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
     /// `swift test` from touching `UNUserNotificationCenter` (#55).
     public func deliverExternalActionNotification(title: String, body: String) {
         guard Bundle.main.bundleURL.pathExtension == "app" else { return }
-
-        guard let content = notificationContent(for: .externalAction) else { return }
-        content.title = title
-        content.body = body
-        let request = UNNotificationRequest(
-            identifier: "external-action-\(UUID().uuidString)",
-            content: content,
-            trigger: nil
-        )
-        UNUserNotificationCenter.current().add(request)
+        Task { @MainActor [weak self] in
+            guard let self,
+                  let content = await self.notificationContentReconcilingFocus(for: .externalAction) else {
+                return
+            }
+            content.title = title
+            content.body = body
+            let request = UNNotificationRequest(
+                identifier: "external-action-\(UUID().uuidString)",
+                content: content,
+                trigger: nil
+            )
+            try? await UNUserNotificationCenter.current().add(request)
+        }
     }
 
     /// A doorbell press as a banner with the camera's snapshot (#10).
@@ -941,24 +950,28 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
 
     private func deliverMissedTimerNotification(for entry: ScheduledCommand) {
         guard Bundle.main.bundleURL.pathExtension == "app" else { return }
+        Task { @MainActor [weak self] in
+            guard let self,
+                  let content = await self.notificationContentReconcilingFocus(for: .missedTimer) else {
+                return
+            }
+            content.title = L10n.tr("已错过定时任务", "Missed Scheduled Command")
+            content.body = L10n.tr(
+                "应用关闭或电脑睡眠时错过的定时：「\(entry.reply)」。没有自动执行，可点通知按钮立即补执行。",
+                "Missed while the app was closed or the Mac was asleep: \"\(entry.reply)\". It did not run. Click Run Now to run it."
+            )
+            if content.interruptionLevel != .passive {
+                content.sound = .default
+            }
+            content.categoryIdentifier = Self.missedTimerCategoryId
 
-        guard let content = notificationContent(for: .missedTimer) else { return }
-        content.title = L10n.tr("已错过定时任务", "Missed Scheduled Command")
-        content.body = L10n.tr(
-            "应用关闭或电脑睡眠时错过的定时：「\(entry.reply)」。没有自动执行，可点通知按钮立即补执行。",
-            "Missed while the app was closed or the Mac was asleep: \"\(entry.reply)\". It did not run. Click Run Now to run it."
-        )
-        if content.interruptionLevel != .passive {
-            content.sound = .default
+            let request = UNNotificationRequest(
+                identifier: MissedTimerNotificationIdentifier(commandId: entry.id).rawValue,
+                content: content,
+                trigger: nil
+            )
+            try? await UNUserNotificationCenter.current().add(request)
         }
-        content.categoryIdentifier = Self.missedTimerCategoryId
-
-        let request = UNNotificationRequest(
-            identifier: MissedTimerNotificationIdentifier(commandId: entry.id).rawValue,
-            content: content,
-            trigger: nil
-        )
-        UNUserNotificationCenter.current().add(request)
     }
 
     private static let hasTimeSensitiveEntitlement: Bool = {
@@ -967,13 +980,35 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
         return SecTaskCopyValueForEntitlement(task, key, nil) as? Bool == true
     }()
 
+    /// Reconciles `FocusFilterStorage` with `MenuBarHomeFocusFilter.current` before deciding whether
+    /// an ordinary (non-safety) notification is suppressed, so direct Focus switches take effect
+    /// immediately even when `MacContextObserver` is not running (#443).
+    private func notificationContentReconcilingFocus(
+        for category: NotificationCategory
+    ) async -> UNMutableNotificationContent? {
+        let focusActive = MacContextObserver.focusActive()
+        let focusFilter = await FocusFilterStorage.reconcile(
+            isFocusActive: focusActive,
+            currentFilter: { await MenuBarHomeFocusFilter.currentQueryResult() }
+        )
+        return notificationContent(
+            for: category,
+            isFocusActive: focusActive == true,
+            focusFilter: focusFilter
+        )
+    }
+
     /// `nil` means the user's Focus filter asked for silence for this category (#575). Safety alerts
     /// and the doorbell never reach that branch: `NotificationDeliveryPolicy` refuses to suppress them.
-    private func notificationContent(for category: NotificationCategory) -> UNMutableNotificationContent? {
+    private func notificationContent(
+        for category: NotificationCategory,
+        isFocusActive: Bool = MacContextObserver.focusActive() == true,
+        focusFilter: FocusFilterProfile = FocusFilterStorage.load()
+    ) -> UNMutableNotificationContent? {
         let policy = NotificationDeliveryPolicy.resolve(
             for: category,
-            isFocusActive: MacContextObserver.focusActive() == true,
-            focusFilter: FocusFilterStorage.load()
+            isFocusActive: isFocusActive,
+            focusFilter: focusFilter
         )
         guard !policy.isSuppressed else { return nil }
         let content = UNMutableNotificationContent()

@@ -62,18 +62,21 @@ struct MacContextAutomationTests {
         let options = AutomationTriggerOptions(
             batteryThresholdPercent: 0,
             wifiSSID: "  Home  ",
+            focusModeName: "  睡眠  ",
             lateNightStartHour: 30,
             lateNightEndHour: -1,
             calendarLeadMinutes: 999
         )
         #expect(options.batteryThresholdPercent == 1)
         #expect(options.wifiSSID == "Home")
+        #expect(options.focusModeName == "睡眠")
         #expect(options.lateNightWindow.startHour == 23)
         #expect(options.lateNightWindow.endHour == 0)
         #expect(options.calendarLeadMinutes == 60)
 
-        let blankSSID = AutomationTriggerOptions(wifiSSID: "   ")
+        let blankSSID = AutomationTriggerOptions(wifiSSID: "   ", focusModeName: "   ")
         #expect(blankSSID.wifiSSID == nil)
+        #expect(blankSSID.focusModeName == nil)
 
         let decoded = try JSONDecoder().decode(
             AutomationTriggerOptions.self,
@@ -166,6 +169,45 @@ struct MacContextAutomationTests {
         let permissionMissing = MacContextSnapshot(isFocusActive: nil)
         #expect(event(.focusModeEnabled, previous: permissionMissing, current: focusOn) == nil)
         #expect(event(.focusModeDisabled, previous: focusOn, current: permissionMissing) == nil)
+    }
+
+    @Test("Focus mode name rules match direct A to B switches, Focus off, and reject unknown mode names")
+    func focusModeNameTransitions() {
+        let sleepOption = AutomationTriggerOptions(focusModeName: "睡眠")
+        let workOption = AutomationTriggerOptions(focusModeName: "工作")
+
+        let off = MacContextSnapshot(isFocusActive: false, focusModeName: nil)
+        let sleep = MacContextSnapshot(isFocusActive: true, focusModeName: "睡眠")
+        let work = MacContextSnapshot(isFocusActive: true, focusModeName: "工作")
+        let unnamed = MacContextSnapshot(isFocusActive: true, focusModeName: nil)
+        let unknown = MacContextSnapshot(isFocusActive: true, focusModeName: "未知模式")
+        let permissionMissing = MacContextSnapshot(isFocusActive: nil, focusModeName: "睡眠")
+
+        // Off -> Sleep fires Sleep enabled, not Work enabled.
+        #expect(event(.focusModeEnabled, previous: off, current: sleep, options: sleepOption) != nil)
+        #expect(event(.focusModeEnabled, previous: off, current: sleep, options: workOption) == nil)
+
+        // Direct Focus A (Sleep) -> Focus B (Work) fires Sleep disabled AND Work enabled.
+        #expect(event(.focusModeDisabled, previous: sleep, current: work, options: sleepOption) != nil)
+        #expect(event(.focusModeEnabled, previous: sleep, current: work, options: workOption) != nil)
+        #expect(event(.focusModeEnabled, previous: sleep, current: work, options: sleepOption) == nil)
+
+        // Generic boolean fallback (`focusModeName: nil`) does not refire on A -> B direct switch.
+        #expect(event(.focusModeEnabled, previous: sleep, current: work) == nil)
+        #expect(event(.focusModeDisabled, previous: sleep, current: work) == nil)
+
+        // Direct Focus A (Sleep) -> Focus B without filter (`focusModeName: nil`) fires Sleep disabled.
+        #expect(event(.focusModeDisabled, previous: sleep, current: unnamed, options: sleepOption) != nil)
+
+        // Unknown / unlabelled mode name never triggers a named rule, and Focus -> Off fires disabled.
+        #expect(event(.focusModeEnabled, previous: off, current: unknown, options: sleepOption) == nil)
+        #expect(event(.focusModeEnabled, previous: off, current: unnamed, options: sleepOption) == nil)
+        #expect(event(.focusModeDisabled, previous: sleep, current: off, options: sleepOption) != nil)
+        #expect(event(.focusModeDisabled, previous: unknown, current: off, options: sleepOption) == nil)
+
+        // Missing Focus permission never fabricates named transitions either.
+        #expect(event(.focusModeEnabled, previous: permissionMissing, current: sleep, options: sleepOption) == nil)
+        #expect(event(.focusModeDisabled, previous: sleep, current: permissionMissing, options: sleepOption) == nil)
     }
 
     @Test("Calendar fires inside the lead window and keys the dedupe by event")

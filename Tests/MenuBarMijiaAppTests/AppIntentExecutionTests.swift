@@ -1,3 +1,4 @@
+import AppIntents
 import Foundation
 import KeychainTestSupport
 import PreferencesTestSupport
@@ -531,9 +532,11 @@ struct AppIntentExecutionTests {
 
         let profile = MenuBarHomeFocusFilter.applyProfile(
             suppressNonSafetyNotifications: true,
+            focusModeName: "睡眠",
             defaults: defaults
         )
         #expect(profile.isEnabled)
+        #expect(profile.focusModeName == "睡眠")
         #expect(FocusFilterStorage.load(defaults: defaults) == profile)
 
         let ordinary = NotificationDeliveryPolicy.resolve(
@@ -561,9 +564,11 @@ struct AppIntentExecutionTests {
 
         let loud = MenuBarHomeFocusFilter.applyProfile(
             suppressNonSafetyNotifications: false,
+            focusModeName: "工作",
             defaults: defaults
         )
         #expect(!loud.suppressNonSafetyNotifications)
+        #expect(loud.focusModeName == "工作")
         #expect(
             !NotificationDeliveryPolicy.resolve(
                 for: .externalAction,
@@ -571,6 +576,37 @@ struct AppIntentExecutionTests {
                 focusFilter: loud
             ).isSuppressed
         )
+    }
+
+    @Test("MenuBarHomeFocusFilter.currentQueryResult maps active, notFound, and unexpected errors")
+    func focusFilterCurrentQueryResult() async {
+        let sleepIntent = MenuBarHomeFocusFilter()
+        sleepIntent.suppressNonSafetyNotifications = true
+        sleepIntent.focusModeName = "  睡眠  "
+        _ = sleepIntent.displayRepresentation
+
+        let active = await MenuBarHomeFocusFilter.currentQueryResult(timeout: nil) {
+            sleepIntent
+        }
+        #expect(
+            active == .active(
+                FocusFilterProfile(
+                    isEnabled: true,
+                    suppressNonSafetyNotifications: true,
+                    focusModeName: "睡眠"
+                )
+            )
+        )
+
+        let notFound = await MenuBarHomeFocusFilter.currentQueryResult(timeout: nil) {
+            throw SetFocusFilterIntentError.notFound
+        }
+        #expect(notFound == .notFound)
+
+        let unavailable = await MenuBarHomeFocusFilter.currentQueryResult(timeout: nil) {
+            throw SetFocusFilterIntentError.missingParameterValue
+        }
+        #expect(unavailable == .unavailable)
     }
 
     @Test("A Focus start action waits for the snapshot and refuses an unknown quick action")

@@ -287,6 +287,9 @@ public struct AutomationTriggerOptions: Codable, Equatable, Sendable {
     public var batteryThresholdPercent: Int
     /// When set, Wi-Fi rules only react to this SSID. `nil` means any network change.
     public var wifiSSID: String?
+    /// When set, Focus rules match this user-assigned Focus filter label (exact match after trim);
+    /// `nil` falls back to boolean `isFocusActive` transitions.
+    public var focusModeName: String?
     /// Local-time window for `.lateNightUsage`; may cross midnight (for example 23 → 6).
     public var lateNightWindow: LateNightWindow
     /// How many minutes before a calendar event starts `.calendarMeetingStartingSoon` fires.
@@ -295,6 +298,7 @@ public struct AutomationTriggerOptions: Codable, Equatable, Sendable {
     public init(
         batteryThresholdPercent: Int = 20,
         wifiSSID: String? = nil,
+        focusModeName: String? = nil,
         lateNightStartHour: Int = 23,
         lateNightEndHour: Int = 6,
         calendarLeadMinutes: Int = 1
@@ -302,6 +306,7 @@ public struct AutomationTriggerOptions: Codable, Equatable, Sendable {
         self.batteryThresholdPercent = min(100, max(1, batteryThresholdPercent))
         let trimmedSSID = wifiSSID?.trimmingCharacters(in: .whitespacesAndNewlines)
         self.wifiSSID = (trimmedSSID?.isEmpty ?? true) ? nil : trimmedSSID
+        self.focusModeName = FocusFilterProfile.normalizedModeName(focusModeName)
         self.lateNightWindow = LateNightWindow(
             startHour: lateNightStartHour,
             endHour: lateNightEndHour
@@ -312,6 +317,7 @@ public struct AutomationTriggerOptions: Codable, Equatable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case batteryThresholdPercent
         case wifiSSID
+        case focusModeName
         case lateNightStartHour
         case lateNightEndHour
         case calendarLeadMinutes
@@ -322,6 +328,7 @@ public struct AutomationTriggerOptions: Codable, Equatable, Sendable {
         self.init(
             batteryThresholdPercent: try container.decodeIfPresent(Int.self, forKey: .batteryThresholdPercent) ?? 20,
             wifiSSID: try container.decodeIfPresent(String.self, forKey: .wifiSSID),
+            focusModeName: try container.decodeIfPresent(String.self, forKey: .focusModeName),
             lateNightStartHour: try container.decodeIfPresent(Int.self, forKey: .lateNightStartHour) ?? 23,
             lateNightEndHour: try container.decodeIfPresent(Int.self, forKey: .lateNightEndHour) ?? 6,
             calendarLeadMinutes: try container.decodeIfPresent(Int.self, forKey: .calendarLeadMinutes) ?? 1
@@ -332,6 +339,7 @@ public struct AutomationTriggerOptions: Codable, Equatable, Sendable {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(batteryThresholdPercent, forKey: .batteryThresholdPercent)
         try container.encodeIfPresent(wifiSSID, forKey: .wifiSSID)
+        try container.encodeIfPresent(focusModeName, forKey: .focusModeName)
         try container.encode(lateNightWindow.startHour, forKey: .lateNightStartHour)
         try container.encode(lateNightWindow.endHour, forKey: .lateNightEndHour)
         try container.encode(calendarLeadMinutes, forKey: .calendarLeadMinutes)
