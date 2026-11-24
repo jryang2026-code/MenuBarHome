@@ -45,6 +45,7 @@ export type BatchStopReason = "undo" | "preempted" | "sourceChanged" | "cancelle
 
 export interface ExecuteIntentsOptions {
   readonly recordHabits?: boolean;
+  readonly userInitiated?: boolean;
   /**
    * Maximum number of per-device batches in flight simultaneously within a phase.
    * Bulk actions ("一键全关" / quick actions) default to `1` so mid-batch undo halts before the
@@ -549,7 +550,7 @@ export async function executeIntents(
           if (command.kind === "activateScene") {
             const prevBanner = host.replyBanner;
             try {
-              const ok = await runningBatch.trackInFlight(() => host.applyCommand(command));
+              const ok = await runningBatch.trackInFlight(() => host.applyCommand(command, false, options.userInitiated));
               if (ok) {
                 succeeded += 1;
                 const entry = candidateIntents[intentIndex];
@@ -612,7 +613,7 @@ export async function executeIntents(
           await runningBatch.trackInFlight(async () => {
             try {
               const seqBefore = peekDeviceWriteSeq(host, deviceId);
-              const sendPromise = host.applyCommand(command);
+              const sendPromise = host.applyCommand(command, false, options.userInitiated);
               const claim =
                 peekDeviceWriteSeq(host, deviceId) === seqBefore
                   ? claimDeviceWrite(host, deviceId)

@@ -1020,7 +1020,7 @@ export interface AutomationExecutionHost {
     readonly source: string;
     readonly isError?: boolean;
   } | null;
-  applyCommand(command: DeviceCommand, silent?: boolean): Promise<boolean>;
+  applyCommand(command: DeviceCommand, readBackPower?: boolean, userInitiated?: boolean): Promise<boolean>;
   evaluateAutomationRuleWriteGate?(rule: AutomationRule): string | null;
   queueBackgroundRender?(): void;
 }
@@ -1147,7 +1147,7 @@ export async function executeAutomationRule(
       blocked = "writeGateDenied";
       return false;
     }
-    if (!(await host.applyCommand(cmd, true))) return false;
+    if (!(await host.applyCommand(cmd, true, options.manual === true))) return false;
     options.onWrite?.();
     return true;
   };
