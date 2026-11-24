@@ -662,10 +662,12 @@ fn complete_hide_panel_on_main_thread(app: &AppHandle, seq: u64) {
         crate::win_theme::apply_window_backdrop(&window, crate::win_theme::BackdropKind::None);
         set_window_cloaked(&window, true);
         let _ = window.hide();
+        crate::webview_lifecycle::schedule_panel_low_memory(app);
     }
 }
 
 fn request_hide_panel_on_main_thread_with_focus(app: &AppHandle, return_focus: bool) {
+    crate::webview_lifecycle::cancel_pending_panel_present();
     let Some(window) = app.get_webview_window("main") else {
         return;
     };
@@ -691,6 +693,7 @@ fn request_hide_panel_on_main_thread_with_focus(app: &AppHandle, return_focus: b
         crate::win_theme::apply_window_backdrop(&window, crate::win_theme::BackdropKind::None);
         set_window_cloaked(&window, true);
         let _ = window.hide();
+        crate::webview_lifecycle::schedule_panel_low_memory(app);
         return;
     }
     let app_clone = app.clone();
@@ -1248,11 +1251,13 @@ pub(crate) fn snap_panel_to_work_area(window: &WebviewWindow) {
     set_window_bounds_sync(window, x, y, win_w, fitted_h);
 }
 
-fn present_panel_for_user_on_main_thread(
+fn present_panel_immediately_on_main_thread(
     app: &AppHandle,
     anchor: Option<PhysicalPosition<f64>>,
     tray_rect: Option<tauri::Rect>,
+    after_present_script: Option<&'static str>,
 ) {
+    crate::webview_lifecycle::restore_panel_normal_memory(app);
     let Some(window) = app.get_webview_window("main") else {
         return;
     };
@@ -1278,6 +1283,46 @@ fn present_panel_for_user_on_main_thread(
     if !window.is_focused().unwrap_or(false) {
         let _ = window.set_focus();
     }
+    if let Some(after_script) = after_present_script {
+        let _ = window.eval(after_script);
+    }
+}
+
+fn present_panel_for_user_on_main_thread(
+    app: &AppHandle,
+    anchor: Option<PhysicalPosition<f64>>,
+    tray_rect: Option<tauri::Rect>,
+    after_present_script: Option<&'static str>,
+) {
+    crate::webview_lifecycle::restore_panel_normal_memory(app);
+    let payload = crate::webview_lifecycle::PendingPanelPresent {
+        anchor,
+        tray_rect,
+        after_present_script,
+    };
+    if let Some(ready_payload) = crate::webview_lifecycle::gate_or_present_panel(app, payload) {
+        present_panel_immediately_on_main_thread(
+            app,
+            ready_payload.anchor,
+            ready_payload.tray_rect,
+            ready_payload.after_present_script,
+        );
+    }
+}
+
+pub(crate) fn finish_deferred_panel_present(
+    app: &AppHandle,
+    pending: crate::webview_lifecycle::PendingPanelPresent,
+) {
+    let app_clone = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        present_panel_immediately_on_main_thread(
+            &app_clone,
+            pending.anchor,
+            pending.tray_rect,
+            pending.after_present_script,
+        );
+    });
 }
 
 pub(crate) fn present_panel_for_user(app: &AppHandle, anchor: Option<PhysicalPosition<f64>>) {
@@ -1291,12 +1336,7 @@ pub(crate) fn present_panel_for_user_and_eval(
 ) {
     let app_clone = app.clone();
     let _ = app.run_on_main_thread(move || {
-        present_panel_for_user_on_main_thread(&app_clone, anchor, None);
-        if let Some(script) = after_present_script {
-            if let Some(window) = app_clone.get_webview_window("main") {
-                let _ = window.eval(script);
-            }
-        }
+        present_panel_for_user_on_main_thread(&app_clone, anchor, None, after_present_script);
     });
 }
 
@@ -1335,7 +1375,7 @@ pub(crate) fn toggle_main_window(
         match action {
             TrayToggleAction::Hide => request_hide_panel_on_main_thread(&app_clone),
             TrayToggleAction::Present => {
-                present_panel_for_user_on_main_thread(&app_clone, anchor, tray_rect)
+                present_panel_for_user_on_main_thread(&app_clone, anchor, tray_rect, None)
             }
             TrayToggleAction::Noop => {}
         }
@@ -1403,6 +1443,7 @@ pub(crate) async fn open_settings_window(
     };
     request_hide_panel(&app);
     if let Some(window) = app.get_webview_window("settings") {
+        crate::webview_lifecycle::settings_mark_open();
         sync_settings_window_chrome(&window);
         let _ = window.unminimize();
         let _ = window.show();
@@ -1449,6 +1490,7 @@ pub(crate) async fn open_settings_window(
     .build()
     .map_err(|err| format!("无法打开设置窗口：{err}"))?;
     sync_settings_window_chrome(&settings_win);
+    crate::webview_lifecycle::settings_mark_open();
     let win_for_events = settings_win.clone();
     settings_win.on_window_event(move |event| match event {
         WindowEvent::ThemeChanged(_) => {
@@ -1468,6 +1510,7 @@ pub(crate) async fn open_settings_window(
         }
         WindowEvent::Destroyed => {
             SETTINGS_ALLOW_CLOSE.store(false, Ordering::SeqCst);
+            crate::webview_lifecycle::settings_mark_destroyed();
         }
         _ => {}
     });
@@ -1477,11 +1520,7 @@ pub(crate) async fn open_settings_window(
 #[tauri::command]
 pub(crate) fn close_settings_window(app: AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("settings") {
-        SETTINGS_ALLOW_CLOSE.store(true, Ordering::SeqCst);
-        if let Err(err) = window.close() {
-            SETTINGS_ALLOW_CLOSE.store(false, Ordering::SeqCst);
-            return Err(format!("无法关闭设置窗口：{err}"));
-        }
+        crate::webview_lifecycle::hide_settings_window_idle(&app, &window)?;
     }
     Ok(())
 }
