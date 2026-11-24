@@ -265,6 +265,8 @@ MenuBarHome can hand its device list to a companion without sharing any credenti
 | Command | What it does |
 | :--- | :--- |
 | `scripts/mijia list [--room 书房] [--json]` | Visible devices grouped by room, with online state and readings |
+| `scripts/mijia list --format alfred [--room 书房]` | Alfred Script Filter JSON: one item per device, ↵ flips its power, ⌘ shows it in the panel |
+| `scripts/mijia list --format swiftbar [--room 书房]` | SwiftBar / xbar plugin text: a menu bar header, one clickable line per device with its state |
 | `scripts/mijia status [--json]` | Connection, device counts, environment readings, and the last command's result |
 | `scripts/mijia toggle 书房台灯` | Flip the primary switch by name, id, or pinyin initials (`sftd`) |
 | `scripts/mijia on 客厅射灯` / `scripts/mijia off 客厅射灯` | Set an exact power state instead of flipping |
@@ -280,6 +282,28 @@ MenuBarHome can hand its device list to a companion without sharing any credenti
 `scripts/menubarhome` runs the same program: `scripts/menubarhome list` is `scripts/mijia list`.
 
 Exit codes: `0` success, `1` the app reported a failure, `2` local error (snapshot missing, unknown device, integration off), `3` no result in time. `--dry-run` prints the link with the token masked, `--no-wait` sends it without waiting, and `MENUBARMIJIA_SNAPSHOT_PATH` overrides the snapshot path.
+
+### Alfred & SwiftBar
+
+`--format alfred` and `--format swiftbar` render the same read-only snapshot as `list`: nothing is written and no network call is made. Every entry carries a `menumijia://` link, so a click still goes through the app's external-link confirmation, high-risk device confirmation and lock-screen block.
+
+For SwiftBar, save a two-line plugin in the plugin folder, for example
+`~/Library/Application Support/SwiftBar/plugins/menubarhome.1m.sh` (the `1m` refreshes it every minute):
+
+```sh
+#!/bin/sh
+exec /ABSOLUTE/PATH/TO/MenuBarHome/scripts/mijia list --format swiftbar
+```
+
+For Alfred, add a **Script Filter** with the keyword `mijia` whose script runs
+`/ABSOLUTE/PATH/TO/MenuBarHome/scripts/mijia list --format alfred`, then connect it to an **Open URL**
+action so the selected `arg` is opened. Each item's ⌘ variant opens the device in the panel instead of
+flipping it. `--icon /Applications/MenuBarHome.app` sets the item icon when the app lives elsewhere;
+without it the script uses the installed app's icon, or Alfred's workflow icon.
+
+Both formats put the local bridge token in the links, exactly like every other CLI command: the token
+only skips the generic "an external link wants to run this" prompt, and the app still asks before a
+high-risk device changes state and refuses controls while the screen is locked.
 
 ### Local MCP Server (Claude Desktop / Claude Code / Cursor)
 
@@ -299,7 +323,7 @@ Every control tool carries `destructiveHint: true`, so MCP clients that honour t
 
 ### Raycast
 
-`raycast/` is a standard Raycast extension with three commands: **Search Devices**, **Scenes & Quick Actions**, and **Ask MenuBarHome**. Import it with Raycast → Extensions → `+` → **Import Extension**, or run `cd raycast && npm ci && npm run dev` while Raycast is open. Power, brightness, colour temperature, thermostat target and fan speed are sent as exact values (`menumijia://power`, `brightness`, `color-temp`, `temperature`, `fan`), so a slider never flips a device by guessing its state; each command shows an animated toast while the app works, then updates it to the result.
+`raycast/` is a standard Raycast extension with three view commands (**Search Devices**, **Scenes & Quick Actions**, **Ask MenuBarHome**), three `no-view` commands you can bind to a global hotkey (**Toggle Device**, **Run Scene**, **All off**, which confirms first), and three AI tools (`list-devices`, `get-device-state`, `control-device`) for `@MenuBarHome` in Raycast AI. Import it with Raycast → Extensions → `+` → **Import Extension**, or run `cd raycast && npm ci && npm run dev` while Raycast is open. Power, brightness, colour temperature, thermostat target and fan speed are sent as exact values (`menumijia://power`, `brightness`, `color-temp`, `temperature`, `fan`), so a slider never flips a device by guessing its state; the view commands show an animated toast while the app works, then update it to the result, the `no-view` commands report through a HUD, and `control-device` asks Raycast for confirmation before sending its link.
 
 </details>
 

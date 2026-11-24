@@ -16,14 +16,32 @@ links, so the same parsing, high-risk confirmation and lock-screen rules apply.
 
 ## Commands
 
-| Command | What it does |
-| :--- | :--- |
-| **Search Devices** | Search by name, room, model or pinyin initials. Turn a device on or off, set brightness, colour temperature, thermostat target or fan speed, open its drawer in the panel, or copy its id. |
-| **Scenes & Quick Actions** | Run Home Assistant scenes and the built-in quick actions: all lights off, soft night light, sleep climate off, all off, and undo. |
-| **Ask MenuBarHome** | Send one natural-language command (for example 把客厅灯调到 40%) with the same local parser the app uses. |
+| Command | Mode | What it does |
+| :--- | :--- | :--- |
+| **Search Devices** | view | Search by name, room, model or pinyin initials. Turn a device on or off, set brightness, colour temperature, thermostat target or fan speed, open its drawer in the panel, or copy its id. |
+| **Scenes & Quick Actions** | view | Run Home Assistant scenes and the built-in quick actions: all lights off, soft night light, sleep climate off, all off, and undo. |
+| **Ask MenuBarHome** | view | Send one natural-language command (for example 把客厅灯调到 40%) with the same local parser the app uses. |
+| **Toggle Device** | no-view | Takes a device name, id or pinyin initials and flips its power, then reports the app's result in a HUD. Bind it to a global hotkey for a one-key light switch. |
+| **Run Scene** | no-view | Takes a scene or quick action name, id or pinyin initials and runs it. |
+| **All off** | no-view | Runs the built-in 一键全关 quick action after a confirmation dialog. |
 
-Results come back through `lastCommandFeedback`, so a toast says whether the app actually ran the
-command (or why it refused).
+Results come back through `lastCommandFeedback`, so a toast (views) or HUD (`no-view`) says whether the app
+actually ran the command, or why it refused.
+
+## AI tools
+
+When Raycast AI is available, mention the extension and it can call three tools:
+
+| Tool | Writes? | What it does |
+| :--- | :--- | :--- |
+| `list-devices` | no | Lists the visible devices with room, state, favourite flag and the controls each device supports. Takes an optional `room`. |
+| `get-device-state` | no | Returns one device's state, its room, the range of each control and the room's environment readings. |
+| `control-device` | yes | Turns one device `on`, `off` or `toggle`. Raycast's `confirmation` export names the device and action before the tool runs. |
+
+The two read-only tools only read the snapshot the app writes. The write tool resolves the device locally:
+`on` and `off` go out as explicit `menumijia://power` states, `toggle` uses `menumijia://toggle` so the app
+decides from the state it sees when the command runs. The app's capability gate, lock-screen block and
+high-risk device confirmation still apply on top of Raycast's confirmation.
 
 ## Preferences
 

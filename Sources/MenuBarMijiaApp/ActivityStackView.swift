@@ -86,7 +86,7 @@ struct ActivityStackView<Content: View>: View {
     @ViewBuilder let content: (PanelActivity) -> Content
     @Environment(\.effectiveReduceMotion) private var reduceMotion
 
-    private var animation: Animation { reduceMotion ? .easeOut(duration: 0.2) : AppleMotion.stack }
+    private var animation: Animation? { AppleMotion.resolve(.stack, reduceMotion: reduceMotion) }
     private var shape: RoundedRectangle { RoundedRectangle(cornerRadius: DesignTokens.Radius.module, style: .continuous) }
     private var capsuleShape: Capsule { Capsule(style: .continuous) }
 

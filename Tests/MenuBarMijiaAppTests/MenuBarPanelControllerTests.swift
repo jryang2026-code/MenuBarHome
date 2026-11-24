@@ -114,6 +114,7 @@ struct MenuBarPanelControllerTests {
         let defaults = InMemoryUserDefaults()
         let mock = MockHomeProvider(snapshot: DemoHomeProvider.defaultHome())
         let store = HomeStore(provider: mock, defaults: defaults)
+        store.assistantAutoResetTiming = .never
         try await store.waitForTestSnapshot()
         #expect(!store.devices.isEmpty, "MockHomeProvider should deliver a snapshot right away")
         return (store, defaults)

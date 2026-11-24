@@ -127,7 +127,10 @@ public final class HomeStore {
         didSet { updateValueFreshness() }
     }
     public internal(set) var rooms: [RoomArea] = [] {
-        didSet { scheduleRaycastSnapshotExport() }
+        didSet {
+            scheduleRaycastSnapshotExport()
+            scheduleSpotlightIndexUpdate()
+        }
     }
     /// Mi Home 家庭 list from the cloud backend; empty elsewhere.
     public internal(set) var homes: [HomeOption] = []
@@ -188,6 +191,7 @@ public final class HomeStore {
         didSet {
             syncIndexedDevices(from: devices)
             scheduleRaycastSnapshotExport()
+            scheduleSpotlightIndexUpdate()
         }
     }
     /// Generic drawer rows under 更多设置, keyed by card id (#5). Values follow the snapshot except
@@ -216,6 +220,7 @@ public final class HomeStore {
                 syncIndexedScenes(from: scenes)
             }
             scheduleRaycastSnapshotExport()
+            scheduleSpotlightIndexUpdate()
         }
     }
     public internal(set) var hasReceivedInitialSnapshot = false
@@ -335,6 +340,19 @@ public final class HomeStore {
         didSet { HomePreferences.showQuickActionsBar.save(showQuickActionsBar, to: userDefaults) }
     }
 
+    public var showHomeSummaryRow: Bool {
+        didSet { HomePreferences.showHomeSummaryRow.save(showHomeSummaryRow, to: userDefaults) }
+    }
+
+    /// Mirror devices, rooms and scenes into the system Spotlight index (#575). Off by default.
+    public var spotlightIndexEnabled: Bool {
+        didSet {
+            HomePreferences.spotlightIndexEnabled.save(spotlightIndexEnabled, to: userDefaults)
+            // Turning it off has to clear what earlier runs indexed, not just stop future writes.
+            scheduleSpotlightIndexUpdate()
+        }
+    }
+
     public var favoriteDeviceIds: Set<String> {
         didSet {
             HomePreferences.favoriteDeviceIds.save(favoriteDeviceIds, to: userDefaults)
@@ -355,6 +373,8 @@ public final class HomeStore {
         didSet {
             HomePreferences.hiddenDeviceIds.save(hiddenDeviceIds, to: userDefaults)
             scheduleRaycastSnapshotExport()
+            // Hiding a device has to remove it from Spotlight now, not at the next poll (#575).
+            scheduleSpotlightIndexUpdate()
         }
     }
 
@@ -430,7 +450,6 @@ public final class HomeStore {
     /// Cleared by `invalidateUndoContext`; a press whose card leaves the home drops out of
     /// `panelActivities`.
     public internal(set) var recentDoorbellRings: [DoorbellRing] = []
-    /// Local camera activity history. It contains event metadata and relative snapshot filenames only.
     public let cameraEventStore: CameraEventStore
     /// Safety alerts the panel's activity stack shows, newest first, at most
     /// `recentSafetyAlertLimit`. Written by the snapshot path in `HomeStore+Backend.swift`, which is
@@ -1258,6 +1277,7 @@ public final class HomeStore {
     public var onHAConnectionDisabled: (@MainActor (Set<String>) -> Void)?
     /// Fires once when the camera type closes, with the camera cards still on the panel (P3c-CM).
     public var onCameraCategoryDisabled: (@MainActor ([SmartDevice]) -> Void)?
+    public internal(set) var automationRunHistory: [AutomationRunEntry] = []
     @ObservationIgnored var automationGeneration: UInt64 = 0
     @ObservationIgnored var reconciledAutomationGeneration: UInt64 = 0
     public var onAutomationRulesChanged: (@MainActor () -> Void)?
@@ -1271,6 +1291,8 @@ public final class HomeStore {
     var companionRevokedForSession = false
     @ObservationIgnored var isPersistingCompanionToggle = false
     public var onCompanionIntegrationChanged: (@MainActor (Bool) -> Void)?
+    /// Installed by the app's `SpotlightIndexer`; tests leave it nil so no system index is touched (#575).
+    @ObservationIgnored public var onSpotlightIndexUpdate: (@MainActor (SpotlightIndexUpdate) -> Void)?
     @ObservationIgnored var miAccountsProviderFactory: (@MainActor ([MiAccount]) -> MiAccountsProvider)?
     @ObservationIgnored var haProviderFactory: (@MainActor (String, String) -> any HomeProvider)?
     @ObservationIgnored var explicitlyDisabledConnections: Set<ConnectionCapabilityID> = []
@@ -1312,6 +1334,10 @@ public final class HomeStore {
                 ? FileManager.default.temporaryDirectory.appendingPathComponent("CameraEvents-\(UUID().uuidString)", isDirectory: true)
                 : nil
         )
+        if let data = ud.data(forKey: Self.automationRunHistoryKey),
+           let history = try? JSONDecoder().decode([AutomationRunEntry].self, from: data) {
+            self.automationRunHistory = Array(history.prefix(Self.automationRunHistoryLimit))
+        }
         self.usesInjectedProvider = (provider != nil || dualSource != nil)
         self.credentialVault = credentialVault
         self.miAccountsProviderFactory = miAccountsProviderFactory
@@ -1434,6 +1460,8 @@ public final class HomeStore {
         self.awayGap = MacAwayGap(includesAway: ud.bool(forKey: MacAwayGap.storageKey))
         self.isCompactGridMode = HomePreferences.isCompactGridMode.load(from: ud)
         self.showQuickActionsBar = HomePreferences.showQuickActionsBar.load(from: ud)
+        self.showHomeSummaryRow = HomePreferences.showHomeSummaryRow.load(from: ud)
+        self.spotlightIndexEnabled = HomePreferences.spotlightIndexEnabled.load(from: ud)
         self.menuBarTargetId = HomePreferences.menuBarTargetId.load(from: ud)
         self.menuBarPinnedReadouts = MenuBarPinnedReadout.normalize(HomePreferences.menuBarPinnedReadouts.load(from: ud))
         self.lastManuallyUsedLightId = ud.string(forKey: Self.lastManualLightIdKey)

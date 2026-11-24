@@ -155,6 +155,12 @@ struct GoldenCorpusTests {
         }
 
         struct SensorPayload: Decodable {
+            struct Observation: Decodable {
+                let entityId: String
+                let kind: String
+                let alarming: Bool
+            }
+            let safetyObservations: [Observation]?
             let temperature: Double?
             let humidity: Double?
             let battery: Int?
@@ -381,7 +387,11 @@ struct GoldenCorpusTests {
                         temperature: p.temperature,
                         humidity: p.humidity,
                         battery: p.battery,
-                        statusText: p.statusText
+                        statusText: p.statusText,
+                        observations: (p.safetyObservations ?? []).compactMap {
+                            guard let kind = SensorAlertKind(rawValue: $0.kind) else { return nil }
+                            return SensorObservation(sourceId: $0.entityId, kind: kind, alarming: $0.alarming)
+                        }
                     )
                 )
             case .appliance(let p):

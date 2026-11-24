@@ -345,7 +345,7 @@ fn main() {
                     "update" => {
                         if app.get_webview_window("main").is_some() {
                             PIN_POPOVER.store(true, Ordering::SeqCst);
-                            present_panel_and_eval(
+                            present_panel_for_user_and_eval(
                                 app,
                                 None,
                                 Some("window.dispatchEvent(new CustomEvent('menumijia:open-update'))"),

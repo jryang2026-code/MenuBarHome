@@ -26,6 +26,7 @@ let package = Package(
                 .copy("Resources/deviceProfiles.json"),
                 .copy("Resources/capability-manifest.json"),
                 .copy("Resources/deviceLabels.json"),
+                .copy("Resources/deviceClaims.json"),
             ],
             swiftSettings: [
                 .swiftLanguageMode(.v6)

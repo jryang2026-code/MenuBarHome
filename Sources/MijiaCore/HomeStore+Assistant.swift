@@ -835,6 +835,24 @@ extension HomeStore {
         let spoken = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !spoken.isEmpty else { return nil }
         let startedAt = Date()
+        let delayed = DelayPhrase.extract(spoken)
+        let utterance = delayed?.remainder ?? spoken
+        if let query = LocalIntentParser.stateQuery(in: utterance) {
+            if case .thinking = assistantState { advanceAssistantEpoch() }
+            pendingCloudConsent = nil
+            assistantSuggestions = []
+            guard delayed == nil else {
+                setAssistantState(.failed(L10n.tr("定时查询仅支持查看当前状态", "State queries only read the current snapshot")))
+                return nil
+            }
+            let plan = query.answer(devices: categoryVisibleDevices)
+            if let plan {
+                setAssistantState(.done(plan.reply))
+            } else {
+                setAssistantState(.failed(L10n.tr("当前快照没有可回答的状态", "No matching state in the current snapshot")))
+            }
+            return plan
+        }
         if DelayPhrase.isCancel(spoken) {
             let count = cancelScheduledCommands()
             setAssistantState(
@@ -848,8 +866,6 @@ extension HomeStore {
             await undoLastAssistantAction()
             return nil
         }
-        let delayed = DelayPhrase.extract(spoken)
-        let utterance = delayed?.remainder ?? spoken
         setAssistantState(.thinking)
         assistantThinkingEpoch = assistantGeneration
 
@@ -1825,7 +1841,8 @@ extension HomeStore {
         habitSummary: String? = nil,
         automationGeneration: UInt64? = nil,
         timerGeneration: UInt64? = nil,
-        onAutomationCompletion: ((Int, Int, Int) -> Void)? = nil
+        automationCanContinue: (() -> Bool)? = nil,
+        onAutomationCompletion: ((Int, Int, Int, Bool) -> Void)? = nil
     ) async -> IntentPlan {
         if origin.blocksWhileScreenLocked, isControlBlockedByScreenLock {
             showToast(screenLockBlockedMessage, isError: true)
@@ -1856,7 +1873,10 @@ extension HomeStore {
 
         func runtimeAllowsWrites() -> Bool {
             if let timerGeneration { return scheduledCommandsCanWrite(generation: timerGeneration) }
-            if let automationGeneration { return automationCanWrite(generation: automationGeneration) }
+            if let automationGeneration {
+                return automationCanWrite(generation: automationGeneration)
+                    && automationCanContinue?() != false
+            }
             return true
         }
 
@@ -1884,8 +1904,6 @@ extension HomeStore {
                 outcomes.append(contentsOf: await task.value)
             }
         }
-        guard context == controlContextID else { return plan }
-
         var restoreCommands: [DeviceCommand] = []
         var failedNames: [String] = []
         var offlineNames: [String] = []
@@ -1910,7 +1928,11 @@ extension HomeStore {
             }
         }
 
-        onAutomationCompletion?(outcomes.count, succeededIntents.count, outcomes.count - succeededIntents.count)
+        onAutomationCompletion?(
+            outcomes.count, succeededIntents.count, outcomes.count - succeededIntents.count,
+            !offlineNames.isEmpty
+        )
+        guard context == controlContextID else { return plan }
         if outcomes.isEmpty, !runtimeAllowsWrites() { return plan }
 
         // Only explicit user actions become habits, and only for intents that actually succeeded (#34/#113).

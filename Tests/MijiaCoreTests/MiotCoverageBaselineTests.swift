@@ -29,6 +29,9 @@ struct MiotCoverageBaselineTests {
         var summary: Summary
         var models: [String: Entry]
         /// Models Windows classifies differently today; the Windows suite expects these instead.
+        /// `scripts/check_device_rules.py` ratchets the count (1 today: the MIoT television card,
+        /// which macOS has no builder for), so a second divergence fails the gate and a stale one
+        /// has to be deleted rather than kept.
         var windowsDivergences: [String: Entry]
     }
 

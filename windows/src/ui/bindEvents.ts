@@ -674,6 +674,12 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
       host.saveSettings();
       host.render();
     });
+    host.root.querySelector<HTMLInputElement>("#settings-home-summary-row")?.addEventListener("change", (e) => {
+      host.settings.showHomeSummaryRow = (e.target as HTMLInputElement).checked;
+      syncSettingsSaveHint(host, "auto-saved");
+      host.saveSettings();
+      host.render();
+    });
 
     host.root.querySelector<HTMLInputElement>("#settings-voice-input")?.addEventListener("change", (e) => {
       setVoiceInputEnabled(host, (e.target as HTMLInputElement).checked, {
@@ -854,8 +860,7 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
     });
 
     host.root.querySelector("#btn-unsupported-devices-row")?.addEventListener("click", () => {
-      host.openSettingsSheet("connection");
-      highlightSettingsAnchor(host.root, "scanUnsupportedDevices");
+      host.openSettingsSheet("connection", "scanUnsupportedDevices");
     });
 
     // A home whose devices the cloud hid leaves the panel empty until the user goes back to all homes.
@@ -1222,6 +1227,47 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
         host.expandedDeviceId = null;
         host.render();
         host.root.querySelector(`[data-kind="${tag}"]`)?.scrollIntoView({ inline: "center", block: "nearest", behavior: "smooth" });
+      });
+    });
+
+    host.root.querySelectorAll<HTMLElement>("[data-home-summary-capsule]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const kind = btn.dataset.homeSummaryCapsule;
+        const tag = host.kindTagFromDataset(btn.dataset.homeSummaryTag);
+        const targetDeviceId = btn.dataset.homeSummaryDevice?.trim() || null;
+        if (kind === "alerts") {
+          if (host.activityCenter) {
+            host.activityCenter.isExpanded = true;
+          }
+          if (targetDeviceId) {
+            if (host.listCut.kind !== "all") {
+              host.selectRoom(null);
+            }
+            host.expandedDeviceId = targetDeviceId;
+            host.render();
+            host.root
+              .querySelector(`[data-device-id="${CSS.escape(targetDeviceId)}"]`)
+              ?.scrollIntoView({ block: "center", behavior: "smooth" });
+          } else {
+            host.render();
+          }
+          return;
+        }
+        if (tag) {
+          if (host.listCut.kind === "deviceKind" && host.listCut.tag === tag) {
+            host.selectRoom(null);
+          } else {
+            host.selectDeviceKind(tag);
+          }
+          host.animateEntrance = true;
+          host.expandedDeviceId = null;
+          host.render();
+          return;
+        }
+        if (targetDeviceId) {
+          host.expandedDeviceId = targetDeviceId;
+          host.render();
+        }
       });
     });
 

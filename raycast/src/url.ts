@@ -1,4 +1,4 @@
-import { open, showToast, Toast } from "@raycast/api";
+import { open, showHUD, showToast, Toast } from "@raycast/api";
 import { readFile, stat } from "node:fs/promises";
 import { loadSnapshot, resultTimeoutSeconds, snapshotPath, type RaycastFeedback } from "./snapshot";
 import {
@@ -56,6 +56,23 @@ export async function runCommandWithToast(route: string, params: CommandParams =
 
 export function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * no-view commands have no toast container, so they report through a HUD. The app's own feedback
+ * message is shown as-is; refusals and local errors keep a warning glyph so a failure is hard to miss.
+ */
+export async function runCommandWithHUD(route: string, params: CommandParams = []): Promise<void> {
+  try {
+    const result = await runCommand(route, params);
+    if (result.isError) {
+      await showHUD(`⚠️ ${result.message || "MenuBarHome refused the command"}`);
+      return;
+    }
+    await showHUD(result.message || "Done");
+  } catch (error) {
+    await showHUD(`⚠️ ${errorMessage(error)}`);
+  }
 }
 
 async function waitForFeedback(requestId: string): Promise<RaycastFeedback> {

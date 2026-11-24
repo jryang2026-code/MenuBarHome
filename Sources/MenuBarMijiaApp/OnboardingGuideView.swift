@@ -15,6 +15,7 @@ public enum OnboardingRoute: Equatable, Sendable {
 /// remain collapsed behind the "Advanced" disclosure until asked for.
 public struct OnboardingGuideView: View {
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.effectiveReduceMotion) private var reduceMotion
     public let store: HomeStore
 
     @State private var route: OnboardingRoute
@@ -126,7 +127,7 @@ public struct OnboardingGuideView: View {
         }
         .onChange(of: store.miAccounts.count) { oldCount, newCount in
             if route == .connectMi, newCount > oldCount {
-                withAnimation(AppleMotion.snappySpring) {
+                withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) {
                     route = .connectedSummary
                 }
                 announceLiveRegion(L10n.tr("已连接米家账号，可继续添加 Home Assistant 启用双源或开始使用。", "Xiaomi Home connected. You can add Home Assistant for dual-source or start using the app."))
@@ -170,7 +171,7 @@ public struct OnboardingGuideView: View {
             Spacer()
 
             Button(store.effectiveLanguage == .en ? "中文" : "EN") {
-                withAnimation(AppleMotion.snappySpring) {
+                withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) {
                     store.appLanguagePreference = (store.effectiveLanguage == .en) ? .zhHans : .en
                 }
             }
@@ -178,7 +179,7 @@ public struct OnboardingGuideView: View {
             .help(L10n.tr("切换为英文界面 / Switch to English", "Switch to Chinese / 切换为中文界面"))
 
             Button(L10n.tr("跳过", "Skip")) {
-                withAnimation(AppleMotion.snappySpring) {
+                withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) {
                     store.finishOnboardingGuide()
                 }
             }
@@ -208,7 +209,7 @@ public struct OnboardingGuideView: View {
                 accessibilityHint: L10n.tr("打开米家扫码登录步骤", "Opens Xiaomi Home QR sign-in")
             ) {
                 store.isKeepingOnboardingGuideOpenForDualSource = true
-                withAnimation(AppleMotion.snappySpring) { route = .connectMi }
+                withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) { route = .connectMi }
             }
 
             platformCard(
@@ -224,7 +225,7 @@ public struct OnboardingGuideView: View {
             ) {
                 haConnectError = nil
                 store.isKeepingOnboardingGuideOpenForDualSource = true
-                withAnimation(AppleMotion.snappySpring) { route = .connectHA }
+                withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) { route = .connectHA }
             }
 
             platformCard(
@@ -240,7 +241,7 @@ public struct OnboardingGuideView: View {
             ) {
                 store.cancelPendingHAOnboardingVerification()
                 store.isKeepingOnboardingGuideOpenForDualSource = false
-                withAnimation(AppleMotion.snappySpring) {
+                withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) {
                     store.switchBackend(.demo)
                     store.showToast(L10n.tr("已进入演示模式，随时可以连接真实家庭", "Demo mode on; connect a real home any time"))
                 }
@@ -315,7 +316,7 @@ public struct OnboardingGuideView: View {
                     ? L10n.tr("返回", "Back")
                     : L10n.tr("返回选择平台", "Choose Platform")
             ) {
-                withAnimation(AppleMotion.snappySpring) {
+                withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) {
                     if store.hasHASource {
                         route = .connectedSummary
                     } else {
@@ -362,7 +363,7 @@ public struct OnboardingGuideView: View {
             ) {
                 store.cancelPendingHAOnboardingVerification()
                 haConnectError = nil
-                withAnimation(AppleMotion.snappySpring) {
+                withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) {
                     if store.hasEnabledMiSource {
                         route = .connectedSummary
                     } else {
@@ -455,7 +456,7 @@ public struct OnboardingGuideView: View {
             switch outcome {
             case .connected:
                 haConnectError = nil
-                withAnimation(AppleMotion.snappySpring) {
+                withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) {
                     route = .connectedSummary
                 }
                 announceLiveRegion(L10n.tr("Home Assistant 验证并连接成功。", "Home Assistant verified and connected."))
@@ -494,7 +495,7 @@ public struct OnboardingGuideView: View {
             if hasMi && !hasHA {
                 Button {
                     haConnectError = nil
-                    withAnimation(AppleMotion.snappySpring) { route = .connectHA }
+                    withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) { route = .connectHA }
                 } label: {
                     Label(L10n.tr("再添加 Home Assistant（启用双源）", "Add Home Assistant (Dual-Source)"), systemImage: "plus.circle")
                         .font(.system(size: 11.5, weight: .semibold))
@@ -502,7 +503,7 @@ public struct OnboardingGuideView: View {
                 .buttonStyle(PillActionButtonStyle())
             } else if hasHA && !hasMi {
                 Button {
-                    withAnimation(AppleMotion.snappySpring) { route = .connectMi }
+                    withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) { route = .connectMi }
                 } label: {
                     Label(L10n.tr("再添加米家（启用双源）", "Add Xiaomi Home (Dual-Source)"), systemImage: "plus.circle")
                         .font(.system(size: 11.5, weight: .semibold))
@@ -959,7 +960,7 @@ public struct OnboardingGuideView: View {
                 if !trimmedKey.isEmpty || draftChangesConfig {
                     _ = saveOnboardingAssistantDraft(showErrorToast: false, explicit: false)
                 }
-                withAnimation(AppleMotion.snappySpring) {
+                withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) {
                     store.finishOnboardingGuide()
                 }
             } label: {

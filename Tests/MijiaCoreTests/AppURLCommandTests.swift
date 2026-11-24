@@ -342,6 +342,10 @@ struct AppURLCommandTests {
 
         let focus = try #require(URL(string: "menumijia://focus?device=dev_fan"))
         #expect(AppURLParser.parse(focus) == .focus(deviceId: "dev_fan"))
+        // A Spotlight room hit navigates to that room's filter instead of a device drawer (#575).
+        let focusRoom = try #require(URL(string: "menumijia://focus?room=living"))
+        #expect(AppURLParser.parse(focusRoom) == .focusRoom(roomId: "living"))
+        #expect(AppURLParser.parse(focusRoom)?.controlsDevice == false)
 
         // A slider that overshoots must not be clamped at the edge of the process: reject the link.
         let rejected = [
@@ -358,6 +362,9 @@ struct AppURLCommandTests {
             "menumijia://fan?device=dev_fan&percent=250",
             "menumijia://fan?device=dev_fan&percent=60&preset=Auto",
             "menumijia://focus?device=",
+            "menumijia://focus",
+            "menumijia://focus?room=",
+            "menumijia://focus?device=dev_fan&room=living",
         ]
         for raw in rejected {
             let url = try #require(URL(string: raw))

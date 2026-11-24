@@ -111,6 +111,7 @@ struct DeviceTransportReadoutRow: View {
 
 struct DeviceCardContextMenuItems: View {
     @Environment(\.headerlessStackMenu) private var headerlessStackMenu
+    @Environment(\.effectiveReduceMotion) private var reduceMotion
     @AppStorage(GroupPrefs.groupsKey) private var groupsRaw: String = "[]"
 
     let device: SmartDevice
@@ -130,13 +131,13 @@ struct DeviceCardContextMenuItems: View {
     }
 
     private func setSize(_ size: TileSize) {
-        withAnimation(AppleMotion.snappySpring) {
+        withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) {
             panelLayout.setSize(size, of: device.id, scope: layoutScope)
         }
     }
 
     private func assignGroup(_ groupId: String?) {
-        withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
+        withAnimation(AppleMotion.resolve(.surface, reduceMotion: reduceMotion)) {
             panelLayout.assign(device.id, toGroup: groupId)
         }
     }
@@ -334,7 +335,7 @@ struct DeviceCardContextMenuItems: View {
 
         if store.hasDetailDrawer(for: device) {
             Button {
-                withAnimation(AppleMotion.snappySpring) {
+                withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) {
                     store.toggleExpanded(device.id)
                 }
             } label: {
@@ -345,7 +346,7 @@ struct DeviceCardContextMenuItems: View {
             }
         } else if case .sensor(let spec) = device.kind, spec.temperature != nil || spec.humidity != nil {
             Button {
-                withAnimation(AppleMotion.snappySpring) {
+                withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) {
                     store.toggleExpanded(device.id)
                 }
             } label: {
@@ -371,7 +372,7 @@ struct DeviceCardContextMenuItems: View {
         Divider()
 
         Button(role: .destructive) {
-            withAnimation(AppleMotion.snappySpring) {
+            withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) {
                 store.hideDevice(device.id)
             }
         } label: {

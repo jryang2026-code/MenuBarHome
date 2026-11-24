@@ -6,7 +6,7 @@ import {
   isHaBlockedRequestError,
 } from "./haTransportGate.js";
 import { HomeAssistantSynthesizer, type HAInvoke } from "./homeAssistant.js";
-import type { ExecuteOptions, HomeProvider } from "./homeProvider.js";
+import type { ExecuteOptions, HomeCommandProvider } from "./homeProvider.js";
 import { tr3, type LanguagePreference } from "./i18n.js";
 import { MiAccountScope, type AccountScopedHomeOption, type AccountScopedSmartDevice,
 } from "./miAccountsStore.js";
@@ -1481,11 +1481,11 @@ export class DualSourceCoordinator { public canonical: CanonicalDeviceRegistry;
     this.rooms.save(this.storage);
     this.lastMerged = merged;
     return merged; } } 
-export class DualSourceHomeProvider implements HomeProvider {
+export class DualSourceHomeProvider implements HomeCommandProvider {
   constructor(
     private readonly dependencies: {
-      readonly haProvider: HomeProvider;
-      readonly miProvider: HomeProvider;
+      readonly haProvider: HomeCommandProvider;
+      readonly miProvider: HomeCommandProvider;
       readonly routes?: Readonly<Record<string, DeviceMergeRoute>>;
       readonly deviceIdForEntity?: (entityId: string) => string | null;
     },

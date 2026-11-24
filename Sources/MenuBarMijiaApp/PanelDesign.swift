@@ -271,6 +271,7 @@ struct HoldToConfirmButton: View {
     let onConfirm: (HomeStore.AllOffHoldMode) -> Void
     let onTap: () -> Void
 
+    @Environment(\.effectiveReduceMotion) private var reduceMotion
     @State private var holding = false
     /// Rehearsal-or-live decision, latched at press-down: SwiftUI can deliver
     /// `onPressingChanged(false)` immediately before `perform`.
@@ -302,7 +303,7 @@ struct HoldToConfirmButton: View {
             .allowsHitTesting(false)
         }
         .modifier(ChipSurface(shape: capsule, tint: nil, interactive: true, clear: false))
-        .scaleEffect(holding ? 0.95 : 1)
+        .scaleEffect(holding && !reduceMotion ? 0.95 : 1)
         .contentShape(capsule)
         .onTapGesture {
             guard !PanelTransientUIState.shared.shouldSuppressTap() else { return }
@@ -327,13 +328,13 @@ struct HoldToConfirmButton: View {
                 holdSessionId = PanelTransientUIState.shared.beginAllOffHold {
                     holdSessionId = nil
                     holdLatch.reset()
-                    withAnimation(.easeOut(duration: 0.15)) { holding = false }
+                    withAnimation(AppleMotion.resolve(.pressFeedback, reduceMotion: reduceMotion)) { holding = false }
                 }
             } else {
                 // A release is not a cancel: `perform` still needs the session.
                 PanelTransientUIState.shared.releaseAllOffHold(session: holdSessionId)
             }
-            withAnimation(pressing ? .linear(duration: 0.6) : .easeOut(duration: 0.2)) { holding = pressing }
+            withAnimation(AppleMotion.resolve(pressing ? .holdProgress : .valueChange, reduceMotion: reduceMotion)) { holding = pressing }
         }
         .onDisappear {
             // Leaving the tree is an explicit cancel: a late `perform` must not fire.

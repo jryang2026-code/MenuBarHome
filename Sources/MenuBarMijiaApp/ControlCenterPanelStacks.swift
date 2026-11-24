@@ -317,23 +317,27 @@ extension ControlCenterPanel {
         }
     }
 
-    /// Single-device non-favorite stacks beyond the initial 8-card overview fold into the long tail
-    /// until opened by the user. Independent of `expandedStacks` so manually opening a long-tail
-    /// single-device stack keeps its `"收起"` header and never displaces earlier overview stacks.
+    private func stackSlotCost(_ stack: DeviceStack) -> Int {
+        stack.devices.reduce(0) { $0 + tileSize($1).overviewSlotSize.slotCost }
+    }
+
+    /// Single-device non-favorite stacks beyond the initial slot budget fold into the long tail
+    /// until opened by the user. Pinned favorites always stay open; remaining slots are filled
+    /// by size weight (skipping oversized stacks so smaller ones still fit).
     func overviewFoldedStackIds(in stacks: [DeviceStack]) -> Set<String> {
         guard !isEditingLayout, store.listCut == .all else { return [] }
         let onlineStacks = stacks.filter { $0.source != .offline }
-        let totalOnline = onlineStacks.reduce(0) { $0 + $1.devices.count }
-        guard totalOnline > PanelDeviceOrganizer.initialOverviewLimit else { return [] }
+        let totalSlotCost = onlineStacks.reduce(0) { $0 + stackSlotCost($1) }
+        guard totalSlotCost > PanelDeviceOrganizer.initialOverviewSlotBudget else { return [] }
 
-        var openCount = 0
+        let pinnedCost = onlineStacks.filter(\.isPinned).reduce(0) { $0 + stackSlotCost($1) }
+        var remaining = max(0, PanelDeviceOrganizer.initialOverviewSlotBudget - pinnedCost)
         var folded: Set<String> = []
-        for stack in onlineStacks {
-            if stack.isPinned {
-                openCount += stack.devices.count
-            } else if stack.isOpen(expandedStacks: [], listCut: store.listCut) {
-                if openCount + stack.devices.count <= PanelDeviceOrganizer.initialOverviewLimit {
-                    openCount += stack.devices.count
+        for stack in onlineStacks where !stack.isPinned {
+            if stack.isOpen(expandedStacks: [], listCut: store.listCut) {
+                let cost = stackSlotCost(stack)
+                if cost <= remaining {
+                    remaining -= cost
                 } else {
                     folded.insert(stack.id)
                 }
@@ -349,7 +353,7 @@ extension ControlCenterPanel {
         return stack.isOpen(expandedStacks: expandedStacks, listCut: store.listCut)
     }
 
-    /// Pinned favorites, single-device groups within the initial 8-card overview, and a stack matching
+    /// Pinned favorites, single-device groups within the initial slot budget, and a stack matching
     /// the active list cut open automatically.
     func isStackOpen(_ stack: DeviceStack) -> Bool {
         isStackOpen(stack, overviewFolded: overviewFoldedStackIds(in: deviceStacks))
@@ -358,8 +362,8 @@ extension ControlCenterPanel {
     func longTailBarState(for stacks: [DeviceStack]) -> (shows: Bool, hiddenCount: Int, isExpanded: Bool) {
         guard !isEditingLayout, store.listCut == .all else { return (false, 0, false) }
         let onlineStacks = stacks.filter { $0.source != .offline }
-        let totalOnline = onlineStacks.reduce(0) { $0 + $1.devices.count }
-        guard totalOnline > PanelDeviceOrganizer.initialOverviewLimit else { return (false, 0, false) }
+        let totalSlotCost = onlineStacks.reduce(0) { $0 + stackSlotCost($1) }
+        guard totalSlotCost > PanelDeviceOrganizer.initialOverviewSlotBudget else { return (false, 0, false) }
 
         let collapsible = onlineStacks.filter { !$0.isPinned }
         guard !collapsible.isEmpty else { return (false, 0, false) }
@@ -438,8 +442,8 @@ extension ControlCenterPanel {
         withAnimation(stackAnimation) { _ = expandedStacks.insert(stack.id) }
     }
 
-    private var stackAnimation: Animation {
-        reduceMotion ? .easeOut(duration: 0.2) : AppleMotion.stack
+    private var stackAnimation: Animation? {
+        AppleMotion.resolve(.stack, reduceMotion: reduceMotion)
     }
 
     private func setStack(_ stack: DeviceStack, open: Bool) {
@@ -461,7 +465,7 @@ extension ControlCenterPanel {
             }
             if let cut = listCutTitle {
                 Button {
-                    withAnimation(AppleMotion.snappySpring) { _ = store.selectRoom(nil) }
+                    withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) { _ = store.selectRoom(nil) }
                 } label: {
                     HStack(spacing: 4) {
                         Text(cut)
@@ -657,7 +661,7 @@ extension ControlCenterPanel {
                 .foregroundStyle(color == nil ? Color.secondary : Color.white)
         }
         .frame(width: 38, height: 38)
-        .animation(AppleMotion.control, value: color == nil)
+        .animation(AppleMotion.resolve(.control, reduceMotion: reduceMotion), value: color == nil)
     }
 
     /// What a notification body would say: which devices are on, plus the room's climate reading.

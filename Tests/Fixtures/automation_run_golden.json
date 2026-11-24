@@ -1,0 +1,13 @@
+{
+  "reasons": [
+    "conditionFalse", "singleAlreadyRunning", "screenLocked", "writeGateDenied",
+    "deviceOffline", "error", "cooldown", "superseded", "noActionNeeded"
+  ],
+  "starts": [
+    { "time": 1000, "mode": "single", "accepted": true },
+    { "time": 1001, "mode": "single", "accepted": false },
+    { "time": 1002, "mode": "restart", "accepted": true },
+    { "time": 1003, "mode": "restart", "accepted": true },
+    { "time": 1004, "mode": "single", "accepted": false }
+  ]
+}

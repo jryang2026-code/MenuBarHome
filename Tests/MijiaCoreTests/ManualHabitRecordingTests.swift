@@ -26,6 +26,7 @@ struct ManualHabitRecordingTests {
     private func makeStore() async throws -> (HomeStore, MockHomeProvider) {
         let mock = MockHomeProvider(snapshot: SynthesizedHome(devices: [Self.ceiling, Self.ac], scenes: Self.scenes))
         let store = HomeStore(provider: mock, defaultsSuiteName: "test.manualhabit.\(UUID().uuidString)")
+        store.assistantAutoResetTiming = .never
         try await store.waitForTestSnapshot()
         return (store, mock)
     }

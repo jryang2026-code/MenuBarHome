@@ -40,7 +40,7 @@ private struct SettingsAnchorHighlight: ViewModifier {
             }
             .padding(.horizontal, -6)
             .padding(.vertical, -3)
-            .animation(reduceMotion ? nil : AppleMotion.control, value: isHighlighted)
+            .animation(AppleMotion.resolve(.control, reduceMotion: reduceMotion), value: isHighlighted)
             .id(anchor)
     }
 }
@@ -156,7 +156,7 @@ private struct SidebarRowButtonStyle: ButtonStyle {
                     .fill(Color.primary.opacity(hovering ? 0.07 : 0))
             }
             .opacity(configuration.isPressed ? 0.85 : 1)
-            .animation(reduceMotion ? nil : AppleMotion.pressFeedback, value: hovering)
+            .animation(AppleMotion.resolve(.pressFeedback, reduceMotion: reduceMotion), value: hovering)
             .onHover { hovering = $0 }
     }
 }

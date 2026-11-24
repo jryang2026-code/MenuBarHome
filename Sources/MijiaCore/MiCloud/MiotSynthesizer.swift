@@ -31,53 +31,61 @@ public enum MiotAddress {
 public enum MiotSynthesizer {
     typealias KindBuilder = @Sendable (MiotReader, MiotService) -> DeviceKind
 
-    /// Primary service short name → builder. Order is the fallback priority when the device
-    /// type itself (urn segment 3) does not name one of these services.
-    static let registry: [(service: String, build: KindBuilder)] = [
-        ("air-conditioner", buildClimate),
-        ("heater", buildClimate),
-        ("thermostat", buildClimate),
-        ("electric-blanket", buildClimate),
-        ("dehumidifier", buildDehumidifier),
-        ("diffuser", buildPlug),
-        ("speaker", buildSpeaker),
-        ("light", buildLight),
-        ("fan", buildFan),
-        ("air-purifier", buildAirPurifier),
-        ("air-fresh", buildAirPurifier),
-        ("humidifier", buildAirPurifier),
-        ("vacuum", buildVacuum),
-        ("curtain", buildCover),
-        ("window-opener", buildCover),
-        ("airer", buildCover),
-        ("fridge", buildFridge),
-        ("camera-control", buildCamera),
-        ("video-doorbell", buildCamera),
-        ("outlet", buildPlug),
-        ("switch", buildPlug),
-        ("electronic-valve", buildBreaker),
-        ("kettle", buildKitchenAppliance),
-        ("ble-kettle", buildKitchenAppliance),
-        ("water-dispenser", buildKitchenAppliance),
-        ("cooker", buildKitchenAppliance),
-        ("air-fryer", buildKitchenAppliance),
-        ("oven", buildKitchenAppliance),
-        ("microwave-oven", buildKitchenAppliance),
-        ("health-pot", buildKitchenAppliance),
-        ("water-heater", buildApplianceCard),
-        ("washer", buildApplianceCard),
-        ("dryer", buildApplianceCard),
-        ("clothes-dryer", buildApplianceCard),
-        ("dishwasher", buildApplianceCard),
-        ("lock", buildSensor),
-        ("motion-sensor", buildSensor),
-        ("occupancy-sensor", buildSensor),
-        ("magnet-sensor", buildSensor),
-        ("submersion-sensor", buildSensor),
-        ("illumination-sensor", buildSensor),
-        ("air-monitor", buildSensor),
-        ("temperature-humidity-sensor", buildSensor),
+    /// Service short name → card builder. Only the renderers live here: `Shared/deviceClaims.json`
+    /// owns which services are claimable, in what order, and under which conditions, and
+    /// `scripts/check_device_rules.py` keeps this table and the document aligned. macOS has no MIoT
+    /// television card, so the document marks that rung Windows-only.
+    static let builders: [String: KindBuilder] = [
+        "air-conditioner": buildClimate,
+        "air-fresh": buildAirPurifier,
+        "air-fryer": buildKitchenAppliance,
+        "air-monitor": buildSensor,
+        "air-purifier": buildAirPurifier,
+        "airer": buildCover,
+        "ble-kettle": buildKitchenAppliance,
+        "camera-control": buildCamera,
+        "clothes-dryer": buildApplianceCard,
+        "cooker": buildKitchenAppliance,
+        "curtain": buildCover,
+        "dehumidifier": buildDehumidifier,
+        "diffuser": buildPlug,
+        "dishwasher": buildApplianceCard,
+        "dryer": buildApplianceCard,
+        "electric-blanket": buildClimate,
+        "electronic-valve": buildBreaker,
+        "fan": buildFan,
+        "fridge": buildFridge,
+        "health-pot": buildKitchenAppliance,
+        "heater": buildClimate,
+        "humidifier": buildAirPurifier,
+        "illumination-sensor": buildSensor,
+        "kettle": buildKitchenAppliance,
+        "light": buildLight,
+        "lock": buildSensor,
+        "magnet-sensor": buildSensor,
+        "microwave-oven": buildKitchenAppliance,
+        "motion-sensor": buildSensor,
+        "occupancy-sensor": buildSensor,
+        "outlet": buildPlug,
+        "oven": buildKitchenAppliance,
+        "speaker": buildSpeaker,
+        "submersion-sensor": buildSensor,
+        "switch": buildPlug,
+        "temperature-humidity-sensor": buildSensor,
+        "thermostat": buildClimate,
+        "vacuum": buildVacuum,
+        "video-doorbell": buildCamera,
+        "washer": buildApplianceCard,
+        "water-dispenser": buildKitchenAppliance,
+        "water-heater": buildApplianceCard,
+        "window-opener": buildCover,
     ]
+
+    /// Claim ladder, in the shared document's order, filtered to the builders this platform has.
+    /// Order is the fallback priority when the device type itself does not name one of these
+    /// services.
+    static let registry: [(service: String, build: KindBuilder)] = DeviceClaims.shared.macosLadder
+        .compactMap { entry in builders[entry.service].map { (entry.service, $0) } }
 
     public static func synthesize(
         devices: [MiDeviceRecord],
@@ -461,15 +469,10 @@ public enum MiotSynthesizer {
         return (service, entry.build)
     }
 
-    /// Services that count as this device type's own primary service.
+    /// Services that count as this device type's own primary service (`Shared/deviceClaims.json`).
     static func preferredServices(forDeviceType deviceType: String) -> [String] {
         if let profile = DeviceProfiles.current.appliances[deviceType] { return profile.primary }
-        switch deviceType {
-        case "outlet": return ["outlet", "switch"]
-        case "camera", "cateye", "video-doorbell": return ["camera-control", "video-doorbell"]
-        case "kettle", "ble-kettle": return ["kettle", "ble-kettle", "water-dispenser"]
-        default: return [deviceType]
-        }
+        return DeviceClaims.shared.preferredServices(forDeviceType: deviceType)
     }
 
     static func primary(for spec: MiotDeviceSpec) -> (MiotService, KindBuilder)? {
@@ -509,20 +512,20 @@ public enum MiotSynthesizer {
 
     /// Whether a device whose type names none of its own services may be drawn from `service` (#296).
     /// Only the pairs in `deviceProfiles.json`'s `fallbackClaims` may, so a projector is no longer a
-    /// speaker and an insect killer no longer a camera or vacuum. A `light` service may still claim
-    /// light-like types (`*light*`, `*lamp*`); it must not claim a hood, airer, bath heater or
-    /// ceiling fan, whose cards would only toggle their lamp while the main function stays hidden.
+    /// speaker and an insect killer no longer a camera or vacuum. `Shared/deviceClaims.json` adds the
+    /// one token rule: a `light` service may still claim light-like types (`*light*`, `*lamp*`); it
+    /// must not claim a hood, airer, bath heater or ceiling fan, whose cards would only toggle their
+    /// lamp while the main function stays hidden.
     static func fallbackAllows(deviceType: String, service: String) -> Bool {
-        if service == "light", deviceType.contains("light") || deviceType.contains("lamp") { return true }
+        if DeviceClaims.shared.fallbackTokens(for: service).contains(where: deviceType.contains) { return true }
         return DeviceProfiles.current.fallbackClaims[deviceType]?.contains(service) == true
     }
 
-    /// An `electronic-valve` is only a mains breaker when it meters electric power (#265). A water
-    /// or gas shut-off valve uses the same service and stays unsupported rather than becoming a plug.
+    /// Whether `service` may claim this spec (`Shared/deviceClaims.json`): an `electronic-valve` is a
+    /// mains breaker only when it meters electric power (#265), and a `water-heater` service belongs
+    /// to a water heater rather than claiming another device (#300).
     static func claims(_ serviceName: String, spec: MiotDeviceSpec) -> Bool {
-        if serviceName == "water-heater" { return spec.shortName == "water-heater" }
-        guard serviceName == "electronic-valve" else { return true }
-        return isMainsBreaker(spec)
+        DeviceClaims.shared.allows(serviceName, spec: spec)
     }
 
     public static func isMainsBreaker(_ spec: MiotDeviceSpec) -> Bool {
@@ -1042,15 +1045,13 @@ public enum MiotSynthesizer {
         ))
     }
 
-    /// Services that make up an appliance card, in read order. A spec may publish a richer
-    /// companion service (a gas boiler's switch, a cleanfly dryer's remaining time) beside the one
-    /// its device type names. Widening this list can only fill a gap: the primary service is always
-    /// read first and duplicate services are skipped. The command mapper also uses it to accept a
-    /// no-argument start/pause only on a service this card builds (see
+    /// Services that make up an appliance card, in read order (`Shared/deviceClaims.json`). A spec
+    /// may publish a richer companion service (a gas boiler's switch, a cleanfly dryer's remaining
+    /// time) beside the one its device type names. Widening this list can only fill a gap: the
+    /// primary service is always read first and duplicate services are skipped. The command mapper
+    /// also uses it to accept a no-argument start/pause only on a service this card builds (see
     /// `WaterHeaterDeviceTests.ignoresUnrelatedActions`).
-    static let applianceServiceNames = [
-        "water-heater", "boiler", "washer", "dryer", "clothes-dryer", "cleanfly-dryer", "dishwasher",
-    ]
+    static let applianceServiceNames = DeviceClaims.shared.applianceServices
 
     /// The shared appliance card (#300). Power, mode, target temperature, status, fault, remaining
     /// time and start/pause actions are each exposed only when the spec publishes them. A device

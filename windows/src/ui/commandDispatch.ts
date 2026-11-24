@@ -13,7 +13,7 @@ import {
   HomeAssistantProvider,
   MiCloudProvider,
   PowerReadBackError,
-  type HomeProvider,
+  type HomeCommandProvider,
 } from "../core/homeProvider.js";
 import {
   DualSourceHomeProvider,
@@ -1190,7 +1190,7 @@ async function dispatchCloudCommand(
   }
 }
 
-function buildXiaomiHomeProvider(host: MenuMijiaWindowsApp): HomeProvider {
+function buildXiaomiHomeProvider(host: MenuMijiaWindowsApp): HomeCommandProvider {
   const deviceForEntity = (entityId: string): SmartDevice | undefined => {
     const deviceId = deviceOwningEntityId(host.devices, host.deviceFacets, entityId);
     return host.devices.find((device) => device.id === deviceId);
@@ -1228,7 +1228,7 @@ function buildXiaomiHomeProvider(host: MenuMijiaWindowsApp): HomeProvider {
   });
 }
 
-function buildHomeAssistantProvider(host: MenuMijiaWindowsApp): HomeProvider {
+function buildHomeAssistantProvider(host: MenuMijiaWindowsApp): HomeAssistantProvider {
   if (!isHostHaEnabled(host)) {
     throw new CapabilityGateError(
       {
@@ -1250,11 +1250,11 @@ function buildHomeAssistantProvider(host: MenuMijiaWindowsApp): HomeProvider {
 }
 
 /** The provider for the backend the panel is connected to right now (ADR-0020). */
-export function homeProviderFor(host: MenuMijiaWindowsApp): HomeProvider {
+export function homeProviderFor(host: MenuMijiaWindowsApp): HomeCommandProvider {
   if (host.settings.connectionMode === "demo") return new DemoHomeProvider();
   if (isDualSourceEnabled(host)) {
-    let cachedMiProvider: HomeProvider | null = null;
-    let cachedHaProvider: HomeProvider | null = null;
+    let cachedMiProvider: HomeCommandProvider | null = null;
+    let cachedHaProvider: HomeCommandProvider | null = null;
     return new DualSourceHomeProvider({
       miProvider: {
         execute: (command, options) => {

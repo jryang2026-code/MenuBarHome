@@ -22,6 +22,7 @@
         "shadow": false,
         "alwaysOnTop": true,
         "skipTaskbar": true,
+        "focus": false,
         "visible": false,
         "center": false,
         "backgroundThrottling": "disabled"
@@ -44,6 +45,13 @@
       "icons/icon.png"
     ],
     "windows": {
+      "nsis": {
+        "installerHooks": "installer/toast-hooks.nsh"
+      },
+      "wix": {
+        "fragmentPaths": ["installer/toast-registration.wxs"],
+        "componentRefs": ["ToastRegistration"]
+      },
       "webviewInstallMode": {
         "type": "downloadBootstrapper"
       }

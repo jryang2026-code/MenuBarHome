@@ -301,6 +301,7 @@ public enum PanelSearch {
         if rooms.contains(q) { return .filter }
         if rooms.contains(where: { $0.hasPrefix(q) }) { return .filter }
 
+        if LocalIntentParser.stateQuery(in: query) != nil { return .command }
         if LocalIntentParser.parse(query, devices: devices, scenes: scenes) != nil { return .command }
         if UndoPhrase.isUndo(query) { return .command }
         if DelayPhrase.extract(query) != nil { return .command }

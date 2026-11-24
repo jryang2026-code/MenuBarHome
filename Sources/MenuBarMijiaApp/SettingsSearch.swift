@@ -21,6 +21,7 @@ enum SettingsAnchor: String, CaseIterable, Hashable, Sendable {
     case hideOfflineDevices
     case hideGroupedLights
     case quickScenesBar
+    case homeSummaryRow
     case voiceInput
     case soundFeedback
     case launchAtLogin
@@ -73,6 +74,7 @@ enum SettingsAnchor: String, CaseIterable, Hashable, Sendable {
     case allOffScope
     case advancedDeviceWrites
     case allowURLControl
+    case spotlightIndex
 
     // 关于与诊断
     case aboutVersion
@@ -88,7 +90,7 @@ enum SettingsAnchor: String, CaseIterable, Hashable, Sendable {
     var tab: SettingsTab {
         switch self {
         case .language, .temperatureUnit, .dashboardTitle, .menuBarReadout, .menuBarPinnedReadouts, .compactGrid,
-             .hideOfflineDevices, .hideGroupedLights, .quickScenesBar, .voiceInput,
+             .hideOfflineDevices, .hideGroupedLights, .quickScenesBar, .homeSummaryRow, .voiceInput,
              .soundFeedback, .launchAtLogin, .globalHotkey, .weeklyReport, .hiddenDevices,
              .scheduledCommands, .automationRules, .raycast, .energyHistory,
              .appearanceMode, .panelTheme, .panelHeight, .climatePanelModule:
@@ -101,7 +103,7 @@ enum SettingsAnchor: String, CaseIterable, Hashable, Sendable {
             return .assistant
         case .blockControlWhileLocked, .safetyAlerts, .sensorAlerts, .alertsOnlyWhenAway,
              .doorbellAutoView, .doorbellChime, .doorbellAutoCloseSeconds, .notificationPermission,
-             .allOffScope, .advancedDeviceWrites, .allowURLControl:
+             .allOffScope, .advancedDeviceWrites, .allowURLControl, .spotlightIndex:
             return .privacy
         case .aboutVersion, .softwareUpdate, .setupGuide, .privacyNotes, .copyDiagnostics,
              .scanUnsupportedDevices, .signOut, .quitApp:
@@ -292,6 +294,9 @@ enum SettingsSearch {
             entry(.quickScenesBar, section: generalSection,
                   zhTitle: "输入框里显示快捷场景", enTitle: "Show Scenes Under the Input",
                   synonyms: ["快捷场景", "场景栏", "输入框", "quick action", "scene bar", "shortcut"]),
+            entry(.homeSummaryRow, section: generalSection,
+                  zhTitle: "面板顶部显示「我家现在」摘要行", enTitle: "Show Home Summary Row",
+                  synonyms: ["摘要", "我家现在", "胶囊", "状态行", "summary", "home summary", "capsules", "chips"]),
             entry(.voiceInput, section: generalSection, zhTitle: "语音输入", enTitle: "Voice Input",
                   synonyms: ["语音", "麦克风", "说话", "听写", "长按说话", "录音", "voice", "mic",
                              "microphone", "speech", "dictation", "hold to talk"]),
@@ -443,6 +448,10 @@ enum SettingsSearch {
                   zhTitle: "允许外部链接直接控制设备", enTitle: "Allow External Links to Control Devices Directly",
                   synonyms: ["url", "直控", "外部链接", "链接", "跳过确认", "二次确认", "高级控制权限",
                              "menumijia", "deeplink", "confirmation", "direct control"]),
+            entry(.spotlightIndex, section: safetySection, zhTitle: "在系统搜索里找到设备与房间",
+                  enTitle: "Show Devices and Rooms in Spotlight Search",
+                  synonyms: ["spotlight", "聚焦", "系统搜索", "系统检索", "搜索", "索引", "设备名", "房间名",
+                             "隐私", "search", "index", "system search", "privacy"]),
 
             entry(.aboutVersion, section: aboutSection, zhTitle: "版本与更新",
                   enTitle: "Version & Updates",

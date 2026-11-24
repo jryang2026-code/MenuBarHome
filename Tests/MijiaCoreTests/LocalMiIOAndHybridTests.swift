@@ -1155,7 +1155,7 @@ struct LocalMiIOClientTests {
         await client.shutdown()
     }
 
-    @Test("Broadcast matching probes use bounded concurrency and preserve budget for non-numeric discovery without duplicate IP binding")
+    @Test("Broadcast matching probes use bounded concurrency and preserve budget for non-numeric discovery without duplicate IP binding", .timeLimit(.minutes(1)))
     func broadcastDiscoveryMatchingConcurrencyAndNonNumericBudgetPreservation() async throws {
         let token1Hex = "00112233445566778899aabbccddeeff"
         let token2Hex = "112233445566778899aabbccddeeff00"
@@ -1183,7 +1183,7 @@ struct LocalMiIOClientTests {
         let transport = MockUDPTransport { packet, host, _ in
             sentHosts.withValue { $0.append(host) }
             switch host {
-            case "192.168.1.11", "192.168.1.12", "192.168.1.13", "192.168.1.53":
+            case "192.168.1.11", "192.168.1.12", "192.168.1.13":
                 activeUnresponsiveProbes.withValue { $0 += 1 }
                 defer { activeUnresponsiveProbes.withValue { $0 -= 1 } }
                 await concurrencyGate.park()
@@ -1221,10 +1221,15 @@ struct LocalMiIOClientTests {
             ]
         }
 
-        // Budget: handshakeTimeout = 200ms, maxDiscoveryDuration = 500ms. A sequential matching phase
-        // waits out each unresponsive candidate (3 * 200ms = 600ms) and never reaches the 4th candidate
-        // inside the budget; the bounded wave keeps all four in flight at once, and the reserved
-        // non-numeric budget still lets the non-numeric candidate resolve afterwards.
+        let discoveryTime = LockedBox(ContinuousClock.now)
+        let discoveryClock = LocalMiIOClient.DiscoveryClock(
+            now: { discoveryTime.withValue { $0 } },
+            sleep: { _ in
+                let (stream, continuation) = AsyncStream<Void>.makeStream()
+                defer { continuation.finish() }
+                for await _ in stream {}
+            }
+        )
         let client = LocalMiIOClient(
             transport: transport,
             handshakeTimeout: .milliseconds(200),
@@ -1242,7 +1247,8 @@ struct LocalMiIOClientTests {
                 MiIODeviceCandidate(did: didCollision, token: tokenCollisionHex),
                 MiIODeviceCandidate(did: "lumi.sensor.v1", token: tokenLumiHex),
             ],
-            broadcastTimeout: .milliseconds(20)
+            broadcastTimeout: .milliseconds(20),
+            discoveryClock: discoveryClock
         )
 
         #expect(discovered[did4] == "192.168.1.14")
@@ -1255,10 +1261,16 @@ struct LocalMiIOClientTests {
 
         await client.shutdown()
 
-        // Also verify that even across multiple waves of unresponsive matching candidates (e.g. concurrency = 2,
-        // 4 unresponsive matching candidates), the non-numeric phase still runs and resolves the non-numeric
-        // candidate. The unresponsive probes now fail as soon as they reach the transport (the gate is already
-        // released), so the reserve is genuinely left for the non-numeric phase instead of being burned by sleeps.
+        // Four unresponsive matching probes consume the 320 ms matching slice across two waves.
+        let matchingHosts = LockedBox<[String]>([])
+        await transport.setHandler { packet, host, _ in
+            if host == "192.168.1.20" {
+                return try self.encodeRPCReply(packet, token: tokenLumi, resultOrError: #""result":[]"#)
+            }
+            matchingHosts.withValue { $0.append(host) }
+            discoveryTime.withValue { $0 = $0.advanced(by: .milliseconds(80)) }
+            throw MiIOError.timeout
+        }
         await transport.setBroadcastHandler { _, _, _ in
             [
                 MiIOBroadcastReply(sourceIP: "192.168.1.11", packet: makeHelloResponse(deviceId: 101, stamp: 10)),
@@ -1283,9 +1295,11 @@ struct LocalMiIOClientTests {
                 MiIODeviceCandidate(did: "105", token: tokenCollisionHex),
                 MiIODeviceCandidate(did: "lumi.sensor.v1", token: tokenLumiHex),
             ],
-            broadcastTimeout: .milliseconds(20)
+            broadcastTimeout: .milliseconds(20),
+            discoveryClock: discoveryClock
         )
         #expect(multiWaveDiscovered["lumi.sensor.v1"] == "192.168.1.20")
+        #expect(Set(matchingHosts.withValue { $0 }) == ["192.168.1.11", "192.168.1.12", "192.168.1.13", "192.168.1.53"])
         await multiWaveClient.shutdown()
 
         #if canImport(Network)
@@ -1297,6 +1311,41 @@ struct LocalMiIOClientTests {
         #expect(await nwTransport.testTimeoutClassification(simulateQueuedSendCompletionBeforeTimeout: false) == .sendFailed)
         await nwTransport.shutdown()
         #endif
+    }
+
+    @Test("A discovery wave keeps a reply the transport received before cancellation", .timeLimit(.minutes(1)))
+    func discoveryKeepsReceivedReplyWhenWaveExpires() async throws {
+        let token = try #require(MiIOPacket.validateToken(validTokenHex))
+        let host = "192.168.1.20"
+        let did = "lumi.sensor.v1"
+        let replyReceived = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        let transport = MockUDPTransport { packet, _, _ in
+            let reply = try self.encodeRPCReply(packet, token: token, resultOrError: #""result":[]"#)
+            // Model a completed receive whose continuation resumes after the wave cancels.
+            let (waitForCancellation, holdReply) = AsyncStream<Void>.makeStream()
+            defer { holdReply.finish() }
+            replyReceived.continuation.yield(())
+            for await _ in waitForCancellation {}
+            return reply
+        }
+        await transport.setBroadcastHandler { _, _, _ in
+            [MiIOBroadcastReply(sourceIP: host, packet: makeHelloResponse(deviceId: 101, stamp: 10))]
+        }
+        let start = ContinuousClock.now
+        let clock = LocalMiIOClient.DiscoveryClock(
+            now: { start },
+            sleep: { _ in
+                var events = replyReceived.stream.makeAsyncIterator()
+                await events.next()
+            }
+        )
+        let client = LocalMiIOClient(transport: transport)
+        let discovered = try await client.discoverEndpoints(
+            for: [MiIODeviceCandidate(did: did, token: validTokenHex)],
+            discoveryClock: clock
+        )
+        #expect(discovered == [did: host])
+        await client.shutdown()
     }
 
     @Test("LocalNetworkDenied is non-retryable and bypasses ambiguousActionOutcome when occurring before packet send")

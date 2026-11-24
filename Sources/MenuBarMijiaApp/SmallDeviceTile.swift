@@ -5,6 +5,7 @@ import MijiaCore
 /// when on, a neutral well when off, with the device's SF Symbol in the middle.
 struct DeviceIconOrb: View {
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.effectiveReduceMotion) private var reduceMotion
 
     let device: SmartDevice
     let accent: Color
@@ -31,11 +32,11 @@ struct DeviceIconOrb: View {
             Image(systemName: symbolName)
                 .font(.system(size: DesignTokens.TypeSize.title, weight: .semibold))
                 .foregroundStyle(isOn ? Color.white : offInk)
-                .symbolEffect(.bounce, value: isOn)
+                .symbolEffect(.bounce, value: reduceMotion ? false : isOn)
         }
         .frame(width: diameter, height: diameter)
         .shadowIf(isOn, color: accent.opacity(0.38), radius: 6, y: 2)
-        .animation(AppleMotion.control, value: isOn)
+        .animation(AppleMotion.resolve(.control, reduceMotion: reduceMotion), value: isOn)
     }
 }
 
@@ -70,6 +71,7 @@ private enum SmallTileMetrics {
 /// card. The tooltip and VoiceOver carry the name, state and click meaning the icon cannot show.
 struct SmallDeviceTile<MenuContent: View>: View {
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.effectiveReduceMotion) private var reduceMotion
     @Environment(\.isEditingLayout) private var isEditingLayout
 
     let device: SmartDevice
@@ -144,7 +146,7 @@ struct SmallDeviceTile<MenuContent: View>: View {
     private func performAction() {
         guard !isEditingLayout else { return }
         if case .camera(let cam) = device.kind {
-            withAnimation(AppleMotion.snappySpring) {
+            withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) {
                 if device.kind.canTogglePower, !cam.isOn {
                     _ = store.togglePrimary(device)
                 }
@@ -153,7 +155,7 @@ struct SmallDeviceTile<MenuContent: View>: View {
             if device.isOnline, device.kind.canTogglePower { SoundFeedback.playSuccess() }
             return
         }
-        withAnimation(AppleMotion.snappySpring) {
+        withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) {
             if case .sensor(let spec) = device.kind, spec.temperature != nil || spec.humidity != nil {
                 store.toggleExpanded(device.id)
             } else if device.isPrimaryToggleable {

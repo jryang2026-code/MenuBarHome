@@ -2217,7 +2217,9 @@ describe("Interface language and temperature units (#52)", () => {
 
   it("shows °F when the unit is Fahrenheit, and one tap moves exactly one °F", async () => {
     seed({ interfaceLanguage: "zh-Hans", temperatureUnit: "fahrenheit" });
-    new MenuMijiaWindowsApp(element("#app"));
+    const app = new MenuMijiaWindowsApp(element("#app"));
+    app.isLongTailExpanded = true;
+    app.render();
     await setImmediate();
 
     // Demo AC runs at 25 °C = 77 °F; the sensor reads 25.5 °C = 77.9 °F.

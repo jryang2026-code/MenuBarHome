@@ -3,6 +3,7 @@ import MijiaCore
 
 public struct ClassicDeviceCardView: View {
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.effectiveReduceMotion) private var reduceMotion
     @Environment(\.isEditingLayout) private var isEditingLayout
     @AppStorage(PanelPrefs.climatePanelKey) private var climatePanelModule: Bool = true
     /// Observed so a temperature-unit change in Settings re-renders open cards (#52).
@@ -162,7 +163,7 @@ public struct ClassicDeviceCardView: View {
                 detailDrawer
                     .padding(.horizontal, 12)
                     .padding(.vertical, 10)
-                    .transition(AppleMotion.drawerTransition)
+                    .transition(AppleMotion.drawerTransition(reduceMotion: reduceMotion))
             }
         }
         .classicTile(isActive: isLit, cornerRadius: DesignTokens.Radius.module, tint: tileTint)
@@ -238,7 +239,7 @@ public struct ClassicDeviceCardView: View {
         return HStack(spacing: 6) {
             Button {
                 guard !isEditingLayout else { return }
-                withAnimation(AppleMotion.snappySpring) {
+                withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) {
                     if device.isPrimaryToggleable || (isCameraDevice && device.isOnline) {
                         _ = DeviceTileActionLayout.performPrimary(for: device, store: store)
                     } else if canAdjust {
@@ -329,7 +330,7 @@ public struct ClassicDeviceCardView: View {
                 if isHovered || isExpanded || isFavorite {
                     Button {
                         guard !isEditingLayout else { return }
-                        withAnimation(AppleMotion.snappySpring) {
+                        withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) {
                             store.toggleFavorite(device.id)
                         }
                     } label: {
@@ -349,7 +350,7 @@ public struct ClassicDeviceCardView: View {
                 if canAdjust {
                     Button {
                         guard !isEditingLayout else { return }
-                        withAnimation(AppleMotion.snappySpring) {
+                        withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) {
                             DeviceTileActionLayout.performAdjust(for: device, store: store)
                         }
                     } label: {
@@ -399,9 +400,9 @@ public struct ClassicDeviceCardView: View {
             Image(systemName: resolvedSymbolName)
                 .font(.system(size: DesignTokens.TypeSize.body, weight: .semibold))
                 .foregroundStyle(on ? Color.white : accent)
-                .symbolEffect(.bounce, value: on)
+                .symbolEffect(.bounce, value: reduceMotion ? false : on)
         }
-        .animation(.spring(response: 0.4, dampingFraction: 0.72), value: on)
+        .animation(AppleMotion.resolve(.stack, reduceMotion: reduceMotion), value: on)
     }
 
     private var resolvedSymbolName: String {

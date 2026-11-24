@@ -1,20 +1,26 @@
 #!/usr/bin/env python3
-"""Validate Shared/deviceLabels.json against both platforms and the migration fixture (#11).
+"""Validate Shared/deviceLabels.json and Shared/deviceClaims.json against both platforms.
 
-The document only carries choices, never computation: facet and device-type titles in the two
-languages the inline catalogs use, plus a neutral icon id per device type. This gate proves:
+Two shared documents, one gate:
 
-* the schema is the one the two parsers expect, with no duplicate key and no missing translation;
-* every semantic icon id the document uses is mapped by **both** ends, and neither end maps an id
-  the document does not declare (`Sources/MijiaCore/DeviceLabels.swift` and
-  `windows/src/core/deviceIconSymbols.ts` stay the only platform vocabularies);
-* the macOS resource copy is byte-identical to `Shared/deviceLabels.json`, the way the capability
-  manifest copy is kept;
-* the pre-migration fixture still covers exactly the document's keys and records the same glyph for
-  every device type, so the equivalence tests cannot silently lose a case.
+* `deviceLabels.json` only carries display text and neutral icon ids. The gate proves the schema is
+  the one the two parsers expect, that every semantic icon id is mapped by **both** ends and none
+  their vocabularies declare goes unused, that the macOS resource copy is byte-identical, and that
+  the pre-migration fixture still records the same glyph for every device type.
+* `deviceClaims.json` (#26) carries the MIoT claim ladder, the device-type service aliases, two
+  closed claim conditions, the appliance service list and the light-like fallback tokens. The gate
+  proves the ladder is unique and ordered, that a rung's `renderers` names a proper subset of the
+  platforms (a platform gap must be explicit, never silent), that each end's code really implements
+  the rungs it claims (macOS's builder table exactly, Windows's synthesizer at least by name), and
+  that the alias/condition/appliance references all point into the document.
 
-Labels are display text, not behaviour: no expression, no regular expression and no code pointer
-may enter the document (ADR-0023 §2's closed-data rule).
+The coverage baseline's `windowsDivergences` is a debt table: the gate fails when it grows past
+`WINDOWS_DIVERGENCE_BUDGET`, and also when an entry grew stale (a divergence identical to the macOS
+entry, or naming a service the ladder does not claim). Shrinking it is always fine; lower the budget
+in the same change.
+
+Both documents carry choices, never computation: no expression, no regular expression and no code
+pointer may enter them (ADR-0023 §2's closed-data rule).
 """
 from __future__ import annotations
 
@@ -32,11 +38,34 @@ SWIFT_ICONS = ROOT / "Sources/MijiaCore/DeviceLabels.swift"
 TS_ICONS = ROOT / "windows/src/core/deviceIconSymbols.ts"
 FIXTURE = ROOT / "Tests/Fixtures/device_labels_golden.json"
 
+SHARED_CLAIMS = ROOT / "Shared/deviceClaims.json"
+SWIFT_CLAIMS_COPY = ROOT / "Sources/MijiaCore/Resources/deviceClaims.json"
+SWIFT_SYNTH = ROOT / "Sources/MijiaCore/MiCloud/MiotSynthesizer.swift"
+TS_SYNTH = ROOT / "windows/src/core/miCloud/synthesis.ts"
+COVERAGE_GOLDEN = ROOT / "Tests/Fixtures/miot_coverage_golden.json"
+
 SCHEMA_VERSION = 1
 ROOT_KEYS = frozenset({"schemaVersion", "defaultIcon", "facetTitles", "familyFacetTitles", "deviceTypes"})
 TITLE_KEYS = frozenset({"zh-Hans", "en"})
 DEVICE_TYPE_KEYS = frozenset({"zh-Hans", "en", "icon"})
 ICON_ID = re.compile(r"^[a-z][a-z0-9-]*$")
+
+CLAIMS_SCHEMA_VERSION = 1
+CLAIMS_ROOT_KEYS = frozenset({"schemaVersion", "preferredServices", "ladder", "applianceServices", "fallbackTypeTokens"})
+LADDER_KEYS = frozenset({"service", "claimableWhen", "renderers"})
+CONDITION_KEYS = frozenset({"serviceHasProperty", "deviceTypeIsService"})
+SERVICE_PROPERTY_KEYS = frozenset({"service", "property"})
+FALLBACK_TOKEN_KEYS = frozenset({"service", "tokens"})
+PLATFORMS = ("macos", "windows")
+SERVICE_NAME = re.compile(r"^[a-z][a-z0-9-]*$")
+
+# Ratchets. `windowsDivergences` is a debt table and may only shrink: lower the budget in the same
+# change that removes an entry. A claim rung only one end renders is the same kind of debt, so a new
+# macOS-only rung is refused outright and a new Windows-only rung needs this number raised on
+# purpose (the current two are the MIoT television/stb cards macOS has no builder for).
+WINDOWS_DIVERGENCE_BUDGET = 1
+WINDOWS_ONLY_CLAIM_BUDGET = 2
+MACOS_ONLY_CLAIM_BUDGET = 0
 
 
 def load_strict_json(text: str) -> Any:
@@ -239,12 +268,243 @@ def facet_keys_of(document: dict[str, Any]) -> list[str]:
     return keys
 
 
+def extract_swift_builders(source: str) -> set[str]:
+    """Service → builder table in `MiotSynthesizer`, the macOS renderer vocabulary."""
+    block = re.search(r"static let builders: \[String: KindBuilder\] = \[\n(.*?)\n    \]", source, re.S)
+    if not block:
+        raise ValueError("Swift 缺少 MiotSynthesizer.builders 表")
+    services = re.findall(r'^\s*"([a-z][a-z0-9-]*)": build[A-Z][A-Za-z]*,$', block.group(1), re.M)
+    if not services:
+        raise ValueError("Swift builders 表为空")
+    if len(set(services)) != len(services):
+        raise ValueError("Swift builders 表存在重复服务")
+    return set(services)
+
+
+def validate_claims_document(
+    document: Any,
+    swift_builders: set[str],
+    ts_source: str,
+    golden: Any,
+) -> list[str]:
+    errs: list[str] = []
+    if not isinstance(document, dict):
+        return ["共享认领清单根节点必须是 JSON 对象"]
+    extra = set(document) - CLAIMS_ROOT_KEYS
+    if extra:
+        errs.append(f"认领清单根节点含未授权字段: {', '.join(sorted(extra))}")
+    version = document.get("schemaVersion")
+    if not isinstance(version, int) or isinstance(version, bool) or version != CLAIMS_SCHEMA_VERSION:
+        errs.append(f"不支持的 schemaVersion: {version!r}")
+
+    ladder = document.get("ladder")
+    if not isinstance(ladder, list) or not ladder:
+        return [*errs, "ladder 必须是非空数组"]
+
+    ladder_services: list[str] = []
+    macos_services: set[str] = set()
+    windows_services: set[str] = set()
+    windows_only: list[str] = []
+    macos_only: list[str] = []
+    for idx, entry in enumerate(ladder):
+        scope = f"ladder[{idx}]"
+        if not isinstance(entry, dict):
+            errs.append(f"{scope} 必须是对象")
+            continue
+        unknown = set(entry) - LADDER_KEYS
+        if unknown:
+            errs.append(f"{scope} 含未授权字段: {', '.join(sorted(unknown))}")
+        service = entry.get("service")
+        if not isinstance(service, str) or not SERVICE_NAME.match(service):
+            errs.append(f"{scope}.service 非法: {service!r}")
+            continue
+        if service in ladder_services:
+            errs.append(f"重复服务: ladder 中 {service} 出现两次")
+            continue
+        ladder_services.append(service)
+
+        renderers = entry.get("renderers")
+        if renderers is None:
+            macos_services.add(service)
+            windows_services.add(service)
+        elif (
+            not isinstance(renderers, list)
+            or not renderers
+            or not all(isinstance(p, str) for p in renderers)
+            or len(set(renderers)) != len(renderers)
+            or set(renderers) - set(PLATFORMS)
+            or set(renderers) == set(PLATFORMS)
+        ):
+            errs.append(f"{scope}.renderers 必须是非空且不含两个平台的平台子集: {renderers!r}")
+        else:
+            if "macos" in renderers:
+                macos_services.add(service)
+            else:
+                windows_only.append(service)
+            if "windows" in renderers:
+                windows_services.add(service)
+            else:
+                macos_only.append(service)
+
+        condition = entry.get("claimableWhen")
+        if condition is None:
+            continue
+        if not isinstance(condition, dict) or not condition:
+            errs.append(f"{scope}.claimableWhen 必须是非空对象")
+            continue
+        unknown = set(condition) - CONDITION_KEYS
+        if unknown:
+            errs.append(f"{scope}.claimableWhen 含未授权条件: {', '.join(sorted(unknown))}")
+        rule = condition.get("serviceHasProperty")
+        if rule is not None:
+            if (
+                not isinstance(rule, dict)
+                or set(rule) != SERVICE_PROPERTY_KEYS
+                or not all(isinstance(rule[k], str) and SERVICE_NAME.match(rule[k]) for k in SERVICE_PROPERTY_KEYS)
+            ):
+                errs.append(f"{scope}.claimableWhen.serviceHasProperty 必须带合法的 service 与 property")
+        device_type_rule = condition.get("deviceTypeIsService")
+        if device_type_rule is not None and device_type_rule is not True:
+            errs.append(f"{scope}.claimableWhen.deviceTypeIsService 只接受 true")
+
+    # A rung nobody renders would silently drop the device: the document and the code must agree.
+    if macos_services != swift_builders:
+        errs.append(
+            "缺映射: 认领阶梯与 Swift builders 不一致 "
+            f"(阶梯多 {sorted(macos_services - swift_builders)}，Swift 多 {sorted(swift_builders - macos_services)})"
+        )
+    missing_in_ts = sorted(s for s in windows_services if f'"{s}"' not in ts_source)
+    if missing_in_ts:
+        errs.append(f"缺映射: Windows 合成器未提及认领阶梯服务 {', '.join(missing_in_ts)}")
+    if len(windows_only) > WINDOWS_ONLY_CLAIM_BUDGET:
+        errs.append(
+            f"平台独占认领增加: Windows 独占 {len(windows_only)} 条 > 预算 {WINDOWS_ONLY_CLAIM_BUDGET}"
+            f" ({', '.join(windows_only)})；补上另一端或显式提高预算"
+        )
+    if len(macos_only) > MACOS_ONLY_CLAIM_BUDGET:
+        errs.append(
+            f"平台独占认领增加: macOS 独占 {len(macos_only)} 条 > 预算 {MACOS_ONLY_CLAIM_BUDGET}"
+            f" ({', '.join(macos_only)})"
+        )
+
+    preferred = document.get("preferredServices")
+    if not isinstance(preferred, dict) or not preferred:
+        errs.append("preferredServices 必须是非空对象")
+    else:
+        for device_type, services in preferred.items():
+            if not isinstance(device_type, str) or not SERVICE_NAME.match(device_type):
+                errs.append(f"preferredServices 含非法设备类型: {device_type!r}")
+                continue
+            if not isinstance(services, list) or not services or not all(isinstance(s, str) for s in services):
+                errs.append(f"preferredServices.{device_type} 必须是非空字符串数组")
+                continue
+            if len(set(services)) != len(services):
+                errs.append(f"preferredServices.{device_type} 含重复服务")
+            for service in services:
+                if service not in ladder_services:
+                    errs.append(f"preferredServices.{device_type} 引用了阶梯外的服务 {service!r}")
+
+    appliances = document.get("applianceServices")
+    if (
+        not isinstance(appliances, list)
+        or not appliances
+        or not all(isinstance(s, str) and SERVICE_NAME.match(s) for s in appliances)
+    ):
+        errs.append("applianceServices 必须是非空且合法的服务名数组")
+    elif len(set(appliances)) != len(appliances):
+        errs.append("applianceServices 含重复服务")
+
+    tokens = document.get("fallbackTypeTokens")
+    if not isinstance(tokens, list) or not tokens:
+        errs.append("fallbackTypeTokens 必须是非空数组")
+    else:
+        seen: set[str] = set()
+        for idx, entry in enumerate(tokens):
+            scope = f"fallbackTypeTokens[{idx}]"
+            if not isinstance(entry, dict) or set(entry) != FALLBACK_TOKEN_KEYS:
+                errs.append(f"{scope} 必须只带 service 与 tokens")
+                continue
+            service = entry["service"]
+            if not isinstance(service, str) or service not in ladder_services:
+                errs.append(f"{scope}.service 必须是认领阶梯内的服务: {service!r}")
+            elif service in seen:
+                errs.append(f"重复服务: fallbackTypeTokens 中 {service} 出现两次")
+            seen.add(service)
+            entry_tokens = entry["tokens"]
+            if (
+                not isinstance(entry_tokens, list)
+                or not entry_tokens
+                or not all(isinstance(t, str) and t for t in entry_tokens)
+                or len(set(entry_tokens)) != len(entry_tokens)
+            ):
+                errs.append(f"{scope}.tokens 必须是非空且不重复的字符串数组")
+
+    errs.extend(validate_divergence_ratchet(golden, set(ladder_services)))
+    return errs
+
+
+def validate_resource_copies() -> list[str]:
+    """Both Swift packages must copy every shared document the runtime decodes.
+
+    `Package.swift` alone is not enough: `scripts/linux-check/Package.swift` lists its resources
+    again, and forgetting a document there traps on `DeviceClaims.shared` under `linux-core` (#440).
+    """
+    errs: list[str] = []
+    for label, path in (
+        ("Package.swift", ROOT / "Package.swift"),
+        ("scripts/linux-check/Package.swift", ROOT / "scripts/linux-check/Package.swift"),
+    ):
+        try:
+            text = path.read_text("utf-8")
+        except OSError as exc:
+            errs.append(f"{label} 不可读: {exc}")
+            continue
+        for name in ("deviceLabels.json", "deviceClaims.json"):
+            if f'Resources/{name}' not in text:
+                errs.append(f"资源缺失: {label} 没有复制 Resources/{name}")
+    return errs
+
+
+def validate_divergence_ratchet(golden: Any, ladder_services: set[str]) -> list[str]:
+    errs: list[str] = []
+    if not isinstance(golden, dict):
+        return ["覆盖语料必须是 JSON 对象"]
+    models = golden.get("models")
+    divergences = golden.get("windowsDivergences")
+    if not isinstance(models, dict) or not isinstance(divergences, dict):
+        return ["覆盖语料缺少 models 或 windowsDivergences"]
+    if len(divergences) > WINDOWS_DIVERGENCE_BUDGET:
+        errs.append(
+            f"双端差异增加: {len(divergences)} 条 > 预算 {WINDOWS_DIVERGENCE_BUDGET}（只减不增）"
+        )
+    for model, entry in sorted(divergences.items()):
+        if model not in models:
+            errs.append(f"双端差异引用了语料不存在的型号: {model}")
+        elif entry == models[model]:
+            errs.append(f"双端差异与 macOS 分类相同，应删除: {model}")
+        if not isinstance(entry, dict):
+            errs.append(f"双端差异条目必须是对象: {model}")
+            continue
+        service = entry.get("service")
+        if isinstance(service, str) and service not in ladder_services:
+            errs.append(f"双端差异的服务不在认领阶梯中: {model} → {service}")
+    return errs
+
+
 def load_inputs() -> tuple[Any, dict[str, str], dict[str, str], Any]:
     document = load_strict_json(SHARED.read_text("utf-8"))
     swift_icons = extract_swift_icons(SWIFT_ICONS.read_text("utf-8"))
     ts_icons = extract_ts_icons(TS_ICONS.read_text("utf-8"))
     fixture = load_strict_json(FIXTURE.read_text("utf-8"))
     return document, swift_icons, ts_icons, fixture
+
+
+def load_claim_inputs() -> tuple[Any, set[str], str, Any]:
+    claims = load_strict_json(SHARED_CLAIMS.read_text("utf-8"))
+    swift_builders = extract_swift_builders(SWIFT_SYNTH.read_text("utf-8"))
+    ts_source = TS_SYNTH.read_text("utf-8")
+    golden = load_strict_json(COVERAGE_GOLDEN.read_text("utf-8"))
+    return claims, swift_builders, ts_source, golden
 
 
 def run_self_test() -> int:
@@ -269,6 +529,44 @@ def run_self_test() -> int:
     expect_err(lambda _d, _s, t, _g: t.__setitem__("water", "drop.fill"), "符号不一致")
     expect_err(lambda _d, _s, _t, g: g["symbols"].__setitem__("router", "router.fill"), "符号变化")
     expect_err(lambda _d, _s, _t, g: g["windows"]["facetTitles"].pop("on"), "夹具与清单不一致")
+
+    claims, swift_builders, ts_source, golden = load_claim_inputs()
+    assert not validate_claims_document(claims, swift_builders, ts_source, golden), "基线认领清单应通过"
+    assert not validate_resource_copies(), "两个 Swift 包都应复制共享文档"
+
+    def expect_claim_err(mutator: Any, keyword: str) -> None:
+        doc = copy.deepcopy(claims)
+        swift = set(swift_builders)
+        gold = copy.deepcopy(golden)
+        source = ts_source
+        result = mutator(doc, swift, gold)
+        if isinstance(result, str):
+            source = result
+        errs = validate_claims_document(doc, swift, source, gold)
+        assert any(keyword in err for err in errs), f"预期命中 {keyword!r}，实际: {errs}"
+
+    expect_claim_err(lambda d, _s, _g: d.__setitem__("shape", "cover"), "未授权字段")
+    expect_claim_err(lambda d, _s, _g: d.__setitem__("schemaVersion", 2), "schemaVersion")
+    expect_claim_err(lambda d, _s, _g: d["ladder"].append(dict(d["ladder"][0])), "重复服务")
+    expect_claim_err(lambda d, _s, _g: d["ladder"][0].__setitem__("requiresAnyOf", []), "未授权字段")
+    expect_claim_err(lambda d, _s, _g: d["ladder"][0].__setitem__("renderers", ["macos", "windows"]), "renderers")
+    expect_claim_err(lambda d, _s, _g: d["ladder"][23]["claimableWhen"].__setitem__("expression", "x"), "未授权条件")
+    expect_claim_err(
+        lambda d, _s, _g: d["ladder"][23]["claimableWhen"].__setitem__("deviceTypeIsService", False),
+        "只接受 true",
+    )
+    expect_claim_err(lambda d, _s, _g: d["preferredServices"]["outlet"].append("kettle-ghost"), "阶梯外的服务")
+    expect_claim_err(lambda d, _s, _g: d["applianceServices"].clear(), "applianceServices")
+    expect_claim_err(lambda d, _s, _g: d["fallbackTypeTokens"][0]["tokens"].append("lamp"), "不重复")
+    expect_claim_err(lambda d, s, _g: s.discard("curtain"), "Swift builders")
+    expect_claim_err(lambda _d, _s, _g: ts_source.replace('"television"', '"tv-vendor"'), "Windows 合成器")
+    expect_claim_err(lambda _d, _s, g: g["windowsDivergences"].__setitem__("extra.model", {"category": "matched"}), "双端差异")
+    expect_claim_err(
+        lambda _d, _s, g: g["windowsDivergences"].__setitem__(
+            m := next(iter(g["windowsDivergences"])), dict(g["models"][m])
+        ),
+        "应删除",
+    )
     print("✅ check_device_rules.py --self-test 通过")
     return 0
 
@@ -284,17 +582,27 @@ def main() -> int:
         errors = validate_document(document, swift_icons, ts_icons, fixture)
         if SHARED.read_bytes() != SWIFT_COPY.read_bytes():
             errors.append("副本不一致: Sources/MijiaCore/Resources/deviceLabels.json 必须与 Shared/deviceLabels.json 逐字节相同")
+        claims, swift_builders, ts_source, golden = load_claim_inputs()
+        errors.extend(validate_claims_document(claims, swift_builders, ts_source, golden))
+        errors.extend(validate_resource_copies())
+        if SHARED_CLAIMS.read_bytes() != SWIFT_CLAIMS_COPY.read_bytes():
+            errors.append("副本不一致: Sources/MijiaCore/Resources/deviceClaims.json 必须与 Shared/deviceClaims.json 逐字节相同")
     except Exception as exc:  # noqa: BLE001 - the message is the gate output
-        print(f"❌ 设备标签门禁解析失败：{exc}", file=sys.stderr)
+        print(f"❌ 设备规则门禁解析失败：{exc}", file=sys.stderr)
         return 1
     if errors:
-        print("❌ Shared/deviceLabels.json 门禁检查未通过：", file=sys.stderr)
+        print("❌ 共享设备规则门禁检查未通过：", file=sys.stderr)
         for err in errors:
             print(f"  - {err}", file=sys.stderr)
         return 1
     facets = len(facet_keys_of(document))
     icons = len(set(swift_icons))
-    print(f"✅ 共享设备标签校验通过：{facets} 条 facet 标题、{len(document['deviceTypes'])} 个设备类型、{icons} 个语义图标 id 与两端映射一致。")
+    print(
+        f"✅ 共享设备规则校验通过：{facets} 条 facet 标题、{len(document['deviceTypes'])} 个设备类型、"
+        f"{icons} 个语义图标 id、{len(claims['ladder'])} 条认领阶梯、"
+        f"{len(golden['windowsDivergences'])} 条双端差异"
+        f"（预算 {WINDOWS_DIVERGENCE_BUDGET}）。"
+    )
     return 0
 
 

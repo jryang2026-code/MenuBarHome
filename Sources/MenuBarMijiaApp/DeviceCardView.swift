@@ -4,6 +4,7 @@ import MijiaCore
 
 public struct DeviceCardView: View {
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.effectiveReduceMotion) private var reduceMotion
     @Environment(\.isEditingLayout) private var isEditingLayout
     @AppStorage(PanelPrefs.climatePanelKey) private var climatePanelModule: Bool = true
     /// Observed so a temperature-unit change in Settings re-renders open cards (#52).
@@ -186,7 +187,7 @@ public struct DeviceCardView: View {
                         .padding(.horizontal, 11)
                         .padding(.bottom, 10)
                         .disabled(isEditingLayout)
-                        .transition(AppleMotion.drawerTransition)
+                        .transition(AppleMotion.drawerTransition(reduceMotion: reduceMotion))
                 }
             }
 
@@ -200,7 +201,7 @@ public struct DeviceCardView: View {
                     )
                     .padding(.horizontal, 8)
                     .padding(.bottom, 8)
-                    .transition(AppleMotion.drawerTransition)
+                    .transition(AppleMotion.drawerTransition(reduceMotion: reduceMotion))
             }
         }
         .glassTile(isActive: isLit, cornerRadius: cardRadius, isCapsule: isCompactTile && !isExpanded && resolvedSize != .hero, tint: tileTint)
@@ -290,7 +291,7 @@ public struct DeviceCardView: View {
         return HStack(spacing: 10) {
             Button {
                 guard !isEditingLayout else { return }
-                withAnimation(AppleMotion.snappySpring) {
+                withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) {
                     if device.isPrimaryToggleable || (isCameraDevice && device.isOnline) {
                         _ = DeviceTileActionLayout.performPrimary(for: device, store: store)
                     } else if canAdjust {
@@ -320,7 +321,7 @@ public struct DeviceCardView: View {
             // The text block opens the drawer; only a card without one falls back to the switch.
             Button {
                 guard !isEditingLayout else { return }
-                withAnimation(AppleMotion.snappySpring) {
+                withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) {
                     if canAdjust {
                         DeviceTileActionLayout.performAdjust(for: device, store: store)
                     } else if device.isPrimaryToggleable {
@@ -399,7 +400,7 @@ public struct DeviceCardView: View {
             if canAdjust {
                 Button {
                     guard !isEditingLayout else { return }
-                    withAnimation(AppleMotion.snappySpring) {
+                    withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) {
                         DeviceTileActionLayout.performAdjust(for: device, store: store)
                     }
                 } label: {

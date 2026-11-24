@@ -505,6 +505,27 @@ public actor LocalMiIOClient {
         excludedIPs: Set<String> = [],
         knownNumericDids: Set<UInt64> = []
     ) async throws -> [String: String] {
+        try await discoverEndpoints(
+            for: candidates,
+            broadcastTimeout: broadcastTimeout,
+            excludedIPs: excludedIPs,
+            knownNumericDids: knownNumericDids,
+            discoveryClock: DiscoveryClock(now: { ContinuousClock.now }, sleep: { try await Task.sleep(for: $0) })
+        )
+    }
+
+    struct DiscoveryClock: Sendable {
+        let now: @Sendable () -> ContinuousClock.Instant
+        let sleep: @Sendable (Duration) async throws -> Void
+    }
+
+    func discoverEndpoints(
+        for candidates: [MiIODeviceCandidate],
+        broadcastTimeout: Duration = .milliseconds(650),
+        excludedIPs: Set<String> = [],
+        knownNumericDids: Set<UInt64> = [],
+        discoveryClock: DiscoveryClock
+    ) async throws -> [String: String] {
         try Task.checkCancellation()
         guard !isShutDown else { throw MiIOError.shutDown }
         var validCandidates: [(did: String, tokenData: Data)] = [], seenDids: Set<String> = []
@@ -533,11 +554,7 @@ public actor LocalMiIOClient {
         var claimedIPs: Set<String> = Set(excludedIPs.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter(Self.isPrivateRFC1918IPv4))
 
         let probeBudget = max(maxDiscoveryDuration - min(broadcastTimeout, maxDiscoveryDuration), min(handshakeTimeout, maxDiscoveryDuration))
-        let discoveryDeadline = ContinuousClock.now.advanced(by: probeBudget)
-        func remainingBudget() -> Duration? {
-            let remaining = discoveryDeadline - ContinuousClock.now
-            return remaining > .zero ? remaining : nil
-        }
+        let discoveryDeadline = discoveryClock.now().advanced(by: probeBudget)
 
         let hasUnresolvedNonNumericCandidates = validCandidates.contains {
             UInt64($0.did) == nil && knownHardwareIdsByDid[$0.did] == nil
@@ -552,7 +569,7 @@ public actor LocalMiIOClient {
         let matchingProbeCap = max(1, maxTotalUnclaimedProbes - reservedNonNumericProbes)
         let matchingDeadline = discoveryDeadline.advanced(by: .zero - reservedNonNumericBudget)
         func remainingMatchingBudget() -> Duration? {
-            let remaining = matchingDeadline - ContinuousClock.now
+            let remaining = matchingDeadline - discoveryClock.now()
             return remaining > .zero ? remaining : nil
         }
 
@@ -583,6 +600,7 @@ public actor LocalMiIOClient {
                 discovered: &discovered,
                 claimedIPs: &claimedIPs,
                 maxTotalProbes: matchingProbeCap,
+                sleep: discoveryClock.sleep,
                 remainingBudget: remainingMatchingBudget
             )
         }
@@ -638,7 +656,7 @@ public actor LocalMiIOClient {
 
         let nonNumericPhaseDeadline = max(
             discoveryDeadline,
-            ContinuousClock.now.advanced(by: reservedNonNumericBudget)
+            discoveryClock.now().advanced(by: reservedNonNumericBudget)
         )
         _ = try await runBoundedProbeWaves(
             candidates: unresolved,
@@ -647,8 +665,9 @@ public actor LocalMiIOClient {
             discovered: &discovered,
             claimedIPs: &claimedIPs,
             maxTotalProbes: maxTotalUnclaimedProbes - totalProbesLaunched,
+            sleep: discoveryClock.sleep,
             remainingBudget: {
-                let remaining = nonNumericPhaseDeadline - ContinuousClock.now
+                let remaining = nonNumericPhaseDeadline - discoveryClock.now()
                 return remaining > .zero ? remaining : nil
             }
         )
@@ -659,9 +678,7 @@ public actor LocalMiIOClient {
         case response(PreparedProbe, Data, Int)
         case noMatch
         case fatal(MiIOError)
-        /// The wave stopped before this probe resolved: the discovery budget ran out for the whole wave or
-        /// the wave was cancelled.
-        case waveStopped
+        case deadlineReached
     }
 
     private func runBoundedProbeWaves(
@@ -671,6 +688,7 @@ public actor LocalMiIOClient {
         discovered: inout [String: String],
         claimedIPs: inout Set<String>,
         maxTotalProbes: Int,
+        sleep: @escaping @Sendable (Duration) async throws -> Void,
         remainingBudget: () -> Duration?
     ) async throws -> Int {
         var totalProbesLaunched = 0
@@ -717,20 +735,16 @@ public actor LocalMiIOClient {
             let perProbeTimeout = min(handshakeTimeout, waveBudget)
             let transport = self.transport
             let port = self.port
-            // The per-probe timeout belongs to the transport (`send(..., timeout:)`), which is the only
-            // component that knows when the datagram actually went out. Racing a second timer here used to
-            // cancel probes that were merely starved of a cooperative-pool thread, so a loaded runner
-            // discarded replies the mock had already produced. The client keeps exactly one clock: the
-            // wave deadline, which cancels whatever is still in flight when the discovery budget runs out.
+            // The transport owns the per-probe timeout. The wave deadline cancels unresolved sends,
+            // and draining the group preserves replies that the transport completed before cancellation.
             let outcomes = try await withThrowingTaskGroup(of: ProbeOutcome.self) { group in
+                defer { group.cancelAll() }
                 for probe in preparedBatch {
                     group.addTask {
                         do {
                             let sendStart = ContinuousClock.now
                             let response = try await transport.send(probe.probePacket, to: probe.sourceIP, port: port, timeout: perProbeTimeout)
                             return .response(probe, response, Self.milliseconds(since: sendStart))
-                        } catch is CancellationError {
-                            return .waveStopped
                         } catch let error as MiIOError where error == .shutDown || error == .localNetworkDenied {
                             return .fatal(error)
                         } catch {
@@ -739,8 +753,8 @@ public actor LocalMiIOClient {
                     }
                 }
                 group.addTask {
-                    try? await Task.sleep(for: waveBudget)
-                    return .waveStopped
+                    try? await sleep(waveBudget)
+                    return .deadlineReached
                 }
                 var collected: [ProbeOutcome] = []
                 var awaitedProbes = preparedBatch.count
@@ -750,14 +764,11 @@ public actor LocalMiIOClient {
                         collected.append(outcome)
                         awaitedProbes -= 1
                     case .fatal(let fatalErr):
-                        group.cancelAll()
                         throw fatalErr
-                    case .waveStopped:
-                        awaitedProbes = 0
+                    case .deadlineReached:
                         group.cancelAll()
                     }
                 }
-                group.cancelAll()
                 return collected
             }
 
