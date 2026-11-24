@@ -415,6 +415,8 @@ export function syncSingleOwnerLifecycle(
   center.lastSourceRevision = currentRev;
   center.hasObservedNonEmptyDevices = host.devices.length > 0;
   clearCenterActivities(center);
+  host.cameraEventStore?.clear();
+  host.stillWallThrottler?.reset();
   // A source/home switch invalidates the footer dialog's platform list, so it closes with the rest.
   host.connectionDetailsOpen = false;
   resetPanelSplitTransientState(host);
@@ -1441,6 +1443,12 @@ export async function ingestHostHASnapshotForDoorbell(
   const nowMs = options.nowMs ?? Date.now();
   for (const ring of rings) {
     center.dismissedActivityIds.delete(`doorbell:${ring.key}`);
+    const parsedRingMs = ring.firedAt ? Date.parse(ring.firedAt) : NaN;
+    host.cameraEventStore?.record({
+      cameraID: ring.deviceId,
+      kind: "doorbell",
+      timestampMs: Number.isFinite(parsedRingMs) ? parsedRingMs : nowMs,
+    });
   }
 
   const guardPrefs = loadSafetyGuardPrefs(center.storage);

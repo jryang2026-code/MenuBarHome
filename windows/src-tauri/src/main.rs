@@ -2,6 +2,7 @@
 
 mod home_assistant;
 mod camera;
+mod camera_events;
 mod companion;
 mod desktop_shell;
 mod job_object;
@@ -18,6 +19,7 @@ mod wifi;
 mod window;
 mod update_manifest;
 use camera::*;
+use camera_events::*;
 use companion::*;
 use credentials::*;
 use desktop_shell::*;
@@ -310,7 +312,12 @@ fn main() {
             stop_camera_runtime,
             resume_camera_runtime,
             go2rtc_jpeg_frame,
-            go2rtc_supervisor_status
+            go2rtc_supervisor_status,
+            camera_events_load,
+            camera_events_record,
+            camera_events_attach_snapshot,
+            camera_events_read_snapshot,
+            camera_events_clear
         ])
         .setup(move |app| {
             sweep_stale_update_installers();
