@@ -5,6 +5,7 @@ import {
 } from "../core/cameraQuality.js";
 import { CameraHubCatalog } from "../core/miCloud/cameraHubs.js";
 import { cameraLensLabel } from "../core/miCloud/cameraLens.js";
+import { isPortraitDoorbellCamera } from "../core/cameraPip.js";
 import { localizeNightShot } from "../core/models.js";
 import { CAMERA_QUALITY_TITLES, SF_ICONS } from "./appConstants.js";
 import type { CameraLiveController } from "./cameraLive.js";
@@ -34,6 +35,7 @@ export function computeQuarterTurnScale(
 }
 
 export function renderCameraLiveModalView(ctrl: CameraLiveController): string {
+  if (ctrl.isDetachedPipActive) return "";
   const dev = ctrl.host.devices.find((d) => d.id === ctrl.activeLiveCameraId);
   if (!dev || dev.kind.kind !== "camera") return "";
   const k = dev.kind;
@@ -43,6 +45,7 @@ export function renderCameraLiveModalView(ctrl: CameraLiveController): string {
   const isNight = k.nightShot?.toLowerCase() === "on";
   const motionOn = Boolean(k.isMotionDetectionOn);
   const rotation = ctrl.cameraRotation(dev.id);
+  const portraitClass = isPortraitDoorbellCamera(dev, rotation) ? " is-portrait" : "";
   const playableCameras = ctrl.host.devices.filter(
     (item) => item.kind.kind === "camera" && (item.id === dev.id || !CameraHubCatalog.isHub(item.model)),
   );
@@ -71,7 +74,7 @@ export function renderCameraLiveModalView(ctrl: CameraLiveController): string {
   if (mediaKind === "sleeping") {
     const canWake = k.powerWritable !== false;
     viewportHtml = `
-      <div class="cc-camera-stage is-sleeping">
+      <div class="cc-camera-stage is-sleeping${portraitClass}">
         <strong>${t("摄像机处于物理休眠状态")}</strong>
         ${
           canWake
@@ -82,24 +85,24 @@ export function renderCameraLiveModalView(ctrl: CameraLiveController): string {
       </div>
     `;
   } else if (mediaKind === "frames") {
-    viewportHtml = `<div class="cc-camera-stage" id="cc-camera-stage"></div>`;
+    viewportHtml = `<div class="cc-camera-stage${portraitClass}" id="cc-camera-stage"></div>`;
   } else if (mediaKind === "image") {
     const safeURL = ctrl.host.escapeHtml(ctrl.liveCameraStreamURL ?? "");
     const source = ctrl.liveCameraRawMediaEl ? "" : ` src="${safeURL}"`;
-    viewportHtml = `<div class="cc-camera-stage"><img id="cc-camera-live-img"${source} alt="${ctrl.host.escapeHtml(dev.name)}" style="max-width:100%;border-radius:10px;" /></div>`;
+    viewportHtml = `<div class="cc-camera-stage${portraitClass}"><img id="cc-camera-live-img"${source} alt="${ctrl.host.escapeHtml(dev.name)}" style="max-width:100%;border-radius:10px;" /></div>`;
   } else if (mediaKind === "loading") {
     viewportHtml = `
-      <div class="cc-camera-stage" style="padding:28px 16px;text-align:center;">
+      <div class="cc-camera-stage${portraitClass}" style="padding:28px 16px;text-align:center;">
         <strong>${t("正在握手并连接摄像机实时画面…")}</strong>
       </div>
     `;
   } else if (mediaKind === "video") {
     const safeURL = ctrl.host.escapeHtml(ctrl.liveCameraStreamURL ?? "");
     const source = ctrl.liveCameraRawMediaEl ? "" : ` src="${safeURL}"`;
-    viewportHtml = `<div class="cc-camera-stage"><video id="cc-camera-video"${source} controls autoplay${ctrl.liveCameraMuted ? " muted" : ""} playsinline preload="auto" style="width:100%;border-radius:10px;background:#090d16;"></video></div>`;
+    viewportHtml = `<div class="cc-camera-stage${portraitClass}"><video id="cc-camera-video"${source} controls autoplay${ctrl.liveCameraMuted ? " muted" : ""} playsinline preload="auto" style="width:100%;border-radius:10px;background:#090d16;"></video></div>`;
   } else if (mediaKind === "demo") {
     viewportHtml = `
-      <div class="cc-camera-stage is-demo" style="padding:18px;border-radius:12px;background:${isNight ? "linear-gradient(135deg,#072219,#03110c)" : "linear-gradient(135deg,#10233d,#091224)"};color:#fff;text-align:center;">
+      <div class="cc-camera-stage is-demo${portraitClass}" style="padding:18px;border-radius:12px;background:${isNight ? "linear-gradient(135deg,#072219,#03110c)" : "linear-gradient(135deg,#10233d,#091224)"};color:#fff;text-align:center;">
         <div style="display:flex;justify-content:space-between;width:100%;gap:12px;font-size:11px;opacity:0.85;margin-bottom:16px;">
           <span>● ${isNight ? "LIVE · IR NIGHT 2K" : "LIVE · 2K HDR · 25fps"}</span>
           <span>${ctrl.host.escapeHtml(dev.roomName)}</span>

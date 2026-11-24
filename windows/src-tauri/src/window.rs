@@ -39,7 +39,7 @@ pub(crate) fn tool_window_ex_style(current_ex_style: u32) -> u32 {
     (current_ex_style & !WIN32_WS_EX_APPWINDOW) | WIN32_WS_EX_TOOLWINDOW
 }
 
-fn sanitize_scale(scale: f64) -> f64 {
+pub(crate) fn sanitize_scale(scale: f64) -> f64 {
     if scale.is_finite() && scale > 0.0 {
         scale
     } else {
@@ -472,7 +472,7 @@ fn monitor_scale_at(window: &WebviewWindow, anchor: Option<PhysicalPosition<f64>
 }
 
 #[cfg(all(windows, not(test)))]
-fn set_window_bounds_sync(window: &WebviewWindow, x: i32, y: i32, w: i32, h: i32) {
+pub(crate) fn set_window_bounds_sync(window: &WebviewWindow, x: i32, y: i32, w: i32, h: i32) {
     use windows_sys::Win32::Foundation::HWND;
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         SetWindowPos, SWP_NOACTIVATE, SWP_NOZORDER,
@@ -504,7 +504,7 @@ fn set_window_bounds_sync(window: &WebviewWindow, x: i32, y: i32, w: i32, h: i32
 }
 
 #[cfg(any(not(windows), test))]
-fn set_window_bounds_sync(window: &WebviewWindow, x: i32, y: i32, w: i32, h: i32) {
+pub(crate) fn set_window_bounds_sync(window: &WebviewWindow, x: i32, y: i32, w: i32, h: i32) {
     let _ = window.set_size(PhysicalSize::new(w.max(1) as u32, h.max(1) as u32));
     let _ = window.set_position(PhysicalPosition::new(x, y));
 }

@@ -181,7 +181,9 @@ export function shouldKeepPopoverPinned(host: MenuMijiaWindowsApp): boolean {
     host.isHomeMenuOpen ||
     host.ctxMenu !== null ||
     host.pendingHighRisk !== null ||
-    (host.cameraLive.activeLiveCameraId !== null && !host.cameraLive.liveCameraHidden)
+    (host.cameraLive.activeLiveCameraId !== null &&
+      !host.cameraLive.liveCameraHidden &&
+      !host.cameraLive.isDetachedPipActive)
   );
 }
 
