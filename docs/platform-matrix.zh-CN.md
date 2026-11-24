@@ -9,8 +9,8 @@ MenuBarHome 的 macOS 版本采用 Swift 6 原生开发，Windows 11 版本基�
 
 | 功能维度 | macOS 原生版 (14+) | Windows 11 托盘版 | 说明 |
 | :--- | :---: | :---: | :--- |
-| **米家云端扫码直连** | ✅ 支持 | ✅ 支持 | 手机米家 App 扫码登录，支持中/欧/美/俄/新加坡多区域服务器；同时加载自有家庭与被分享给该账号的家庭 |
-| **Home Assistant 接入** | ✅ 支持 | ✅ 支持 | macOS 保持长连接 WebSocket 实时事件流并支持局域网 mDNS 发现；Windows 按刷新与控制请求建立 WebSocket 会话。双端均支持官方 `xiaomi_home` 物理设备聚合 |
+| **米家云端扫码直连** | ✅ 支持 | ✅ 支持 | 手机米家 App 扫码登录，双端均支持同时登录多个小米账号及中/欧/美/俄/新加坡多区域服务器；同时加载自有家庭与被分享给该账号的家庭 |
+| **Home Assistant 接入** | ✅ 支持 | ✅ 支持 | macOS 保持长连接 WebSocket 实时事件流并支持局域网 mDNS 发现；Windows 按刷新与控制请求建立 WebSocket 会话。双端均支持与米家双源并行自动去重合并，以及官方 `xiaomi_home` 物理设备聚合 |
 | **键盘搜索与设备控制** | ✅ 支持 | ✅ 支持 | 按设备名、房间或拼音首字母（如 `sftd`）搜索；方向键选择与调节，回车切换设备或执行口令 |
 | **全局快捷键呼出** | ✅ `⌥M`（支持自定义） | ✅ `Alt+M`（支持自定义） | 1.1.4 Windows 版已补齐自定义热键录制与占用冲突检测 |
 | **语音控制方式** | ✅ 菜单栏按住 / 快捷键按住 / 免提 | ⚠️ 仅免提听写 | macOS 支持系统原生听写与按住说话；Windows 使用 WebView 听写 |
@@ -19,7 +19,7 @@ MenuBarHome 的 macOS 版本采用 Swift 6 原生开发，Windows 11 版本基�
 | **「猜你想控」主动推荐** | ✅ 最多 4 项 | ✅ 最多 4 项 | 手动点卡片也按时段与工作日/周末计入习惯记忆，带 14 天半衰期衰减与动作序列预测（撤销同步回滚，详见 [ADR-0009](adr/0009-habit-ranking-algorithm.md)）；本地推荐立即显示，大模型在后台刷新。可执行动作不足四项时显示实际数量。 |
 | **顶部快捷动作与场景栏** | ✅ 3 个动作 | ✅ 3 个动作 | macOS 通过设置里的「输入框里显示快捷场景」开关（点击输入框时在下方展开），Windows 通过「显示顶部快捷场景栏」开关。双端都提供 全屋关灯 / 柔和夜灯 / 关温控风扇（家里有对应设备时才显示），Windows 演示模式另用四个示例动作；接入 Home Assistant 后双端都会追加你的场景胶囊。macOS 下动作与场景合计不超过四项时等宽铺满，更多则支持普通鼠标滚轮横向滚动。 |
 | **批量全关与即刻撤销** | ✅ 支持 | ✅ 支持 | 长按 0.6 秒触发；插座与扫地机默认不参与，可调整；操作可撤销时提供 10–15 秒横幅 |
-| **状态自动化** | ✅ 支持 | ⚠️ 部分支持 | macOS 支持锁屏、休眠/唤醒、外接显示器，以及摄像头 / 麦克风占用、电源与电量、Wi-Fi、专注模式、日历与深夜使用等触发（默认关闭）。Windows 已覆盖锁屏离开 / 解锁回来、电源与电量（`GetSystemPowerStatus`，10 秒轮询）、外接显示器（`QueryDisplayConfig`）、休眠与息屏（`RegisterSuspendResumeNotification` / `GUID_CONSOLE_DISPLAY_STATE`）、Wi-Fi 连接 / 离开（含 Wi-Fi 条件）、深夜用机、定时与传感器阈值；摄像头 / 麦克风、专注模式、日历与合盖休眠暂无事件源 |
+| **状态自动化** | ✅ 支持 | ⚠️ 部分支持 | macOS 支持锁屏、休眠/唤醒、外接显示器，以及摄像头 / 麦克风占用、电源与电量、Wi-Fi、专注模式、日历与深夜使用等触发（默认关闭）。Windows 已覆盖锁屏离开 / 解锁回来、电源与电量（`GetSystemPowerStatus`，10 秒轮询）、外接显示器（`QueryDisplayConfig`）、休眠与息屏（`PowerRegisterSuspendResumeNotification` / `GUID_CONSOLE_DISPLAY_STATE`）、Wi-Fi 连接 / 离开（含 Wi-Fi 条件）、深夜用机、定时与传感器阈值；摄像头 / 麦克风、专注模式、日历与合盖休眠暂无事件源 |
 | **系统快捷指令集成** | ✅ 支持 (8 个动作) | — 暂不支持 | 提供设备切换、执行场景、一句话控制、查询温湿度、调亮度（0–100%）、调色温（1000–20000K）、执行快捷动作 7 项 App Intents（同一动作可有多种参数组合）。所有参数化动作复用 URL 控制链路，能力写入门、锁屏拦截与高风险二次确认照旧生效。开启「在系统搜索（Spotlight）里找到设备、房间与场景」后（默认关闭，只索引名称，不含 ID、地址或令牌，退出账号或关闭开关即清空），设备、房间与场景会出现在系统 Spotlight；专注模式过滤条件可静音非安全通知，但安全告警与门铃绝不会被静音 |
 | **URL Scheme 控制** | ✅ 支持 | ✅ 支持 | `menumijia://toggle`（及 `power`、`brightness`、`color-temp`、`temperature`、`fan`、`scene`、`ask`、`focus`）调用默认需确认，可在设置中允许直接执行；Windows 通过单实例转发交给运行中的托盘程序处理 |
 | **Raycast 扩展、本地 CLI 与 MCP 服务** | ✅ 支持 | ✅ 支持 | `raycast/`、`scripts/mijia` 与 `scripts/mijia-mcp` 只读应用写出的 `raycast-snapshot.json`（macOS 为 `~/Library/Application Support/MenuBarMijia/`，Windows 为 `%LOCALAPPDATA%\MenuBarMijia\`），通过 `menumijia://` 链接控制设备、场景与快捷动作，不持有任何凭据；MCP 响应自动剥离 `bridgeToken`，高风险二次确认与锁屏拦截仍在应用内执行 |
