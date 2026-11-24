@@ -131,6 +131,9 @@ extension HomeStore {
             } catch let blocked as CapabilityControlBlockedError {
                 showToast(blocked.reason.userMessage, isError: true)
                 return false
+            } catch is CancellationError {
+                // Declining the confirmation (or a home/connection switch behind it) is not a failure.
+                return false
             } catch {
                 showToast(L10n.tr("场景「\(scene.name)」执行失败", "Scene \"\(scene.name)\" failed"), isError: true)
                 return false

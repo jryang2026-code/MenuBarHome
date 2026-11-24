@@ -22,7 +22,7 @@ import {
   DualSourceHomeProvider,
   commandTargetBackend,
 } from "../core/dualSourceProvider.js";
-import { MultiAccountMiCloudProvider, miAccountId } from "../core/miAccountsStore.js";
+import { MultiAccountMiCloudProvider, MiAccountScope, miAccountId } from "../core/miAccountsStore.js";
 import { appDiagnosticsLog } from "../core/diagnosticsAndScanner.js";
 import {
   buildHostCapabilityContext,
@@ -56,6 +56,7 @@ import type {
   DeviceCommand,
   DeviceKind,
   FacetControl,
+  HomeScene,
   SmartDevice,
 } from "../core/models.js";
 import { applyCommandToDevices } from "../core/commandEffects.js";
@@ -840,12 +841,28 @@ function isPureSpeakerTextCommand(dev: SmartDevice | null, command: DeviceComman
   );
 }
 
+/**
+ * A Mi cloud scene id names its cloud home. Running it from another home would drive rooms the
+ * user is not looking at, so a selected home only accepts scenes that belong to it. With no home
+ * selected ("all homes") every scene of the snapshot stays runnable.
+ */
+function miSceneBelongsToSelectedHome(host: MenuMijiaWindowsApp, scene: HomeScene): boolean {
+  const selected = host.settings.selectedHomeId;
+  const homeId = scene.miScene?.homeId;
+  if (!selected || !homeId) return true;
+  const rawSelected = MiAccountScope.owner(selected) === null
+    ? selected
+    : MiAccountScope.localId(selected);
+  return homeId === rawSelected;
+}
+
 export async function applyCommand(
   host: MenuMijiaWindowsApp,
   command: DeviceCommand,
   readBackPower = false,
 ): Promise<boolean> {
   const sourceRevision = host.sourceRevision;
+  const homeRevision = host.homeRevision;
   const originalCommand = command;
   const wasUndoRestore = undoRestoreCommands.has(originalCommand);
   const capturedFacet = wasUndoRestore
@@ -874,9 +891,18 @@ export async function applyCommand(
   }
   if (command.kind === "activateScene" && miSceneAccount(command.entityId) !== null) {
     const scene = host.scenes.find((row) => row.entityId === command.entityId && row.miScene);
-    if (!scene || await isWorkstationLockBlockingControl(host) || sourceRevision !== host.sourceRevision) return false;
+    if (
+      !scene ||
+      !miSceneBelongsToSelectedHome(host, scene) ||
+      await isWorkstationLockBlockingControl(host) ||
+      sourceRevision !== host.sourceRevision ||
+      homeRevision !== host.homeRevision
+    ) {
+      return false;
+    }
     if (!(await requestMiSceneConfirmation(host, scene, command))) return false;
     if (await isWorkstationLockBlockingControl(host) || sourceRevision !== host.sourceRevision ||
+        homeRevision !== host.homeRevision || !miSceneBelongsToSelectedHome(host, scene) ||
         !host.scenes.some((row) => row.entityId === scene.entityId && row.miScene &&
           row.miScene.ownerUid === scene.miScene?.ownerUid)) return false;
   }
@@ -1168,12 +1194,15 @@ async function dispatchCloudCommand(
   originalEntityId = command.entityId,
 ): Promise<boolean | null> {
   const sourceRevision = host.sourceRevision;
+  const homeRevision = host.homeRevision;
   const provider = homeProviderFor(host);
   try {
     return await provider.execute(command, {
       readBackPower,
       beforeSend: () => {
-        if (sourceRevision !== host.sourceRevision) throw new Error("Connection source changed");
+        if (sourceRevision !== host.sourceRevision || homeRevision !== host.homeRevision) {
+          throw new Error("Connection source changed");
+        }
         if (host.settings?.connectionMode !== "demo" || isDualSourceEnabled(host)) {
           const currentTargetId = deviceOwningEntityId(
             host.devices,
@@ -1207,6 +1236,12 @@ function buildXiaomiHomeProvider(host: MenuMijiaWindowsApp): HomeCommandProvider
     return host.devices.find((device) => device.id === deviceId);
   };
   const sceneForEntity = (entityId: string) => host.scenes.find((scene) => scene.entityId === entityId);
+  // The entity id alone only names the account; the provider must also refuse a scene of a home
+  // the user has already left (a two-tap confirm or a URL command can outlive the switch).
+  const sceneForEntityInSelectedHome = (entityId: string) => {
+    const scene = sceneForEntity(entityId);
+    return scene && miSceneBelongsToSelectedHome(host, scene) ? scene : undefined;
+  };
   const multiState = getHostMiAccountsState(host);
   const accounts = host.miAccountsOverride ?? multiState?.accounts ?? [];
   const enabledAccounts = resolveEnabledMiAccountsForHost(host, accounts);
@@ -1218,7 +1253,7 @@ function buildXiaomiHomeProvider(host: MenuMijiaWindowsApp): HomeCommandProvider
       devices: host.devices,
       specResolver: host.specResolver,
       deviceForEntity,
-      sceneForEntity,
+      sceneForEntity: sceneForEntityInSelectedHome,
       transport: host.transport,
     });
   }
@@ -1239,7 +1274,7 @@ function buildXiaomiHomeProvider(host: MenuMijiaWindowsApp): HomeCommandProvider
     specResolver: host.specResolver,
     deviceForEntity,
     sceneForEntity: (entityId) => miSceneAccount(entityId) === miAccountId(session)
-      ? sceneForEntity(entityId) : undefined,
+      ? sceneForEntityInSelectedHome(entityId) : undefined,
   });
 }
 

@@ -399,7 +399,10 @@ export interface HostSceneSource {
   readonly scenes?: readonly HomeScene[] | null;
 }
 
-const singleAccountSceneSnapshots = new WeakMap<MenuMijiaWindowsApp, { sourceRevision: number; snapshot: MiSceneSnapshot }>();
+const singleAccountSceneSnapshots = new WeakMap<
+  MenuMijiaWindowsApp,
+  { sourceRevision: number; homeRevision: number; snapshot: MiSceneSnapshot }
+>();
 
 /**
  * Every scene the host currently knows about, deduplicated by id (first source wins).
@@ -621,6 +624,7 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
     const stateToken = host.sourceEpoch.capture();
     const selectedHomeAtStart = host.settings.selectedHomeId;
     const sourceRevisionAtStart = host.sourceRevision;
+    const homeRevisionAtStart = host.homeRevision;
     const syncRun = host.sourceEpoch.claimSyncRun();
     let presentationChanged = false;
     host.isSyncingCloud = true;
@@ -644,8 +648,11 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
       );
 
       const previousSceneEntry = singleAccountSceneSnapshots.get(host);
-      let sceneSnapshot = previousSceneEntry?.sourceRevision === sourceRevisionAtStart
-        ? previousSceneEntry.snapshot : undefined;
+      let sceneSnapshot =
+        previousSceneEntry?.sourceRevision === sourceRevisionAtStart &&
+        previousSceneEntry.homeRevision === homeRevisionAtStart
+          ? previousSceneEntry.snapshot
+          : undefined;
       let rawDevices: readonly MiDeviceRecord[];
       let rooms: readonly MiRoom[];
       let specs: Readonly<Record<string, MiotDeviceSpec>>;
@@ -767,11 +774,19 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
       host.lastMiCloudSyncFailed = false;
       host.markCloudValuesFresh();
       if (sceneSnapshot) {
-        singleAccountSceneSnapshots.set(host, { sourceRevision: sourceRevisionAtStart, snapshot: sceneSnapshot });
+        singleAccountSceneSnapshots.set(host, {
+          sourceRevision: sourceRevisionAtStart,
+          homeRevision: homeRevisionAtStart,
+          snapshot: sceneSnapshot,
+        });
       }
       const fetchedScenes = miSceneRows(sceneSnapshot, rooms, accountId);
-      const retainedScenes = host.scenes.filter((scene) => scene.sourceBackend === "xiaomiCloud" || scene.accountId !== undefined || !scene.id.startsWith("scene."));
-      host.scenes = [...fetchedScenes, ...retainedScenes.filter((scene) => !fetchedScenes.some((fresh) => fresh.id === scene.id))];
+      // The single-account round owns every Xiaomi scene row: a scene removed in the cloud or
+      // belonging to the home the user just left must not survive as a runnable leftover.
+      const retainedScenes = host.scenes.filter(
+        (scene) => scene.sourceBackend !== "xiaomiCloud" && scene.accountId === undefined,
+      );
+      host.scenes = [...retainedScenes, ...fetchedScenes];
       host.groupOwnerByMemberDid = memberGroupOwners(membersByGroup as Map<string, string[]>);
       const merged = mergeHomeSnapshotRespectingLocks(host, home.devices, home.deviceFacets);
       host.devices = applyOrder(host.devices.map((device) => device.id), merged.devices);

@@ -12,10 +12,15 @@ public struct MiCloudScene: Codable, Equatable, Sendable {
             guard let id = row["scene_id"]?.idString,
                   !id.isEmpty, !id.contains(":"), !id.contains("/"),
                   seen.insert(id).inserted else { return nil }
-            let name = (row["scene_name"]?.stringValue ?? row["name"]?.stringValue)?
+            // `scene_name` wins over `name`; an empty field falls back to the other one, then the id.
+            let preferred = row["scene_name"]?.stringValue?
                 .trimmingCharacters(in: .whitespacesAndNewlines)
-            return Self(id: id, name: name.flatMap { $0.isEmpty ? nil : $0 } ?? id,
-                        homeId: homeId, ownerUid: ownerUid)
+            let alternate = row["name"]?.stringValue?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let name = [preferred, alternate]
+                .compactMap { $0 }
+                .first { !$0.isEmpty } ?? id
+            return Self(id: id, name: name, homeId: homeId, ownerUid: ownerUid)
         }
     }
 

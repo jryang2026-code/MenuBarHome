@@ -17,6 +17,7 @@ export function requestMiSceneConfirmation(
     deviceId: scene.id,
     actionKey: JSON.stringify(command),
     sourceRevision: host.sourceRevision,
+    homeRevision: host.homeRevision,
     expiresAtMs: Date.now() + 8_000,
     confirm: {
       command,
@@ -39,7 +40,9 @@ export function finishMiSceneConfirmation(host: MenuMijiaWindowsApp, approved: b
   if (!request) return;
   requests.delete(host);
   request.resolve(approved && request.pending === host.pendingHighRisk &&
-    request.pending.sourceRevision === host.sourceRevision && Date.now() < request.pending.expiresAtMs);
+    request.pending.sourceRevision === host.sourceRevision &&
+    (request.pending.homeRevision === undefined || request.pending.homeRevision === host.homeRevision) &&
+    Date.now() < request.pending.expiresAtMs);
 }
 
 export function renderMiSceneConfirmation(host: MenuMijiaWindowsApp): string {

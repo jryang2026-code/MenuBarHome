@@ -17,10 +17,12 @@ export function decodeMiScenes(result: unknown, homeId: string, ownerUid: string
     const id = asIdString(row?.["scene_id"]);
     if (!id || /[:/]/.test(id) || seen.has(id)) return [];
     seen.add(id);
-    const rawName = row?.["name"];
-    const alternateName = row?.["scene_name"];
-    const name = typeof rawName === "string" ? rawName : typeof alternateName === "string" ? alternateName : "";
-    return [{ id, name: name.trim() || id, homeId, ownerUid }];
+    // Same preference as the Swift decoder (`MiCloudScenes.swift`): `scene_name` wins over
+    // `name`, and an empty field falls back to the other one before the id.
+    const primary = typeof row?.["scene_name"] === "string" ? row["scene_name"].trim() : "";
+    const alternate = typeof row?.["name"] === "string" ? row["name"].trim() : "";
+    const name = primary || alternate || id;
+    return [{ id, name, homeId, ownerUid }];
   });
 }
 
