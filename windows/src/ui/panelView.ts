@@ -14,6 +14,10 @@ import {
 import { SF_ICONS } from "./appConstants.js";
 import { renderConnectionStatus, resolveConnectionStatus, type ConnectionStatusPresentation } from "./connectionStatus.js";
 import { applyPanelOpacity, hiddenDeviceIds, withAliases } from "./panelPrefs.js";
+import {
+  readPanelQuickDrawerExpanded,
+  renderPanelQuickDrawerToggle,
+} from "./panelQuickDrawer.js";
 import { computeHomeSummary, formatHomeSummaryCapsuleTitle, type HomeSummaryCapsule } from "../core/homeSummary.js";
 import { isSwitchMarkedAsLight } from "../core/switchLightMarks.js";
 import { getTemperatureUnit } from "../core/temperature.js";
@@ -68,6 +72,8 @@ export function renderPanel(host: MenuMijiaWindowsApp): void {
   const scheme = host.effectiveAppearance;
   const profile = getPanelThemeProfile(host.settings.panelTheme);
   const isClassic = profile.shellLayout === "unifiedPopover";
+  const quickDrawerExpanded = readPanelQuickDrawerExpanded();
+  host.root.dataset.quickDrawer = quickDrawerExpanded ? "expanded" : "collapsed";
   host.root.dataset.scheme = scheme;
   applyPanelOpacity(host.root, host.settings.panelOpacity);
   host.root.classList.toggle("is-native-host", Boolean(window.__TAURI_INTERNALS__));
@@ -237,6 +243,7 @@ export function renderPanel(host: MenuMijiaWindowsApp): void {
               </div>
             </div>
             <div class="cc-room-tools">
+              ${renderPanelQuickDrawerToggle(host, quickDrawerExpanded)}
               ${isClassic ? `${roomOrderBtnHtml}${gridToggleBtnHtml}${offlineToggleBtnHtml}` : `${gridToggleBtnHtml}${offlineToggleBtnHtml}${roomOrderBtnHtml}`}
             </div>
           </div>
@@ -366,7 +373,7 @@ function renderNotificationStack(host: MenuMijiaWindowsApp, includeCameraDeck = 
 
   if (host.pendingSuggestions.length > 0) {
     cards.push(
-      `<div class="win-notif-card cc-feedback-card"><div class="cc-suggestion-row">${host.pendingSuggestions
+      `<div class="win-notif-card cc-feedback-card" data-quick-drawer-item><div class="cc-suggestion-row">${host.pendingSuggestions
         .map(
           (item) => `<button class="cc-inline-pill" data-suggestion-id="${host.escapeHtml(item.id)}">${host.escapeHtml(item.title)}${
             item.confidencePercent !== null ? ` · ${item.confidencePercent}%` : ""
@@ -384,7 +391,7 @@ function renderNotificationStack(host: MenuMijiaWindowsApp, includeCameraDeck = 
       if (items.length > 0) {
         const openAttr = host.collapsedNotifCards.has("proactive") ? "" : "open";
         cards.push(
-          `<details class="win-notif-card cc-feedback-card" data-notif-card="proactive" ${openAttr}>
+          `<details class="win-notif-card cc-feedback-card" data-quick-drawer-item data-notif-card="proactive" ${openAttr}>
             <summary class="win-notif-summary">
               <span class="win-notif-icon">${SF_ICONS.sparkles}</span>
               <span class="win-notif-app">${t("猜你想控")}</span>
@@ -665,7 +672,7 @@ function quickStrip(host: MenuMijiaWindowsApp): string {
     const pills = quickActions().map(
       (act) => `<button class="cc-quick-pill tint-${act.tint}" data-scene-cmd="${host.escapeHtml(act.command)}"><span class="cc-quick-icon">${act.icon}</span><span>${host.escapeHtml(act.title)}</span></button>`,
     ).join("");
-    return `<section class="cc-quick-strip">${pills}</section>`;
+    return `<section class="cc-quick-strip" data-quick-drawer-item>${pills}</section>`;
   }
   const builtIns = availableQuickActions(quickActionScopeDevices(host)).map(
     (act) =>
@@ -677,7 +684,7 @@ function quickStrip(host: MenuMijiaWindowsApp): string {
   );
   const allPills = [...builtIns, ...scenePills];
   if (allPills.length === 0) return "";
-  return `<section class="cc-quick-strip">${allPills.join("")}</section>`;
+  return `<section class="cc-quick-strip" data-quick-drawer-item>${allPills.join("")}</section>`;
 }
 
 export function unsupportedDevicesQuietRowText(count: number): string {
