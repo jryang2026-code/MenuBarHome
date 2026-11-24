@@ -2040,6 +2040,64 @@ details.win-notif-card-ghost > :not(summary) {
   border-top: none;
 }
 
+.cc-camera-still-wall {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.cc-camera-still-tile {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-height: 74px;
+  max-height: 110px;
+  aspect-ratio: 16 / 9;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.18);
+  overflow: hidden;
+  cursor: pointer;
+}
+
+.cc-camera-still-tile:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.cc-camera-still-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.cc-camera-still-placeholder {
+  color: var(--text-secondary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.cc-camera-still-label {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  max-width: 100%;
+  padding: 3px 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.55);
+  border-top-right-radius: 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .cc-facet-section {
   padding: 10px 12px 12px;
   border-top: 1px solid var(--win-divider);

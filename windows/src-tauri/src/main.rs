@@ -2,6 +2,7 @@
 
 mod home_assistant;
 mod camera;
+mod camera_events;
 mod companion;
 mod desktop_shell;
 mod job_object;
@@ -18,6 +19,7 @@ mod wifi;
 mod window;
 mod update_manifest;
 use camera::*;
+use camera_events::*;
 use companion::*;
 use credentials::*;
 use desktop_shell::*;
@@ -292,6 +294,9 @@ fn main() {
             system_power_status,
             awake_time_ms,
             external_display_count,
+            media_capture_status,
+            focus_mode_status,
+            set_system_event_watchers,
             wifi_current,
             set_tray_tooltip, send_desktop_notification,
             set_companion_integration,
@@ -310,7 +315,12 @@ fn main() {
             stop_camera_runtime,
             resume_camera_runtime,
             go2rtc_jpeg_frame,
-            go2rtc_supervisor_status
+            go2rtc_supervisor_status,
+            camera_events_load,
+            camera_events_record,
+            camera_events_attach_snapshot,
+            camera_events_read_snapshot,
+            camera_events_clear
         ])
         .setup(move |app| {
             sweep_stale_update_installers();
@@ -379,6 +389,7 @@ fn main() {
                         }
                     }
                     "quit" => {
+                        shutdown_system_event_watchers();
                         shutdown_companion_runtime();
                         shutdown_camera_daemons();
                         app.exit(0);
@@ -418,6 +429,7 @@ fn main() {
         .expect("error while building MenuBarHome Windows application")
         .run(|_app, event| {
             if matches!(event, tauri::RunEvent::Exit) {
+                shutdown_system_event_watchers();
                 shutdown_companion_runtime();
                 shutdown_camera_daemons();
             }

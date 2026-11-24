@@ -1,0 +1,96 @@
+{
+  "schemaVersion": 1,
+  "retentionSeconds": 604800,
+  "maxEvents": 500,
+  "stillWallLimit": 4,
+  "stillRefreshCooldownSeconds": 60,
+  "allowedKinds": ["doorbell", "motion", "person", "package"],
+  "validRecords": [
+    {
+      "id": "11111111-1111-4111-8111-111111111111",
+      "cameraID": "cam-front-door",
+      "kind": "doorbell",
+      "timestamp": "2026-11-24T10:00:00Z",
+      "snapshotFile": "snapshot-11111111-1111-4111-8111-111111111111.jpeg"
+    },
+    {
+      "id": "22222222-2222-4222-8222-222222222222",
+      "cameraID": "cam-living-room",
+      "kind": "motion",
+      "timestamp": "2026-11-24T09:30:00.500Z",
+      "snapshotFile": null
+    },
+    {
+      "id": "33333333-3333-4333-8333-333333333333",
+      "cameraID": "cam-balcony",
+      "kind": "person",
+      "timestamp": "2026-11-24T08:15:00Z"
+    },
+    {
+      "id": "44444444-4444-4444-8444-444444444444",
+      "cameraID": "cam-porch",
+      "kind": "package",
+      "timestamp": "2026-11-24T07:00:00Z",
+      "snapshotFile": "snapshot-44444444-4444-4444-8444-444444444444.jpeg"
+    }
+  ],
+  "malformedRecords": [
+    {
+      "reason": "missing_camera_id",
+      "record": {
+        "id": "bad-1",
+        "kind": "doorbell",
+        "timestamp": "2026-11-24T10:00:00Z"
+      }
+    },
+    {
+      "reason": "url_in_camera_id",
+      "record": {
+        "id": "bad-2",
+        "cameraID": "rtsp://admin:secret@192.0.2.10/live",
+        "kind": "doorbell",
+        "timestamp": "2026-11-24T10:00:00Z"
+      }
+    },
+    {
+      "reason": "unknown_kind",
+      "record": {
+        "id": "bad-3",
+        "cameraID": "cam-front-door",
+        "kind": "laser",
+        "timestamp": "2026-11-24T10:00:00Z"
+      }
+    },
+    {
+      "reason": "invalid_timestamp",
+      "record": {
+        "id": "bad-4",
+        "cameraID": "cam-front-door",
+        "kind": "motion",
+        "timestamp": "not-a-date"
+      }
+    },
+    {
+      "reason": "non_object_entry",
+      "record": "corrupt-line"
+    }
+  ],
+  "unsafeSnapshotFilenames": [
+    "",
+    "../secret.jpeg",
+    "..\\secret.jpeg",
+    "/tmp/snapshot-1.jpeg",
+    "C:\\Users\\test\\snapshot-1.jpeg",
+    "rtsp://user:pass@192.0.2.10/stream",
+    "http://192.0.2.10/api/frame.jpeg?token=abc",
+    "snapshot-1.jpeg?token=abc",
+    "snapshot-1.png",
+    "random.txt"
+  ],
+  "stillWallSelectionCase": {
+    "visibleCameraIds": ["cam-c", "cam-d", "cam-e", "cam-f", "cam-g"],
+    "eventfulCameraIds": ["cam-e", "cam-d"],
+    "limit": 4,
+    "expectedOrder": ["cam-d", "cam-e", "cam-c", "cam-f"]
+  }
+}

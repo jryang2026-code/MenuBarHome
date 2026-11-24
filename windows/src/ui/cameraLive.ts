@@ -188,6 +188,7 @@ export interface CameraLiveHost {
   escapeHtml(value: string): string;
   saveSettings(): void;
   shouldKeepPopoverPinned(): boolean;
+  onCameraFrameCaptured?(cameraId: string | null, jpegBase64: string): void;
   readonly pipeline?: {
     readonly cameraStandby: {
       resumeFromStandby(root: HTMLElement): void;
@@ -1084,6 +1085,7 @@ export class CameraLiveController {
           unchangedCount = 0;
           img.src = `data:image/jpeg;base64,${jpeg}`;
           lastJpeg = jpeg;
+          this.host.onCameraFrameCaptured?.(this.activeLiveCameraId, jpeg);
         } else {
           unchangedCount += 1;
         }
