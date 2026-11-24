@@ -326,6 +326,75 @@ struct FragmentedMP4DemuxerFuzzTests {
             _ = try overBudgetDemuxer.append(overBudget)
         }
     }
+
+    @Test("Parses audio track metadata from moov and emits audioSample events from fragments without extra requests")
+    func parsesAudioTrackAndSamplesFromInitAndFragments() throws {
+        let ftyp = FMP4Fixture.box("ftyp", Data("iso5".utf8) + FMP4Fixture.u32(512) + Data("iso5iso6mp41".utf8))
+        let mvhd = FMP4Fixture.box("mvhd", Data(count: 100))
+
+        // Video track 1
+        let vTkhd = FMP4Fixture.box("tkhd", Data(count: 12) + FMP4Fixture.u32(1) + Data(count: 64))
+        let vMdhd = FMP4Fixture.box("mdhd", Data(count: 12) + FMP4Fixture.u32(90_000) + Data(count: 8))
+        let vHdlr = FMP4Fixture.box("hdlr", Data(count: 8) + Data("vide".utf8) + Data(count: 12) + Data("VideoHandler\0".utf8))
+        var visual = Data(count: 24)
+        visual.append(FMP4Fixture.u16(640))
+        visual.append(FMP4Fixture.u16(360))
+        visual.append(Data(count: 50))
+        let avc1 = FMP4Fixture.box("avc1", visual + FMP4Fixture.box("avcC", FMP4Fixture.avcC))
+        let vMinf = FMP4Fixture.box("minf", FMP4Fixture.box("vmhd", Data(count: 12)) + FMP4Fixture.box("stbl", FMP4Fixture.box("stsd", Data(count: 4) + FMP4Fixture.u32(1) + avc1)))
+        let vTrak = FMP4Fixture.box("trak", vTkhd + FMP4Fixture.box("mdia", vMdhd + vHdlr + vMinf))
+
+        // Audio track 2 (mp4a with esds AudioSpecificConfig = 0x14 0x08 -> 16kHz mono AAC-LC)
+        let aTkhd = FMP4Fixture.box("tkhd", Data(count: 12) + FMP4Fixture.u32(2) + Data(count: 64))
+        let aMdhd = FMP4Fixture.box("mdhd", Data(count: 12) + FMP4Fixture.u32(16_000) + Data(count: 8))
+        let aHdlr = FMP4Fixture.box("hdlr", Data(count: 8) + Data("soun".utf8) + Data(count: 12) + Data("SoundHandler\0".utf8))
+        var audioEntry = Data(count: 16) // SampleEntry(8) + version/rev/vendor(8)
+        audioEntry.append(FMP4Fixture.u16(1)) // channels
+        audioEntry.append(FMP4Fixture.u16(16)) // bitsPerSample
+        audioEntry.append(FMP4Fixture.u32(0)) // pre_defined + reserved
+        audioEntry.append(FMP4Fixture.u32(16_000 << 16)) // 16.16 fixed-point sampleRate
+        let audioSpecificConfig = Data([0x14, 0x08])
+        let decSpecific = Data([0x05, UInt8(audioSpecificConfig.count)]) + audioSpecificConfig
+        let decConfig = Data([0x04, UInt8(13 + decSpecific.count), 0x40, 0x15, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]) + decSpecific
+        let esDesc = Data([0x03, UInt8(3 + decConfig.count), 0, 2, 0]) + decConfig
+        let esds = FMP4Fixture.box("esds", Data(count: 4) + esDesc)
+        let mp4a = FMP4Fixture.box("mp4a", audioEntry + esds)
+        let aMinf = FMP4Fixture.box("minf", FMP4Fixture.box("smhd", Data(count: 8)) + FMP4Fixture.box("stbl", FMP4Fixture.box("stsd", Data(count: 4) + FMP4Fixture.u32(1) + mp4a)))
+        let aTrak = FMP4Fixture.box("trak", aTkhd + FMP4Fixture.box("mdia", aMdhd + aHdlr + aMinf))
+
+        let trex1 = FMP4Fixture.box("trex", Data(count: 4) + FMP4Fixture.u32(1) + FMP4Fixture.u32(1) + Data(count: 12))
+        let trex2 = FMP4Fixture.box("trex", Data(count: 4) + FMP4Fixture.u32(2) + FMP4Fixture.u32(1) + Data(count: 12))
+        var stream = ftyp + FMP4Fixture.box("moov", mvhd + vTrak + aTrak + FMP4Fixture.box("mvex", trex1 + trex2))
+        let audioPayload = Data([0xAA, 0xBB, 0xCC, 0xDD])
+        stream.append(FMP4Fixture.fragment(seq: 1, trackID: 2, dts: 1024, duration: 1024, sample: audioPayload, keyframe: true))
+
+        var demuxer = FragmentedMP4Demuxer()
+        let events = try demuxer.append(stream)
+        #expect(events.count == 3)
+        guard case .videoTrack = events[0] else {
+            Issue.record("expected videoTrack first")
+            return
+        }
+        guard case .audioTrack(let aTrack) = events[1] else {
+            Issue.record("expected audioTrack second")
+            return
+        }
+        #expect(aTrack.trackID == 2)
+        #expect(aTrack.codec == .aac)
+        #expect(aTrack.timescale == 16_000)
+        #expect(aTrack.sampleRate == 16_000)
+        #expect(aTrack.channelCount == 1)
+        #expect(aTrack.configRecord == audioSpecificConfig)
+
+        guard case .audioSample(let aSample) = events[2] else {
+            Issue.record("expected audioSample third")
+            return
+        }
+        #expect(aSample.trackID == 2)
+        #expect(aSample.data == audioPayload)
+        #expect(aSample.decodeTime == 1024)
+        #expect(aSample.duration == 1024)
+    }
 }
 
 @Suite("go2rtc config comparison (#97)")

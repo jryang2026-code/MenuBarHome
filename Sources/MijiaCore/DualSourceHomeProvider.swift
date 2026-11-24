@@ -2001,13 +2001,23 @@ public actor DualSourceHomeProvider: HomeProvider {
         quality: XiaomiCameraStreamQuality,
         channel: Int
     ) async throws -> CameraStreamSource {
-        try await resolveCameraStream(for: device, quality: quality, channel: channel, explicitlyDisabledBackends: [])
+        try await resolveCameraStream(for: device, quality: quality, channel: channel, audioEnabled: false)
+    }
+
+    public func resolveCameraStream(
+        for device: SmartDevice,
+        quality: XiaomiCameraStreamQuality,
+        channel: Int,
+        audioEnabled: Bool
+    ) async throws -> CameraStreamSource {
+        try await resolveCameraStream(for: device, quality: quality, channel: channel, audioEnabled: audioEnabled, explicitlyDisabledBackends: [])
     }
 
     func resolveCameraStream(
         for device: SmartDevice,
         quality: XiaomiCameraStreamQuality,
         channel: Int,
+        audioEnabled: Bool = false,
         explicitlyDisabledBackends: Set<HomeBackend>
     ) async throws -> CameraStreamSource {
         let disabled = disabledBackendsGate.snapshot()
@@ -2034,7 +2044,8 @@ public actor DualSourceHomeProvider: HomeProvider {
                     let source = try await activeMi.resolveCameraStream(
                         for: route.sourceDevice,
                         quality: quality,
-                        channel: channel
+                        channel: channel,
+                        audioEnabled: audioEnabled
                     )
                     activeCameraRoutes[device.id] = route
                     return source
@@ -2056,7 +2067,8 @@ public actor DualSourceHomeProvider: HomeProvider {
                 let source = try await activeMi.resolveCameraStream(
                     for: device,
                     quality: quality,
-                    channel: channel
+                    channel: channel,
+                    audioEnabled: audioEnabled
                 )
                 activeCameraRoutes[device.id] = DeviceMergeRoute(
                     backend: .xiaomiCloud,

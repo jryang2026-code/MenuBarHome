@@ -118,15 +118,18 @@ pub(crate) fn build_xiaomi_camera_url(
     uid: Option<&str>,
     channel: u32,
     subdid: Option<&str>,
+    audio_enabled: bool,
 ) -> String {
+    let audio_flag = if audio_enabled { "1" } else { "0" };
     let mut query = format!(
-        "client_public={}&client_private={}&device_public={}&sign={}&vendor={}&transport=udp&subtype={}&audio=0&model={}",
+        "client_public={}&client_private={}&device_public={}&sign={}&vendor={}&transport=udp&subtype={}&audio={}&model={}",
         urlencoding_simple(client_public),
         urlencoding_simple(client_private),
         urlencoding_simple(device_public),
         urlencoding_simple(sign),
         urlencoding_simple(vendor),
         subtype,
+        audio_flag,
         urlencoding_simple(model)
     );
     if let Some(u) = uid.filter(|s| !s.is_empty()) {
@@ -216,6 +219,48 @@ pub(crate) fn is_go2rtc_stream_name(src: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
 }
 
+/// Builds a loopback go2rtc stream URL for `/api/stream.mp4`, `/api/stream.m3u8`, or
+/// `/api/stream.mjpeg`. Muted previews include `&audio=0` so audio is never requested
+/// until the user opts into listen-only playback (#445, P1-2).
+pub(crate) fn build_go2rtc_http_stream_url(
+    api_listen: &str,
+    path: &str,
+    src: &str,
+    audio_enabled: bool,
+) -> Result<String, String> {
+    if !is_go2rtc_stream_name(src) {
+        return Err("无效的摄像机流名称".to_string());
+    }
+    if !super::is_acceptable_go2rtc_listen(api_listen) {
+        return Err("本地流媒体地址无效".to_string());
+    }
+    let normalized_path = if path.starts_with('/') {
+        path.to_string()
+    } else {
+        format!("/{path}")
+    };
+    let encoded = urlencoding_simple(src);
+    let query = match normalized_path.as_str() {
+        "/api/stream.mp4" => {
+            if audio_enabled {
+                format!("src={encoded}&mp4=all")
+            } else {
+                format!("src={encoded}&mp4&audio=0")
+            }
+        }
+        "/api/stream.m3u8" => {
+            if audio_enabled {
+                format!("src={encoded}")
+            } else {
+                format!("src={encoded}&audio=0")
+            }
+        }
+        "/api/stream.mjpeg" => format!("src={encoded}"),
+        _ => return Err("不支持的 go2rtc 流端点".to_string()),
+    };
+    Ok(format!("http://{api_listen}{normalized_path}?{query}"))
+}
+
 #[tauri::command(rename = "stop_xiaomi_camera_bridge")]
 pub(crate) async fn stop_xiaomi_camera_bridge_ipc(
     did: String,
@@ -286,11 +331,29 @@ mod tests {
             Some("uid-1"),
             0,
             None,
+            false,
         );
         assert_eq!(
             base,
             "xiaomi://127.0.0.1:41234?client_public=cpub&client_private=cpriv&device_public=dpub&sign=sig%3D%3D&vendor=cs2&transport=udp&subtype=hd&audio=0&model=isa.camera.c700&uid=uid-1"
         );
+
+        let listen_only = build_xiaomi_camera_url(
+            41234,
+            "cpub",
+            "cpriv",
+            "dpub",
+            "sig==",
+            "cs2",
+            "hd",
+            "isa.camera.c700",
+            Some("uid-1"),
+            0,
+            None,
+            true,
+        );
+        assert!(listen_only.contains("&audio=1&"));
+        assert!(!listen_only.contains("audio=0"));
 
         let dual_sub = build_xiaomi_camera_url(
             41235,
@@ -304,10 +367,64 @@ mod tests {
             None,
             1,
             Some("mwc11/child:1"),
+            false,
         );
         assert!(dual_sub.contains("&channel=1"));
         assert!(dual_sub.contains("&subdid=mwc11%2Fchild%3A1"));
         assert!(!dual_sub.contains("&uid="));
+    }
+
+    #[test]
+    fn build_go2rtc_http_stream_url_sets_audio_0_only_when_muted() {
+        let mp4_muted = build_go2rtc_http_stream_url(
+            "127.0.0.1:43123",
+            "/api/stream.mp4",
+            "cam_raw_1",
+            false,
+        )
+        .expect("muted mp4 url");
+        assert_eq!(
+            mp4_muted,
+            "http://127.0.0.1:43123/api/stream.mp4?src=cam_raw_1&mp4&audio=0"
+        );
+
+        let mp4_listen = build_go2rtc_http_stream_url(
+            "127.0.0.1:43123",
+            "/api/stream.mp4",
+            "cam_raw_1",
+            true,
+        )
+        .expect("listen-only mp4 url");
+        assert_eq!(
+            mp4_listen,
+            "http://127.0.0.1:43123/api/stream.mp4?src=cam_raw_1&mp4=all"
+        );
+
+        let hls_muted = build_go2rtc_http_stream_url(
+            "127.0.0.1:43123",
+            "/api/stream.m3u8",
+            "cam_raw_1",
+            false,
+        )
+        .expect("muted hls url");
+        assert_eq!(
+            hls_muted,
+            "http://127.0.0.1:43123/api/stream.m3u8?src=cam_raw_1&audio=0"
+        );
+
+        let hls_listen = build_go2rtc_http_stream_url(
+            "127.0.0.1:43123",
+            "/api/stream.m3u8",
+            "cam_raw_1",
+            true,
+        )
+        .expect("listen-only hls url");
+        assert_eq!(
+            hls_listen,
+            "http://127.0.0.1:43123/api/stream.m3u8?src=cam_raw_1"
+        );
+
+        assert!(build_go2rtc_http_stream_url("127.0.0.1:1984", "/api/stream.mp4", "cam_raw_1", false).is_err());
     }
 
     #[test]

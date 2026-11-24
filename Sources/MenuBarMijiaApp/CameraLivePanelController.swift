@@ -86,9 +86,11 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
     }
     /// Rotation is a mounting preference per camera, so switching cameras keeps each one upright.
     public private(set) var videoRotations: [String: Int] = [:]
-    /// HLS streams can carry an audio track; every other source is video only. The player still
-    /// starts muted, so sound is an explicit opt-in (#29).
+    /// Audio-capable streams (HLS or go2rtc fMP4) always start muted; sound is an explicit
+    /// listen-only opt-in with microphone capture disabled (#445).
     public var isMuted = true
+    /// Detected from the active stream without an extra network call (`nil` while probing).
+    public private(set) var detectedAudioTrack: Bool?
     public var isExpandedSize = true
     /// The window fills the screen's visible frame until the user restores it.
     public private(set) var isMaximized = false
@@ -463,6 +465,7 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
                let playback = activePlayback,
                playback.failure == nil,
                case .liveMP4 = playback.source {
+                playback.player.setMuted(true)
                 tearDownPictureInPicture()
                 warmActivePlayback(
                     playback,
@@ -477,6 +480,7 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
                 }
             }
             isMuted = true
+            detectedAudioTrack = nil
         }
 
         activeDeviceId = device.id
@@ -523,9 +527,11 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
                     identityMatches: warm.identity.matches(currentIdentity)
                 ) {
                     tearDownPictureInPicture()
+                    warm.playback.player.setMuted(isMuted)
                     activePlayback = warm.playback
                     streamSource = warm.playback.source
                     videoPlayer = warm.playback.player
+                    detectedAudioTrack = warm.playback.player.detectedAudioTrack
                     hasLiveVideoFrame = warm.playback.hasFrame
                     isLoadingStream = false
                     errorMessage = nil
@@ -729,6 +735,7 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
         videoPlayer = nil
         tearDownPictureInPicture()
         hasLiveVideoFrame = false
+        detectedAudioTrack = nil
         snapshotImage = nil
         streamSource = nil
         isLoadingStream = false
@@ -873,9 +880,35 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
         isPictureInPictureActive = false
     }
 
+    var currentAudioStatus: CameraLiveAudioStatus {
+        CameraLiveAudioStatus(
+            streamSource: streamSource,
+            detectedAudioTrack: detectedAudioTrack,
+            isMuted: isMuted
+        )
+    }
+
+    func updateActiveStreamAudioAvailable(_ available: Bool?) {
+        detectedAudioTrack = available
+    }
+
     public func toggleMute() {
         claimDoorbellWindowForUser(claimsPlacement: false)
-        isMuted.toggle()
+        let nextMuted = !isMuted
+        isMuted = nextMuted
+        videoPlayer?.setMuted(nextMuted)
+        if !nextMuted, let source = streamSource, Self.isMutedPreviewSource(source) {
+            reloadStream(preservingMute: true)
+        }
+    }
+
+    private static func isMutedPreviewSource(_ source: CameraStreamSource) -> Bool {
+        switch source {
+        case .liveMP4(let url, _, _), .hls(let url):
+            return XiaomiCameraBridge.isMutedPreviewURL(url)
+        default:
+            return false
+        }
     }
 
     public func togglePinnedOnTop() {
@@ -891,8 +924,8 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
     public func showVideoOnlyNotice() {
         claimDoorbellWindowForUser(claimsPlacement: false)
         videoOnlyNotice = L10n.tr(
-            "此画面流仅传输视频，没有音轨；自定义 HLS 流可开启声音",
-            "This stream is video only; a custom HLS stream can carry sound"
+            "此画面流仅传输视频，没有音轨（MJPEG、抓拍及无音轨流仅支持画面）",
+            "This stream is video only and has no audio track (MJPEG, snapshots, and video-only streams have no sound)"
         )
         videoOnlyNoticeTask?.cancel()
         videoOnlyNoticeTask = Task { @MainActor [weak self] in
@@ -986,7 +1019,10 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
         reloadStream()
     }
 
-    public func reloadStream() {
+    public func reloadStream(preservingMute: Bool = false) {
+        if !preservingMute {
+            isMuted = true
+        }
         stopStreamTasks()
         errorMessage = nil
 
@@ -1004,6 +1040,7 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
         let lens = selectedLens(for: device)
         activeLensID = lens?.id ?? "main"
         let channel = lens?.channel ?? 0
+        let audioEnabled = !isMuted
         let priorResolveTask = cancelledResolveTask
         cancelledResolveTask = nil
         resolveTask = Task { @MainActor [weak self] in
@@ -1014,7 +1051,7 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
             await self.pendingStopTasks[deviceId]?.value
             guard !Task.isCancelled else { return }
             do {
-                let resolved = try await store.resolveCameraStream(for: deviceId, channel: channel)
+                let resolved = try await store.resolveCameraStream(for: deviceId, channel: channel, audioEnabled: audioEnabled)
                 guard !Task.isCancelled else { return }
                 self.streamSource = resolved
                 self.isLoadingStream = false
@@ -1074,7 +1111,7 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
     /// Plays the camera's own bitstream through VideoToolbox. The playback object owns the
     /// reconnect loop so it can stay warm while another camera is on screen.
     private func startLiveVideo(source: CameraStreamSource, deviceID: String, lensID: String) {
-        guard let playback = CameraLivePlayback(deviceID: deviceID, lensID: lensID, source: source) else {
+        guard let playback = CameraLivePlayback(deviceID: deviceID, lensID: lensID, source: source, isMuted: isMuted) else {
             return
         }
         snapshotLoopTask?.cancel()
@@ -1083,6 +1120,7 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
         videoPlayer = nil
         tearDownPictureInPicture()
         hasLiveVideoFrame = false
+        detectedAudioTrack = nil
         snapshotImage = nil
         activePlayback = playback
         videoPlayer = playback.player
@@ -1091,6 +1129,11 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
         playback.onFirstFrame = { [weak self, weak playback] in
             guard let self, let playback, self.activePlayback === playback else { return }
             self.hasLiveVideoFrame = true
+        }
+
+        playback.onAudioAvailabilityChanged = { [weak self, weak playback] available in
+            guard let self, let playback, self.activePlayback === playback else { return }
+            self.detectedAudioTrack = available
         }
 
         playback.onFallback = { [weak self, weak playback] url in
@@ -1221,9 +1264,16 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
         case nil: streamMode = "none"
         }
         let audioSupport: String
-        if case .hls = streamSource {
-            audioSupport = isMuted ? "hls-muted" : "hls-unmuted"
-        } else {
+        switch currentAudioStatus {
+        case .audio(let muted):
+            if case .liveMP4 = streamSource {
+                audioSupport = muted ? "live-mp4-muted" : "live-mp4-unmuted"
+            } else {
+                audioSupport = muted ? "hls-muted" : "hls-unmuted"
+            }
+        case .hidden:
+            audioSupport = streamSource == nil ? "none" : "probing"
+        case .videoOnly:
             audioSupport = "video-only"
         }
         let rawError = errorMessage ?? "none"
@@ -1499,6 +1549,7 @@ private final class MJPEGStreamDelegate: NSObject, URLSessionDataDelegate, @unch
 struct CameraHLSPlayerView: NSViewRepresentable {
     let url: URL
     let isMuted: Bool
+    var onAudioAvailabilityChanged: (@MainActor (Bool?) -> Void)? = nil
 
     func makeCoordinator() -> Coordinator {
         Coordinator()
@@ -1509,10 +1560,12 @@ struct CameraHLSPlayerView: NSViewRepresentable {
         view.controlsStyle = .inline
         view.allowsPictureInPicturePlayback = true
         view.videoGravity = .resizeAspect
-        let player = AVPlayer(url: url)
+        let item = AVPlayerItem(url: url)
+        let player = AVPlayer(playerItem: item)
         player.isMuted = isMuted
         view.player = player
         context.coordinator.currentURL = url
+        context.coordinator.observe(item: item, onAudioAvailabilityChanged: onAudioAvailabilityChanged)
         player.play()
         return view
     }
@@ -1521,20 +1574,54 @@ struct CameraHLSPlayerView: NSViewRepresentable {
         nsView.player?.isMuted = isMuted
         guard context.coordinator.currentURL != url else { return }
         context.coordinator.currentURL = url
-        let player = AVPlayer(url: url)
+        let item = AVPlayerItem(url: url)
+        let player = AVPlayer(playerItem: item)
         player.isMuted = isMuted
+        context.coordinator.observe(item: item, onAudioAvailabilityChanged: onAudioAvailabilityChanged)
         nsView.player?.pause()
         nsView.player = player
         player.play()
     }
 
     static func dismantleNSView(_ nsView: AVPlayerView, coordinator: Coordinator) {
+        coordinator.clearObservations()
         nsView.player?.pause()
         nsView.player = nil
     }
 
+    @MainActor
     final class Coordinator {
         var currentURL: URL?
+        private var statusObservation: NSKeyValueObservation?
+        private var tracksObservation: NSKeyValueObservation?
+
+        func observe(item: AVPlayerItem, onAudioAvailabilityChanged: (@MainActor (Bool?) -> Void)?) {
+            clearObservations()
+            let report: @MainActor (AVPlayerItem?) -> Void = { item in
+                guard let item else { return }
+                let hasAudio = item.tracks.contains { $0.assetTrack?.mediaType == .audio }
+                if hasAudio {
+                    onAudioAvailabilityChanged?(true)
+                } else if item.status == .readyToPlay || item.status == .failed || !item.tracks.isEmpty {
+                    onAudioAvailabilityChanged?(false)
+                } else {
+                    onAudioAvailabilityChanged?(nil)
+                }
+            }
+            tracksObservation = item.observe(\.tracks, options: [.initial, .new]) { [weak item] _, _ in
+                Task { @MainActor in report(item) }
+            }
+            statusObservation = item.observe(\.status, options: [.initial, .new]) { [weak item] _, _ in
+                Task { @MainActor in report(item) }
+            }
+        }
+
+        func clearObservations() {
+            statusObservation?.invalidate()
+            statusObservation = nil
+            tracksObservation?.invalidate()
+            tracksObservation = nil
+        }
     }
 }
 
@@ -1556,18 +1643,37 @@ enum CameraVideoRotation {
     }
 }
 
-/// What the live HUD can say about sound for the stream on screen. Only an HLS stream can carry
-/// an audio track; P2P, MJPEG, snapshot and demo sources are video only.
+/// What the live HUD can say about sound for the stream on screen (#445).
+/// HLS and go2rtc/fMP4 streams expose audio only when an audio track is detected (or when
+/// a muted preview explicitly suppressed audio via `audio=0` pending user opt-in).
+/// MJPEG, snapshot, demo, and video-only streams stay `.videoOnly`.
 enum CameraLiveAudioStatus: Equatable {
     case hidden
     case videoOnly
     case audio(isMuted: Bool)
 
-    init(streamSource: CameraStreamSource?, isMuted: Bool) {
+    init(streamSource: CameraStreamSource?, detectedAudioTrack: Bool? = nil, isMuted: Bool) {
         switch streamSource {
-        case .hls?: self = .audio(isMuted: isMuted)
-        case nil: self = .hidden
-        default: self = .videoOnly
+        case nil:
+            self = .hidden
+        case .hls(let url)?:
+            if XiaomiCameraBridge.isMutedPreviewURL(url) || detectedAudioTrack == true {
+                self = .audio(isMuted: isMuted)
+            } else if detectedAudioTrack == false {
+                self = .videoOnly
+            } else {
+                self = .hidden
+            }
+        case .liveMP4(let url, _, _)?:
+            if XiaomiCameraBridge.isMutedPreviewURL(url) || detectedAudioTrack == true {
+                self = .audio(isMuted: isMuted)
+            } else if detectedAudioTrack == false {
+                self = .videoOnly
+            } else {
+                self = .hidden
+            }
+        case .mjpeg?, .snapshot?, .demo?:
+            self = .videoOnly
         }
     }
 }
@@ -1612,6 +1718,7 @@ struct CameraLiveAudioStatusView: View {
                 help: muteLabel,
                 action: onToggleMute
             )
+            .accessibilityHint(Text(L10n.tr("仅收听摄像机声音，不开启麦克风", "Listen-only camera audio; microphone remains off")))
         }
     }
 
@@ -1861,7 +1968,7 @@ struct CameraLivePanelView: View {
     private var toolbarTrailing: some View {
         HStack(spacing: 4) {
             CameraLiveAudioStatusView(
-                status: CameraLiveAudioStatus(streamSource: controller.streamSource, isMuted: controller.isMuted),
+                status: controller.currentAudioStatus,
                 isCompact: !controller.isExpandedSize,
                 onExplainVideoOnly: { controller.showVideoOnlyNotice() }
             ) {
@@ -2127,7 +2234,9 @@ struct CameraLivePanelView: View {
             switch source {
             case .hls(let url):
                 rotatedMedia {
-                    CameraHLSPlayerView(url: url, isMuted: controller.isMuted)
+                    CameraHLSPlayerView(url: url, isMuted: controller.isMuted) { available in
+                        controller.updateActiveStreamAudioAvailable(available)
+                    }
                 }
             case .liveMP4:
                 ZStack {
