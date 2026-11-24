@@ -348,6 +348,7 @@ run_script_self_tests() {
         run_clean_env "$PYTHON_BIN" scripts/check_device_rules.py --self-test
         run_clean_env bash scripts/test_ci_relevant_paths.sh
         run_clean_env bash scripts/test_check_release.sh
+        run_clean_env bash scripts/test_mirror_release.sh
         run_clean_env bash scripts/test_nas_setup.sh
         run_clean_env "$PYTHON_BIN" scripts/test_pr_ready.py
     fi

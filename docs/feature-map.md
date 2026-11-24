@@ -36,4 +36,4 @@
 
 - **主门禁与依赖复用**：`scripts/check.sh`、`scripts/shared_windows_deps.sh`、`scripts/ci_relevant_paths.sh`、`scripts/check_doc_links.py`、`scripts/check_capability_manifest.py`、`scripts/check_device_rules.py`、`scripts/check_workflows.py`
 - **PR 与 Issue 协同**：`scripts/pr-ready.sh`、`scripts/ci-failures.sh`、`scripts/ci_errors.sh`
-- **打包、更新与测试**：`scripts/build_app.sh`、`scripts/release.sh`、`scripts/check_release.sh`、`scripts/mijia`、`scripts/linux-check/run.sh`
+- **打包、更新与测试**：`scripts/build_app.sh`、`scripts/release.sh`、`scripts/check_release.sh`、`scripts/mirror_release.sh`、`scripts/mijia`、`scripts/linux-check/run.sh`

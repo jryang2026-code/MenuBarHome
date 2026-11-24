@@ -32,6 +32,12 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       RELEASE_TAG: ${{ inputs.tag }}
+      # 大陆镜像（research #29）是尽力而为：没有配 token 就跳过，配了就同步，失败只发警告。
+      # 令牌只作为 job 环境变量出现，任何步骤都不会打印它；GitHub 也会自动打码。
+      GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+      GITCODE_TOKEN: ${{ secrets.GITCODE_TOKEN }}
+      GITEE_MIRROR_REPO: ${{ vars.GITEE_MIRROR_REPO || 'jryang2026-code/MenuBarHome' }}
+      GITCODE_MIRROR_REPO: ${{ vars.GITCODE_MIRROR_REPO || 'jryang2026-code/MenuBarHome' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -169,6 +175,22 @@ jobs:
           fi
           echo "✅ 已发布 ${RELEASE_TAG}"
 
+      # 镜像放在发布之后：草稿阶段的附件还不是最终产物（更新清单与签名由维护者离线补），
+      # 先把它们搬到大陆镜像会在 GitHub 还没公开时就对外发一个可能被撤下的版本。
+      - name: Mirror the published assets to Gitee (best effort)
+        if: env.GITEE_TOKEN != ''
+        continue-on-error: true
+        env:
+          RELEASE_VERSION: ${{ steps.check.outputs.version }}
+        run: bash scripts/mirror_release.sh gitee "${RELEASE_TAG}" "${RELEASE_VERSION}" dist
+
+      - name: Mirror the published assets to GitCode (best effort)
+        if: env.GITCODE_TOKEN != ''
+        continue-on-error: true
+        env:
+          RELEASE_VERSION: ${{ steps.check.outputs.version }}
+        run: bash scripts/mirror_release.sh gitcode "${RELEASE_TAG}" "${RELEASE_VERSION}" dist
+
       - name: Summarize
         env:
           RELEASE_VERSION: ${{ steps.check.outputs.version }}
@@ -180,4 +202,14 @@ jobs:
             echo "- 附件：DMG/EXE/MSI + 各自 .sha256 + 两端 SPDX SBOM + 更新清单与清单签名（共 10 个）"
             echo "- Ed25519：使用 UpdateChecker.swift 内置公钥验证清单签名，check-fields 再把清单和三个安装包对上"
             echo "- 私钥：未进入 GitHub；CI 全程只做验证"
+            if [ -n "${GITEE_TOKEN}" ]; then
+              echo "- Gitee 大陆镜像：已尝试同步（失败只发警告，不影响本发布）"
+            else
+              echo "- Gitee 大陆镜像：未配置 GITEE_TOKEN，本次跳过"
+            fi
+            if [ -n "${GITCODE_TOKEN}" ]; then
+              echo "- GitCode 大陆镜像：已尝试同步（失败只发警告，不影响本发布）"
+            else
+              echo "- GitCode 大陆镜像：未配置 GITCODE_TOKEN，本次跳过"
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
