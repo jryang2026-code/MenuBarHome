@@ -3,6 +3,7 @@
 mod home_assistant;
 mod camera;
 mod camera_events;
+mod camera_pip;
 mod companion;
 mod desktop_shell;
 mod job_object;
@@ -20,6 +21,7 @@ mod window;
 mod update_manifest;
 use camera::*;
 use camera_events::*;
+use camera_pip::*;
 use companion::*;
 use credentials::*;
 use desktop_shell::*;
@@ -320,7 +322,13 @@ fn main() {
             camera_events_record,
             camera_events_attach_snapshot,
             camera_events_read_snapshot,
-            camera_events_clear
+            camera_events_clear,
+            open_camera_pip_window,
+            close_camera_pip_window,
+            start_camera_pip_drag,
+            sync_camera_pip_state,
+            get_camera_pip_state,
+            camera_pip_action
         ])
         .setup(move |app| {
             sweep_stale_update_installers();
@@ -335,6 +343,7 @@ fn main() {
             }
             let _ = app.global_shortcut().register(default_shortcut);
             load_panel_placement();
+            load_camera_pip_bounds();
             if let Some(main_win) = app.get_webview_window("main") {
                 apply_tool_window_style(&main_win);
                 set_window_cloaked(&main_win, true);
@@ -389,6 +398,7 @@ fn main() {
                         }
                     }
                     "quit" => {
+                        close_camera_pip_on_exit(app);
                         shutdown_system_event_watchers();
                         shutdown_companion_runtime();
                         shutdown_camera_daemons();
@@ -427,8 +437,9 @@ fn main() {
         })
         .build(tauri::generate_context!())
         .expect("error while building MenuBarHome Windows application")
-        .run(|_app, event| {
+        .run(|app, event| {
             if matches!(event, tauri::RunEvent::Exit) {
+                close_camera_pip_on_exit(app);
                 shutdown_system_event_watchers();
                 shutdown_companion_runtime();
                 shutdown_camera_daemons();

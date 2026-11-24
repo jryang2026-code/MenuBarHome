@@ -16,7 +16,14 @@ import {
   type MiSession,
   type MiotSpecResolver,
 } from "../core/miCloudClient.js";
-import type { CameraLens, SmartDevice } from "../core/models.js";
+import type { CameraLens, DeviceCommand, SmartDevice } from "../core/models.js";
+import { localizeNightShot } from "../core/models.js";
+import {
+  isPortraitDoorbellCamera,
+  type CameraPipAction,
+  type CameraPipMediaKind,
+  type CameraPipSnapshot,
+} from "../core/cameraPip.js";
 import { getCachedXiaomiTopology, miAccountId } from "../core/pollingPolicy.js";
 import type { MenuMijiaWindowsApp } from "./app.js";
 import { SF_ICONS } from "./appConstants.js";
@@ -128,6 +135,8 @@ export interface CameraLiveHost {
   saveSettings(): void;
   shouldKeepPopoverPinned(): boolean;
   onCameraFrameCaptured?(cameraId: string | null, jpegBase64: string): void;
+  toggleDevice?(dev: SmartDevice): void;
+  executeSingleCommand?(dev: SmartDevice, cmd: DeviceCommand, successText: string): Promise<void>;
   readonly pipeline?: {
     readonly cameraStandby: {
       resumeFromStandby(root: HTMLElement): void;
@@ -254,6 +263,11 @@ export class CameraLiveController {
   public cameraLocalIPs: Record<string, string> = {};
   /** The live picture arrives as MJPEG frames in a persistent `<img>`, which never restarts on re-render. */
   public liveCameraMode: "mjpeg" | null = null;
+  public liveCameraMjpegSrc: string | null = null;
+  private detachedPipActive = false;
+  public get isDetachedPipActive(): boolean {
+    return this.detachedPipActive;
+  }
   /** Only a raw `<video>` element can carry audio; it starts muted like the macOS HLS player (#29). */
   public liveCameraMuted = true;
   public liveCameraQualityApplies = true;
@@ -393,7 +407,11 @@ export class CameraLiveController {
 
   public openCameraLiveView(
     deviceId: string,
-    options?: { readonly alreadyCountedLockBlock?: boolean },
+    options?: {
+      readonly alreadyCountedLockBlock?: boolean;
+      readonly forceTopRight?: boolean;
+      readonly stealFocus?: boolean;
+    },
   ): void {
     if (!this.categoryEnabled) {
       this.host.replyBanner = {
@@ -439,7 +457,12 @@ export class CameraLiveController {
       this.liveCameraHidden = false;
       this.clearCameraKeepAlive();
       this.syncModalEscapeListener();
-      invokeTauriVoid("set_pin_popover", { pin: true });
+      if (this.detachedPipActive) {
+        this.requestDetachedPipWindow(dev, options);
+        this.syncCameraPipState();
+      } else {
+        invokeTauriVoid("set_pin_popover", { pin: true });
+      }
       if (options?.alreadyCountedLockBlock) {
         this.liveCameraLoading = false;
         this.liveCameraError = t("屏幕已锁定，已拦截设备控制指令");
@@ -477,7 +500,10 @@ export class CameraLiveController {
       ? this.normalizeWindowsCameraStreamUrl(this.cameraStreamURLs[dev.id]!)
       : this.resolveHaCameraStreamUrl(dev);
     this.liveCameraLoading = false;
-    invokeTauriVoid("set_pin_popover", { pin: true });
+    if (!this.detachedPipActive) {
+      invokeTauriVoid("set_pin_popover", { pin: true });
+    }
+    this.requestDetachedPipWindow(dev, options);
     if (options?.alreadyCountedLockBlock) {
       this.liveCameraError = t("屏幕已锁定，已拦截设备控制指令");
     } else if (dev.kind.isOn && this.liveCameraStreamURL && window.__TAURI_INTERNALS__?.invoke) {
@@ -593,6 +619,10 @@ export class CameraLiveController {
     this.liveCameraNeedsManualIp = false;
     this.liveCameraLocalIpError = null;
     this.liveCameraDraftIp = null;
+    if (this.detachedPipActive) {
+      this.detachedPipActive = false;
+      invokeTauriVoid("close_camera_pip_window");
+    }
     if (closingId && closingIsXiaomi && closingDev) {
       const retained = this.cloudStreamSessions.get(closingId);
       if (this.categoryEnabled) {
@@ -840,6 +870,7 @@ export class CameraLiveController {
     this.liveCameraRawMediaEl?.remove();
     this.liveCameraRawMediaEl = null;
     this.liveCameraMode = null;
+    this.liveCameraMjpegSrc = null;
     if (this.activeLiveCameraId) {
       const stopPayload = this.buildStopBridgePayload(this.activeLiveCameraId);
       this.cameraBridgeBindings.delete(this.activeLiveCameraId);
@@ -925,6 +956,14 @@ export class CameraLiveController {
     this.liveCameraAbort?.abort();
     this.liveCameraImgEl?.remove();
     this.liveCameraImgEl = null;
+    this.liveCameraMjpegSrc = name;
+    if (this.detachedPipActive) {
+      this.liveCameraMode = "mjpeg";
+      this.liveCameraLoading = false;
+      this.liveCameraError = null;
+      this.syncCameraPipState();
+      return;
+    }
     this.liveCameraMode = null;
     this.liveCameraLoading = true;
     const img = document.createElement("img");
@@ -1220,11 +1259,11 @@ export class CameraLiveController {
     savePersistedRecord(CameraLiveController.CAMERA_CHANNELS_STORAGE_KEY, this.cameraChannels);
   }
 
-  public commitCameraLocalIp(): void {
+  public commitCameraLocalIp(overrideRaw?: string): void {
     const id = this.activeLiveCameraId;
     if (!id) return;
     const input = this.host.root.querySelector<HTMLInputElement>("#camera-local-ip-input");
-    const raw = input?.value ?? "";
+    const raw = overrideRaw ?? input?.value ?? "";
     this.liveCameraDraftIp = raw;
     const parsed = parsePrivateLanIpv4(raw);
     if (!parsed) {
@@ -1831,6 +1870,278 @@ export class CameraLiveController {
     button.setAttribute("aria-label", label);
     button.setAttribute("aria-pressed", String(this.liveCameraMuted));
     button.classList.toggle("is-active", !this.liveCameraMuted);
+  }
+
+  private requestDetachedPipWindow(
+    dev: SmartDevice,
+    options?: { readonly forceTopRight?: boolean; readonly stealFocus?: boolean },
+  ): void {
+    const invoke = window.__TAURI_INTERNALS__?.invoke;
+    if (!invoke) return;
+    const cameraId = dev.id;
+    const token = this.liveCameraToken;
+    const rotation = this.cameraRotation(cameraId);
+    const isPortrait = isPortraitDoorbellCamera(dev, rotation);
+    void invoke<boolean>("open_camera_pip_window", {
+      cameraId,
+      title: dev.name,
+      isPortrait,
+      forceTopRight: Boolean(options?.forceTopRight),
+      stealFocus: options?.stealFocus ?? true,
+    })
+      .then((opened) => {
+        if (opened !== true) return;
+        if (this.activeLiveCameraId !== cameraId || this.liveCameraToken !== token) return;
+        const wasDetached = this.detachedPipActive;
+        this.detachedPipActive = true;
+        if (!wasDetached) {
+          // Hand MJPEG pumping over to the independent PiP window without double-polling.
+          if (this.liveCameraMjpegSrc) {
+            this.liveCameraAbort?.abort();
+            this.liveCameraAbort = null;
+            this.liveCameraImgEl?.remove();
+            this.liveCameraImgEl = null;
+            this.liveCameraMode = "mjpeg";
+            this.liveCameraLoading = false;
+          }
+          invokeTauriVoid("set_pin_popover", { pin: this.host.shouldKeepPopoverPinned() });
+          this.host.render();
+        }
+        this.syncCameraPipState();
+      })
+      .catch(() => {
+        // Keep in-panel fallback if the runtime does not expose the PiP window command.
+      });
+  }
+
+  public buildCameraPipSnapshot(): CameraPipSnapshot | null {
+    const dev = this.host.devices.find((d) => d.id === this.activeLiveCameraId);
+    if (!dev || dev.kind.kind !== "camera") return null;
+    const k = dev.kind;
+    const customURL = this.cameraStreamURLs[dev.id] ?? "";
+    const savedManualIp = this.cameraLocalIPs[dev.id] ?? "";
+    const rotation = this.cameraRotation(dev.id);
+    const isPortrait = isPortraitDoorbellCamera(dev, rotation);
+    let mediaKind: CameraPipMediaKind;
+    if (!k.isOn) {
+      mediaKind = "sleeping";
+    } else if (this.liveCameraMode || this.liveCameraMjpegSrc) {
+      mediaKind = "frames";
+    } else if (this.liveCameraLoading) {
+      mediaKind = "loading";
+    } else if (this.liveCameraError) {
+      mediaKind = "error";
+    } else if (this.liveCameraStreamURL && this.isOwnedGo2rtcApiUrl(this.liveCameraStreamURL)) {
+      mediaKind = "loading";
+    } else if (this.liveCameraStreamURL && /^https?:/i.test(this.liveCameraStreamURL)) {
+      mediaKind = /\.(jpg|jpeg|png)|snapshot|camera_proxy|frame\.jpeg|mjpeg/i.test(
+        this.liveCameraStreamURL,
+      )
+        ? "image"
+        : "video";
+    } else if (this.host.settings.connectionMode === "demo") {
+      mediaKind = "demo";
+    } else {
+      mediaKind = "error";
+    }
+    const playableCameras = this.host.devices
+      .filter((item) => item.kind.kind === "camera" && (item.id === dev.id || !CameraHubCatalog.isHub(item.model)))
+      .map((cam) => ({
+        id: cam.id,
+        name: cam.name,
+        roomName: cam.roomName,
+        isActiveOnline: cam.isOnline && cam.kind.kind === "camera" && cam.kind.isOn,
+      }));
+    const hasDualLenses =
+      this.host.settings.connectionMode === "xiaomiCloud" && !customURL && (k.lenses?.length ?? 0) > 1;
+    const showManualIpFallback =
+      this.host.settings.connectionMode === "xiaomiCloud" &&
+      !customURL &&
+      (this.liveCameraNeedsManualIp || Boolean(savedManualIp) || Boolean(this.liveCameraLocalIpError));
+    return {
+      cameraId: dev.id,
+      name: dev.name,
+      roomName: dev.roomName,
+      isPortrait,
+      mediaKind,
+      mjpegSrc: this.liveCameraMjpegSrc,
+      streamURL: this.liveCameraStreamURL,
+      isOn: k.isOn,
+      powerWritable: k.powerWritable !== false,
+      isNight: k.nightShot?.toLowerCase() === "on",
+      nightShot: k.nightShot,
+      availableNightShots: k.availableNightShots,
+      motionDetectionEntityId: k.motionDetectionEntityId,
+      isMotionDetectionOn: Boolean(k.isMotionDetectionOn),
+      rotation,
+      muted: this.liveCameraMuted,
+      error: this.liveCameraError,
+      showingURLInput: this.liveCameraShowingURLInput,
+      customURL,
+      showManualIpFallback,
+      savedManualIp,
+      draftManualIp: this.liveCameraDraftIp ?? savedManualIp,
+      manualIpError: this.liveCameraLocalIpError,
+      showQualityBar:
+        this.host.settings.connectionMode === "xiaomiCloud" &&
+        !customURL &&
+        this.liveCameraQualityApplies &&
+        !this.liveCameraLoading,
+      quality: this.cameraStreamQualities[dev.id] ?? DEFAULT_CAMERA_STREAM_QUALITY,
+      lenses: hasDualLenses ? (k.lenses ?? []) : [],
+      activeLensChannel: this.selectedCameraChannel(dev),
+      playableCameras,
+    };
+  }
+
+  public syncCameraPipState(): void {
+    if (!this.detachedPipActive) return;
+    const snap = this.buildCameraPipSnapshot();
+    if (!snap) return;
+    invokeTauriVoid("sync_camera_pip_state", { payloadJson: JSON.stringify(snap) });
+  }
+
+  public bindPipWindowEvents(ownerWin: Window): () => void {
+    const onClosed = () => {
+      if (this.activeLiveCameraId !== null || this.detachedPipActive) {
+        this.detachedPipActive = false;
+        this.closeCameraLiveView();
+      }
+    };
+    const onAction = (event: Event) => {
+      const raw = (event as CustomEvent<string>).detail;
+      if (typeof raw !== "string") return;
+      try {
+        const action = JSON.parse(raw) as CameraPipAction;
+        if (action && typeof action.type === "string") {
+          this.handlePipAction(action);
+        }
+      } catch {
+        // Ignore malformed action payloads.
+      }
+    };
+    ownerWin.addEventListener("menumijia:camera-pip-closed", onClosed);
+    ownerWin.addEventListener("menumijia:camera-pip-action", onAction);
+    return () => {
+      ownerWin.removeEventListener("menumijia:camera-pip-closed", onClosed);
+      ownerWin.removeEventListener("menumijia:camera-pip-action", onAction);
+    };
+  }
+
+  public handlePipAction(action: CameraPipAction): void {
+    switch (action.type) {
+      case "close":
+        this.closeCameraLiveView();
+        return;
+      case "reload":
+        this.reconnectCameraLiveView();
+        this.syncCameraPipState();
+        return;
+      case "rotate":
+        this.rotateActiveCamera();
+        this.syncCameraPipState();
+        return;
+      case "toggleMute":
+        this.liveCameraMuted = !this.liveCameraMuted;
+        this.syncCameraPipState();
+        return;
+      case "switchCamera":
+        if (action.deviceId && action.deviceId !== this.activeLiveCameraId) {
+          this.openCameraLiveView(action.deviceId);
+        }
+        return;
+      case "setLens": {
+        const dev = this.host.devices.find((d) => d.id === action.deviceId);
+        if (!dev || dev.kind.kind !== "camera") return;
+        if (action.channel !== this.selectedCameraChannel(dev)) {
+          this.setCameraLensChannel(action.deviceId, action.channel);
+          this.reconnectCameraLiveView();
+          this.syncCameraPipState();
+        }
+        return;
+      }
+      case "setQuality": {
+        const dev = this.host.devices.find((d) => d.id === action.deviceId);
+        if (!dev || dev.kind.kind !== "camera") return;
+        const q = normalizeCameraStreamQuality(action.quality);
+        if (q !== (this.cameraStreamQualities[action.deviceId] ?? DEFAULT_CAMERA_STREAM_QUALITY)) {
+          this.setCameraStreamQuality(action.deviceId, q);
+          this.reconnectCameraLiveView();
+          this.syncCameraPipState();
+        }
+        return;
+      }
+      case "togglePower": {
+        const dev = this.host.devices.find((d) => d.id === action.deviceId);
+        if (dev) this.host.toggleDevice?.(dev);
+        return;
+      }
+      case "toggleMotion": {
+        const dev = this.host.devices.find((d) => d.id === action.deviceId);
+        if (!dev || dev.kind.kind !== "camera" || !dev.kind.motionDetectionEntityId) return;
+        const nextMotion = !dev.kind.isMotionDetectionOn;
+        void this.host.executeSingleCommand?.(
+          dev,
+          { kind: "setSwitch", entityId: dev.kind.motionDetectionEntityId, isOn: nextMotion },
+          t("已{action}{name}移动侦测", { action: nextMotion ? t("开启") : t("关闭"), name: dev.name }),
+        );
+        return;
+      }
+      case "setNightShot": {
+        const dev = this.host.devices.find((d) => d.id === action.deviceId);
+        if (!dev || dev.kind.kind !== "camera" || !action.mode) return;
+        void this.host.executeSingleCommand?.(
+          dev,
+          { kind: "setSelectOption", entityId: dev.kind.entityId, option: action.mode },
+          t("已将{name}设为{mode}", { name: dev.name, mode: localizeNightShot(action.mode) }),
+        );
+        return;
+      }
+      case "toggleUrlInput":
+        this.liveCameraShowingURLInput = !this.liveCameraShowingURLInput;
+        this.syncCameraPipState();
+        return;
+      case "saveCustomUrl": {
+        const id = this.activeLiveCameraId;
+        if (!id) return;
+        const val = action.url.trim();
+        if (val) this.cameraStreamURLs[id] = val;
+        else delete this.cameraStreamURLs[id];
+        this.host.settings.cameraStreamURLs = { ...this.cameraStreamURLs };
+        this.host.saveSettings();
+        this.liveCameraShowingURLInput = false;
+        this.reconnectCameraLiveView();
+        this.syncCameraPipState();
+        return;
+      }
+      case "saveManualIp":
+        this.liveCameraDraftIp = action.ip;
+        this.commitCameraLocalIp(action.ip);
+        this.syncCameraPipState();
+        return;
+      case "clearManualIp":
+        this.clearCameraLocalIp();
+        this.syncCameraPipState();
+        return;
+      case "copyDiag": {
+        const dev = this.host.devices.find((d) => d.id === this.activeLiveCameraId);
+        if (!dev || dev.kind.kind !== "camera") return;
+        const report = [
+          "MenuBarHome Camera Diagnostics (Windows PiP)",
+          `model: ${dev.model}`,
+          `online: ${dev.isOnline}`,
+          `isOn: ${dev.kind.isOn}`,
+          `connectionMode: ${this.host.settings.connectionMode}`,
+        ].join("\n");
+        void navigator.clipboard?.writeText(report).catch(() => {});
+        return;
+      }
+      case "frameCaptured":
+        if (action.cameraId && action.jpegBase64) {
+          this.host.onCameraFrameCaptured?.(action.cameraId, action.jpegBase64);
+        }
+        return;
+    }
   }
 }
 

@@ -296,7 +296,11 @@ export function handlePanelKey(host: MenuMijiaWindowsApp, event: KeyboardEvent):
       host.render();
       return true;
     }
-    if (host.cameraLive.activeLiveCameraId !== null && !host.cameraLive.liveCameraHidden) {
+    if (
+      host.cameraLive.activeLiveCameraId !== null &&
+      !host.cameraLive.liveCameraHidden &&
+      !host.cameraLive.isDetachedPipActive
+    ) {
       event.preventDefault();
       host.cameraLive.hideCameraLiveView();
       return true;

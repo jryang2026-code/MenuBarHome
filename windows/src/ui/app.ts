@@ -99,6 +99,7 @@ import { createTransport, invokeTauriVoid } from "./transport.js";
 import { evaluateLegacyOnboardingMigration, loadSettings } from "./settings.js";
 import { appDiagnosticsLog } from "../core/diagnosticsAndScanner.js";
 import { CameraLiveController } from "./cameraLive.js";
+import { CameraPipWindowApp } from "./cameraPipWindow.js";
 import { renderDeviceTile as renderDeviceTileView, renderEnvironmentStrip as renderEnvironmentStripView } from "./deviceViews.js";
 import { renderContextMenu, renderHomeMenu, renderOnboardingModal, renderPrompt, renderSettingsModal } from "./menuViews.js";
 import { bindDeckEvents, bindEvents as bindEventsImpl } from "./bindEvents.js";
@@ -742,6 +743,7 @@ export class MenuMijiaWindowsApp {
     // Alt+Tab hides the popover without a button blur; a hold started before it must not finish.
     const onBlurCancelAllOff = () => this.cancelAllOffHold();
     window.addEventListener("blur", onBlurCancelAllOff);
+    this.appDisposers.push(this.cameraLive.bindPipWindowEvents(window));
     const unsubscribeHaLifecycle = subscribeHaScopeLifecycle(() => {
       if (!this.root.isConnected) return;
       this.queueBackgroundRender();
@@ -1926,6 +1928,9 @@ export class MenuMijiaWindowsApp {
     if (this.activeSheet === "settings") {
       restoreActiveSettingsHighlight(this.root);
     }
+    if (this.cameraLive.isDetachedPipActive) {
+      this.cameraLive.syncCameraPipState();
+    }
     syncTimerLoopSchedule(this);
   }
 
@@ -2719,7 +2724,14 @@ if (typeof document !== "undefined") {
   document.addEventListener("DOMContentLoaded", () => {
     const root = document.getElementById("app");
     if (root) {
-      new MenuMijiaWindowsApp(root);
+      const mode = (window as unknown as { __MENUMIJIA_WINDOW_MODE__?: string })
+        .__MENUMIJIA_WINDOW_MODE__;
+      const queryMode = new URLSearchParams(window.location.search).get("window");
+      if (mode === "camera-pip" || queryMode === "camera-pip") {
+        new CameraPipWindowApp(root);
+      } else {
+        new MenuMijiaWindowsApp(root);
+      }
     }
   });
 }

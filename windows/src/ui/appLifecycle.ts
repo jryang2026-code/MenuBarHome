@@ -1428,7 +1428,11 @@ export function bindGlobalKeys(
         host.render();
         return;
       }
-      if (host.cameraLive.activeLiveCameraId !== null && !host.cameraLive.liveCameraHidden) {
+      if (
+        host.cameraLive.activeLiveCameraId !== null &&
+        !host.cameraLive.liveCameraHidden &&
+        !host.cameraLive.isDetachedPipActive
+      ) {
         e.preventDefault();
         host.cameraLive.hideCameraLiveView();
         return;
