@@ -9,6 +9,9 @@
 - Wave 1：12/12 DONE（#471–#484 + main 187b6743）
 - Wave 0：8/8 DONE（#463 #464 #465 #466 #467 #468 #469 + main 1682695f）
 - 已完成不再派活：`#453`、`#461`（Windows Rust miIO 原生层）、`#460`（WidgetKit 签名可行性 spike）、`#462`（调研总纲）
+- 2026-11-25 01:1x Antigravity 返回 401 认证失效（W2A-9b 失败）：可能需重新登录 Antigravity
+- main 14d3ade（#493）CI 红于 AssistantTests:603 + MiAccountDisableTests（计时抖动），重跑转绿；确定化修复已直推 main 0c16f1d4（CI 绿）
+- main ef6a9b7（#490）CI 一度红（runner 编译卡顿），后续 d565cf9 已含该提交且 CI 绿 → main 已恢复
 - Codex 云端审查额度耗尽（#479–#484 均 usage limit）：设备写入/网络 PR 由主控兜底审 diff
 - main 红一次（#467 新增 TV 撤销测试抖动）已由 2caf7730 修绿
 - 需作者拍板：`v1.5.0` 发版、`#12` SignPath 申请启动
@@ -56,19 +59,20 @@
 
 | ID | 关联已有Issue | 模型分派 | 前置依赖 | 通道 | 状态 | PR/SHA | 交接备注 |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| W2A-1 macOS 自动化定时触发 + 持续 N 分钟 | #430 #431 | Codex sol6.2 | Wave 1 | PR | IN_PROGRESS | | AutomationRule/AutomationEngine；对齐 Windows 现有语义 |
-| W2A-2 macOS 自动化事件源守卫 | #432 | Hydrogen High | W2A-1 | PR | TODO | | 移植 Windows 守卫 |
-| W2A-3 P1-1 Context Stack 状态栈无痕还原 | — | Codex sol6.2 | W2A-1 | PR | TODO | | 双端；尊重人工中途接管；后台自动写入高风险 |
-| W2A-4 P1-1 Win 摄像头/麦克风占用 + 全屏探测事件源 | — | Neon Mid | Wave 1 | PR | IN_PROGRESS | | system_events.rs：CapabilityAccessManager、SHQueryUserNotificationState |
-| W2A-5 P1-1 macOS 前台应用事件 + 开会/观影模板 | — | Neon Mid | W2A-3 | PR | TODO | | |
-| W2A-6 P1-2 Win 摄像机事件库 + 静帧墙 | #447 | Neon Mid | Wave 1 | PR | IN_PROGRESS | | |
-| W2A-7 P1-2 摄像机仅收听模式 + 防抢蓝牙 HFP | #445 | Hydrogen High | Wave 1 | PR | IN_PROGRESS | | 静音预览 `&audio=0` |
-| W2A-8 P1-2 PiP 置顶副窗 + 门铃自动弹出 + 钉选开关 | — | Neon Mid | W2A-6 | PR | TODO | | 双端 |
-| W2A-9 P1-3a 首屏 ≤3 层 + 卡片微交互（纯样式） | — | Hydrogen High / Neon Mid | Wave 1 | 快车道main / PR | TODO | | 含 P0-7 遗留：45s 温热卸载 + 200ms 伸缩 |
-| W2A-10 P1-3b L2/L3 原位长按/滑轨安全确认 | — | Neon Mid | W2A-9 | PR | TODO | | 复用 ManualControlPolicy；键盘/VoiceOver 兜底 |
-| W2A-11 P1-4 Win 原生材质 + 系统强调色 + WebView2 瘦身 | — | Neon Mid | Wave 1 | PR | IN_PROGRESS | | 严禁 SetProcessWorkingSetSize(-1,-1)、严禁双岛盲开 Acrylic |
-| W2A-12 Win 用户主动操作绕过 HA 退避 | — | Codex sol6.2 | Wave 1 | PR | TODO | | 来自 #482 备忘；并入 #484 Codex P2：macOS 锁屏/仅显示器休眠时网络拓扑变化仍触发后台重连，宜延迟到恢复活跃 |
-| W2A-13 multiLanguage 官方翻译缓存 | — | Hydrogen High | Wave 1 | PR | TODO | | 来自 W1-9 遗留 |
+| W2A-1 macOS 自动化定时触发 + 持续 N 分钟 | #430 #431 | Codex sol6.2 | Wave 1 | PR | DONE | #486 → main e9c1a3a（CI 抖动证实为 runner 方差；P1 设置页回归已修） | AutomationRule/AutomationEngine；对齐 Windows 现有语义 |
+| W2A-2 macOS 自动化事件源守卫 | #432 | Hydrogen High | W2A-1 | PR | DONE | #501 → main 8df15c7 | 移植 Windows 守卫 |
+| W2A-3 P1-1 Context Stack 状态栈无痕还原 | — | Codex sol6.2 | W2A-1 | PR | DONE | #500 → main e63dc94（第 2 轮 P1 已修；macos-test 一次超时取消重跑转绿；仅电源字段，无设置 UI） | 双端；尊重人工中途接管；后台自动写入高风险 |
+| W2A-3b Context Stack 续作：设置页开关 + 亮度/色温/窗帘字段 + Windows 同构 | — | Codex sol6.2 / Neon Mid | W2A-3 | PR | IN_PROGRESS | | 来自 #500 范围收窄；P2：同一 restoreTrigger 的多条规则按规则顺序而非严格 LIFO 还原（已在 #500 d5b87885 修）；补 #500 未加的回归测试：真实基线还原、失败重试、部分还原、同触发器 LIFO |
+| W2A-4 P1-1 Win 摄像头/麦克风占用 + 全屏探测事件源 | — | Neon Mid | Wave 1 | PR | DONE | #487 已合 | system_events.rs：CapabilityAccessManager、SHQueryUserNotificationState |
+| W2A-5 P1-1 macOS 前台应用事件 + 开会/观影模板 | — | Neon Mid | W2A-3 | PR | IN_PROGRESS | | |
+| W2A-6 P1-2 Win 摄像机事件库 + 静帧墙 | #447 | Neon Mid | Wave 1 | PR | DONE | #488 已合（+1782 新增模块未拆） | |
+| W2A-7 P1-2 摄像机仅收听模式 + 防抢蓝牙 HFP | #445 | Hydrogen High | Wave 1 | PR | DONE | #490 + #497 已合 | 静音预览 `&audio=0` |
+| W2A-8 P1-2 PiP 置顶副窗 + 门铃自动弹出 + 钉选开关 | — | Neon Mid | W2A-6 | PR | DONE | #492 + #493 已合 | 双端 |
+| W2A-9 P1-3a 首屏 ≤3 层 + 卡片微交互（纯样式） | — | Hydrogen High / Neon Mid | Wave 1 | 快车道main / PR | DONE | #491 + #496 已合 | 含 P0-7 遗留：45s 温热卸载 + 200ms 伸缩 |
+| W2A-10 P1-3b L2/L3 原位长按/滑轨安全确认 | — | Codex sol6.2（macOS 先行） | W2A-9 | PR | DONE | #498 → main 04191f5（审过：panelConfirmed 仅手势一次性凭据可达，VoiceOver/键盘仍弹窗） | 复用 ManualControlPolicy；键盘/VoiceOver 兜底 |
+| W2A-11 P1-4 Win 原生材质 + 系统强调色 + WebView2 瘦身 | — | Neon Mid | Wave 1 | PR | DONE | #485 + #489 已合 | 严禁 SetProcessWorkingSetSize(-1,-1)、严禁双岛盲开 Acrylic |
+| W2A-12 Win 用户主动操作绕过 HA 退避 | — | Codex sol6.2 | Wave 1 | PR | DONE | #495 + #494 已合 | 来自 #482 备忘；并入 #484 Codex P2：macOS 锁屏/仅显示器休眠时网络拓扑变化仍触发后台重连，宜延迟到恢复活跃 |
+| W2A-13 multiLanguage 官方翻译缓存 | — | Flash (pi) | Wave 1 | PR | DONE | #499 → main 1234c97 | 来自 W1-9 遗留 |
 
 ## Wave 2B：P1 写入管线、热键与安全底座
 
