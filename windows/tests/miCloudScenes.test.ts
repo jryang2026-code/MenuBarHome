@@ -249,4 +249,20 @@ describe("Mi cloud scenes stay scoped to the selected home", () => {
     assert.equal(await running, false);
     assert.equal(runSceneCalls, 0);
   });
+
+  it("clears an armed Mi scene confirmation when another intent batch starts", async () => {
+    const app = await mountApp();
+    const running = app.applyCommand({ kind: "activateScene", entityId: sceneEntityId("home-a", "11") });
+    await waitFor(() => app.pendingHighRisk !== null, "the scene confirmation to arm");
+
+    const light = app.devices.find((device) => device.id === "dev-a");
+    assert.ok(light);
+    app.applyCommand = async () => true;
+    await app.executeIntents([{ targetId: light.id, operation: { kind: "power", isOn: false } }], "关闭", "测试");
+
+    assert.equal(app.pendingHighRisk, null, "a newer batch preempts the pending scene approval");
+    finishMiSceneConfirmation(app, true);
+    assert.equal(await running, false);
+    assert.equal(runSceneCalls, 0);
+  });
 });
