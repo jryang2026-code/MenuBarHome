@@ -65,6 +65,7 @@ final class AutomationEngine {
     private var runStates: [UUID: AutomationRunState] = [:]
     private var runTasks: [UUID: Task<Void, Never>] = [:]
     private let deduper: AutomationTriggerDeduper
+    private let contextStack: AutomationContextStack
     private let injectedContextProvider: (any MacContextProviding)?
     /// Every time-of-day decision in this engine (trigger windows, calendar lead times) reads this
     /// calendar. It is `Calendar.autoupdatingCurrent` in production, so a time-zone or DST change
@@ -104,6 +105,11 @@ final class AutomationEngine {
     /// using the computer” for late-night rules; launch-time session state seeds the initial value.
     private var isUserPresent: Bool
 
+    private struct ContextCapture {
+        let ruleID: UUID
+        let snapshots: [AutomationContextSnapshot]
+    }
+
     // MARK: Away arbitration state
 
     private var arbitrator = AwayArbitrator()
@@ -142,6 +148,7 @@ final class AutomationEngine {
     ) {
         self.ruleStore = AutomationRuleStore(defaults: defaults)
         self.deduper = AutomationTriggerDeduper(defaults: defaults)
+        self.contextStack = AutomationContextStack(defaults: defaults)
         self.injectedContextProvider = contextProvider
         self.calendar = calendar
         self.environment = environment
@@ -304,6 +311,7 @@ final class AutomationEngine {
         default:
             break
         }
+        await restoreContexts(for: trigger, store: store, at: now)
         let rules = AutomationMatcher.rules(for: trigger, in: ruleStore.load())
         // An empty list must not burn the cooldown; the user may add a rule a moment later.
         guard !rules.isEmpty else { return }
@@ -714,7 +722,11 @@ final class AutomationEngine {
             if let denied = blocked() {
                 reason = denied
             } else {
+                let capture = rule.restoreWhenContextEnds ? self.captureContext(for: rule, store: store) : nil
                 reason = await self.execute(rule, store: store, blocked: blocked)
+                if reason == nil, let capture {
+                    self.commitContext(capture, in: store, at: time)
+                }
             }
             store.recordAutomationRun(rule, at: time, reason: reason)
             self.runStates[rule.id]?.finish(token)
@@ -725,6 +737,82 @@ final class AutomationEngine {
         }
         runTasks[rule.id] = task
         await task.value
+    }
+
+    private func captureContext(for rule: AutomationRule, store: HomeStore) -> ContextCapture? {
+        guard case .devices(let ids, let isOn) = rule.action else { return nil }
+        let snapshots = ids.compactMap { id -> AutomationContextSnapshot? in
+            guard let device = store.devices.first(where: { $0.id == id }),
+                  let baseline = device.automationContextValue() else { return nil }
+            let applied = AutomationContextValue(field: .power, boolValue: isOn)
+            return AutomationContextSnapshot(deviceID: id, baseline: baseline, applied: applied)
+        }
+        guard !snapshots.isEmpty else { return nil }
+        return ContextCapture(ruleID: rule.id, snapshots: snapshots)
+    }
+
+    private func commitContext(_ capture: ContextCapture, in store: HomeStore, at time: Date) {
+        let applied = capture.snapshots.filter { snapshot in
+            store.devices.first(where: { $0.id == snapshot.deviceID })?.automationContextValue() == snapshot.applied
+        }
+        _ = contextStack.push(ruleID: capture.ruleID, snapshots: applied, at: time)
+    }
+
+    private func restoreContexts(for trigger: AutomationTrigger, store: HomeStore, at time: Date) async {
+        let rules = ruleStore.load().filter { $0.isEnabled && $0.restoreWhenContextEnds && $0.restoreTrigger == trigger }
+        guard !rules.isEmpty else {
+            contextStack.pruneExpired(at: time)
+            return
+        }
+        var live = Dictionary(uniqueKeysWithValues: store.devices.compactMap { device in
+            device.automationContextValue().map { (device.id, $0) }
+        })
+        let ruleIDs = Set(rules.map(\.id))
+        let frames = contextStack.allFrames
+            .filter { ruleIDs.contains($0.ruleID) }
+            .sorted { $0.enteredAt > $1.enteredAt }
+        for frame in frames {
+            guard let plan = contextStack.prepareRestore(frame: frame, liveValues: live, at: time) else { continue }
+            let intents = plan.intents
+            // A restore is still an unattended write. Never turn a high-risk device back on
+            // without the same explicit approval required by the original automation rule.
+            let restoreNeedsApproval = intents.contains { intent in
+                guard case .power(true) = intent.operation else { return false }
+                return store.devices.first(where: { $0.id == intent.targetId }).map {
+                    ManualControlPolicy.requiresConfirmation(intent, devices: [$0])
+                } ?? false
+            }
+            if restoreNeedsApproval {
+                store.showToast(
+                    L10n.tr("上下文还原需要确认，已跳过", "Context restore requires confirmation and was skipped"),
+                    isError: true
+                )
+                continue
+            }
+            let outcome = await store.runAutomation(
+                intents: intents,
+                title: L10n.tr("自动化还原上下文", "Restore automation context"),
+                canContinue: { true }
+            )
+            let restoredIDs = Set(intents.compactMap { intent -> String? in
+                guard case .power(let value) = intent.operation,
+                      store.devices.first(where: { $0.id == intent.targetId })?.automationContextValue()
+                        == AutomationContextValue(field: .power, boolValue: value) else { return nil }
+                return intent.targetId
+            })
+            contextStack.commitRestore(plan, restoredDeviceIDs: restoredIDs)
+            for intent in intents where restoredIDs.contains(intent.targetId) {
+                if case .power(let value) = intent.operation {
+                    live[intent.targetId] = AutomationContextValue(field: .power, boolValue: value)
+                }
+            }
+            if outcome.succeededCount == 0, outcome.attemptedCount > 0 {
+                store.showToast(
+                    L10n.tr("上下文还原被安全策略跳过", "Context restore skipped by safety policy"),
+                    isError: true
+                )
+            }
+        }
     }
 
     private func execute(
