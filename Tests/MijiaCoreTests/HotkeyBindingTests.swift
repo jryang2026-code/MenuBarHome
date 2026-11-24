@@ -269,4 +269,28 @@ struct HotkeyBindingTests {
         let commands = await mock.executedCommands
         #expect(commands.contains(.activateScene(entityId: "scene.movie")))
     }
+
+    @Test("Quick-action hotkey ignores unrelated pre-existing toast when building notification text")
+    @MainActor
+    func quickActionDoesNotReuseStaleToast() async throws {
+        let onLight = SmartDevice(
+            id: "light.living",
+            name: "客厅主灯",
+            roomId: "room.living",
+            roomName: "客厅",
+            model: "yeelink.light.lamp4",
+            isOnline: true,
+            kind: .light(LightSpec(entityId: "light.living", isOn: true))
+        )
+        let (store, _) = try await makeStore(devices: [onLight], scenes: [])
+        store.showToast("之前的无关提示")
+
+        let binding = HotkeyBinding(
+            target: .quickAction(.lightsOff),
+            targetLabel: QuickAction.lightsOff.title,
+            shortcut: HotkeyShortcut(keyCode: 22, keyLabel: "6", modifiers: [.option, .shift])
+        )
+        let outcome = await store.executeHotkeyBinding(binding)
+        #expect(outcome.notificationBody != "之前的无关提示")
+    }
 }

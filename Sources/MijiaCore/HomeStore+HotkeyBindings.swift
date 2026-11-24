@@ -62,13 +62,14 @@ extension HomeStore {
                 _ = rejectControlWhileLocked()
                 return .blocked(message: screenLockBlockedMessage)
             }
+            let priorToast = toastNotice?.message
             let succeeded = await triggerScene(scene).value
             if succeeded {
                 let message = L10n.tr("已触发场景：\(scene.name)", "Activated scene: \(scene.name)")
                 return .executed(message: message)
             }
-            if let toast = toastNotice?.message, !toast.isEmpty {
-                return .blocked(message: toast)
+            if let currentToast = toastNotice?.message, currentToast != priorToast, !currentToast.isEmpty {
+                return .blocked(message: currentToast)
             }
             return .cancelled
 
@@ -80,14 +81,16 @@ extension HomeStore {
                 _ = rejectControlWhileLocked()
                 return .blocked(message: screenLockBlockedMessage)
             }
+            let priorToast = toastNotice?.message
             guard let task = executeQuickAction(action, respectScreenLock: true) else {
-                if let toast = toastNotice?.message, !toast.isEmpty {
-                    return .blocked(message: toast)
+                if let currentToast = toastNotice?.message, currentToast != priorToast, !currentToast.isEmpty {
+                    return .blocked(message: currentToast)
                 }
                 return .cancelled
             }
             let outcome = await task.value
-            let message = toastNotice?.message ?? L10n.tr("已执行：\(action.title)", "Ran: \(action.title)")
+            let freshToast = toastNotice?.message != priorToast ? toastNotice?.message : nil
+            let message = freshToast ?? L10n.tr("已执行：\(action.title)", "Ran: \(action.title)")
             switch outcome {
             case .completed:
                 return .executed(message: message)
