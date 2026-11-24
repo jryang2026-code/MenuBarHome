@@ -387,6 +387,7 @@ extension View {
 /// Storage keys that are not a user-visible choice but still persist between launches.
 public enum PanelPrefs {
     public static let climatePanelKey = "climate_panel_module"
+    public static let quickDrawerExpandedKey = "panel_quick_drawer_expanded"
 }
 
 // MARK: - Room Badge Deduplication

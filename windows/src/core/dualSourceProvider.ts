@@ -1044,6 +1044,7 @@ export async function fetchHASnapshotWithIdentities(baseURL: string, token: stri
       throw new Error("Home Assistant requires the Windows app");
     }
     return window.__TAURI_INTERNALS__.invoke(command, args); }, prune: HaTypePruneOptions | null = null,
+  userInitiated = false,
 ): Promise<{ readonly rawSnapshot: unknown;
   readonly home: SynthesizedHome;
   readonly identities: Record<string, DeviceSourceIdentity>;
@@ -1060,6 +1061,7 @@ export async function fetchHASnapshotWithIdentities(baseURL: string, token: stri
     const rawSnapshot = await invokeHaWithLease<unknown>(lease, invoke, "ha_snapshot", {
       baseUrl: baseURL,
       token,
+      ...(userInitiated ? { userInitiated } : {}),
     });
     if (!lease.isCurrent()) {
       throw new HaBlockedRequestError(lease.scope ?? "ha:");

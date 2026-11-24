@@ -132,3 +132,53 @@ export async function readNativeExternalDisplayCount(): Promise<number | null> {
     return null;
   }
 }
+
+/** One-shot camera/microphone active booleans from `CapabilityAccessManager\ConsentStore`. */
+export async function readNativeMediaCaptureStatus(): Promise<{
+  readonly cameraInUse: boolean;
+  readonly microphoneInUse: boolean;
+} | null> {
+  const invoke = typeof window !== "undefined" ? window.__TAURI_INTERNALS__?.invoke : undefined;
+  if (!invoke) return null;
+  try {
+    const raw = await invoke<{ cameraInUse?: unknown; microphoneInUse?: unknown } | null>(
+      "media_capture_status",
+    );
+    if (!raw || typeof raw !== "object") return null;
+    return {
+      cameraInUse: raw.cameraInUse === true,
+      microphoneInUse: raw.microphoneInUse === true,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** One-shot fullscreen / presentation / quiet-hours state (`SHQueryUserNotificationState`). */
+export async function readNativeFocusModeStatus(): Promise<boolean | null> {
+  const invoke = typeof window !== "undefined" ? window.__TAURI_INTERNALS__?.invoke : undefined;
+  if (!invoke) return null;
+  try {
+    const raw = await invoke<boolean | null>("focus_mode_status");
+    return typeof raw === "boolean" ? raw : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Starts or stops the on-demand native camera/mic registry watcher and foreground fullscreen hook. */
+export async function syncNativeSystemEventWatchers(need: {
+  readonly mediaCapture: boolean;
+  readonly focusMode: boolean;
+}): Promise<void> {
+  const invoke = typeof window !== "undefined" ? window.__TAURI_INTERNALS__?.invoke : undefined;
+  if (!invoke) return;
+  try {
+    await invoke<void>("set_system_event_watchers", {
+      mediaCapture: need.mediaCapture,
+      focusMode: need.focusMode,
+    });
+  } catch {
+    // Non-fatal: web/test hosts do not expose native watchers.
+  }
+}

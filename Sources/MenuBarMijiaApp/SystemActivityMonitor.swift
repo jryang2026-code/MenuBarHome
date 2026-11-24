@@ -158,6 +158,7 @@ final class SystemActivityMonitor {
     private var wakePolicy: SystemWakePolicy
     private var waitingForInteractiveWake = false
     private var pendingTransportRestart = false
+    private var pendingTopologyRestart = false
     private var darkWakeCapGeneration: UInt64 = 0
 
     var isWaitingForInteractiveWakeForTesting: Bool { waitingForInteractiveWake }
@@ -229,6 +230,7 @@ final class SystemActivityMonitor {
         wakePolicy = SystemWakePolicy(now: scheduler.now)
         waitingForInteractiveWake = false
         pendingTransportRestart = false
+        pendingTopologyRestart = false
     }
 
     private func observe(_ center: NotificationCenter, _ name: Notification.Name, _ change: Change) {
@@ -287,7 +289,7 @@ final class SystemActivityMonitor {
         publishAndFlushResumeIfActive()
     }
 
-    private func handleNetworkPathUpdate(isSatisfied: Bool, fingerprint: NetworkTopologyFingerprint) {
+    func handleNetworkPathUpdate(isSatisfied: Bool, fingerprint: NetworkTopologyFingerprint) {
         guard isStarted else { return }
         let previous = lastNetworkSatisfied
         let previousFingerprint = networkFingerprint
@@ -296,7 +298,7 @@ final class SystemActivityMonitor {
         store?.setNetworkSatisfiedForResume(isSatisfied)
         if let previous, let previousFingerprint,
            previous != isSatisfied || previousFingerprint != fingerprint {
-            pendingTransportRestart = true
+            pendingTopologyRestart = true
             publishTransportState()
         }
         if previous == false, isSatisfied {
@@ -340,24 +342,29 @@ final class SystemActivityMonitor {
     }
 
     private var transportSuspended: Bool { asleep || waitingForInteractiveWake }
+    private var isSystemActive: Bool { !(transportSuspended || displayAsleep || locked || sessionInactive) }
 
-    private func publishTransportState() {
-        let restart = !transportSuspended && pendingTransportRestart
-        if restart { pendingTransportRestart = false }
-        store?.setHATransportSuspended(transportSuspended, topologyChanged: restart)
+    private func publishTransportState(systemActive: Bool? = nil) {
+        let wakeRestart = !transportSuspended && pendingTransportRestart
+        let topologyRestart = isSystemActive && pendingTopologyRestart
+        if wakeRestart { pendingTransportRestart = false }
+        if topologyRestart { pendingTopologyRestart = false }
+        store?.setHATransportSuspended(
+            transportSuspended,
+            topologyChanged: wakeRestart || topologyRestart,
+            systemActive: systemActive
+        )
     }
 
     private func publish() {
-        publishTransportState()
         store?.setScreenLocked(locked)
-        store?.setSystemActive(!(transportSuspended || displayAsleep || locked || sessionInactive))
+        publishTransportState(systemActive: isSystemActive)
         store?.setLowPowerMode(ProcessInfo.processInfo.isLowPowerModeEnabled)
     }
 
     private func publishAndFlushResumeIfActive() {
-        let isActive = !(transportSuspended || displayAsleep || locked || sessionInactive)
         publish()
-        if isActive, !pendingResumeReasons.isEmpty {
+        if isSystemActive, !pendingResumeReasons.isEmpty {
             let reasons = pendingResumeReasons
             pendingResumeReasons.removeAll()
             for reason in reasons {

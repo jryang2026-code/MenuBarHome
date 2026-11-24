@@ -25,6 +25,7 @@ final class CameraLiveVideoPlayer: NSObject, URLSessionDataDelegate, @unchecked 
 
     /// Called on the main actor when the first frame of a connection reaches the renderer.
     var onFirstFrame: (@MainActor @Sendable () -> Void)?
+    var onAudioAvailabilityChanged: (@MainActor @Sendable (Bool) -> Void)?
     var onPlaybackPauseChanged: (@MainActor @Sendable (Bool) -> Void)?
     var playOverride: (@MainActor @Sendable (URL, CameraLiveVideoPlayer) async -> Outcome)?
     var stopOverride: (@MainActor @Sendable (String?) -> Void)?
@@ -73,7 +74,16 @@ final class CameraLiveVideoPlayer: NSObject, URLSessionDataDelegate, @unchecked 
     private let logger = Logger(subsystem: "com.jryang1997.MenuBarMijia", category: "CameraLiveVideo")
     private let queue = DispatchQueue(label: "com.jryang1997.MenuBarMijia.camera-fmp4", qos: .userInteractive)
     private let delegateQueue: OperationQueue
-    private var liveTimebase: CMTimebase?
+    private let audioStateLock = NSLock()
+    private var mutedState = true
+    private var detectedAudioTrackState: Bool?
+    /// Output-only synchronizer shared between the video display layer and the optional
+    /// listen-only audio renderer. Never opens an audio input device / microphone (#445).
+    private var renderSynchronizer: AVSampleBufferRenderSynchronizer?
+
+    var detectedAudioTrack: Bool? {
+        audioStateLock.withLock { detectedAudioTrackState }
+    }
 
     // Everything below is only touched on `queue`.
     private var activeToken: PlayToken?
@@ -81,7 +91,11 @@ final class CameraLiveVideoPlayer: NSObject, URLSessionDataDelegate, @unchecked 
     private var continuation: CheckedContinuation<Outcome, Never>?
     private var demuxer = FragmentedMP4Demuxer()
     private var track: FMP4VideoTrack?
+    private var audioTrack: FMP4AudioTrack?
     private var formatDescription: CMVideoFormatDescription?
+    private var audioFormatDescription: CMAudioFormatDescription?
+    private var audioRenderer: AVSampleBufferAudioRenderer?
+    private var didReportAudioAvailability = false
     private var activeParameterSets: [Data] = []
     private var waitingForKeyframe = true
     private var framesDecoded = 0
@@ -102,23 +116,50 @@ final class CameraLiveVideoPlayer: NSObject, URLSessionDataDelegate, @unchecked 
         delegateQueue.maxConcurrentOperationCount = 1
         super.init()
         delegateQueue.underlyingQueue = queue
-        installLiveTimebase()
+        installLiveSynchronizer()
     }
 
     @MainActor
-    private func installLiveTimebase() {
-        var timebase: CMTimebase?
-        guard CMTimebaseCreateWithSourceClock(
-            allocator: kCFAllocatorDefault,
-            sourceClock: CMClockGetHostTimeClock(),
-            timebaseOut: &timebase
-        ) == noErr, let timebase else {
-            logger.error("camera playback timebase was not created; decoded frames may accumulate")
-            return
+    private func installLiveSynchronizer() {
+        let synchronizer = AVSampleBufferRenderSynchronizer()
+        synchronizer.delaysRateChangeUntilHasSufficientMediaData = false
+        synchronizer.setRate(0, time: .invalid)
+        synchronizer.addRenderer(renderer)
+        renderSynchronizer = synchronizer
+    }
+
+    func setMuted(_ muted: Bool) {
+        audioStateLock.withLock { mutedState = muted }
+        queue.async {
+            if muted {
+                self.teardownAudioRenderer()
+            } else {
+                self.ensureAudioRendererIfNeeded()
+            }
         }
-        CMTimebaseSetRate(timebase, rate: 0)
-        liveTimebase = timebase
-        displayLayer.controlTimebase = timebase
+    }
+
+    private func ensureAudioRendererIfNeeded() {
+        let isMuted = audioStateLock.withLock { mutedState }
+        guard !isMuted, !playbackPaused, audioTrack != nil, audioFormatDescription != nil else { return }
+        if audioRenderer == nil {
+            let newAudioRenderer = AVSampleBufferAudioRenderer()
+            newAudioRenderer.isMuted = false
+            newAudioRenderer.volume = 1.0
+            renderSynchronizer?.addRenderer(newAudioRenderer)
+            audioRenderer = newAudioRenderer
+        } else {
+            audioRenderer?.isMuted = false
+            audioRenderer?.volume = 1.0
+        }
+    }
+
+    private func teardownAudioRenderer() {
+        guard let existing = audioRenderer else { return }
+        existing.isMuted = true
+        existing.flush()
+        renderSynchronizer?.removeRenderer(existing, at: .invalid)
+        audioRenderer = nil
     }
 
     /// Streams one HTTP connection until it ends, fails, or the calling task is cancelled.
@@ -155,6 +196,7 @@ final class CameraLiveVideoPlayer: NSObject, URLSessionDataDelegate, @unchecked 
         queue.async {
             self.playbackPaused = false
             self.renderer.flush()
+            self.teardownAudioRenderer()
             self.finish(failure: reason)
         }
     }
@@ -180,8 +222,14 @@ final class CameraLiveVideoPlayer: NSObject, URLSessionDataDelegate, @unchecked 
         queue.async {
             let resumed = self.playbackPaused && !paused
             self.playbackPaused = paused
-            if resumed {
+            if paused {
+                self.teardownAudioRenderer()
+                if let sync = self.renderSynchronizer {
+                    sync.setRate(0, time: sync.currentTime())
+                }
+            } else if resumed {
                 self.resumeFromNextKeyframe()
+                self.ensureAudioRendererIfNeeded()
             }
         }
     }
@@ -189,6 +237,7 @@ final class CameraLiveVideoPlayer: NSObject, URLSessionDataDelegate, @unchecked 
     private func resumeFromNextKeyframe() {
         renderer.flush()
         waitingForKeyframe = true
+        playbackClock.reset()
     }
 
     // MARK: - Connection lifecycle (queue)
@@ -203,6 +252,11 @@ final class CameraLiveVideoPlayer: NSObject, URLSessionDataDelegate, @unchecked 
         continuation = cont
         demuxer = FragmentedMP4Demuxer()
         track = nil
+        audioTrack = nil
+        audioFormatDescription = nil
+        didReportAudioAvailability = false
+        audioStateLock.withLock { detectedAudioTrackState = nil }
+        teardownAudioRenderer()
         // A new connection may carry different parameter sets; keep nothing from the last one.
         formatDescription = nil
         activeParameterSets = []
@@ -213,9 +267,7 @@ final class CameraLiveVideoPlayer: NSObject, URLSessionDataDelegate, @unchecked 
         statsWindowStart = Date()
         statsWindowFrames = 0
         playbackClock.reset()
-        if let liveTimebase {
-            CMTimebaseSetRate(liveTimebase, rate: 0)
-        }
+        renderSynchronizer?.setRate(0, time: .invalid)
         renderer.flush()
 
         let cfg = URLSessionConfiguration.ephemeral
@@ -231,6 +283,7 @@ final class CameraLiveVideoPlayer: NSObject, URLSessionDataDelegate, @unchecked 
 
     private func finish(failure reason: String?) {
         if let reason, failure == nil { failure = reason }
+        teardownAudioRenderer()
         session?.invalidateAndCancel()
         session = nil
         activeToken = nil
@@ -265,17 +318,53 @@ final class CameraLiveVideoPlayer: NSObject, URLSessionDataDelegate, @unchecked 
             finish(failure: "fMP4 demux error: \(error)")
             return
         }
+        processDemuxEvents(events)
+    }
+
+    func processDemuxEvents(_ events: [FMP4DemuxEvent]) {
+        var sawVideoTrackInBatch = false
+        var sawAudioTrackInBatch = false
         for event in events {
             switch event {
             case .videoTrack(let newTrack):
+                sawVideoTrackInBatch = true
                 if track == nil {
                     track = newTrack
                     logger.info("camera fMP4 track \(newTrack.codec.rawValue, privacy: .public) \(newTrack.width)x\(newTrack.height) timescale \(newTrack.timescale)")
+                }
+            case .audioTrack(let newAudioTrack):
+                sawAudioTrackInBatch = true
+                if audioTrack == nil {
+                    audioTrack = newAudioTrack
+                    audioFormatDescription = Self.makeAudioFormatDescription(for: newAudioTrack)
+                    let supported = audioFormatDescription != nil
+                    reportAudioAvailability(supported)
+                    if supported {
+                        ensureAudioRendererIfNeeded()
+                    }
+                    let safeHz = newAudioTrack.sampleRate.isFinite ? Int(min(max(newAudioTrack.sampleRate, 0), 1_000_000)) : 0
+                    logger.info("camera fMP4 audio track \(newAudioTrack.codec.rawValue, privacy: .public) \(safeHz)Hz ch=\(newAudioTrack.channelCount) supported=\(supported)")
                 }
             case .sample(let sample):
                 guard let track, sample.trackID == track.trackID else { continue }
                 enqueue(sample, track: track)
                 if self.session == nil { return } // a fatal enqueue error closed the connection
+            case .audioSample(let sample):
+                guard let audioTrack, sample.trackID == audioTrack.trackID else { continue }
+                enqueueAudio(sample, track: audioTrack)
+            }
+        }
+        if sawVideoTrackInBatch, !sawAudioTrackInBatch, !didReportAudioAvailability {
+            reportAudioAvailability(false)
+        }
+    }
+
+    private func reportAudioAvailability(_ available: Bool) {
+        didReportAudioAvailability = true
+        audioStateLock.withLock { detectedAudioTrackState = available }
+        if let callback = onAudioAvailabilityChanged {
+            Task { @MainActor in
+                callback(available)
             }
         }
     }
@@ -332,7 +421,7 @@ final class CameraLiveVideoPlayer: NSObject, URLSessionDataDelegate, @unchecked 
         let mediaPTS = CMTimeAdd(dts, CMTime(value: CMTimeValue(sample.compositionOffset), timescale: scale))
         let mediaSeconds = CMTimeGetSeconds(mediaPTS)
         let hostNow = CMTimeGetSeconds(CMClockGetTime(CMClockGetHostTimeClock()))
-        if liveTimebase != nil, mediaSeconds.isFinite, hostNow.isFinite {
+        if renderSynchronizer != nil, mediaSeconds.isFinite, hostNow.isFinite {
             alignPlaybackClock(mediaSeconds: mediaSeconds, hostNowSeconds: hostNow)
         }
         guard let sampleBuffer = Self.makeSampleBuffer(
@@ -341,7 +430,7 @@ final class CameraLiveVideoPlayer: NSObject, URLSessionDataDelegate, @unchecked 
             sample: sample,
             timescale: track.timescale,
             isKeyframe: isKeyframe,
-            displayImmediately: liveTimebase == nil
+            displayImmediately: renderSynchronizer == nil
         ) else { return }
 
         renderer.enqueue(sampleBuffer)
@@ -363,15 +452,287 @@ final class CameraLiveVideoPlayer: NSObject, URLSessionDataDelegate, @unchecked 
     }
 
     private func alignPlaybackClock(mediaSeconds: Double, hostNowSeconds: Double) {
-        guard let liveTimebase else { return }
+        guard let renderSynchronizer else { return }
         switch playbackClock.step(mediaSeconds: mediaSeconds, hostNowSeconds: hostNowSeconds) {
         case .start(let origin), .reanchor(let origin):
             let time = CMTime(seconds: origin, preferredTimescale: 90_000)
-            CMTimebaseSetRate(liveTimebase, rate: 0)
-            CMTimebaseSetTime(liveTimebase, time: time)
-            CMTimebaseSetRate(liveTimebase, rate: 1)
+            renderSynchronizer.setRate(1, time: time)
         case .follow:
             break
+        }
+    }
+
+    private func enqueueAudio(_ sample: FMP4AudioSample, track: FMP4AudioTrack) {
+        let isMuted = audioStateLock.withLock { mutedState }
+        guard !isMuted, !playbackPaused, let audioFormatDescription else { return }
+        ensureAudioRendererIfNeeded()
+        guard let audioRenderer else { return }
+        if !audioRenderer.isReadyForMoreMediaData {
+            return
+        }
+        if audioRenderer.status == .failed {
+            audioRenderer.flush()
+        }
+        let scale = CMTimeScale(clamping: track.timescale == 0 ? 48_000 : track.timescale)
+        let pts = CMTime(value: CMTimeValue(clamping: sample.decodeTime), timescale: scale)
+        let mediaSeconds = CMTimeGetSeconds(pts)
+        let hostNow = CMTimeGetSeconds(CMClockGetTime(CMClockGetHostTimeClock()))
+        if self.track == nil, mediaSeconds.isFinite, hostNow.isFinite {
+            alignPlaybackClock(mediaSeconds: mediaSeconds, hostNowSeconds: hostNow)
+        }
+        guard let buffer = Self.makeAudioSampleBuffer(
+            sample: sample,
+            format: audioFormatDescription,
+            track: track
+        ) else { return }
+        audioRenderer.enqueue(buffer)
+    }
+
+    static func makeAudioFormatDescription(for track: FMP4AudioTrack) -> CMAudioFormatDescription? {
+        let sampleRate = track.sampleRate > 0 ? track.sampleRate : 16_000
+        let channels = UInt32(max(track.channelCount, 1))
+        var asbd = AudioStreamBasicDescription()
+        asbd.mSampleRate = sampleRate
+        asbd.mChannelsPerFrame = channels
+        var magicCookie = track.configRecord
+
+        switch track.codec {
+        case .aac:
+            asbd.mFormatID = kAudioFormatMPEG4AAC
+            asbd.mFormatFlags = 0
+            asbd.mFramesPerPacket = 1024
+        case .alaw:
+            asbd.mFormatID = kAudioFormatALaw
+            asbd.mBitsPerChannel = 8
+            asbd.mFramesPerPacket = 1
+            asbd.mBytesPerFrame = channels
+            asbd.mBytesPerPacket = channels
+            magicCookie = Data()
+        case .ulaw:
+            asbd.mFormatID = kAudioFormatULaw
+            asbd.mBitsPerChannel = 8
+            asbd.mFramesPerPacket = 1
+            asbd.mBytesPerFrame = channels
+            asbd.mBytesPerPacket = channels
+            magicCookie = Data()
+        case .opus:
+            asbd.mFormatID = kAudioFormatOpus
+            asbd.mSampleRate = track.sampleRate > 0 ? track.sampleRate : 48_000
+            asbd.mFramesPerPacket = 0
+            if magicCookie.count >= 10, magicCookie.prefix(8) != Data("OpusHead".utf8) {
+                magicCookie = opusHeadCookie(fromDOps: magicCookie, channels: UInt8(clamping: channels))
+            }
+        case .flac:
+            asbd.mFormatID = kAudioFormatFLAC
+            asbd.mFramesPerPacket = 0
+        }
+
+        var format: CMAudioFormatDescription?
+        let status: OSStatus
+        if magicCookie.isEmpty {
+            status = CMAudioFormatDescriptionCreate(
+                allocator: kCFAllocatorDefault,
+                asbd: &asbd,
+                layoutSize: 0,
+                layout: nil,
+                magicCookieSize: 0,
+                magicCookie: nil,
+                extensions: nil,
+                formatDescriptionOut: &format
+            )
+        } else {
+            status = magicCookie.withUnsafeBytes { rawBuf in
+                CMAudioFormatDescriptionCreate(
+                    allocator: kCFAllocatorDefault,
+                    asbd: &asbd,
+                    layoutSize: 0,
+                    layout: nil,
+                    magicCookieSize: magicCookie.count,
+                    magicCookie: rawBuf.baseAddress,
+                    extensions: nil,
+                    formatDescriptionOut: &format
+                )
+            }
+        }
+        return status == noErr ? format : nil
+    }
+
+    private static func opusHeadCookie(fromDOps dops: Data, channels: UInt8) -> Data {
+        var head = Data("OpusHead".utf8)
+        let ch = dops.count >= 2 ? dops[1] : channels
+        let preSkipLo: UInt8 = dops.count >= 4 ? dops[3] : 0
+        let preSkipHi: UInt8 = dops.count >= 4 ? dops[2] : 0
+        let rateB0: UInt8 = dops.count >= 8 ? dops[7] : 0x80
+        let rateB1: UInt8 = dops.count >= 8 ? dops[6] : 0xBB
+        let rateB2: UInt8 = dops.count >= 8 ? dops[5] : 0x00
+        let rateB3: UInt8 = dops.count >= 8 ? dops[4] : 0x00
+        let gainLo: UInt8 = dops.count >= 10 ? dops[9] : 0
+        let gainHi: UInt8 = dops.count >= 10 ? dops[8] : 0
+        let family: UInt8 = dops.count >= 11 ? dops[10] : 0
+        head.append(contentsOf: [1, ch, preSkipLo, preSkipHi, rateB0, rateB1, rateB2, rateB3, gainLo, gainHi, family])
+        return head
+    }
+
+    /// Reads the blocksize from a FLAC frame header (RFC 9639) with `sample.duration` fallback
+    /// so variable-length go2rtc G.711-to-FLAC packets report exact duration instead of 4096.
+    static func flacPacketFrameCount(data: Data, sample: FMP4AudioSample, track: FMP4AudioTrack) -> UInt32 {
+        let bytes = [UInt8](data)
+        if bytes.count >= 6, bytes[0] == 0xFF, (bytes[1] & 0xFC) == 0xF8 {
+            let bsCode = (bytes[2] >> 4) & 0x0F
+            let srCode = bytes[2] & 0x0F
+            let chMode = (bytes[3] >> 4) & 0x0F
+            var offset = 4
+            if offset < bytes.count {
+                let first = bytes[offset]
+                let extra: Int
+                if (first & 0x80) == 0 { extra = 1 }
+                else if (first & 0xE0) == 0xC0 { extra = 2 }
+                else if (first & 0xF0) == 0xE0 { extra = 3 }
+                else if (first & 0xF8) == 0xF0 { extra = 4 }
+                else if (first & 0xFC) == 0xF8 { extra = 5 }
+                else if (first & 0xFE) == 0xFC { extra = 6 }
+                else { extra = 7 }
+                offset += extra
+            }
+            let _ = chMode
+            switch bsCode {
+            case 1: return 192
+            case 2...5: return UInt32(576 << (bsCode - 2))
+            case 6:
+                if offset < bytes.count { return UInt32(bytes[offset]) + 1 }
+            case 7:
+                if offset + 1 < bytes.count {
+                    return (UInt32(bytes[offset]) << 8 | UInt32(bytes[offset + 1])) + 1
+                }
+            case 8...15: return UInt32(256 << (bsCode - 8))
+            default: break
+            }
+            let _ = srCode
+        }
+        return sampleDurationFrameCount(sample: sample, track: track)
+    }
+
+    static func opusPacketFrameCount(data: Data, sample: FMP4AudioSample, track: FMP4AudioTrack) -> UInt32 {
+        let bytes = [UInt8](data)
+        if let toc = bytes.first {
+            let config = Int(toc >> 3)
+            let code = Int(toc & 0x03)
+            let frameSamples48k: Int
+            switch config {
+            case 0...11:
+                frameSamples48k = [480, 960, 1920, 2880][config & 0x03]
+            case 12...15:
+                frameSamples48k = (config & 0x01) == 0 ? 480 : 960
+            default:
+                frameSamples48k = [120, 240, 480, 960][config & 0x03]
+            }
+            let frameCount: Int
+            switch code {
+            case 0:
+                frameCount = 1
+            case 1, 2:
+                frameCount = 2
+            default:
+                frameCount = bytes.count >= 2 ? Int(bytes[1] & 0x3F) : 1
+            }
+            if frameCount > 0 {
+                let sampleRate = track.sampleRate.isFinite && track.sampleRate > 0 ? track.sampleRate : 48_000
+                let scaled = (Double(frameCount * frameSamples48k) * sampleRate / 48_000.0).rounded()
+                if scaled >= 1 && scaled <= Double(UInt32.max) {
+                    return UInt32(scaled)
+                }
+            }
+        }
+        return sampleDurationFrameCount(sample: sample, track: track)
+    }
+
+    private static func sampleDurationFrameCount(sample: FMP4AudioSample, track: FMP4AudioTrack) -> UInt32 {
+        if sample.duration > 0, track.timescale > 0, track.sampleRate.isFinite, track.sampleRate > 0 {
+            let scaled = (Double(sample.duration) * track.sampleRate / Double(track.timescale)).rounded()
+            if scaled >= 1 && scaled <= Double(UInt32.max) {
+                return UInt32(scaled)
+            }
+        }
+        return 0
+    }
+
+    static func makeAudioSampleBuffer(
+        sample: FMP4AudioSample,
+        format: CMAudioFormatDescription,
+        track: FMP4AudioTrack
+    ) -> CMSampleBuffer? {
+        guard !sample.data.isEmpty else { return nil }
+        var block: CMBlockBuffer?
+        let status = sample.data.withUnsafeBytes { rawBuf -> OSStatus in
+            guard let base = rawBuf.baseAddress else { return -1 }
+            var temp: CMBlockBuffer?
+            let createStatus = CMBlockBufferCreateWithMemoryBlock(
+                allocator: kCFAllocatorDefault,
+                memoryBlock: nil,
+                blockLength: sample.data.count,
+                blockAllocator: kCFAllocatorDefault,
+                customBlockSource: nil,
+                offsetToData: 0,
+                dataLength: sample.data.count,
+                flags: 0,
+                blockBufferOut: &temp
+            )
+            guard createStatus == kCMBlockBufferNoErr, let temp else { return createStatus }
+            let replaceStatus = CMBlockBufferReplaceDataBytes(
+                with: base,
+                blockBuffer: temp,
+                offsetIntoDestination: 0,
+                dataLength: sample.data.count
+            )
+            guard replaceStatus == kCMBlockBufferNoErr else { return replaceStatus }
+            block = temp
+            return noErr
+        }
+        guard status == noErr, let block else { return nil }
+
+        let timescale = CMTimeScale(clamping: track.timescale == 0 ? 48_000 : track.timescale)
+        let pts = CMTime(value: CMTimeValue(clamping: sample.decodeTime), timescale: timescale)
+        let numSamples: CMItemCount
+        var sampleBuffer: CMSampleBuffer?
+        switch track.codec {
+        case .alaw, .ulaw:
+            let bytesPerFrame = max(track.channelCount, 1)
+            numSamples = CMItemCount(max(sample.data.count / bytesPerFrame, 1))
+            let createStatus = CMAudioSampleBufferCreateReadyWithPacketDescriptions(
+                allocator: kCFAllocatorDefault,
+                dataBuffer: block,
+                formatDescription: format,
+                sampleCount: numSamples,
+                presentationTimeStamp: pts,
+                packetDescriptions: nil,
+                sampleBufferOut: &sampleBuffer
+            )
+            return createStatus == noErr ? sampleBuffer : nil
+        case .aac, .opus, .flac:
+            let variableFrames: UInt32
+            switch track.codec {
+            case .flac:
+                variableFrames = flacPacketFrameCount(data: sample.data, sample: sample, track: track)
+            case .opus:
+                variableFrames = opusPacketFrameCount(data: sample.data, sample: sample, track: track)
+            default:
+                variableFrames = 0
+            }
+            var packetDesc = AudioStreamPacketDescription(
+                mStartOffset: 0,
+                mVariableFramesInPacket: variableFrames,
+                mDataByteSize: UInt32(sample.data.count)
+            )
+            let createStatus = CMAudioSampleBufferCreateReadyWithPacketDescriptions(
+                allocator: kCFAllocatorDefault,
+                dataBuffer: block,
+                formatDescription: format,
+                sampleCount: 1,
+                presentationTimeStamp: pts,
+                packetDescriptions: &packetDesc,
+                sampleBufferOut: &sampleBuffer
+            )
+            return createStatus == noErr ? sampleBuffer : nil
         }
     }
 

@@ -69,7 +69,12 @@ import {
 } from "./speechGuard.js";
 import { proactiveSignature, renderProactiveInlinePill } from "./proactive.js";
 import { cancelScheduledCommands } from "./scheduledCommands.js";
-import { isWorkstationLocked } from "./transport.js";
+import {
+  isWorkstationLocked,
+  readNativeFocusModeStatus,
+  readNativeMediaCaptureStatus,
+  syncNativeSystemEventWatchers,
+} from "./transport.js";
 import {
   SYSTEM_CONTEXT_POLL_INTERVAL_MS,
   planSystemSignalTransition,
@@ -140,6 +145,7 @@ export interface HostActivityCenter {
   systemSignalBaseline: SystemSignalBaseline | null;
   lastSystemPollAtMs: number;
   systemPollInFlight: boolean;
+  activeSystemWatchers: { mediaCapture: boolean; focusMode: boolean };
   /** `lastSampledLockState` 每次值翻转递增：用于作废在探针/规则执行期间被后续
    * 翻转超越的锁屏回调（布尔值检查区分不了「解锁又上锁」的两次翻转）。 */
   lockSampleGeneration: number;
@@ -364,6 +370,7 @@ function createHostActivityCenter(
     systemSignalBaseline: null,
     lastSystemPollAtMs: 0,
     systemPollInFlight: false,
+    activeSystemWatchers: { mediaCapture: false, focusMode: false },
     lockSampleGeneration: 0,
     lastClipboardMarkdown: null,
     pendingHighRiskUndoRunId: null,
@@ -415,6 +422,8 @@ export function syncSingleOwnerLifecycle(
   center.lastSourceRevision = currentRev;
   center.hasObservedNonEmptyDevices = host.devices.length > 0;
   clearCenterActivities(center);
+  host.cameraEventStore?.clear();
+  host.stillWallThrottler?.reset();
   // A source/home switch invalidates the footer dialog's platform list, so it closes with the rest.
   host.connectionDetailsOpen = false;
   resetPanelSplitTransientState(host);
@@ -1441,9 +1450,25 @@ export async function ingestHostHASnapshotForDoorbell(
   const nowMs = options.nowMs ?? Date.now();
   for (const ring of rings) {
     center.dismissedActivityIds.delete(`doorbell:${ring.key}`);
+    const parsedRingMs = ring.firedAt ? Date.parse(ring.firedAt) : NaN;
+    host.cameraEventStore?.record({
+      cameraID: ring.deviceId,
+      kind: "doorbell",
+      timestampMs: Number.isFinite(parsedRingMs) ? parsedRingMs : nowMs,
+    });
   }
 
   const guardPrefs = loadSafetyGuardPrefs(center.storage);
+  const focusActive = Boolean(center.systemSignalBaseline?.focusMode);
+  for (const ring of rings) {
+    host.cameraLive.handleCameraEventForAutoOpen({
+      cameraId: ring.deviceId,
+      kind: "doorbell",
+      isLocked,
+      isFocusActive: focusActive,
+      dismissSeconds: options.popupSeconds ?? guardPrefs.doorbellPopupSeconds,
+    });
+  }
   const responses = center.doorbellCoordinator.handleRings({
     rings,
     devices: aliased,
@@ -1539,6 +1564,7 @@ export function setEventAutomationRunning(host: MenuMijiaWindowsApp, enabled: bo
   center.lastWifiProbeState = null;
   center.lastWifiPollAtMs = 0;
   host.settings.eventAutomationEnabled = enabled;
+  void syncSystemEventWatchers(host);
   return true;
 }
 
@@ -1606,8 +1632,9 @@ export async function pollSystemContextSignals(
     return false;
   }
   const rules = enabledRules ?? center.automationEngine.store.load().filter((r) => r.isEnabled);
-  const { power: needsPower, externalDisplayCount: needsDisplay } = systemSignalNeed(rules);
-  if (!needsPower && !needsDisplay) return false;
+  const { power: needsPower, externalDisplayCount: needsDisplay, focusMode: needsFocus } =
+    systemSignalNeed(rules);
+  if (!needsPower && !needsDisplay && !needsFocus) return false;
 
   center.lastSystemPollAtMs = nowMs;
   center.systemPollInFlight = true;
@@ -1616,11 +1643,12 @@ export async function pollSystemContextSignals(
     const signals = await readNativeSystemSignals({
       power: needsPower,
       externalDisplayCount: needsDisplay,
+      focusMode: needsFocus,
     });
     if (!isFullPanelHost(host) || generation !== center.automationGeneration) return false;
     const latestRules = center.automationEngine.store.load().filter((r) => r.isEnabled);
     const latestNeed = systemSignalNeed(latestRules);
-    if (!latestNeed.power && !latestNeed.externalDisplayCount) {
+    if (!latestNeed.power && !latestNeed.externalDisplayCount && !latestNeed.focusMode) {
       center.systemSignalBaseline = null;
       center.lastSystemPollAtMs = 0;
       return false;
@@ -1637,6 +1665,9 @@ export async function pollSystemContextSignals(
     }
     if (baseline.externalDisplayCount !== null && previous?.externalDisplayCount == null) {
       center.automationEngine.primeExternalDisplayBaseline(baseline.externalDisplayCount);
+    }
+    if (baseline.focusMode !== undefined && baseline.focusMode !== null && previous?.focusMode == null) {
+      center.automationEngine.primeFocusModeBaseline(baseline.focusMode);
     }
 
     let fired = false;
@@ -1663,11 +1694,108 @@ export async function pollSystemContextSignals(
       );
       fired = fired || runs.length > 0;
     }
+    if (
+      transition.focusMode !== undefined &&
+      transition.focusMode !== null &&
+      generation === center.automationGeneration
+    ) {
+      const runs = await dispatchSystemContextEvent(
+        host,
+        {
+          kind: "focusModeChanged",
+          enabled: transition.focusMode,
+        },
+        nowMs,
+      );
+      fired = fired || runs.length > 0;
+    }
     if (fired) host.queueBackgroundRender();
     return fired;
   } finally {
     center.systemPollInFlight = false;
   }
+}
+
+/**
+ * Starts or stops the native camera/microphone registry watcher and fullscreen foreground hook
+ * based on whether event automation is enabled and at least one enabled rule listens for them.
+ * When a watcher transitions from off to on, primes the engine baseline first so an already-active
+ * camera/mic or fullscreen app at startup never fires a spurious transition.
+ */
+export async function syncSystemEventWatchers(
+  host: unknown,
+  enabledRules?: readonly AutomationRule[],
+): Promise<void> {
+  if (!isFullPanelHost(host)) return;
+  const center = getHostActivityCenter(host);
+  const automationOn = isEventAutomationEnabled(host.settings);
+  const rules = automationOn
+    ? (enabledRules ?? center.automationEngine.store.load().filter((r) => r.isEnabled))
+    : [];
+  const need = systemSignalNeed(rules);
+  const next = { mediaCapture: need.mediaCapture, focusMode: need.focusMode };
+  const prev = center.activeSystemWatchers;
+  if (next.mediaCapture === prev.mediaCapture && next.focusMode === prev.focusMode) return;
+  center.activeSystemWatchers = next;
+
+  const generation = center.automationGeneration;
+  if (next.mediaCapture && !prev.mediaCapture) {
+    const sample = await readNativeMediaCaptureStatus();
+    if (sample && generation === center.automationGeneration) {
+      center.automationEngine.primeMediaCaptureBaseline(sample.cameraInUse, sample.microphoneInUse);
+    }
+  }
+  if (next.focusMode && !prev.focusMode) {
+    const focus = await readNativeFocusModeStatus();
+    if (focus !== null && generation === center.automationGeneration) {
+      center.automationEngine.primeFocusModeBaseline(focus);
+      center.systemSignalBaseline = {
+        power: center.systemSignalBaseline?.power ?? null,
+        externalDisplayCount: center.systemSignalBaseline?.externalDisplayCount ?? null,
+        focusMode: focus,
+      };
+    }
+  }
+  if (generation !== center.automationGeneration) return;
+  await syncNativeSystemEventWatchers(next);
+}
+
+/** `CapabilityAccessManager\ConsentStore` registry watch push from `system_events.rs`. */
+export function notifyMediaCaptureChanged(
+  host: unknown,
+  status: { readonly cameraInUse?: boolean; readonly microphoneInUse?: boolean },
+  nowMs = Date.now(),
+): void {
+  if (!isFullPanelHost(host)) return;
+  void dispatchSystemContextEvent(
+    host,
+    {
+      kind: "mediaCaptureChanged",
+      ...(status.cameraInUse !== undefined ? { cameraInUse: status.cameraInUse } : {}),
+      ...(status.microphoneInUse !== undefined ? { microphoneInUse: status.microphoneInUse } : {}),
+    },
+    nowMs,
+  ).then((runs) => {
+    if (runs.length > 0) host.queueBackgroundRender();
+  });
+}
+
+/** `SetWinEventHook(EVENT_SYSTEM_FOREGROUND)` + `SHQueryUserNotificationState` push from `system_events.rs`. */
+export function notifyFocusModeChanged(
+  host: unknown,
+  enabled: boolean,
+  nowMs = Date.now(),
+): void {
+  if (!isFullPanelHost(host)) return;
+  const center = getHostActivityCenter(host);
+  if (center.systemSignalBaseline !== null) {
+    center.systemSignalBaseline = { ...center.systemSignalBaseline, focusMode: enabled };
+  }
+  void dispatchSystemContextEvent(host, { kind: "focusModeChanged", enabled }, nowMs).then(
+    (runs) => {
+      if (runs.length > 0) host.queueBackgroundRender();
+    },
+  );
 }
 
 /** `PBT_APMSUSPEND` from `system_events.rs`: Windows is about to suspend. */
@@ -1970,9 +2098,12 @@ export function tickSafetyHealthAndAutomation(
 function tickAutomationRules(
   host: MenuMijiaWindowsApp, center: HostActivityCenter, enabledRules: readonly AutomationRule[], nowMs: number,
 ): void {
-  // Power and external-display sampling runs on the macOS 10 s cadence only when enabled rules consume them.
+  // Keep native camera/mic registry watcher and foreground fullscreen hook synced to enabled rules.
+  void syncSystemEventWatchers(host, enabledRules);
+
+  // Power, external-display, and the ≥ 5 s focus fallback run on the macOS 10 s cadence only when enabled rules consume them.
   const need = systemSignalNeed(enabledRules);
-  if (need.power || need.externalDisplayCount) {
+  if (need.power || need.externalDisplayCount || need.focusMode) {
     void pollSystemContextSignals(host, nowMs, enabledRules);
   } else if (center.systemSignalBaseline !== null || center.lastSystemPollAtMs !== 0) {
     center.systemSignalBaseline = null;
@@ -2544,14 +2675,14 @@ function buildUpperCardFactories(host: MenuMijiaWindowsApp, nowMs = Date.now()):
     else factories.push(replyFactory);
   }
   if (host.pendingSuggestions.length > 0) {
-    factories.push(wrapCard("suggestions:pending", "suggestions", true, "cc-feedback-card", (btns) => `<div class="cc-feedback-row"><div class="cc-suggestion-row" style="flex:1;">${host.pendingSuggestions.map((item) => `<button class="cc-inline-pill" data-suggestion-id="${host.escapeHtml(item.id)}">${host.escapeHtml(item.title)}${item.confidencePercent !== null ? ` · ${item.confidencePercent}%` : ""}</button>`).join("")}</div>${btns}</div>`));
+    factories.push(wrapCard("suggestions:pending", "suggestions", true, "cc-feedback-card", (btns) => `<div class="cc-feedback-row"><div class="cc-suggestion-row" style="flex:1;">${host.pendingSuggestions.map((item) => `<button class="cc-inline-pill" data-suggestion-id="${host.escapeHtml(item.id)}">${host.escapeHtml(item.title)}${item.confidencePercent !== null ? ` · ${item.confidencePercent}%` : ""}</button>`).join("")}</div>${btns}</div>`, " data-quick-drawer-item"));
   }
   if (host.pendingSuggestions.length === 0) {
     const items = host.currentProactiveSuggestions();
     if (items.length > 0) {
       const sig = `${proactiveSignature(host)}:${items.map((item) => item.id).join(",")}`;
       if (center.dismissedProactiveSignature !== sig) {
-        factories.push(wrapCard("proactive:suggestions", "proactive", true, "cc-feedback-card", (btns) => `<div class="cc-feedback-row"><span class="cc-feedback-badge">${SF_ICONS.sparkles} ${t("猜你想控")}</span><div class="cc-suggestion-row" data-proactive-bar style="flex:1;">${items.map((item) => renderProactiveInlinePill(host, item)).join("")}</div>${btns}</div>`, ' data-notif-card="proactive"'));
+        factories.push(wrapCard("proactive:suggestions", "proactive", true, "cc-feedback-card", (btns) => `<div class="cc-feedback-row"><span class="cc-feedback-badge">${SF_ICONS.sparkles} ${t("猜你想控")}</span><div class="cc-suggestion-row" data-proactive-bar style="flex:1;">${items.map((item) => renderProactiveInlinePill(host, item)).join("")}</div>${btns}</div>`, ' data-quick-drawer-item data-notif-card="proactive"'));
       }
     }
   }

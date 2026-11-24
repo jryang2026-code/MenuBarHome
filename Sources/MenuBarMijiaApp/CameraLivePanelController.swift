@@ -11,6 +11,7 @@ import SwiftUI
 /// Borderless, resizable floating `NSPanel` that stays visible across Spaces and full-screen apps.
 final class CameraFloatingPanel: NSPanel {
     var onCancel: (() -> Void)?
+    var onUserInteraction: (() -> Void)?
 
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
@@ -22,8 +23,11 @@ final class CameraFloatingPanel: NSPanel {
     /// A nonactivating panel ignores the click that would make it key, so the first click on
     /// the close button never reached the SwiftUI action.
     override func sendEvent(_ event: NSEvent) {
-        if event.type == .leftMouseDown, !isKeyWindow {
-            makeKey()
+        if event.type == .leftMouseDown {
+            onUserInteraction?()
+            if !isKeyWindow {
+                makeKey()
+            }
         }
         super.sendEvent(event)
     }
@@ -86,9 +90,11 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
     }
     /// Rotation is a mounting preference per camera, so switching cameras keeps each one upright.
     public private(set) var videoRotations: [String: Int] = [:]
-    /// HLS streams can carry an audio track; every other source is video only. The player still
-    /// starts muted, so sound is an explicit opt-in (#29).
+    /// Audio-capable streams (HLS or go2rtc fMP4) always start muted; sound is an explicit
+    /// listen-only opt-in with microphone capture disabled (#445).
     public var isMuted = true
+    /// Detected from the active stream without an extra network call (`nil` while probing).
+    public private(set) var detectedAudioTrack: Bool?
     public var isExpandedSize = true
     /// The window fills the screen's visible frame until the user restores it.
     public private(set) var isMaximized = false
@@ -145,6 +151,8 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
     private var pendingStopGenerations: [String: Int] = [:]
     private var activeCameraEntityID: String?
     private var doorbellDismissTask: Task<Void, Never>?
+    private var pendingAudioOptInFallbackDeviceID: String?
+    private var listenOnlyOptInFailed = false
     var mjpegStableWindow: Duration = .seconds(10)
     var mjpegStallTimeout: Duration = .seconds(15)
     var mjpegWatchdogInterval: Duration = .seconds(1)
@@ -173,6 +181,8 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
     /// The ring still owns this window's closing; the user taking it over (moving, resizing, PiP,
     /// interacting, reopening) ends that.
     private(set) var doorbellOwnsClose = false
+    /// Visible countdown (in seconds) before an auto-opened PiP closes itself; nil when not armed.
+    public private(set) var autoCloseRemainingSeconds: Int?
     var hasPendingDoorbellAutoDismiss: Bool { doorbellDismissTask != nil && doorbellOwnsClose }
     private var isClosing = false
     private let mjpegSessionLock = OSAllocatedUnfairLock<URLSession?>(initialState: nil)
@@ -334,10 +344,31 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
 
     private func scheduleDoorbellDismiss(_ deviceId: String, after delay: Duration) {
         doorbellDismissTask?.cancel()
+        if delay < .seconds(1) {
+            autoCloseRemainingSeconds = 1
+            doorbellDismissTask = Task { @MainActor [weak self] in
+                try? await Task.sleep(for: delay)
+                guard !Task.isCancelled, let self else { return }
+                self.doorbellDismissTask = nil
+                self.autoCloseRemainingSeconds = nil
+                guard self.isVisible, self.doorbellOwnsClose, self.activeDeviceId == deviceId, !self.isPictureInPictureActive else { return }
+                self.closePanel()
+            }
+            return
+        }
+        let totalSeconds = max(1, Int(delay.components.seconds))
+        autoCloseRemainingSeconds = totalSeconds
         doorbellDismissTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: delay)
+            var remaining = totalSeconds
+            while remaining > 0 {
+                try? await Task.sleep(for: .seconds(1))
+                guard !Task.isCancelled, let self else { return }
+                remaining -= 1
+                self.autoCloseRemainingSeconds = remaining > 0 ? remaining : nil
+            }
             guard !Task.isCancelled, let self else { return }
             self.doorbellDismissTask = nil
+            self.autoCloseRemainingSeconds = nil
             guard self.isVisible, self.doorbellOwnsClose, self.activeDeviceId == deviceId, !self.isPictureInPictureActive else { return }
             self.closePanel()
         }
@@ -347,6 +378,7 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
         doorbellDismissTask?.cancel()
         doorbellDismissTask = nil
         doorbellOwnsClose = false
+        autoCloseRemainingSeconds = nil
         if claimsPlacement {
             isDoorbellPlacement = false
         }
@@ -440,6 +472,7 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
         doorbellDismissTask = nil
         isDoorbellPlacement = false
         doorbellOwnsClose = false
+        autoCloseRemainingSeconds = nil
         if isPictureInPictureActive {
             pictureInPicture?.stop()
         }
@@ -463,6 +496,7 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
                let playback = activePlayback,
                playback.failure == nil,
                case .liveMP4 = playback.source {
+                playback.player.setMuted(true)
                 tearDownPictureInPicture()
                 warmActivePlayback(
                     playback,
@@ -477,6 +511,7 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
                 }
             }
             isMuted = true
+            detectedAudioTrack = nil
         }
 
         activeDeviceId = device.id
@@ -523,9 +558,11 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
                     identityMatches: warm.identity.matches(currentIdentity)
                 ) {
                     tearDownPictureInPicture()
+                    warm.playback.player.setMuted(isMuted)
                     activePlayback = warm.playback
                     streamSource = warm.playback.source
                     videoPlayer = warm.playback.player
+                    detectedAudioTrack = warm.playback.player.detectedAudioTrack
                     hasLiveVideoFrame = warm.playback.hasFrame
                     isLoadingStream = false
                     errorMessage = nil
@@ -558,6 +595,7 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
         frameBeforeMaximize = nil
         isDoorbellPlacement = false
         doorbellOwnsClose = false
+        autoCloseRemainingSeconds = nil
         closeReleaseGeneration &+= 1
         let releaseGeneration = closeReleaseGeneration
         let closingDeviceId = activeDeviceId
@@ -711,7 +749,13 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
         errorMessage = errorText
     }
 
-    private func stopStreamTasks() {
+    private func stopStreamTasks(keepingAudioOptInFallback: Bool = false, keepingListenOnlyFailed: Bool = false) {
+        if !keepingAudioOptInFallback {
+            pendingAudioOptInFallbackDeviceID = nil
+        }
+        if !keepingListenOnlyFailed {
+            listenOnlyOptInFailed = false
+        }
         clearPTZ()
         videoOnlyNoticeTask?.cancel()
         videoOnlyNoticeTask = nil
@@ -729,6 +773,7 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
         videoPlayer = nil
         tearDownPictureInPicture()
         hasLiveVideoFrame = false
+        detectedAudioTrack = nil
         snapshotImage = nil
         streamSource = nil
         isLoadingStream = false
@@ -873,9 +918,58 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
         isPictureInPictureActive = false
     }
 
+    var currentAudioStatus: CameraLiveAudioStatus {
+        let hasCustomURL = activeDeviceId.flatMap { store?.cameraCustomStreamURL(for: $0) }?.isEmpty == false
+        return CameraLiveAudioStatus(
+            streamSource: streamSource,
+            detectedAudioTrack: detectedAudioTrack,
+            isMuted: isMuted,
+            allowsMutedPreviewOptIn: !hasCustomURL && !listenOnlyOptInFailed,
+            listenOnlyFailed: listenOnlyOptInFailed
+        )
+    }
+
+    func updateActiveStreamAudioAvailable(_ available: Bool?) {
+        detectedAudioTrack = available
+    }
+
     public func toggleMute() {
         claimDoorbellWindowForUser(claimsPlacement: false)
-        isMuted.toggle()
+        let nextMuted = !isMuted
+        isMuted = nextMuted
+        videoPlayer?.setMuted(nextMuted)
+        if !nextMuted, let source = streamSource, isAppMutedPreviewSource(source) {
+            pendingAudioOptInFallbackDeviceID = activeDeviceId
+            reloadStream(preservingMute: true, keepingAudioOptInFallback: true)
+        } else {
+            pendingAudioOptInFallbackDeviceID = nil
+        }
+    }
+
+    @discardableResult
+    private func recoverMutedVideoOnlyPreview(for deviceID: String) -> Bool {
+        guard pendingAudioOptInFallbackDeviceID == deviceID, activeDeviceId == deviceID else {
+            return false
+        }
+        pendingAudioOptInFallbackDeviceID = nil
+        listenOnlyOptInFailed = true
+        isMuted = true
+        videoPlayer?.setMuted(true)
+        showVideoOnlyNotice()
+        reloadStream(preservingMute: false, keepingListenOnlyFailed: true)
+        return true
+    }
+
+    private func isAppMutedPreviewSource(_ source: CameraStreamSource) -> Bool {
+        if let activeDeviceId, let custom = store?.cameraCustomStreamURL(for: activeDeviceId), !custom.isEmpty {
+            return false
+        }
+        switch source {
+        case .liveMP4(let url, _, _), .hls(let url):
+            return XiaomiCameraBridge.isMutedPreviewURL(url)
+        default:
+            return false
+        }
     }
 
     public func togglePinnedOnTop() {
@@ -891,8 +985,8 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
     public func showVideoOnlyNotice() {
         claimDoorbellWindowForUser(claimsPlacement: false)
         videoOnlyNotice = L10n.tr(
-            "此画面流仅传输视频，没有音轨；自定义 HLS 流可开启声音",
-            "This stream is video only; a custom HLS stream can carry sound"
+            "此画面流仅传输视频，没有音轨（MJPEG、抓拍及无音轨流仅支持画面）",
+            "This stream is video only and has no audio track (MJPEG, snapshots, and video-only streams have no sound)"
         )
         videoOnlyNoticeTask?.cancel()
         videoOnlyNoticeTask = Task { @MainActor [weak self] in
@@ -986,8 +1080,18 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
         reloadStream()
     }
 
-    public func reloadStream() {
-        stopStreamTasks()
+    public func reloadStream(
+        preservingMute: Bool = false,
+        keepingAudioOptInFallback: Bool = false,
+        keepingListenOnlyFailed: Bool = false
+    ) {
+        if !preservingMute {
+            isMuted = true
+        }
+        stopStreamTasks(
+            keepingAudioOptInFallback: keepingAudioOptInFallback,
+            keepingListenOnlyFailed: keepingListenOnlyFailed
+        )
         errorMessage = nil
 
         guard let store, let device = currentDevice, case .camera(let spec) = device.kind else {
@@ -1004,6 +1108,7 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
         let lens = selectedLens(for: device)
         activeLensID = lens?.id ?? "main"
         let channel = lens?.channel ?? 0
+        let audioEnabled = !isMuted
         let priorResolveTask = cancelledResolveTask
         cancelledResolveTask = nil
         resolveTask = Task { @MainActor [weak self] in
@@ -1014,7 +1119,7 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
             await self.pendingStopTasks[deviceId]?.value
             guard !Task.isCancelled else { return }
             do {
-                let resolved = try await store.resolveCameraStream(for: deviceId, channel: channel)
+                let resolved = try await store.resolveCameraStream(for: deviceId, channel: channel, audioEnabled: audioEnabled)
                 guard !Task.isCancelled else { return }
                 self.streamSource = resolved
                 self.isLoadingStream = false
@@ -1034,6 +1139,9 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
                 }
             } catch {
                 guard !Task.isCancelled else { return }
+                if self.recoverMutedVideoOnlyPreview(for: deviceId) {
+                    return
+                }
                 self.isLoadingStream = false
                 self.errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
             }
@@ -1074,7 +1182,7 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
     /// Plays the camera's own bitstream through VideoToolbox. The playback object owns the
     /// reconnect loop so it can stay warm while another camera is on screen.
     private func startLiveVideo(source: CameraStreamSource, deviceID: String, lensID: String) {
-        guard let playback = CameraLivePlayback(deviceID: deviceID, lensID: lensID, source: source) else {
+        guard let playback = CameraLivePlayback(deviceID: deviceID, lensID: lensID, source: source, isMuted: isMuted) else {
             return
         }
         snapshotLoopTask?.cancel()
@@ -1083,6 +1191,7 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
         videoPlayer = nil
         tearDownPictureInPicture()
         hasLiveVideoFrame = false
+        detectedAudioTrack = nil
         snapshotImage = nil
         activePlayback = playback
         videoPlayer = playback.player
@@ -1090,11 +1199,20 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
 
         playback.onFirstFrame = { [weak self, weak playback] in
             guard let self, let playback, self.activePlayback === playback else { return }
+            self.pendingAudioOptInFallbackDeviceID = nil
             self.hasLiveVideoFrame = true
+        }
+
+        playback.onAudioAvailabilityChanged = { [weak self, weak playback] available in
+            guard let self, let playback, self.activePlayback === playback else { return }
+            self.detectedAudioTrack = available
         }
 
         playback.onFallback = { [weak self, weak playback] url in
             guard let self, let playback, self.activePlayback === playback else { return }
+            if self.recoverMutedVideoOnlyPreview(for: deviceID) {
+                return
+            }
             self.clearPTZ()
             self.activePlayback = nil
             self.videoPlayer = nil
@@ -1106,6 +1224,9 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
 
         playback.onFailure = { [weak self, weak playback] detail in
             guard let self, let playback, self.activePlayback === playback else { return }
+            if self.recoverMutedVideoOnlyPreview(for: deviceID) {
+                return
+            }
             self.clearPTZ()
             self.activePlayback = nil
             self.videoPlayer = nil
@@ -1221,9 +1342,16 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
         case nil: streamMode = "none"
         }
         let audioSupport: String
-        if case .hls = streamSource {
-            audioSupport = isMuted ? "hls-muted" : "hls-unmuted"
-        } else {
+        switch currentAudioStatus {
+        case .audio(let muted):
+            if case .liveMP4 = streamSource {
+                audioSupport = muted ? "live-mp4-muted" : "live-mp4-unmuted"
+            } else {
+                audioSupport = muted ? "hls-muted" : "hls-unmuted"
+            }
+        case .hidden:
+            audioSupport = streamSource == nil ? "none" : "probing"
+        case .videoOnly:
             audioSupport = "video-only"
         }
         let rawError = errorMessage ?? "none"
@@ -1372,6 +1500,9 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
         panel.onCancel = { [weak self] in
             self?.closePanel()
         }
+        panel.onUserInteraction = { [weak self] in
+            self?.claimDoorbellWindowForUser(claimsPlacement: false)
+        }
         return panel
     }
 
@@ -1499,6 +1630,7 @@ private final class MJPEGStreamDelegate: NSObject, URLSessionDataDelegate, @unch
 struct CameraHLSPlayerView: NSViewRepresentable {
     let url: URL
     let isMuted: Bool
+    var onAudioAvailabilityChanged: (@MainActor (Bool?) -> Void)? = nil
 
     func makeCoordinator() -> Coordinator {
         Coordinator()
@@ -1509,10 +1641,12 @@ struct CameraHLSPlayerView: NSViewRepresentable {
         view.controlsStyle = .inline
         view.allowsPictureInPicturePlayback = true
         view.videoGravity = .resizeAspect
-        let player = AVPlayer(url: url)
+        let item = AVPlayerItem(url: url)
+        let player = AVPlayer(playerItem: item)
         player.isMuted = isMuted
         view.player = player
         context.coordinator.currentURL = url
+        context.coordinator.observe(item: item, onAudioAvailabilityChanged: onAudioAvailabilityChanged)
         player.play()
         return view
     }
@@ -1521,20 +1655,58 @@ struct CameraHLSPlayerView: NSViewRepresentable {
         nsView.player?.isMuted = isMuted
         guard context.coordinator.currentURL != url else { return }
         context.coordinator.currentURL = url
-        let player = AVPlayer(url: url)
+        let item = AVPlayerItem(url: url)
+        let player = AVPlayer(playerItem: item)
         player.isMuted = isMuted
+        context.coordinator.observe(item: item, onAudioAvailabilityChanged: onAudioAvailabilityChanged)
         nsView.player?.pause()
         nsView.player = player
         player.play()
     }
 
     static func dismantleNSView(_ nsView: AVPlayerView, coordinator: Coordinator) {
+        coordinator.clearObservations()
         nsView.player?.pause()
         nsView.player = nil
     }
 
+    @MainActor
     final class Coordinator {
         var currentURL: URL?
+        private var statusObservation: NSKeyValueObservation?
+        private var tracksObservation: NSKeyValueObservation?
+        private var observationGeneration: UInt64 = 0
+
+        func observe(item: AVPlayerItem, onAudioAvailabilityChanged: (@MainActor (Bool?) -> Void)?) {
+            clearObservations()
+            observationGeneration &+= 1
+            let generation = observationGeneration
+            let report: @MainActor (AVPlayerItem?) -> Void = { [weak self] item in
+                guard let self, self.observationGeneration == generation, let item else { return }
+                let hasAudio = item.tracks.contains { $0.assetTrack?.mediaType == .audio }
+                if hasAudio {
+                    onAudioAvailabilityChanged?(true)
+                } else if item.status == .readyToPlay || item.status == .failed || !item.tracks.isEmpty {
+                    onAudioAvailabilityChanged?(false)
+                } else {
+                    onAudioAvailabilityChanged?(nil)
+                }
+            }
+            tracksObservation = item.observe(\.tracks, options: [.initial, .new]) { [weak item] _, _ in
+                Task { @MainActor in report(item) }
+            }
+            statusObservation = item.observe(\.status, options: [.initial, .new]) { [weak item] _, _ in
+                Task { @MainActor in report(item) }
+            }
+        }
+
+        func clearObservations() {
+            observationGeneration &+= 1
+            statusObservation?.invalidate()
+            statusObservation = nil
+            tracksObservation?.invalidate()
+            tracksObservation = nil
+        }
     }
 }
 
@@ -1556,18 +1728,35 @@ enum CameraVideoRotation {
     }
 }
 
-/// What the live HUD can say about sound for the stream on screen. Only an HLS stream can carry
-/// an audio track; P2P, MJPEG, snapshot and demo sources are video only.
+/// What the live HUD can say about sound for the stream on screen (#445).
+/// HLS and go2rtc/fMP4 streams expose audio only when an audio track is detected (or when
+/// a muted preview explicitly suppressed audio via `audio=0` pending user opt-in).
+/// MJPEG, snapshot, demo, and video-only streams stay `.videoOnly`.
 enum CameraLiveAudioStatus: Equatable {
     case hidden
     case videoOnly
     case audio(isMuted: Bool)
 
-    init(streamSource: CameraStreamSource?, isMuted: Bool) {
+    init(
+        streamSource: CameraStreamSource?,
+        detectedAudioTrack: Bool? = nil,
+        isMuted: Bool,
+        allowsMutedPreviewOptIn: Bool = true,
+        listenOnlyFailed: Bool = false
+    ) {
         switch streamSource {
-        case .hls?: self = .audio(isMuted: isMuted)
-        case nil: self = .hidden
-        default: self = .videoOnly
+        case nil:
+            self = .hidden
+        case .hls(let url)?, .liveMP4(let url, _, _)?:
+            if (allowsMutedPreviewOptIn && XiaomiCameraBridge.isMutedPreviewURL(url)) || detectedAudioTrack == true {
+                self = .audio(isMuted: isMuted)
+            } else if detectedAudioTrack == false || listenOnlyFailed {
+                self = .videoOnly
+            } else {
+                self = .hidden
+            }
+        case .mjpeg?, .snapshot?, .demo?:
+            self = .videoOnly
         }
     }
 }
@@ -1612,6 +1801,7 @@ struct CameraLiveAudioStatusView: View {
                 help: muteLabel,
                 action: onToggleMute
             )
+            .accessibilityHint(Text(L10n.tr("仅收听摄像机声音，不开启麦克风", "Listen-only camera audio; microphone remains off")))
         }
     }
 
@@ -1802,6 +1992,13 @@ struct CameraLivePanelView: View {
                 cameraSwitcherRail
             }
 
+            if let activeId = device?.id {
+                let pinned = store.pinnedSwitchDevices(forCamera: activeId)
+                if !pinned.isEmpty {
+                    pinnedSwitchesBar(pinned)
+                }
+            }
+
             if let spec = cameraSpec {
                 bottomControlsBar(spec: spec)
             }
@@ -1844,6 +2041,26 @@ struct CameraLivePanelView: View {
             cameraTitle
                 .layoutPriority(1)
 
+            if let remaining = controller.autoCloseRemainingSeconds, remaining > 0 {
+                Button {
+                    controller.claimDoorbellWindowForUser(claimsPlacement: false)
+                } label: {
+                    HStack(spacing: 3) {
+                        Image(systemName: "timer")
+                            .font(.system(size: 11, weight: .semibold))
+                        Text("\(remaining)s")
+                            .font(.system(size: 11, weight: .semibold).monospacedDigit())
+                    }
+                    .foregroundStyle(.white.opacity(0.92))
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Capsule().fill(Color.orange.opacity(0.35)))
+                    .overlay(Capsule().strokeBorder(Color.orange.opacity(0.55), lineWidth: 0.75))
+                }
+                .buttonStyle(.plain)
+                .help(L10n.tr("点击取消自动关闭并保持窗口打开", "Click to cancel auto-close and keep open"))
+            }
+
             if controller.isExpandedSize, let room = device?.roomName, !room.isEmpty {
                 Text(L10n.displayRoomName(room))
                     .font(.system(size: 11, weight: .semibold))
@@ -1861,7 +2078,7 @@ struct CameraLivePanelView: View {
     private var toolbarTrailing: some View {
         HStack(spacing: 4) {
             CameraLiveAudioStatusView(
-                status: CameraLiveAudioStatus(streamSource: controller.streamSource, isMuted: controller.isMuted),
+                status: controller.currentAudioStatus,
                 isCompact: !controller.isExpandedSize,
                 onExplainVideoOnly: { controller.showVideoOnlyNotice() }
             ) {
@@ -1979,6 +2196,34 @@ struct CameraLivePanelView: View {
             } label: {
                 Label(L10n.tr("重新连接", "Reconnect"), systemImage: "arrow.clockwise")
             }
+            if let activeCameraId = device?.id {
+                Divider()
+                let autoOpenOn = store.isCameraPipAutoOpenEnabled(for: activeCameraId)
+                Button {
+                    store.setCameraPipAutoOpen(!autoOpenOn, for: activeCameraId)
+                } label: {
+                    Label(
+                        L10n.tr("门铃/告警时自动弹出小窗", "Auto-open on doorbell/alarm"),
+                        systemImage: autoOpenOn ? "checkmark.circle.fill" : "circle"
+                    )
+                }
+                let pinnable = store.pinnableSwitchDevices(excludingCamera: activeCameraId)
+                if !pinnable.isEmpty {
+                    let selectedIds = Set(store.cameraPipPinnedSwitchIds[activeCameraId] ?? [])
+                    Menu(L10n.tr("钉选关联开关（最多 2 个）", "Pin related switches (max 2)")) {
+                        ForEach(pinnable) { sw in
+                            Button {
+                                store.toggleCameraPipPinnedSwitch(sw.id, forCamera: activeCameraId)
+                            } label: {
+                                Label(
+                                    sw.name,
+                                    systemImage: selectedIds.contains(sw.id) ? "checkmark" : "power"
+                                )
+                            }
+                        }
+                    }
+                }
+            }
         } label: {
             CameraHUDGlyph(symbol: "ellipsis")
         }
@@ -2008,6 +2253,47 @@ struct CameraLivePanelView: View {
                 .foregroundStyle(.white)
                 .lineLimit(1)
         }
+    }
+
+    private func pinnedSwitchesBar(_ switches: [SmartDevice]) -> some View {
+        HStack(spacing: 6) {
+            ForEach(switches) { sw in
+                let isOn = CameraPipWatchPolicy.isSwitchOn(sw)
+                Button {
+                    controller.claimDoorbellWindowForUser(claimsPlacement: false)
+                    _ = store.togglePrimary(sw)
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: isOn ? "power.circle.fill" : "power.circle")
+                            .font(.system(size: 11, weight: .semibold))
+                        Text(sw.name)
+                            .font(.system(size: 11, weight: .semibold))
+                            .lineLimit(1)
+                    }
+                    .foregroundStyle(isOn ? Color.white : Color.white.opacity(0.78))
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 5)
+                    .background(
+                        Capsule().fill(
+                            isOn ? Color.accentColor.opacity(0.75) : Color.white.opacity(0.10)
+                        )
+                    )
+                    .overlay(
+                        Capsule().strokeBorder(
+                            isOn ? Color.white.opacity(0.28) : Color.white.opacity(0.14),
+                            lineWidth: 0.75
+                        )
+                    )
+                }
+                .buttonStyle(.plain)
+                .disabled(!sw.isOnline)
+                .help(L10n.tr("切换关联开关", "Toggle pinned switch"))
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(Color.black.opacity(0.32))
     }
 
     private var cameraSwitcherRail: some View {
@@ -2127,7 +2413,9 @@ struct CameraLivePanelView: View {
             switch source {
             case .hls(let url):
                 rotatedMedia {
-                    CameraHLSPlayerView(url: url, isMuted: controller.isMuted)
+                    CameraHLSPlayerView(url: url, isMuted: controller.isMuted) { available in
+                        controller.updateActiveStreamAudioAvailable(available)
+                    }
                 }
             case .liveMP4:
                 ZStack {

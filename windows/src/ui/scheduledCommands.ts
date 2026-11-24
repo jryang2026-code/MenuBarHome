@@ -300,7 +300,7 @@ export async function confirmMissedScheduledCommand(
     timerStorageFailure(host);
     return;
   }
-  void host.runScheduledCommand(item);
+  void host.runScheduledCommand(item, true);
   host.render();
 }
 

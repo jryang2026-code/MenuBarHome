@@ -114,6 +114,77 @@ struct XiaomiCameraStreamQualityTests {
         #expect(streamKey == "hub123_sub_camera123")
     }
 
+    @Test("go2rtc and Xiaomi stream URL builders set audio=0 when muted and request audio only for listen-only")
+    func go2rtcAndXiaomiURLBuildersHonorAudioFlag() throws {
+        let mutedXiaomi = XiaomiCameraBridge.xiaomiStreamQuery(
+            clientPublic: "aa",
+            clientPrivate: "bb",
+            devicePublic: "cc",
+            sign: "dd",
+            vendor: "cs2",
+            model: "isa.camera.hlc7",
+            quality: .hd,
+            uid: nil,
+            channel: 0,
+            subdid: nil
+        )
+        #expect(mutedXiaomi.contains("audio=0"))
+        #expect(!mutedXiaomi.contains("audio=1"))
+
+        let listenOnlyXiaomi = XiaomiCameraBridge.xiaomiStreamQuery(
+            clientPublic: "aa",
+            clientPrivate: "bb",
+            devicePublic: "cc",
+            sign: "dd",
+            vendor: "cs2",
+            model: "isa.camera.hlc7",
+            quality: .hd,
+            uid: nil,
+            channel: 0,
+            subdid: nil,
+            audioEnabled: true
+        )
+        #expect(listenOnlyXiaomi.contains("audio=1"))
+        #expect(!listenOnlyXiaomi.contains("audio=0"))
+
+        let base = try #require(URL(string: "http://127.0.0.1:43123"))
+        let mutedMP4 = try #require(XiaomiCameraBridge.go2rtcStreamURL(
+            baseURL: base,
+            path: "/api/stream.mp4",
+            streamName: "cam_raw_1",
+            audioEnabled: false
+        ))
+        #expect(mutedMP4.absoluteString == "http://127.0.0.1:43123/api/stream.mp4?src=cam_raw_1&mp4&audio=0")
+        #expect(XiaomiCameraBridge.isMutedPreviewURL(mutedMP4))
+
+        let listenOnlyMP4 = try #require(XiaomiCameraBridge.go2rtcStreamURL(
+            baseURL: base,
+            path: "/api/stream.mp4",
+            streamName: "cam_raw_1",
+            audioEnabled: true
+        ))
+        #expect(listenOnlyMP4.absoluteString == "http://127.0.0.1:43123/api/stream.mp4?src=cam_raw_1&mp4=all")
+        #expect(!XiaomiCameraBridge.isMutedPreviewURL(listenOnlyMP4))
+
+        let mutedHLS = try #require(XiaomiCameraBridge.go2rtcStreamURL(
+            baseURL: base,
+            path: "/api/stream.m3u8",
+            streamName: "cam_raw_1",
+            audioEnabled: false
+        ))
+        #expect(mutedHLS.absoluteString == "http://127.0.0.1:43123/api/stream.m3u8?src=cam_raw_1&video=all&audio=0")
+        #expect(XiaomiCameraBridge.isMutedPreviewURL(mutedHLS))
+
+        let listenOnlyHLS = try #require(XiaomiCameraBridge.go2rtcStreamURL(
+            baseURL: base,
+            path: "/api/stream.m3u8",
+            streamName: "cam_raw_1",
+            audioEnabled: true
+        ))
+        #expect(listenOnlyHLS.absoluteString == "http://127.0.0.1:43123/api/stream.m3u8?src=cam_raw_1")
+        #expect(!XiaomiCameraBridge.isMutedPreviewURL(listenOnlyHLS))
+    }
+
     @MainActor
     @Test("HomeStore saves the chosen camera quality and passes it when resolving the stream")
     func homeStorePassesSavedQuality() async throws {

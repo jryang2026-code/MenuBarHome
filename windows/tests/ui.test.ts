@@ -3952,6 +3952,44 @@ describe("Scene habit learning (#113 review fix)", () => {
 
 describe("Home Assistant source", () => {
   const fixture = JSON.parse(readFileSync("../Tests/Fixtures/ha_snapshot.json", "utf8"));
+  it("marks only manual refreshes and user controls for HA reconnect bypass", async () => {
+    const snapshots: unknown[] = [];
+    const writes: unknown[] = [];
+    const invoke = async (name: string, args: Record<string, unknown> = {}) => {
+      if (name === "secure_store_get") return "controlled-token";
+      if (name === "ha_snapshot") {
+        snapshots.push(args.userInitiated);
+        return structuredClone(fixture);
+      }
+      if (name === "ha_execute") writes.push(args.userInitiated);
+      return undefined;
+    };
+    Object.defineProperty(window, "__TAURI_INTERNALS__", { value: { invoke }, configurable: true });
+    localStorage.setItem("menumijia.windows.settings.v2", JSON.stringify({
+      connectionMode: "homeAssistant",
+      haBaseURL: "http://localhost:8123",
+      hasCompletedOnboarding: true,
+    }));
+    const app = new MenuMijiaWindowsApp(element("#app"));
+    await waitFor(() => !!document.querySelector('[data-toggle-device="study-light"]'));
+    assert.deepEqual(snapshots, [undefined]);
+
+    await click("#btn-refresh");
+    assert.deepEqual(snapshots, [undefined, true]);
+    await click('[data-toggle-device="study-light"]');
+    assert.deepEqual(writes, [true]);
+
+    await app.runScheduledCommand({
+      id: "ha-reconnect-timer",
+      command: "打开书房灯",
+      reply: "好",
+      delaySeconds: 60,
+      fireTimestampMs: Date.now(),
+      intents: [{ targetId: "study-light", operation: { kind: "power", isOn: true } }],
+    });
+    assert.deepEqual(writes, [true, undefined]);
+  });
+
   function startHA(failedSnapshot = false, cached = failedSnapshot, token = "controlled-token"): { calls: string[]; failCommand: () => void } {
     const calls: string[] = [];
     let rejectCommand = false;
