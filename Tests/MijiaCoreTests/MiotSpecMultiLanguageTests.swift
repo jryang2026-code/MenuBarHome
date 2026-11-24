@@ -79,6 +79,8 @@ struct MiotSpecMultiLanguageTests {
             return (404, [:], "")
         }
         let store = MiotSpecStore(transport: transport, cacheDirectory: cacheDir)
+        _ = try await store.spec(model: golden.model, specType: golden.urn)
+        await store.waitForMultiLanguageRefresh(type: golden.urn)
         let resolved = try await L10n.$overrideLanguage.withValue(.zhHans) {
             try await store.spec(model: golden.model, specType: golden.urn)
         }
@@ -124,6 +126,7 @@ struct MiotSpecMultiLanguageTests {
         }
         let refreshed = MiotSpecStore(transport: online, cacheDirectory: cacheDir, specMaxAge: 0)
         _ = try await refreshed.spec(model: golden.model, specType: golden.urn)
+        await refreshed.waitForMultiLanguageRefresh(type: golden.urn)
 
         let offline = ScriptedTransport { _ in throw URLError(.notConnectedToInternet) }
         let staleStore = MiotSpecStore(transport: offline, cacheDirectory: cacheDir, specMaxAge: 0)
@@ -131,5 +134,40 @@ struct MiotSpecMultiLanguageTests {
             try await staleStore.spec(model: golden.model, specType: golden.urn)
         }
         #expect(Self.labels(stale!) == golden.expected["zh-Hans"])
+    }
+
+    @Test("a fresh spec cache ignores expired translations until the spec refreshes")
+    func expiredTranslationsRespectTTL() async throws {
+        let golden = try Self.fixture()
+        let specJSON = String(decoding: try JSONEncoder().encode(golden.spec), as: UTF8.self)
+        let languageJSON = String(decoding: try JSONEncoder().encode(golden.multiLanguage), as: UTF8.self)
+        let cacheDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MiotMultiLanguageTTL-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: cacheDir) }
+        let transport = ScriptedTransport { request in
+            let url = request.url!.absoluteString
+            if url.contains("/instance?type=") { return (200, [:], specJSON) }
+            if url.contains("/instance/v2/multiLanguage?urn=") { return (200, [:], languageJSON) }
+            return (404, [:], "")
+        }
+
+        let first = MiotSpecStore(transport: transport, cacheDirectory: cacheDir)
+        _ = try await first.spec(model: golden.model, specType: golden.urn)
+        await first.waitForMultiLanguageRefresh(type: golden.urn)
+        let safeName = golden.urn.replacingOccurrences(of: ":", with: "_") + ".json"
+        let translationFile = cacheDir.appendingPathComponent("multiLanguage-v1/\(safeName)")
+        try FileManager.default.setAttributes([.modificationDate: Date.distantPast], ofItemAtPath: translationFile.path)
+
+        let cached = MiotSpecStore(transport: transport, cacheDirectory: cacheDir)
+        let raw = try await cached.spec(model: golden.model, specType: golden.urn)
+        #expect(Self.labels(raw!) == Self.labels(golden.spec))
+
+        let refreshed = MiotSpecStore(transport: transport, cacheDirectory: cacheDir, specMaxAge: 0)
+        _ = try await refreshed.spec(model: golden.model, specType: golden.urn)
+        await refreshed.waitForMultiLanguageRefresh(type: golden.urn)
+        let translated = try await L10n.$overrideLanguage.withValue(.zhHans) {
+            try await refreshed.spec(model: golden.model, specType: golden.urn)
+        }
+        #expect(Self.labels(translated!) == golden.expected["zh-Hans"])
     }
 }

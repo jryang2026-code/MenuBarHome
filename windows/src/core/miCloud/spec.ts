@@ -325,6 +325,7 @@ export class MiotSpecResolver {
   /// Versioned key (`v1:<urn>`) and 30-day lifetime mirror the macOS disk cache (#480).
   private readonly translationsByKey = new Map<string, { document: SpecMultiLanguage; fetchedAt: number }>();
   private readonly multiLanguageInFlight = new Map<string, Promise<void>>();
+  private readonly urnByModel = new Map<string, string>();
   /// Models served by the guessed table; every resolve() retries the upstream instance (#30).
   private readonly fallbackModels = new Set<string>();
   private typeIndex: Record<string, string> | null = null;
@@ -395,9 +396,13 @@ export class MiotSpecResolver {
     }
 
     if (urn) {
+      this.urnByModel.set(device.model, urn);
       const fetched = await this.fetchInstance(urn);
       if (fetched) {
-        const translations = this.translationsByKey.get(multiLanguageCacheKey(urn))?.document;
+        const entry = this.translationsByKey.get(multiLanguageCacheKey(urn));
+        const translations = entry && this.nowMs() - entry.fetchedAt < this.multiLanguageMaxAgeMs
+          ? entry.document
+          : undefined;
         const localized = applyMultiLanguage(fetched, translations, currentLanguage());
         // Patches run last so Shared/specPatches.json still beats official translations (#480).
         const patched = applySpecPatches(localized, device.model, this.patches);
@@ -473,7 +478,7 @@ export class MiotSpecResolver {
         if (spec && spec.services.length > 0) {
           this.specByType.set(urn, spec);
           // Only fetched alongside a real spec refresh; never blocks that spec on failure.
-          await this.refreshMultiLanguage(urn);
+          void this.refreshMultiLanguage(urn);
           return spec;
         }
       } catch {
@@ -508,6 +513,7 @@ export class MiotSpecResolver {
         const parsed = parseMultiLanguageDocument(JSON.parse(resp.body));
         if (parsed && Object.keys(parsed.data).length > 0) {
           this.translationsByKey.set(key, { document: parsed, fetchedAt: this.nowMs() });
+          this.refreshCachedSpecsForUrn(urn);
         }
       } catch {
         // Optional data: keep a stale entry, or leave raw spec descriptions in place.
@@ -519,6 +525,24 @@ export class MiotSpecResolver {
       await task;
     } finally {
       this.multiLanguageInFlight.delete(key);
+    }
+  }
+
+  /// Test hook: spec resolution returns before the optional translation completes.
+  async waitForMultiLanguageRefresh(urn: string): Promise<void> {
+    const pending = this.multiLanguageInFlight.get(multiLanguageCacheKey(urn));
+    if (pending) await pending;
+  }
+
+  /// Put the newly available labels into specs already cached for this URN.
+  private refreshCachedSpecsForUrn(urn: string): void {
+    const raw = this.specByType.get(urn);
+    const entry = this.translationsByKey.get(multiLanguageCacheKey(urn));
+    if (!raw || !entry) return;
+    for (const [model, modelUrn] of this.urnByModel) {
+      if (modelUrn !== urn) continue;
+      const localized = applyMultiLanguage(raw, entry.document, currentLanguage());
+      this.specByModel.set(model, applySpecPatches(localized, model, this.patches));
     }
   }
 }

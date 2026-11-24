@@ -87,6 +87,8 @@ describe("MIoT official multiLanguage labels and cache", () => {
     const saved = currentLanguage();
     try {
       setLanguage("zh-Hant");
+      await resolver.resolve(device(golden));
+      await resolver.waitForMultiLanguageRefresh(golden.urn);
       const resolved = await resolver.resolve(device(golden));
       assert.deepEqual(labels(resolved), golden.expected["zh-Hant"]);
       assert.ok(seen.some((url) => url.includes("/instance/v2/multiLanguage?urn=")));
@@ -128,6 +130,8 @@ describe("MIoT official multiLanguage labels and cache", () => {
     const saved = currentLanguage();
     try {
       setLanguage("zh-Hans");
+      await resolver.resolve(device(golden));
+      await resolver.waitForMultiLanguageRefresh(golden.urn);
       const first = await resolver.resolve(device(golden));
       online = false;
       const stale = await resolver.resolve(device(golden));

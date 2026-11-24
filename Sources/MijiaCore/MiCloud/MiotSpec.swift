@@ -271,6 +271,7 @@ public actor MiotSpecStore: MiotSpecSource {
     private var indexTask: Task<([String: String], Bool), any Error>?
     private var specByType: [String: MiotDeviceSpec] = [:]
     private var translationsByType: [String: MiotSpecMultiLanguage] = [:]
+    private var translationTasksByType: [String: Task<Void, Never>] = [:]
     private var jitteredTTLByKey: [String: TimeInterval] = [:]
 
     public static var defaultCacheDirectory: URL {
@@ -461,7 +462,7 @@ public actor MiotSpecStore: MiotSpecSource {
         let cachedSpec = (try? Data(contentsOf: file)).flatMap { try? JSONDecoder().decode(MiotDeviceSpec.self, from: $0) }
         if let cachedSpec, isFreshCacheFile(file, cacheKey: type, baseMaxAge: specMaxAge) {
             specByType[type] = cachedSpec
-            loadCachedMultiLanguage(type: type)
+            loadCachedMultiLanguage(type: type, allowStale: false)
             return cachedSpec
         }
         do {
@@ -474,14 +475,15 @@ public actor MiotSpecStore: MiotSpecSource {
             let spec = try JSONDecoder().decode(MiotDeviceSpec.self, from: fetched)
             writeCache(fetched, to: file)
             specByType[type] = spec
-            // Translations are fetched only when this spec itself was fetched/refreshed.
-            await refreshMultiLanguage(type: type)
+            // Translations are fetched only when this spec itself was fetched/refreshed, but the
+            // optional request must never delay an otherwise usable spec.
+            startMultiLanguageRefresh(type: type)
             return spec
         } catch is CancellationError {
             throw CancellationError()
         } catch {
             guard let cachedSpec else { throw error }
-            loadCachedMultiLanguage(type: type)
+            loadCachedMultiLanguage(type: type, allowStale: true)
             logger.warning("MIoT spec refresh failed for \(type, privacy: .public), using stale cached spec: \(error.localizedDescription, privacy: .public)")
             return cachedSpec
         }
@@ -506,15 +508,34 @@ public actor MiotSpecStore: MiotSpecSource {
             .flatMap { try? JSONDecoder().decode(MiotSpecMultiLanguage.self, from: $0) }
     }
 
-    private func loadCachedMultiLanguage(type: String) {
-        guard translationsByType[type] == nil else { return }
-        if let cached = cachedMultiLanguage(type: type) { translationsByType[type] = cached }
+    private func multiLanguageCacheKey(for type: String) -> String {
+        "__multilanguage_v\(Self.multiLanguageCacheVersion)__:\(type)"
+    }
+
+    private func startMultiLanguageRefresh(type: String) {
+        translationTasksByType[type] = Task { await self.refreshMultiLanguage(type: type) }
+    }
+
+    /// Test hook: lets a spec resolve without waiting on the optional translation, then await it.
+    internal func waitForMultiLanguageRefresh(type: String) async {
+        await translationTasksByType[type]?.value
+    }
+
+    private func loadCachedMultiLanguage(type: String, allowStale: Bool) {
+        guard translationsByType[type] == nil, let cached = cachedMultiLanguage(type: type) else { return }
+        let file = multiLanguageCacheFile(type: type)
+        // A stale cache is only reused when the spec refresh itself failed (offline).
+        if allowStale || isFreshCacheFile(
+            file, cacheKey: multiLanguageCacheKey(for: type), baseMaxAge: specMaxAge
+        ) {
+            translationsByType[type] = cached
+        }
     }
 
     /// Official translations are best effort: a failed fetch leaves the raw spec untouched.
     private func refreshMultiLanguage(type: String) async {
         let file = multiLanguageCacheFile(type: type)
-        let key = "__multilanguage_v\(Self.multiLanguageCacheVersion)__:\(type)"
+        let key = multiLanguageCacheKey(for: type)
         if let cached = cachedMultiLanguage(type: type),
            isFreshCacheFile(file, cacheKey: key, baseMaxAge: specMaxAge) {
             translationsByType[type] = cached
@@ -532,9 +553,9 @@ public actor MiotSpecStore: MiotSpecSource {
             translationsByType[type] = document
         } catch is CancellationError {
             // Do not discard an otherwise usable spec just because translation was cancelled.
-            loadCachedMultiLanguage(type: type)
+            loadCachedMultiLanguage(type: type, allowStale: true)
         } catch {
-            loadCachedMultiLanguage(type: type)
+            loadCachedMultiLanguage(type: type, allowStale: true)
             logger.warning("MIoT multiLanguage refresh failed for \(type, privacy: .public), keeping cached or raw descriptions: \(error.localizedDescription, privacy: .public)")
         }
     }
