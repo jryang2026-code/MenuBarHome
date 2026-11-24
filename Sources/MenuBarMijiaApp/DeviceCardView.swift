@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import MijiaCore
 
@@ -1179,6 +1180,7 @@ public struct DeviceCardView: View {
 
     private func cameraDrawer(_ spec: CameraSpec) -> some View {
         VStack(alignment: .leading, spacing: 9) {
+            CameraStillWall(store: store)
             ScrollView(.horizontal, showsIndicators: false) {
                 AdaptiveGlassContainer(spacing: 6) {
                     HStack(spacing: 6) {
@@ -1245,5 +1247,63 @@ public struct DeviceCardView: View {
                 .padding(-6)
             }
         }
+    }
+}
+
+private struct CameraStillWall: View {
+    let store: HomeStore
+
+    private var cameras: [SmartDevice] {
+        store.cameraStillWallCameras()
+    }
+
+    var body: some View {
+        let _ = store.cameraEventRevision
+        if cameras.contains(where: { store.cameraEventStore.latestEvent(for: $0.id) != nil }) {
+            LazyVGrid(columns: [GridItem(.flexible(), spacing: 6), GridItem(.flexible(), spacing: 6)], spacing: 6) {
+                ForEach(cameras) { camera in
+                    Button { store.openCameraLiveView(camera.id) } label: {
+                        CameraStillTile(camera: camera, store: store)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!camera.isOnline)
+                }
+            }
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel(L10n.tr("摄像头事件画面", "Camera event stills"))
+        }
+    }
+}
+
+private struct CameraStillTile: View {
+    let camera: SmartDevice
+    let store: HomeStore
+
+    var body: some View {
+        let event = store.cameraEventStore.latestEvent(for: camera.id)
+        ZStack(alignment: .bottomLeading) {
+            if let event, let data = store.cameraEventStore.snapshotData(for: event), let image = NSImage(data: data) {
+                Image(nsImage: image)
+                    .resizable()
+                    .aspectRatio(16 / 9, contentMode: .fill)
+            } else {
+                Rectangle().fill(Color.black.opacity(0.18))
+                Image(systemName: "camera.viewfinder")
+                    .font(.system(size: 24))
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            Text(camera.name)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 4)
+                .background(.black.opacity(0.55))
+        }
+        .frame(minHeight: 74, maxHeight: 110)
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.white.opacity(0.12)))
+        .contentShape(RoundedRectangle(cornerRadius: 8))
+        .accessibilityLabel(Text(L10n.format("查看 %@ 实时画面", "View live feed for %@", camera.name)))
     }
 }
