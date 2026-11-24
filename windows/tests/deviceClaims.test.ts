@@ -41,11 +41,10 @@ describe("shared MIoT claim rules (Shared/deviceClaims.json)", () => {
     assert.equal(CLAIM_LADDER.length, 45);
     assert.equal(CLAIM_LADDER[0], "air-conditioner");
     assert.equal(CLAIM_LADDER.at(-1), "temperature-humidity-sensor");
-    // Windows renders the two rungs macOS has no builder for; the document says so explicitly.
     const tv = DEVICE_CLAIMS.ladder.find((entry) => entry.service === "television");
     const stb = DEVICE_CLAIMS.ladder.find((entry) => entry.service === "stb");
-    assert.deepEqual(tv?.renderers, ["windows"]);
-    assert.deepEqual(stb?.renderers, ["windows"]);
+    assert.equal(tv?.renderers, undefined);
+    assert.equal(stb?.renderers, undefined);
     assert.deepEqual([...APPLIANCE_SERVICE_NAMES], [...DEVICE_CLAIMS.applianceServices]);
     assert.ok(APPLIANCE_SERVICE_NAMES.includes("cleanfly-dryer"));
   });

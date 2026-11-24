@@ -2272,16 +2272,38 @@ extension HomeStore {
             )
 
         case (.power(let on), .tv(var s)):
+            guard s.powerWritable else { return nil }
             let wasOn = s.state != "off" && s.state != "standby"
-            let powerEntity = LGWebOSProtocol.isLGEntity(s.mediaEntityId) ? LGWebOSProtocol.powerEntityId : s.mediaEntityId
-            let restore = DeviceCommand.setSwitch(entityId: powerEntity, isOn: wasOn)
+            let isLG = LGWebOSProtocol.isLGEntity(s.mediaEntityId)
+            let powerCommand: DeviceCommand = if isLG {
+                .setSwitch(entityId: LGWebOSProtocol.powerEntityId, isOn: on)
+            } else if on, let btnId = s.turnOnButtonId {
+                .pressButton(entityId: btnId)
+            } else if on, let actionId = s.powerOnActionId {
+                .pressButton(entityId: actionId)
+            } else if !on, let actionId = s.powerOffActionId {
+                .pressButton(entityId: actionId)
+            } else {
+                .setSwitch(entityId: s.mediaEntityId, isOn: on)
+            }
+            let restoreCommand: DeviceCommand = if isLG {
+                .setSwitch(entityId: LGWebOSProtocol.powerEntityId, isOn: wasOn)
+            } else if wasOn, let btnId = s.turnOnButtonId {
+                .pressButton(entityId: btnId)
+            } else if wasOn, let actionId = s.powerOnActionId {
+                .pressButton(entityId: actionId)
+            } else if !wasOn, let actionId = s.powerOffActionId {
+                .pressButton(entityId: actionId)
+            } else {
+                .setSwitch(entityId: s.mediaEntityId, isOn: wasOn)
+            }
             s.state = on ? "on" : "standby"
             if on { s.isScreenOff = false }
             updated.kind = .tv(s)
             return AssistantEffect(
                 updated: updated,
-                command: .setSwitch(entityId: powerEntity, isOn: on),
-                restore: [restore]
+                command: powerCommand,
+                restore: [restoreCommand]
             )
 
 
