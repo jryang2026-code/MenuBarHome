@@ -1,3 +1,4 @@
+import { executeMiScene, miSceneAccount } from "./miCloud/scenes.js";
 import { t } from "./i18n.js";
 import { HaBlockedRequestError, getHaScopeLifecyclePhase, haConnectionScope } from "./haTransportGate.js";
 import type { HomeAssistantClient } from "./homeAssistant.js";
@@ -96,7 +97,8 @@ export class HomeAssistantProvider implements HomeProvider {
 }
 
 export interface MiCloudProviderDependencies {
-  readonly client: Pick<MiCloudClient, "setProps" | "getProps" | "action">;
+  readonly client: Pick<MiCloudClient, "setProps" | "getProps" | "action"> & Partial<Pick<MiCloudClient, "runManualScene">>;
+  readonly sceneForEntity?: (entityId: string) => import("./models.js").HomeScene | undefined;
   readonly specResolver: Pick<MiotSpecResolver, "resolve">;
   /** The card whose controls own this entity id, or undefined when no card does. */
   readonly deviceForEntity: (entityId: string) => SmartDevice | undefined;
@@ -104,13 +106,21 @@ export interface MiCloudProviderDependencies {
 
 export class MiCloudProvider implements HomeCommandProvider {
   static readonly capabilities: ReadonlySet<HomeProviderCapability> = new Set([
-    "readSnapshot", "control", "cameras",
+    "readSnapshot", "control", "scenes", "cameras",
   ]);
 
   constructor(private readonly dependencies: MiCloudProviderDependencies) {}
 
   async execute(command: DeviceCommand, options: ExecuteOptions = {}): Promise<boolean | null> {
     const { client, specResolver, deviceForEntity } = this.dependencies;
+    if (command.kind === "activateScene" && miSceneAccount(command.entityId)) {
+      if (!client.runManualScene) throw new Error("Xiaomi scenes unavailable");
+      return executeMiScene(
+        { runManualScene: client.runManualScene.bind(client) },
+        this.dependencies.sceneForEntity?.(command.entityId),
+        options.beforeSend,
+      );
+    }
     const device = deviceForEntity(command.entityId);
     if (!device) throw new Error(t("无法找到指令对应的设备"));
     const spec = await specResolver.resolve({

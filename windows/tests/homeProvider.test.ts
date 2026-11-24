@@ -34,7 +34,7 @@ it("reports the active source set for zero, one, and two snapshots", () => {
 
 it("declares the existing capabilities of both Windows backends", () => {
   assert.deepEqual(HomeAssistantProvider.capabilities, new Set(["readSnapshot", "control", "scenes", "cameras"]));
-  assert.deepEqual(MiCloudProvider.capabilities, new Set(["readSnapshot", "control", "cameras"]));
+  assert.deepEqual(MiCloudProvider.capabilities, new Set(["readSnapshot", "control", "scenes", "cameras"]));
 });
 
 it("maps Home Assistant and Xiaomi errors to the same adapter codes", () => {

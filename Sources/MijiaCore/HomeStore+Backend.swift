@@ -464,7 +464,7 @@ extension HomeStore {
                     return nil
                 })
                 snapshot.devices.removeAll { disabledHADeviceIds.contains($0.id) }
-                snapshot.scenes = []
+                snapshot.scenes.removeAll { MiCloudScene.accountID(for: $0.entityId) == nil }
                 snapshot.sourceStatuses.removeValue(forKey: .homeAssistant)
                 snapshot.localNetworkBlockedFeatures.remove(.homeAssistant)
                 snapshot.activeBackends.remove(.homeAssistant)
@@ -1567,7 +1567,7 @@ extension HomeStore {
         sourceStatuses.removeValue(forKey: .homeAssistant)
         connectedBackends.remove(.homeAssistant)
         if homeBackend != .demo {
-            scenes = []
+            scenes.removeAll { MiCloudScene.accountID(for: $0.entityId) == nil }
             tearDownHACameras(cameraTeardownIds)
         }
         if homeBackend != .demo, hasManagedHAProvider {

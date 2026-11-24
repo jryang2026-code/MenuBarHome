@@ -1,3 +1,4 @@
+import { decodeMiScenes, type MiCloudScene } from "./scenes.js";
 import { t } from "../i18n.js";
 import { MiCloudCrypto } from "../miCloudCrypto.js";
 import {
@@ -146,6 +147,13 @@ export interface MiotActionCall {
   readonly siid: number;
   readonly aiid: number;
   readonly inputs: readonly unknown[];
+}
+
+const sceneAPI = "appgateway/miot/appsceneservice/AppSceneService";
+
+function numericMiId(raw: string): number | string {
+  const parsed = Number(raw);
+  return /^\d+$/.test(raw) && Number.isSafeInteger(parsed) ? parsed : raw;
 }
 
 export class MiCloudClient {
@@ -367,7 +375,7 @@ export class MiCloudClient {
         // A home with no rooms and no dids still matters when the cloud names its owner: only
         // `withHomeDeviceLists` (`discovery.ts`) can list its devices, and it needs a room to learn the pair
         // (home id, owner uid) from. Without this entry such a shared home is invisible (#76, #67).
-        if (homeId && roomCount === 0 && ownerUid) {
+        if (homeId && roomCount === 0 && (!shared || ownerUid)) {
           rooms.push({ id: `home_${homeId}`, name: "", dids: [], homeId, homeName, ...sharedFlag, ...ownerFlag });
         }
       }
@@ -403,6 +411,20 @@ export class MiCloudClient {
    * `v2/home/device_list_page` also returns the split keys of multi-key Mesh panels, which
    * `home/device_list` omits even with `get_split_device`; fall back to the latter on failure.
    */
+  async manualScenes(homeId: string, ownerUid: string): Promise<MiCloudScene[]> {
+    const result = await this.request(`${sceneAPI}/GetSimpleSceneList`, {
+      app_version: 12, get_type: 2, home_id: homeId, owner_uid: numericMiId(ownerUid),
+    });
+    return decodeMiScenes(result, homeId, ownerUid);
+  }
+
+  async runManualScene(scene: MiCloudScene): Promise<void> {
+    await this.request(`${sceneAPI}/NewRunScene`, {
+      scene_id: scene.id, scene_type: 2, phone_id: "null",
+      home_id: scene.homeId, owner_uid: numericMiId(scene.ownerUid),
+    });
+  }
+
   async deviceList(): Promise<MiDeviceRecord[]> {
     try {
       return await this.deviceListPaged();
@@ -585,16 +607,11 @@ export class MiCloudClient {
    */
   async homeDevices(homeId: string, ownerUid: string): Promise<MiDeviceRecord[]> {
     const records: MiDeviceRecord[] = [];
-    const asNumericId = (raw: string): number | string => {
-      if (!/^\d+$/.test(raw)) return raw;
-      const parsed = Number(raw);
-      return Number.isSafeInteger(parsed) ? parsed : raw;
-    };
     let startDid = "";
     for (let page = 0; page < 20; page++) {
       const data: Record<string, unknown> = {
-        home_owner: asNumericId(ownerUid),
-        home_id: asNumericId(homeId),
+        home_owner: numericMiId(ownerUid),
+        home_id: numericMiId(homeId),
         limit: 300,
         get_split_device: true,
         support_smart_home: true,

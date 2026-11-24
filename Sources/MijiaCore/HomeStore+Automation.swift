@@ -149,7 +149,7 @@ extension HomeStore {
     /// Scenes an external entry point may list and trigger: empty when Home Assistant is turned off
     /// outside demo mode.
     public var visibleScenes: [HomeScene] {
-        (homeBackend == .demo || isHAConnectionEnabled) ? scenes : []
+        scenes.filter { homeBackend == .demo || evaluateSceneControlGate(sceneId: $0.id).allowed }
     }
 
     /// Runs one automation rule through the same optimistic-update, dispatch, rollback, and undo

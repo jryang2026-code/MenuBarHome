@@ -1841,6 +1841,12 @@ extension HomeStore {
     }
 
     private func makeSceneReference(from scene: HomeScene) -> SceneReference {
+        if let scope = MiCloudScene.accountID(for: scene.entityId) {
+            return SceneReference(
+                id: scene.id, name: scene.name, connection: .xiaomiCloud, sourceScope: scope,
+                isSourceAvailable: isScopeConfiguredAndAvailable(connection: .xiaomiCloud, scope: scope)
+            )
+        }
         let haManaged = hasHASource || explicitlyDisabledConnections.contains(.homeAssistant)
         let conn: ConnectionCapabilityID? = (homeBackend != .demo && haManaged) ? .homeAssistant : nil
         let scope = (homeBackend != .demo && haManaged)

@@ -399,6 +399,7 @@ export interface EnvironmentReading {
 }
 
 export interface HomeScene {
+  readonly miScene?: import("./miCloud/scenes.js").MiCloudScene;
   readonly id: string;
   readonly name: string;
   readonly entityId: string;

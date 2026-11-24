@@ -1,3 +1,4 @@
+import { miSceneRows, refreshMiScenes, type MiSceneSnapshot } from "../core/miCloud/scenes.js";
 import { markTimerSnapshotReady, scheduledCommandIdentity } from "./scheduledCommands.js";
 import type { MenuMijiaWindowsApp } from "./app.js";
 import { t } from "../core/i18n.js";
@@ -398,13 +399,10 @@ export interface HostSceneSource {
   readonly scenes?: readonly HomeScene[] | null;
 }
 
+const singleAccountSceneSnapshots = new WeakMap<MenuMijiaWindowsApp, { sourceRevision: number; snapshot: MiSceneSnapshot }>();
+
 /**
  * Every scene the host currently knows about, deduplicated by id (first source wins).
- *
- * In dual-source mode `host.scenes` only carries the merged Home Assistant scenes, because the
- * merge copies `haInput.home.scenes` and drops Xiaomi scenes. Xiaomi scenes therefore stay on the
- * multi-account merged/child snapshots and on the coordinator's last Mi input; leaving them out
- * makes disable preflight, capability indexing and the disabled-scene gates blind to them.
  */
 export function collectHostKnownScenes(
   host: DualSourceInspectableHost & HostSceneSource & { readonly multiAccountState?: HostMultiAccountState | null; readonly dualSourceCoordinator?: DualSourceCoordinator | null },
@@ -645,6 +643,9 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
         !skipLightGroupMembers,
       );
 
+      const previousSceneEntry = singleAccountSceneSnapshots.get(host);
+      let sceneSnapshot = previousSceneEntry?.sourceRevision === sourceRevisionAtStart
+        ? previousSceneEntry.snapshot : undefined;
       let rawDevices: readonly MiDeviceRecord[];
       let rooms: readonly MiRoom[];
       let specs: Readonly<Record<string, MiotDeviceSpec>>;
@@ -713,6 +714,9 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
           host.render();
         }
 
+        if (homeRoomsError === null) {
+          sceneSnapshot = await refreshMiScenes(client, allRooms, session.userId, sceneSnapshot, Date.now());
+        }
         specs = await host.specResolver.resolveForDevices(rawDevices);
         membersByGroup = await membershipPromise;
         if (cloudSnapshotIsStale(host, session, stateToken, syncRun, selectedHomeAtStart)) return;
@@ -762,6 +766,12 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
       host.miSessionExpired = false;
       host.lastMiCloudSyncFailed = false;
       host.markCloudValuesFresh();
+      if (sceneSnapshot) {
+        singleAccountSceneSnapshots.set(host, { sourceRevision: sourceRevisionAtStart, snapshot: sceneSnapshot });
+      }
+      const fetchedScenes = miSceneRows(sceneSnapshot, rooms, accountId);
+      const retainedScenes = host.scenes.filter((scene) => scene.sourceBackend === "xiaomiCloud" || scene.accountId !== undefined || !scene.id.startsWith("scene."));
+      host.scenes = [...fetchedScenes, ...retainedScenes.filter((scene) => !fetchedScenes.some((fresh) => fresh.id === scene.id))];
       host.groupOwnerByMemberDid = memberGroupOwners(membersByGroup as Map<string, string[]>);
       const merged = mergeHomeSnapshotRespectingLocks(host, home.devices, home.deviceFacets);
       host.devices = applyOrder(host.devices.map((device) => device.id), merged.devices);
@@ -942,7 +952,7 @@ export async function refreshHADevices(host: MenuMijiaWindowsApp, silent = false
             hiddenDevices: synthesized.hiddenIndexedDevices,
             safetySignalsByDeviceId: synthesized.safetySignalsByDeviceId,
           });
-      host.scenes = home.scenes;
+      host.scenes = [...host.scenes.filter((scene) => scene.sourceBackend === "xiaomiCloud" || scene.accountId !== undefined || !scene.id.startsWith("scene.")), ...home.scenes];
       if (haClient.lastRawSnapshot && typeof haClient.lastRawSnapshot === "object") {
         void ingestHostHASnapshotForDoorbell(host, haClient.lastRawSnapshot as HASnapshotLike);
       }
@@ -1491,6 +1501,7 @@ function applySynthesizedSnapshotToHost(
   },
   groupOwners: Map<string, string>,
 ): void {
+  host.scenes = [...host.scenes.filter((scene) => scene.sourceBackend === "xiaomiCloud" || scene.accountId !== undefined || !scene.id.startsWith("scene.")), ...home.scenes];
   host.groupOwnerByMemberDid = groupOwners;
   const merged = mergeHomeSnapshotRespectingLocks(host, home.devices, home.deviceFacets);
   host.devices = applyOrder(host.devices.map((device) => device.id), merged.devices);

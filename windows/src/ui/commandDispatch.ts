@@ -1,3 +1,6 @@
+import { miSceneAccount } from "../core/miCloud/scenes.js";
+import { requestMiSceneConfirmation } from "./sceneConfirmation.js";
+import { isWorkstationLockBlockingControl } from "./transport.js";
 import type { MenuMijiaWindowsApp } from "./app.js";
 import type { UndoAction } from "./appTypes.js";
 import type { HabitRecordingReceipt } from "../core/assistant.js";
@@ -869,6 +872,14 @@ export async function applyCommand(
       return false;
     }
   }
+  if (command.kind === "activateScene" && miSceneAccount(command.entityId) !== null) {
+    const scene = host.scenes.find((row) => row.entityId === command.entityId && row.miScene);
+    if (!scene || await isWorkstationLockBlockingControl(host) || sourceRevision !== host.sourceRevision) return false;
+    if (!(await requestMiSceneConfirmation(host, scene, command))) return false;
+    if (await isWorkstationLockBlockingControl(host) || sourceRevision !== host.sourceRevision ||
+        !host.scenes.some((row) => row.entityId === scene.entityId && row.miScene &&
+          row.miScene.ownerUid === scene.miScene?.ownerUid)) return false;
+  }
   if (targetDeviceId !== null) {
     invalidateEchoReadBackForDevice(host, targetDeviceId);
   }
@@ -1195,6 +1206,7 @@ function buildXiaomiHomeProvider(host: MenuMijiaWindowsApp): HomeCommandProvider
     const deviceId = deviceOwningEntityId(host.devices, host.deviceFacets, entityId);
     return host.devices.find((device) => device.id === deviceId);
   };
+  const sceneForEntity = (entityId: string) => host.scenes.find((scene) => scene.entityId === entityId);
   const multiState = getHostMiAccountsState(host);
   const accounts = host.miAccountsOverride ?? multiState?.accounts ?? [];
   const enabledAccounts = resolveEnabledMiAccountsForHost(host, accounts);
@@ -1206,6 +1218,7 @@ function buildXiaomiHomeProvider(host: MenuMijiaWindowsApp): HomeCommandProvider
       devices: host.devices,
       specResolver: host.specResolver,
       deviceForEntity,
+      sceneForEntity,
       transport: host.transport,
     });
   }
@@ -1225,6 +1238,8 @@ function buildXiaomiHomeProvider(host: MenuMijiaWindowsApp): HomeCommandProvider
     client: new MiCloudClient(session, host.transport),
     specResolver: host.specResolver,
     deviceForEntity,
+    sceneForEntity: (entityId) => miSceneAccount(entityId) === miAccountId(session)
+      ? sceneForEntity(entityId) : undefined,
   });
 }
 

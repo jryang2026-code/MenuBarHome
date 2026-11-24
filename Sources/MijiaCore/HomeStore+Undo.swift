@@ -101,6 +101,7 @@ extension HomeStore {
 
     @discardableResult
     public func triggerScene(_ scene: HomeScene) -> Task<Bool, Never> {
+        guard !rejectControlWhileLocked() else { return Task { false } }
         if let msg = capabilitySceneControlRejectionMessage(forSceneIdOrName: scene.id) {
             showToast(msg, isError: true)
             return Task { false }
@@ -122,7 +123,9 @@ extension HomeStore {
         return Task {
             do {
                 try await executeDeviceCommand(.activateScene(entityId: scene.entityId))
-                confirmManualControl(intents: [.init(targetId: scene.id, operation: .activateScene)])
+                if MiCloudScene.accountID(for: scene.entityId) == nil {
+                    confirmManualControl(intents: [.init(targetId: scene.id, operation: .activateScene)])
+                }
                 showToast(L10n.tr("已触发场景：\(scene.name)", "Activated scene: \(scene.name)"))
                 return true
             } catch let blocked as CapabilityControlBlockedError {
