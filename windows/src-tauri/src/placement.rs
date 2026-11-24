@@ -94,6 +94,66 @@ pub fn rect_overlaps_2d(a: Rect, b: Rect) -> bool {
         && a.bottom() > b.y
 }
 
+/// Whether `point` falls inside `rect` expanded outward by `pad_px` physical pixels on every side.
+pub fn point_in_expanded_rect(point: (i32, i32), rect: Rect, pad_px: i32) -> bool {
+    if rect.width <= 0 || rect.height <= 0 {
+        return false;
+    }
+    let pad = pad_px.max(0);
+    point.0 >= rect.x.saturating_sub(pad)
+        && point.0 <= rect.right().saturating_add(pad)
+        && point.1 >= rect.y.saturating_sub(pad)
+        && point.1 <= rect.bottom().saturating_add(pad)
+}
+
+/// Minimum gap (physical pixels) between a tray icon rect and the taskbar edge inside `work`
+/// to classify the icon as living in the floating Win11 overflow flyout (`^`) rather than on the
+/// docked taskbar strip.
+pub const OVERFLOW_TRAY_EDGE_GAP_PX: i32 = 4;
+
+/// Detects whether a tray icon rect comes from the Win11 overflow flyout (`^`), which floats
+/// completely inside `work` away from the taskbar edge. Anchoring to that transient rect would
+/// leave the panel suspended in mid-air after the overflow popup closes.
+pub fn is_overflow_tray_rect(work: Rect, tray_rect: Rect, edge: TaskbarEdge) -> bool {
+    if work.width <= 0 || work.height <= 0 || tray_rect.width <= 0 || tray_rect.height <= 0 {
+        return false;
+    }
+    let inside_work = tray_rect.x >= work.x
+        && tray_rect.y >= work.y
+        && tray_rect.right() <= work.right()
+        && tray_rect.bottom() <= work.bottom();
+    if !inside_work {
+        return false;
+    }
+    match edge {
+        TaskbarEdge::Bottom => work.bottom().saturating_sub(tray_rect.bottom()) > OVERFLOW_TRAY_EDGE_GAP_PX,
+        TaskbarEdge::Top => tray_rect.y.saturating_sub(work.y) > OVERFLOW_TRAY_EDGE_GAP_PX,
+        TaskbarEdge::Left => tray_rect.x.saturating_sub(work.x) > OVERFLOW_TRAY_EDGE_GAP_PX,
+        TaskbarEdge::Right => work.right().saturating_sub(tray_rect.right()) > OVERFLOW_TRAY_EDGE_GAP_PX,
+        TaskbarEdge::None => false,
+    }
+}
+
+/// Resolves the effective tray anchor point for `place()`.
+///
+/// When `tray_rect` is valid and belongs to the floating overflow area, returns `None` so `place()`
+/// docks cleanly to the monitor's taskbar corner. Otherwise uses the tray icon rect's center (or
+/// falls back to the raw click cursor when no valid rect is available).
+pub fn tray_anchor_point(
+    work: Rect,
+    tray_rect: Option<Rect>,
+    cursor: Option<(i32, i32)>,
+    edge: TaskbarEdge,
+) -> Option<(i32, i32)> {
+    if let Some(rect) = tray_rect.filter(|r| r.width > 0 && r.height > 0) {
+        if is_overflow_tray_rect(work, rect, edge) {
+            return None;
+        }
+        return Some((rect.x + rect.width / 2, rect.y + rect.height / 2));
+    }
+    cursor
+}
+
 /// Resolves the auto-hide taskbar edge and thickness for `monitor` only.
 ///
 /// Primary taskbar data from `ABM_GETTASKBARPOS` applies only when `primary_rect` overlaps
@@ -768,5 +828,72 @@ mod tests {
             ),
             Some((TaskbarEdge::Right, 48))
         );
+    }
+
+    #[test]
+    fn overflow_tray_rect_is_detected_and_docks_to_work_corner() {
+        let work_bottom = work_with(TaskbarEdge::Bottom);
+        // Normal tray icon sits on the bottom taskbar strip (outside `work`).
+        let docked_icon = Rect::new(1760, 1040, 32, 32);
+        assert!(!is_overflow_tray_rect(work_bottom, docked_icon, TaskbarEdge::Bottom));
+        assert_eq!(
+            tray_anchor_point(work_bottom, Some(docked_icon), Some((1770, 1050)), TaskbarEdge::Bottom),
+            Some((1776, 1056))
+        );
+
+        // Win11 overflow flyout (`^`) floats inside `work`, well above the bottom taskbar.
+        let overflow_icon = Rect::new(1680, 910, 40, 40);
+        assert!(is_overflow_tray_rect(work_bottom, overflow_icon, TaskbarEdge::Bottom));
+        assert_eq!(
+            tray_anchor_point(work_bottom, Some(overflow_icon), Some((1700, 930)), TaskbarEdge::Bottom),
+            None
+        );
+
+        // Icon flush within 4px of the work edge is not treated as floating overflow.
+        let flush_icon = Rect::new(1760, work_bottom.bottom() - 32 - 4, 32, 32);
+        assert!(!is_overflow_tray_rect(work_bottom, flush_icon, TaskbarEdge::Bottom));
+
+        // Top, left, and right taskbars also detect floating overflow rects.
+        assert!(is_overflow_tray_rect(
+            work_with(TaskbarEdge::Top),
+            Rect::new(1680, TASKBAR + 40, 40, 40),
+            TaskbarEdge::Top
+        ));
+        assert!(is_overflow_tray_rect(
+            work_with(TaskbarEdge::Left),
+            Rect::new(TASKBAR + 40, 900, 40, 40),
+            TaskbarEdge::Left
+        ));
+        assert!(is_overflow_tray_rect(
+            work_with(TaskbarEdge::Right),
+            Rect::new(1920 - TASKBAR - 80, 900, 40, 40),
+            TaskbarEdge::Right
+        ));
+        assert!(!is_overflow_tray_rect(
+            monitor(),
+            Rect::new(1680, 910, 40, 40),
+            TaskbarEdge::None
+        ));
+
+        // Degenerate or absent rect falls back to cursor coordinates.
+        assert_eq!(
+            tray_anchor_point(work_bottom, None, Some((1700, 1060)), TaskbarEdge::Bottom),
+            Some((1700, 1060))
+        );
+        assert_eq!(
+            tray_anchor_point(work_bottom, Some(Rect::new(0, 0, 0, 0)), Some((1700, 1060)), TaskbarEdge::Bottom),
+            Some((1700, 1060))
+        );
+    }
+
+    #[test]
+    fn point_in_expanded_rect_respects_padding_and_rejects_degenerate_rects() {
+        let icon = Rect::new(1760, 1040, 48, 48);
+        assert!(point_in_expanded_rect((1780, 1060), icon, 16));
+        assert!(point_in_expanded_rect((1744, 1024), icon, 16));
+        assert!(point_in_expanded_rect((1824, 1104), icon, 16));
+        assert!(!point_in_expanded_rect((1743, 1060), icon, 16));
+        assert!(!point_in_expanded_rect((1780, 1105), icon, 16));
+        assert!(!point_in_expanded_rect((0, 0), Rect::new(0, 0, 0, 32), 16));
     }
 }
