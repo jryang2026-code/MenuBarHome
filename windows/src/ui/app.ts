@@ -76,6 +76,7 @@ import {
   type HomeOption,
 } from "./panelPrefs.js";
 import { getPanelThemeProfile, normalizePanelTheme, type PanelTheme } from "./panelTheme.js";
+import { applyWinThemeToDom, parseWinThemeSnapshot, type WinThemeSnapshot } from "./winTheme.js";
 import { formatTemperatureValue } from "../core/temperature.js";
 import {
   allOffResultText,
@@ -280,6 +281,7 @@ export class MenuMijiaWindowsApp {
       });
     }
   }
+  public winThemeSnapshot: WinThemeSnapshot | null = null;
   /** Device id → 更多设置 rows from the latest snapshot (#5); empty until one arrives. */
   public deviceFacets: Readonly<Record<string, readonly FacetControl[]>> = {};
   /**
@@ -810,12 +812,47 @@ export class MenuMijiaWindowsApp {
       if (!this.root.isConnected || this.isStandaloneSettingsWindow) return;
       focusPanelOnActivate(this);
     };
+    const onWinThemeChanged = (event: Event) => {
+      if (!this.root.isConnected) return;
+      const parsed = parseWinThemeSnapshot((event as CustomEvent<unknown>).detail);
+      if (!parsed) return;
+      const backdropChanged =
+        Boolean(this.winThemeSnapshot?.supportsSystemBackdrop) !== parsed.supportsSystemBackdrop;
+      this.winThemeSnapshot = parsed;
+      this.applyNativeWinTheme();
+      if (backdropChanged && !this.isStandaloneSettingsWindow) {
+        this.lastAppliedPanelHeightKey = null;
+        this.syncPanelGeometry();
+      }
+      this.render();
+    };
     window.addEventListener("menumijia:open-update", onOpenUpdate);
     window.addEventListener("menumijia:activate", onActivate);
+    window.addEventListener("menumijia:win-theme-changed", onWinThemeChanged);
     this.appDisposers.push(
       () => window.removeEventListener("menumijia:open-update", onOpenUpdate),
       () => window.removeEventListener("menumijia:activate", onActivate),
+      () => window.removeEventListener("menumijia:win-theme-changed", onWinThemeChanged),
     );
+    const themeInvoke = window.__TAURI_INTERNALS__?.invoke;
+    if (themeInvoke) {
+      void themeInvoke<unknown>("win_theme_state")
+        .then((raw) => {
+          if (!this.root.isConnected) return;
+          const parsed = parseWinThemeSnapshot(raw);
+          if (!parsed) return;
+          const backdropChanged =
+            Boolean(this.winThemeSnapshot?.supportsSystemBackdrop) !== parsed.supportsSystemBackdrop;
+          this.winThemeSnapshot = parsed;
+          this.applyNativeWinTheme();
+          if (backdropChanged && !this.isStandaloneSettingsWindow) {
+            this.lastAppliedPanelHeightKey = null;
+            this.syncPanelGeometry();
+          }
+          this.render();
+        })
+        .catch(() => undefined);
+    }
     if (!this.isStandaloneSettingsWindow) {
       this.applyPanelHeight();
       this.syncPanelPlacement();
@@ -825,6 +862,9 @@ export class MenuMijiaWindowsApp {
     this.bindLifecycleRecovery();
     this.restoreUpdateState();
     this.render();
+    if (!this.isStandaloneSettingsWindow) {
+      this.notifyPanelReady();
+    }
     if (this.isStandaloneSettingsWindow && initialSettingsAnchor) {
       highlightSettingsAnchor(this.root, initialSettingsAnchor);
     }
@@ -1884,9 +1924,19 @@ export class MenuMijiaWindowsApp {
 
   public get effectiveAppearance(): "light" | "dark" {
     const prefersLight =
-      typeof window.matchMedia === "function" &&
-      window.matchMedia("(prefers-color-scheme: light)").matches;
+      this.winThemeSnapshot && this.winThemeSnapshot.windowsBuild > 0
+        ? this.winThemeSnapshot.appsUseLightTheme
+        : typeof window.matchMedia === "function" &&
+          window.matchMedia("(prefers-color-scheme: light)").matches;
     return resolveAppearance(this.settings.appearance, prefersLight);
+  }
+
+  public applyNativeWinTheme(): void {
+    applyWinThemeToDom(this.root, this.root.ownerDocument?.documentElement ?? null, this.winThemeSnapshot, {
+      panelTheme: normalizePanelTheme(this.settings.panelTheme),
+      effectiveAppearance: this.effectiveAppearance,
+      isStandaloneSettingsWindow: this.isStandaloneSettingsWindow,
+    });
   }
 
   public get layout(): LayoutPrefs {
@@ -1922,6 +1972,7 @@ export class MenuMijiaWindowsApp {
       this.isRoomBrowseMenuOpen = false;
     }
     this.root.dataset.panelTheme = normalizePanelTheme(this.settings.panelTheme);
+    this.applyNativeWinTheme();
     this.pipeline.commitRender(this);
     if (this.activeSheet === "settings") {
       restoreActiveSettingsHighlight(this.root);
@@ -2651,7 +2702,8 @@ export class MenuMijiaWindowsApp {
     const theme = normalizePanelTheme(this.settings.panelTheme);
     const h = PANEL_HEIGHTS.find((item) => item.id === this.settings.panelHeight) ?? PANEL_HEIGHTS[1]!;
     this.panelGeometryUpdates = this.panelGeometryUpdates.then(async () => {
-      const key = `${theme}:${h.px}:${this.panelMonitorGeometryKey()}`;
+      const backdropFlag = this.winThemeSnapshot?.supportsSystemBackdrop ? "1" : "0";
+      const key = `${theme}:${backdropFlag}:${h.px}:${this.panelMonitorGeometryKey()}`;
       if (this.lastAppliedPanelHeightKey === key) return;
       this.lastAppliedPanelHeightKey = key;
       try {
@@ -2665,6 +2717,20 @@ export class MenuMijiaWindowsApp {
 
   public applyPanelHeight(): void {
     this.syncPanelGeometry();
+  }
+
+  private notifyPanelReady(): void {
+    const invoke = window.__TAURI_INTERNALS__?.invoke;
+    if (!invoke) return;
+    const signal = () => {
+      if (!this.root.isConnected) return;
+      void invoke("panel_ready").catch(() => undefined);
+    };
+    if (typeof requestAnimationFrame === "function") {
+      requestAnimationFrame(() => signal());
+    } else {
+      setTimeout(signal, 0);
+    }
   }
 
   /** The saved API key, isolated per provider preset and bound to custom host (#19, §6). */
