@@ -15,6 +15,7 @@ export interface ExecuteOptions {
    * provider was resolving it.
    */
   readonly beforeSend?: () => void;
+  readonly beforeFallback?: () => void | Promise<void>;
 }
 
 /** The dispatch surface shared by all built-in sources (ADR-0020). */
@@ -131,12 +132,13 @@ export class MiCloudProvider implements HomeCommandProvider {
       specType: null,
     });
     const mapped = MiotCommandMapper.map(command, spec);
+    const beforeFallback = options.beforeFallback ?? options.beforeSend;
     options.beforeSend?.();
     if (mapped.kind === "action") {
-      await client.action(mapped.call);
+      await client.action(mapped.call, beforeFallback);
       return null;
     }
-    await client.setProps(mapped.writes);
+    await client.setProps(mapped.writes, beforeFallback);
     if (!options.readBackPower) return null;
     const power = mapped.writes.find((write) => {
       if (typeof write.value === "boolean") return true;
