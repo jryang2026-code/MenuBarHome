@@ -147,6 +147,7 @@ struct AutomationTriggerSourceGuardTests {
             .awayArbitrator: (arbitratorSource, "public struct AwayArbitrator"),
             .screenParametersChanged: (engineSource, "NSApplication.didChangeScreenParametersNotification"),
             .macContextObserver: (observerSource, "final class MacContextObserver: MacContextProviding"),
+            .workspaceDidActivateApplication: (engineSource, "NSWorkspace.didActivateApplicationNotification"),
         ]
         for source in AutomationTriggerSource.allCases {
             let pair = try #require(requiredSourceMarkers[source])
@@ -171,7 +172,7 @@ struct AutomationTriggerSourceGuardTests {
                     arbitratorSource.contains(".\(trigger.rawValue)"),
                     "AwayArbitrator must map \(trigger.rawValue)"
                 )
-            } else if sources.contains(.screenParametersChanged) {
+            } else if sources.contains(.screenParametersChanged) || sources.contains(.workspaceDidActivateApplication) {
                 #expect(
                     engineSource.contains(".\(trigger.rawValue)"),
                     "AutomationEngine must dispatch \(trigger.rawValue)"
@@ -629,5 +630,127 @@ struct AutomationTriggerSourceGuardTests {
         // First observation right after re-enable: camera already in use and schedule already in minute 08:30 -> both suppressed.
         await provider.emit(MacContextSnapshot(cameraInUse: true, isCameraUsageAvailable: true), at: scheduleNow.addingTimeInterval(5))
         #expect(await mock.executedCommands.isEmpty)
+    }
+
+    @Test("FrontmostApp source stays stopped when unused, warms up baseline, restores on leave, and stops when disabled")
+    func frontmostAppGuardsWarmupAndRestore() async throws {
+        let defaults = InMemoryUserDefaults()
+        let (store, mock) = try await makeStore(lightOn: true)
+        defer { store.stop() }
+        let provider = FakeMacContextProvider()
+        let (centers, workspace, _, _) = makeCenters()
+        var currentNow = Date(timeIntervalSince1970: 1_800_000_000)
+
+        let engine = AutomationEngine(
+            defaults: defaults,
+            contextProvider: provider,
+            environment: AutomationEnvironmentProbe(
+                isLidClosed: { false },
+                currentWiFi: { (nil, true) },
+                isScreenLocked: { false },
+                frontmostAppBundleID: { nil }
+            ),
+            notificationCenters: centers,
+            now: { currentNow }
+        )
+        engine.start(with: store)
+        defer { withExtendedLifetime(engine) {} }
+
+        // Off when no enabled rule uses FrontmostApp (even if another rule is enabled).
+        let awayRule = AutomationRule(trigger: .away, action: .devices(ids: [Self.lightId], isOn: false))
+        AutomationRuleStore(defaults: defaults).save([awayRule])
+        engine.rulesDidChange()
+        #expect(!engine.isObservingFrontmostApp)
+        #expect(!provider.isStarted)
+
+        // Enabling a movie rule starts FrontmostApp observation without starting context polling.
+        var movieRule = try #require(AutomationRuleTemplate.movie.makeRules().first)
+        movieRule.action = .devices(ids: [Self.lightId], isOn: false)
+        movieRule.isEnabled = true
+        AutomationRuleStore(defaults: defaults).save([movieRule])
+        engine.rulesDidChange()
+        #expect(engine.isObservingFrontmostApp)
+        #expect(!provider.isStarted)
+
+        func postActivate(_ bundleID: String) {
+            workspace.post(
+                name: NSWorkspace.didActivateApplicationNotification,
+                object: nil,
+                userInfo: [AutomationEngine.frontmostAppBundleIDUserInfoKey: bundleID]
+            )
+        }
+
+        // First observation only warms up baseline, even when it matches the chosen app.
+        postActivate("com.colliderli.iina")
+        await Task.yield()
+        #expect(await mock.executedCommands.isEmpty)
+
+        // Switching to an unrelated app does not fire frontmostAppBecame.
+        currentNow = currentNow.addingTimeInterval(5)
+        postActivate("com.apple.finder")
+        await Task.yield()
+        #expect(await mock.executedCommands.isEmpty)
+
+        // Switching to IINA fires the movie rule and turns off the study light.
+        currentNow = currentNow.addingTimeInterval(5)
+        postActivate("com.colliderli.iina")
+        #expect(await waitUntil { await mock.executedCommands.count == 1 })
+        #expect(store.devices.first(where: { $0.id == Self.lightId })?.isActiveOn == false)
+
+        // Leaving IINA triggers context restore and turns the study light back on.
+        currentNow = currentNow.addingTimeInterval(5)
+        postActivate("com.apple.finder")
+        #expect(await waitUntil { await mock.executedCommands.count == 2 })
+        #expect(store.devices.first(where: { $0.id == Self.lightId })?.isActiveOn == true)
+
+        // The same exit may also arrive through the generic trigger observer. Restoration is
+        // deduped at the shared restore entry point.
+        await engine.handle(trigger: .frontmostAppLeft, at: currentNow.addingTimeInterval(1))
+        #expect(await mock.executedCommands.count == 2)
+
+        // Disabling the FrontmostApp rule stops the source immediately.
+        movieRule.isEnabled = false
+        AutomationRuleStore(defaults: defaults).save([awayRule, movieRule])
+        engine.rulesDidChange()
+        #expect(!engine.isObservingFrontmostApp)
+    }
+
+    @Test("Meeting template camera rule restores context when camera stops being used")
+    func meetingTemplateRestoresOnCameraStop() async throws {
+        let defaults = InMemoryUserDefaults()
+        let (store, mock) = try await makeStore(lightOn: false)
+        defer { store.stop() }
+        let provider = FakeMacContextProvider()
+        let (centers, _, _, _) = makeCenters()
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+
+        var camRule = try #require(AutomationRuleTemplate.meeting.makeRules().first { $0.trigger == .cameraInUse })
+        camRule.action = .devices(ids: [Self.lightId], isOn: true)
+        camRule.isEnabled = true
+        AutomationRuleStore(defaults: defaults).save([camRule])
+
+        let engine = AutomationEngine(
+            defaults: defaults,
+            contextProvider: provider,
+            environment: AutomationContextEngineTests.unlockedEnvironment,
+            notificationCenters: centers,
+            now: { start }
+        )
+        engine.start(with: store)
+        defer { withExtendedLifetime(engine) {} }
+
+        // Baseline: camera off, light off.
+        await provider.emit(MacContextSnapshot(cameraInUse: false, isCameraUsageAvailable: true), at: start)
+        #expect(await mock.executedCommands.isEmpty)
+
+        // Camera turns on -> study light turns on.
+        await provider.emit(MacContextSnapshot(cameraInUse: true, isCameraUsageAvailable: true), at: start.addingTimeInterval(10))
+        #expect(await mock.executedCommands.count == 1)
+        #expect(store.devices.first(where: { $0.id == Self.lightId })?.isActiveOn == true)
+
+        // Camera turns off -> context stack restores study light back off.
+        await provider.emit(MacContextSnapshot(cameraInUse: false, isCameraUsageAvailable: true), at: start.addingTimeInterval(20))
+        #expect(await mock.executedCommands.count == 2)
+        #expect(store.devices.first(where: { $0.id == Self.lightId })?.isActiveOn == false)
     }
 }
