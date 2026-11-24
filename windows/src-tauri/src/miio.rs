@@ -220,6 +220,15 @@ impl MiIOClient {
         self.lock_inner().last_rtt_ms.get(did).copied()
     }
 
+    /// Clears cached LAN handshake sessions and RTT estimates after a network change or
+    /// system resume so stale IPs and device stamps are re-handshaked cleanly.
+    pub(crate) fn reset_sessions(&self) {
+        let mut g = self.lock_inner();
+        g.sessions.clear();
+        g.known_hardware_ids.clear();
+        g.last_rtt_ms.clear();
+    }
+
     pub(crate) async fn shutdown(&self) {
         if self.shut_down.swap(true, Ordering::AcqRel) { return; }
         {
@@ -755,6 +764,12 @@ fn contains_stream_url(value: &Value) -> bool {
 #[derive(Default)]
 pub(crate) struct MiIOState { client: Arc<MiIOClient> }
 
+impl MiIOState {
+    pub(crate) fn reset_for_network_change(&self) {
+        self.client.reset_sessions();
+    }
+}
+
 #[tauri::command]
 pub(crate) async fn miio_handshake(state: tauri::State<'_, MiIOState>, endpoint: MiIOEndpointInput) -> Result<MiIOHandshakeOutput, MiIOCommandError> {
     state.client.handshake(&endpoint).await.map_err(|e| e.to_command_error())
@@ -1009,5 +1024,45 @@ mod tests {
         )).unwrap();
         assert_eq!(discovered.get("1001").map(String::as_str), Some("192.168.1.10"));
         assert!(!discovered.contains_key("2002"));
+    }
+
+    #[test]
+    fn reset_sessions_clears_cached_handshakes_so_next_call_rehandshakes() {
+        let tok_hex = "0123456789abcdef0123456789abcdef";
+        let tok = validate_token(tok_hex).unwrap();
+        let hellos = Arc::new(AtomicU64::new(0));
+        let hellos_cb = hellos.clone();
+        let client = MiIOClient::new(Arc::new(MockTransport {
+            send_fn: Box::new(move |pkt, _, _, _| {
+                let hellos = hellos_cb.clone();
+                Box::pin(async move {
+                    if pkt == HELLO_PACKET {
+                        hellos.fetch_add(1, Ordering::SeqCst);
+                        return Ok(hello_reply(42, 100, &tok));
+                    }
+                    let (hdr, pt) = decode_packet(&pkt, &tok).unwrap();
+                    let req: Value = serde_json::from_slice(&pt).unwrap();
+                    let resp = serde_json::to_vec(&json!({
+                        "id": req["id"],
+                        "result": [{ "did": "42", "siid": 2, "piid": 1, "code": 0, "value": true }]
+                    })).unwrap();
+                    Ok(encode_packet(hdr.device_id, hdr.stamp + 1, &tok, &resp, 0).unwrap())
+                })
+            }),
+            bcast_fn: Box::new(|_, _, _| Box::pin(async { Ok(Vec::new()) })),
+        }));
+        let ep = MiIOEndpointInput { did: "42".into(), ip: "192.168.1.50".into(), token: tok_hex.into() };
+        let key = [MiIOPropKeyInput { did: "42".into(), siid: 2, piid: 1 }];
+        tauri::async_runtime::block_on(async {
+            client.get_props(&key, &ep).await.unwrap();
+            client.get_props(&key, &ep).await.unwrap();
+            assert_eq!(hellos.load(Ordering::SeqCst), 1);
+
+            client.reset_sessions();
+            assert_eq!(client.last_rtt_ms("42"), None);
+
+            client.get_props(&key, &ep).await.unwrap();
+            assert_eq!(hellos.load(Ordering::SeqCst), 2);
+        });
     }
 }

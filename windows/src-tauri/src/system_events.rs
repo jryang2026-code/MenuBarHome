@@ -136,6 +136,25 @@ pub(crate) fn system_power_status() -> Option<SystemPowerStatus> {
     read_power_status()
 }
 
+#[tauri::command]
+pub(crate) fn awake_time_ms() -> Option<u64> {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::System::WindowsProgramming::QueryUnbiasedInterruptTime;
+        let mut ticks = 0;
+        // The API writes one u64 of 100-nanosecond ticks and excludes suspend/hibernation.
+        let ok = unsafe { QueryUnbiasedInterruptTime(&mut ticks) } != 0;
+        unbiased_ticks_to_ms(ok, ticks)
+    }
+    #[cfg(not(windows))]
+    None
+}
+
+#[cfg(any(windows, test))]
+fn unbiased_ticks_to_ms(ok: bool, ticks: u64) -> Option<u64> {
+    ok.then_some(ticks / 10_000)
+}
+
 fn read_external_display_count() -> Option<u32> {
     use windows_sys::Win32::Devices::Display::{
         GetDisplayConfigBufferSizes, QueryDisplayConfig, DISPLAYCONFIG_MODE_INFO,
@@ -225,7 +244,8 @@ unsafe extern "system" fn on_power_broadcast(
     match kind {
         PBT_APMSUSPEND => emit_to_panel(&context.app, SYSTEM_SLEEP_SCRIPT),
         PBT_APMRESUMEAUTOMATIC | PBT_APMRESUMESUSPEND => {
-            emit_to_panel(&context.app, SYSTEM_WAKE_SCRIPT)
+            crate::network_monitor::notify_system_resume(&context.app);
+            emit_to_panel(&context.app, SYSTEM_WAKE_SCRIPT);
         }
         PBT_POWERSETTINGCHANGE if !setting.is_null() => {
             let broadcast = unsafe { &*(setting as *const POWERBROADCAST_SETTING) };
@@ -292,6 +312,12 @@ pub(crate) fn install_power_notifications(app: AppHandle) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn converts_awake_ticks_to_whole_milliseconds() {
+        assert_eq!(super::unbiased_ticks_to_ms(true, 150_009_999), Some(15_000));
+        assert_eq!(super::unbiased_ticks_to_ms(false, 0), None);
+    }
+
     use super::*;
 
     fn status(ac_line_status: u8, battery_flag: u8, battery_life_percent: u8) -> SystemPowerStatus {

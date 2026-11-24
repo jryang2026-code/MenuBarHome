@@ -30,6 +30,7 @@ export type STALE = typeof STALE;
 
 /** A point-in-time snapshot of the epoch; see `SourceEpoch.capture`. */
 export interface EpochToken {
+  readonly pollCapturedEpoch: number;
   /**
    * True iff the counter for `level` has not moved since capture. Because
    * every advance cascades downwards, a token current at `localWrite` is also
@@ -124,6 +125,7 @@ export class SourceEpoch {
       return this.localCount;
     };
     return {
+      pollCapturedEpoch: counts.localWrite,
       isCurrent: (level: EpochLevel = "localWrite") => countAt(level) === counts[level],
       guard: <T>(promise: Promise<T>, level: EpochLevel = "localWrite") =>
         promise.then((value: T) => (countAt(level) === counts[level] ? value : STALE)),

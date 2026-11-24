@@ -4,6 +4,23 @@ import Testing
 
 /// The provider seam: the store stops whatever provider it replaces through `HomeProvider`.
 struct ProviderSeamTests {
+    @Test("HA reconnect backoff uses away segments and resets after a topology restart")
+    func reconnectBackoffSegmentsAndReset() {
+        var backoff = HAReconnectBackoff()
+        #expect(backoff.next() == .milliseconds(800))
+        #expect(backoff.next() == .seconds(2))
+        #expect(backoff.next() == .seconds(4))
+        #expect(backoff.next() == .seconds(8))
+        #expect(backoff.next() == .seconds(30))
+        #expect(backoff.next() == .seconds(60))
+        #expect(backoff.next() == .seconds(120))
+        #expect(backoff.next() == .seconds(300))
+        #expect(backoff.next() == .seconds(300))
+        backoff.reset()
+        #expect(backoff.next() == .milliseconds(800))
+        #expect(backoff.next(localEndpoint: false) == .seconds(2))
+    }
+
     @Test("The composite stops both sources through the protocol")
     @MainActor
     func compositeShutsDownChildren() async throws {
@@ -141,6 +158,68 @@ struct ProviderSeamTests {
         #expect(transientStatuses.last == .connected)
         await transientProvider.shutdown()
     }
+
+    @Test("HAWebSocketProvider pong timeout cancels the stale socket and reconnects")
+    func pongTimeoutRestartsConnectionAndReconnects() async throws {
+        let attempts = ProviderTestCounter()
+        let firstSocket = ScriptedHandshakeSocket(frames: [
+            #"{"type":"auth_required"}"#,
+            #"{"type":"auth_ok"}"#,
+        ], autoReplyRegistries: true)
+        let secondSocket = ScriptedHandshakeSocket(frames: [
+            #"{"type":"auth_required"}"#,
+            #"{"type":"auth_ok"}"#,
+        ], autoReplyRegistries: true)
+        let pongGate = ProviderTransportSleepGate()
+        let intervalGate = ProviderTransportSleepGate()
+
+        let provider = HAWebSocketProvider(
+            baseURLString: "http://192.168.1.20:8123",
+            token: "good-token",
+            rediscover: { _ in [] },
+            allowsToken: { _ in true }
+        )
+        await provider.setTestSeams(
+            connectOverride: nil,
+            reconnectSleep: { _ in },
+            webSocketFactory: { _ in
+                attempts.increment() == 1 ? firstSocket : secondSocket
+            },
+            transportSleep: { duration in
+                if duration == .milliseconds(2500) {
+                    try await pongGate.sleep()
+                } else {
+                    try await intervalGate.sleep()
+                }
+            }
+        )
+
+        let events = provider.events()
+        var iterator = events.makeAsyncIterator()
+        while let event = await iterator.next() {
+            if case .statusChanged(.connected) = event { break }
+        }
+        #expect(attempts.value == 1)
+
+        await provider.setPollingContext(PollingContext(systemActive: false))
+        await provider.setPollingContext(PollingContext(systemActive: true))
+
+        await pongGate.waitUntilParked()
+        #expect(await firstSocket.sentTypes().contains("ping"))
+
+        await pongGate.release()
+
+        var reconnected = false
+        while let event = await iterator.next() {
+            if case .statusChanged(.connected) = event {
+                reconnected = true
+                break
+            }
+        }
+        #expect(reconnected)
+        #expect(attempts.value == 2)
+        await provider.shutdown()
+    }
 }
 
 final class ProviderTestCounter: @unchecked Sendable {
@@ -253,6 +332,7 @@ private actor GatedHandshakeSocket: HAWebSocketConnection {
 
 private actor ScriptedHandshakeSocket: HAWebSocketConnection {
     private var frames: [Data]
+    private var sent: [String] = []
     private let autoReplyRegistries: Bool
     private var waiter: CheckedContinuation<Data, Error>?
     private var isCancelled = false
@@ -266,6 +346,7 @@ private actor ScriptedHandshakeSocket: HAWebSocketConnection {
 
     func send(_ text: String) async throws {
         guard !isCancelled else { throw CancellationError() }
+        sent.append(text)
         guard autoReplyRegistries,
               let obj = try? JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any],
               let id = obj["id"] as? Int,
@@ -300,10 +381,60 @@ private actor ScriptedHandshakeSocket: HAWebSocketConnection {
         Task { await self.markCancelled() }
     }
 
+    func sentTypes() -> [String] {
+        sent.compactMap { raw in
+            (try? JSONSerialization.jsonObject(with: Data(raw.utf8)) as? [String: Any])?["type"] as? String
+        }
+    }
+
     private func markCancelled() {
         isCancelled = true
         waiter?.resume(throwing: CancellationError())
         waiter = nil
+    }
+}
+
+private actor ProviderTransportSleepGate {
+    private var waiters: [UUID: CheckedContinuation<Void, Error>] = [:]
+    private var parkedWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func sleep() async throws {
+        let token = UUID()
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+                if Task.isCancelled {
+                    cont.resume(throwing: CancellationError())
+                    return
+                }
+                waiters[token] = cont
+                let waiting = parkedWaiters
+                parkedWaiters.removeAll()
+                for waiter in waiting {
+                    waiter.resume()
+                }
+            }
+        } onCancel: {
+            Task { await self.cancel(token: token) }
+        }
+    }
+
+    func waitUntilParked() async {
+        if !waiters.isEmpty { return }
+        await withCheckedContinuation { cont in
+            parkedWaiters.append(cont)
+        }
+    }
+
+    func release() {
+        let active = waiters.values
+        waiters.removeAll()
+        for waiter in active {
+            waiter.resume()
+        }
+    }
+
+    private func cancel(token: UUID) {
+        waiters.removeValue(forKey: token)?.resume(throwing: CancellationError())
     }
 }
 

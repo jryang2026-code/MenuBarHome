@@ -1182,6 +1182,9 @@ public final class HomeStore {
     var optimisticFieldLocks: [OptimisticLockKey: OptimisticLockEntry] = [:]
     var optimisticFacetLocks: [String: OptimisticLockEntry] = [:]
     var optimisticLockRevision: [String: UInt64] = [:]
+    @ObservationIgnored var fieldWriteEpochs: [OptimisticLockKey: ContinuousClock.Instant] = [:]
+    @ObservationIgnored var facetWriteEpochs: [String: ContinuousClock.Instant] = [:]
+    @ObservationIgnored var writeEpochNow: @Sendable () -> ContinuousClock.Instant = { .now }
     var optimisticFieldRevisions: [OptimisticLockKey: UInt64] = [:]
     var optimisticFacetRevisions: [String: UInt64] = [:]
     @ObservationIgnored var hasCustomOptimisticNow = false

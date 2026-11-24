@@ -23,6 +23,7 @@ struct HAHomeSnapshot {
     private var devices: [HADeviceEntry] = []
     private var entities: [HAEntityEntry] = []
     private(set) var states: [String: HAEntityState] = [:]
+    private var stateCaptureEpochs: [String: ContinuousClock.Instant] = [:]
     private var pendingInitialResults: Set<Int> = [1, 2, 3, 4]
     private var rings: [DoorbellRing] = []
     /// Last valid press timestamp per doorbell entity. It survives `unavailable`, so a doorbell
@@ -86,7 +87,8 @@ struct HAHomeSnapshot {
         _ message: [String: JSONValue],
         isInitialStatesResult: Bool = false,
         isRefreshStatesResult: Bool = false,
-        typePrunePolicy: HATypePrunePolicy = .unpruned
+        typePrunePolicy: HATypePrunePolicy = .unpruned,
+        pollCapturedEpoch: ContinuousClock.Instant? = nil
     ) throws -> SynthesizedHome? {
         if message["type"]?.stringValue == "result", let id = message["id"]?.intValue {
             guard (1...4).contains(id) || isInitialStatesResult || isRefreshStatesResult else { return nil }
@@ -104,8 +106,18 @@ struct HAHomeSnapshot {
                 var nextStates: [String: HAEntityState] = [:]
                 for value in entries {
                     guard let state = Self.parseState(value) else { throw ReadError.invalidResponse }
+                    if let pollCapturedEpoch, let previousEpoch = stateCaptureEpochs[state.entityId], previousEpoch > pollCapturedEpoch {
+                        nextStates[state.entityId] = states[state.entityId]
+                        continue
+                    }
                     nextStates[state.entityId] = state
+                    if let pollCapturedEpoch { stateCaptureEpochs[state.entityId] = pollCapturedEpoch }
                     if let timestamp = DoorbellRing.timestamp(state) { doorbellTimestamps[state.entityId] = timestamp }
+                }
+                if let pollCapturedEpoch {
+                    for (entityId, epoch) in stateCaptureEpochs where epoch > pollCapturedEpoch {
+                        nextStates[entityId] = states[entityId]
+                    }
                 }
                 states = nextStates
                 if isInitialStatesResult { pendingInitialResults.remove(4) }
@@ -120,12 +132,17 @@ struct HAHomeSnapshot {
         } else {
             return nil
         }
-        return synthesizeCurrent(typePrunePolicy: typePrunePolicy)
+        guard var home = synthesizeCurrent(typePrunePolicy: typePrunePolicy) else { return nil }
+        if let pollCapturedEpoch {
+            home.devicePollCapturedEpochs = home.devicePollCapturedEpochs.mapValues { min($0, pollCapturedEpoch) }
+        }
+        return home
     }
 
     mutating func ingestStateChangedEvent(
         _ message: [String: JSONValue],
-        typePrunePolicy: HATypePrunePolicy = .unpruned
+        typePrunePolicy: HATypePrunePolicy = .unpruned,
+        capturedEpoch: ContinuousClock.Instant? = nil
     ) -> Bool {
         guard message["type"]?.stringValue == "event",
               case .object(let event) = message["event"],
@@ -135,7 +152,7 @@ struct HAHomeSnapshot {
         }
         if let newState = data["new_state"], let state = Self.parseState(newState) {
             guard Self.isSupportedSmartHomeDomain(state.entityId) else { return false }
-            return ingestLiveState(state, typePrunePolicy: typePrunePolicy)
+            return ingestLiveState(state, typePrunePolicy: typePrunePolicy, capturedEpoch: capturedEpoch)
         } else if data["new_state"] == .null {
             let entityId = data["entity_id"]?.stringValue ?? data["old_state"]?["entity_id"]?.stringValue
             guard let entityId, Self.isSupportedSmartHomeDomain(entityId) else { return false }
@@ -198,8 +215,13 @@ struct HAHomeSnapshot {
         return needsSynthesis
     }
 
-    private mutating func ingestLiveState(_ state: HAEntityState, typePrunePolicy: HATypePrunePolicy) -> Bool {
+    private mutating func ingestLiveState(
+        _ state: HAEntityState,
+        typePrunePolicy: HATypePrunePolicy,
+        capturedEpoch: ContinuousClock.Instant? = nil
+    ) -> Bool {
         let entityId = state.entityId
+        if let capturedEpoch { stateCaptureEpochs[entityId] = capturedEpoch }
         let previous = states.updateValue(state, forKey: entityId)
         guard Self.isSupportedSmartHomeDomain(entityId) else { return false }
         if let timestamp = DoorbellRing.timestamp(state), timestamp != doorbellTimestamps[entityId] {
@@ -241,8 +263,17 @@ struct HAHomeSnapshot {
         typePrunePolicy: HATypePrunePolicy = .unpruned
     ) -> SynthesizedHome? {
         guard pendingInitialResults.isEmpty else { return nil }
-        let home = DeviceSynthesizer.synthesize(areas: areas, devices: devices, entities: entities, states: states)
-        return applyTypePruning(to: home, policy: typePrunePolicy)
+        var home = DeviceSynthesizer.synthesize(areas: areas, devices: devices, entities: entities, states: states)
+        home = applyTypePruning(to: home, policy: typePrunePolicy)
+        for device in home.devices {
+            let keys = DeviceSynthesizer.haCardReadKeys(
+                for: device,
+                entities: DeviceSynthesizer.haCardEntities(cardIds: [device.id], entities: entities)[device.id] ?? [],
+                facets: home.deviceFacets[device.id] ?? []
+            )
+            home.devicePollCapturedEpochs[device.id] = keys.compactMap { stateCaptureEpochs[$0] }.max()
+        }
+        return home
     }
 
     /// Closed types leave synthesis while the subscription still tracks entities for policy changes.

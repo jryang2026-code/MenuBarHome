@@ -40,6 +40,43 @@ struct ControlWriteTests {
         return device
     }
 
+    @Test("A pre-write poll cannot take back a field after the lease expires")
+    func slowPollAfterLeaseExpiry() async throws {
+        let store = try await makeStore()
+        let writeEpoch = ContinuousClock.now
+        let writeDate = Date()
+        store.writeEpochNow = { writeEpoch }
+        store.optimisticNow = { writeDate }
+        _ = store.beginOptimisticWrite(from: Self.lamp, to: withBrightness(30), lock: .seconds(3))
+        store.optimisticNow = { writeDate.addingTimeInterval(4) }
+
+        var read = SynthesizedHome(devices: [withBrightness(80)])
+        read.devicePollCapturedEpochs["lamp"] = writeEpoch.advanced(by: .seconds(-1))
+        store.handleProviderEvent(.snapshotUpdated(read))
+        #expect(brightness(store) == 30)
+
+        read.devices = [withBrightness(55)]
+        read.devicePollCapturedEpochs["lamp"] = writeEpoch.advanced(by: .seconds(1))
+        store.handleProviderEvent(.snapshotUpdated(read))
+        #expect(brightness(store) == 55)
+    }
+
+    @Test("A click with an old online card immediately reports the live row's offline state")
+    func offlineClickNeverShowsAnOptimisticSwitch() async throws {
+        let store = try await makeStore()
+        var offline = Self.lamp
+        offline.isOnline = false
+        store.handleProviderEvent(.snapshotUpdated(SynthesizedHome(devices: [offline])))
+        #expect(store.togglePrimary(Self.lamp) == nil)
+        let displayed = try #require(store.devices.first { $0.id == offline.id })
+        #expect(displayed.kind == offline.kind)
+        #expect(store.toastNotice?.isError == true)
+
+        store.setLightBrightness("lamp", percent: 30)
+        #expect(brightness(store) == 80)
+        #expect(store.toastNotice?.isError == true)
+    }
+
     @Test("A failed send restores the previous row and drops the lock")
     func failedSendRollsBack() async throws {
         let store = try await makeStore()

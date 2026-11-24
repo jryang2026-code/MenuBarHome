@@ -734,6 +734,7 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
       const prunePlan = prunePlanFor(rawDevices, specs);
       const propKeys = prunePlan.readKeys;
 
+      const { pollCapturedEpoch } = host.sourceEpoch.capture();
       let values: Map<string, unknown>;
       try {
         values =
@@ -788,7 +789,9 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
       );
       host.scenes = [...retainedScenes, ...fetchedScenes];
       host.groupOwnerByMemberDid = memberGroupOwners(membersByGroup as Map<string, string[]>);
-      const merged = mergeHomeSnapshotRespectingLocks(host, home.devices, home.deviceFacets);
+      const merged = mergeHomeSnapshotRespectingLocks(
+        host, home.devices, home.deviceFacets, Date.now(), undefined, pollCapturedEpoch,
+      );
       host.devices = applyOrder(host.devices.map((device) => device.id), merged.devices);
       host.deviceFacets = merged.deviceFacets;
       if (
@@ -927,13 +930,14 @@ export async function refreshHADevices(host: MenuMijiaWindowsApp, silent = false
         host.settings.haToken !== token ||
         !isHostHaEnabled(host) ||
         getHostHaLifecyclePhase(host) !== "enabled" ||
-        !stateToken.isCurrent() ||
+        !stateToken.isCurrent("home") ||
         !syncRun.isCurrent()
       ) {
         return;
       }
       const haClient = new HomeAssistantClient(endpoint, token, host.haInvokeOverride ?? undefined);
       const prune = hostHaTypePruneOptions(host);
+      const { pollCapturedEpoch } = host.sourceEpoch.capture();
       const synthesized = await haClient.snapshotWithPrune(prune);
       const home = synthesized.home;
       const identity = homeAssistantIdentity(endpoint, token);
@@ -945,12 +949,14 @@ export async function refreshHADevices(host: MenuMijiaWindowsApp, silent = false
         host.settings.haToken !== token ||
         !isHostHaEnabled(host) ||
         getHostHaLifecyclePhase(host) !== "enabled" ||
-        !stateToken.isCurrent() ||
+        !stateToken.isCurrent("home") ||
         !syncRun.isCurrent()
       ) {
         return;
       }
-      const merged = mergeHomeSnapshotRespectingLocks(host, home.devices, home.deviceFacets);
+      const merged = mergeHomeSnapshotRespectingLocks(
+        host, home.devices, home.deviceFacets, Date.now(), undefined, pollCapturedEpoch,
+      );
       host.devices = applyOrder(host.devices.map((device) => device.id), merged.devices);
       host.deviceFacets = merged.deviceFacets;
       applyMiotTypePruneSnapshot(host, null);
@@ -1018,7 +1024,7 @@ export async function refreshHADevices(host: MenuMijiaWindowsApp, silent = false
         host.settings.haToken !== token ||
         !isHostHaEnabled(host) ||
         getHostHaLifecyclePhase(host) !== "enabled" ||
-        !stateToken.isCurrent() ||
+        !stateToken.isCurrent("home") ||
         !syncRun.isCurrent()
       ) {
         return;
@@ -1064,7 +1070,7 @@ export function cloudSnapshotIsStale(
       host.settings.connectionMode !== "xiaomiCloud" ||
       host.settings.miSession !== session ||
       !isHostMiSessionEnabled(host, session) ||
-      !stateToken.isCurrent() ||
+      !stateToken.isCurrent("home") ||
       (syncRun !== undefined && !syncRun.isCurrent()) ||
       (selectedHomeId !== undefined && host.settings.selectedHomeId !== selectedHomeId)
     );
@@ -1521,10 +1527,11 @@ function applySynthesizedSnapshotToHost(
     readonly scenes: readonly import("../core/models.js").HomeScene[];
   },
   groupOwners: Map<string, string>,
+  capture?: number | Readonly<Record<string, number>>,
 ): void {
   host.scenes = [...home.scenes];
   host.groupOwnerByMemberDid = groupOwners;
-  const merged = mergeHomeSnapshotRespectingLocks(host, home.devices, home.deviceFacets);
+  const merged = mergeHomeSnapshotRespectingLocks(host, home.devices, home.deviceFacets, Date.now(), undefined, capture);
   host.devices = applyOrder(host.devices.map((device) => device.id), merged.devices);
   host.deviceFacets = merged.deviceFacets;
   if (
@@ -1549,14 +1556,12 @@ async function refreshMultiAccountXiaomiDevices(
   if (!isHostAttachedToActiveWindow(host) || host.settings.connectionMode !== "xiaomiCloud" || host.isSyncingCloud) {
     return;
   }
-  // One token covers both the local-write and source levels: a source switch cascades down to
-  // `localWrite`, so a single `isCurrent()` at the strictest level detects every switch.
   const stateToken = host.sourceEpoch.capture();
   if (silent && (await isWorkstationLocked())) return;
   if (
     !isHostAttachedToActiveWindow(host) ||
     host.settings.connectionMode !== "xiaomiCloud" ||
-    !stateToken.isCurrent() ||
+    !stateToken.isCurrent("home") ||
     host.isSyncingCloud
   ) {
     return;
@@ -1567,7 +1572,7 @@ async function refreshMultiAccountXiaomiDevices(
   if (
     !isHostAttachedToActiveWindow(host) ||
     host.settings.connectionMode !== "xiaomiCloud" ||
-    !stateToken.isCurrent() ||
+    !stateToken.isCurrent("home") ||
     host.isSyncingCloud
   ) {
     return;
@@ -1592,6 +1597,7 @@ async function refreshMultiAccountXiaomiDevices(
 
   try {
     const prevState = host.multiAccountState;
+    const { pollCapturedEpoch } = host.sourceEpoch.capture();
     const { merged, children } = await refreshMiAccountsConcurrently({
       accounts: enabledAccounts,
       namespaceSingleAccount:
@@ -1608,7 +1614,7 @@ async function refreshMultiAccountXiaomiDevices(
     if (
       !isHostAttachedToActiveWindow(host) ||
       host.settings.connectionMode !== "xiaomiCloud" ||
-      !stateToken.isCurrent() ||
+      !stateToken.isCurrent("home") ||
       !syncRun.isCurrent() ||
       enabledAccounts.length !== latestEnabledIds.size ||
       !enabledAccounts.every((a) => latestEnabledIds.has(a.id))
@@ -1659,14 +1665,14 @@ async function refreshMultiAccountXiaomiDevices(
       host.lastMiCloudSyncFailed = true;
       host.markCloudValuesStale();
       if (merged.home.devices.length > 0) {
-        applySynthesizedSnapshotToHost(host, merged.home, merged.lightGroupOwners);
+        applySynthesizedSnapshotToHost(host, merged.home, merged.lightGroupOwners, pollCapturedEpoch);
         presentationChanged = cloudPresentationFingerprint(host) !== previousPresentation;
       }
       if (merged.resetSelectedHome) host.saveSettings();
     } else {
       host.lastMiCloudSyncFailed = false;
       host.markCloudValuesFresh();
-      applySynthesizedSnapshotToHost(host, merged.home, merged.lightGroupOwners);
+      applySynthesizedSnapshotToHost(host, merged.home, merged.lightGroupOwners, pollCapturedEpoch);
       presentationChanged = cloudPresentationFingerprint(host) !== previousPresentation;
       markTimerSnapshotReady(host);
       const freshAccountIds = enabledAccounts
@@ -1777,9 +1783,9 @@ export function getHostDualSourceCoordinator(host: MenuMijiaWindowsApp): DualSou
   if (!host.dualSourceCoordinator) {
     host.dualSourceCoordinator = new DualSourceCoordinator(undefined, {
       onRecompute: (merged) => {
-        if (!isDualSourceEnabled(host)) return;
+        if (!isHostAttachedToActiveWindow(host) || !isDualSourceEnabled(host)) return;
         applyDualSourceMergeToHost(host, merged);
-        if (isHostAttachedToActiveWindow(host)) host.render();
+        host.render();
       },
     });
   }
@@ -1818,7 +1824,7 @@ function applyDualSourceMergeToHost(host: MenuMijiaWindowsApp, merged: DeviceMer
     host.homes = applyOrder(host.homes.map((h) => h.id), merged.homes);
   }
   const groupOwners = new Map<string, string>(merged.lightGroupOwners);
-  applySynthesizedSnapshotToHost(host, merged.home, groupOwners);
+  applySynthesizedSnapshotToHost(host, merged.home, groupOwners, merged.pollCapturedEpochs);
   host.scenes = [...merged.home.scenes];
   // Fold the orphaned side's preferences onto the canonical cards (#24). Persisting only on a
   // real change keeps the periodic refresh from rewriting the settings store.
@@ -1832,14 +1838,12 @@ async function refreshDualSourceDevices(
   silent = false,
 ): Promise<void> {
   if (!isHostAttachedToActiveWindow(host) || host.isSyncingCloud) return;
-  // One token covers both the local-write and source levels: a source switch cascades down to
-  // `localWrite`, so a single `isCurrent()` at the strictest level detects every switch.
   const stateToken = host.sourceEpoch.capture();
   if (silent && (await isWorkstationLocked())) return;
   if (
     !isHostAttachedToActiveWindow(host) ||
     !isDualSourceEnabled(host) ||
-    !stateToken.isCurrent() ||
+    !stateToken.isCurrent("home") ||
     host.isSyncingCloud
   ) {
     return;
@@ -1855,7 +1859,7 @@ async function refreshDualSourceDevices(
   if (
     !isHostAttachedToActiveWindow(host) ||
     !isDualSourceEnabled(host) ||
-    !stateToken.isCurrent() ||
+    !stateToken.isCurrent("home") ||
     host.isSyncingCloud
   ) {
     return;
@@ -1887,7 +1891,7 @@ async function refreshDualSourceDevices(
     if (
       !isHostAttachedToActiveWindow(host) ||
       !isDualSourceEnabled(host) ||
-      !stateToken.isCurrent() ||
+      !stateToken.isCurrent("home") ||
       !syncRun.isCurrent() ||
       currentHaActive() !== haEnabledAtStart
     ) {
@@ -1907,7 +1911,7 @@ async function refreshDualSourceDevices(
         return (
           isHostAttachedToActiveWindow(host) &&
           isDualSourceEnabled(host) &&
-          stateToken.isCurrent() &&
+          stateToken.isCurrent("home") &&
           syncRun.isCurrent() &&
           currentHaActive() === haEnabledAtStart &&
           enabledAccounts.length === latestIds.size &&
@@ -1917,10 +1921,12 @@ async function refreshDualSourceDevices(
       fetchHA: haEnabledAtStart
         ? async (): Promise<DualSourceInputSnapshot> => {
             const haPrune = hostHaTypePruneOptions(host);
+            const { pollCapturedEpoch } = host.sourceEpoch.capture();
             const res = await fetchHASnapshotWithIdentities(endpoint, token, haInvoke, haPrune);
             haRawSnapshot = res.rawSnapshot;
             return {
               home: res.home,
+              pollCapturedEpoch,
               identity: homeAssistantIdentity(endpoint, token),
               identities: res.identities,
               safetySignalsByDeviceId: res.safetySignalsByDeviceId,
@@ -1938,6 +1944,7 @@ async function refreshDualSourceDevices(
         if (enabledAccounts.length === 0) {
           return null;
         }
+        const { pollCapturedEpoch } = host.sourceEpoch.capture();
         const { merged, children } = await refreshMiAccountsConcurrently({
           accounts: enabledAccounts,
           namespaceSingleAccount:
@@ -1951,6 +1958,9 @@ async function refreshDualSourceDevices(
         });
         nextMultiAccountState = { accounts, merged, children };
         if (merged.aggregateStatus.kind === "disconnected") {
+          if (Object.values(children).some(child => child.tokenStatus.kind === "expired")) {
+            throw new MiCloudError("sessionExpired", merged.aggregateStatus.reason);
+          }
           throw new Error(merged.aggregateStatus.reason);
         }
         const allRawRecords: MiDeviceRecord[] = [];
@@ -1965,6 +1975,7 @@ async function refreshDualSourceDevices(
         }
         return {
           home: merged.home,
+          pollCapturedEpoch,
           identities: extractMiDeviceIdentities(allRawRecords, merged.home),
           lightGroupOwners: merged.lightGroupOwners,
           homes: merged.homes,
@@ -1982,7 +1993,7 @@ async function refreshDualSourceDevices(
       outcome.aborted ||
       !isHostAttachedToActiveWindow(host) ||
       !isDualSourceEnabled(host) ||
-      !stateToken.isCurrent() ||
+      !stateToken.isCurrent("home") ||
       !syncRun.isCurrent() ||
       currentHaActive() !== haEnabledAtStart ||
       enabledAccounts.length !== latestEnabledIds.size ||
@@ -2057,7 +2068,7 @@ async function refreshDualSourceDevices(
       };
     }
   } catch (error) {
-    if (isHaBlockedRequestError(error) || !isHostAttachedToActiveWindow(host) || !stateToken.isCurrent() || !syncRun.isCurrent()) {
+    if (isHaBlockedRequestError(error) || !isHostAttachedToActiveWindow(host) || !stateToken.isCurrent("home") || !syncRun.isCurrent()) {
       return;
     }
     failed = true;

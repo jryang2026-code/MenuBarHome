@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "relativeFiles": {
+    "config": "go2rtc.yaml",
+    "owner": "go2rtc.owner",
+    "pid": "go2rtc.pid",
+    "log": "go2rtc.log"
+  },
+  "forbiddenPorts": [1984, 8554, 8555],
+  "allowedModules": [
+    "api",
+    "ws",
+    "http",
+    "rtsp",
+    "webrtc",
+    "mp4",
+    "hls",
+    "mjpeg",
+    "exec",
+    "ffmpeg",
+    "xiaomi"
+  ]
+}
