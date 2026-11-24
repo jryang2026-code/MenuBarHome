@@ -10,6 +10,7 @@ mod credentials;
 mod miio;
 mod miio_crypto;
 mod network;
+mod network_monitor;
 mod placement;
 mod system_events;
 mod update;
@@ -314,6 +315,7 @@ fn main() {
             sweep_stale_update_installers();
             scrub_stale_camera_config_on_startup();
             let _ = install_power_notifications(app.handle().clone());
+            let _ = network_monitor::install_network_monitor(app.handle().clone());
             start_companion_runtime(app.handle().clone());
             if let Some(path) = authorization_store_path() {
                 if let Ok(mut guard) = EXTRA_ALLOWED_ORIGINS.write() {

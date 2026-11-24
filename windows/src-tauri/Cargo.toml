@@ -38,6 +38,8 @@ windows-sys = { version = "0.59", features = [
     "Win32_Devices_Display",
     "Win32_Foundation",
     "Win32_Graphics_Dwm",
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_NetworkManagement_Ndis",
     "Win32_NetworkManagement_WiFi",
     "Win32_Networking_WinSock",
     "Win32_Security_Credentials",

@@ -225,7 +225,8 @@ unsafe extern "system" fn on_power_broadcast(
     match kind {
         PBT_APMSUSPEND => emit_to_panel(&context.app, SYSTEM_SLEEP_SCRIPT),
         PBT_APMRESUMEAUTOMATIC | PBT_APMRESUMESUSPEND => {
-            emit_to_panel(&context.app, SYSTEM_WAKE_SCRIPT)
+            crate::network_monitor::notify_system_resume(&context.app);
+            emit_to_panel(&context.app, SYSTEM_WAKE_SCRIPT);
         }
         PBT_POWERSETTINGCHANGE if !setting.is_null() => {
             let broadcast = unsafe { &*(setting as *const POWERBROADCAST_SETTING) };
