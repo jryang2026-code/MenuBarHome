@@ -171,6 +171,7 @@ enum PanelKeyRouter {
         case roomOrder(HotkeyAndNotificationManager.RoomOrderKeyAction)
         case endDeviceLayoutEditing
         case presentAssistant(voice: Bool)
+        case toggleQuickDrawer
         case moveFocus(Int)
         case adjustFocusedDevice(Int)
         case toggleFocusedDevice
@@ -190,6 +191,17 @@ enum PanelKeyRouter {
     /// Keys decided before search sees them. nil means search goes next.
     static func beforeSearch(_ key: Key, _ context: Context) -> Action? {
         if key.code == kVK_ANSI_Comma, key.command { return .openSettings }
+        if key.code == kVK_ANSI_K,
+           key.command, !key.shift, !key.option, !key.control,
+           context.isPanelWindow,
+           !context.isShowingOnboarding,
+           !context.isShowingMiReauth,
+           !context.hasActivePrompt,
+           !context.isShowingConnectionDetail,
+           !context.isFormFieldFocused,
+           context.editMode == .none {
+            return .toggleQuickDrawer
+        }
         if let consumes = HotkeyAndNotificationManager.miReauthKeyDownResult(
             keyCode: key.code,
             isShowingMiReauth: context.isShowingMiReauth,

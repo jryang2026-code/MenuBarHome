@@ -528,6 +528,11 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
             LayoutUIState.shared.endDeviceLayoutEditing()
         case .presentAssistant(let voice):
             store.presentAssistantBar(startVoice: voice)
+        case .toggleQuickDrawer:
+            let expanded = PanelQuickDrawerState.shared.toggle()
+            if expanded {
+                store.refreshProactiveSuggestionCacheIfStale()
+            }
         case .moveFocus(let delta):
             PanelConnectionDetailState.shared.clearStatusControlFocus()
             PanelQuickIndexState.shared.moveFocus(delta: delta, store: store)
