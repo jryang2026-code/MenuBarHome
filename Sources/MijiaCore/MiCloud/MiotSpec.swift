@@ -253,6 +253,8 @@ public actor MiotSpecStore: MiotSpecSource {
 
     public static let indexCacheFileName = "miot-instances-all-v2.json"
     private static let legacyIndexCacheFileName = "miot-instances.json"
+    /// Versioned like the index cache so an older payload cannot poison a newer schema.
+    private static let multiLanguageCacheVersion = 1
 
     private let logger = Logger(subsystem: "com.jryang1997.MenuBarMijia", category: "MiotSpec")
     private let transport: any MiHTTPTransport
@@ -268,6 +270,7 @@ public actor MiotSpecStore: MiotSpecSource {
     private var typeByModel: [String: String]?
     private var indexTask: Task<([String: String], Bool), any Error>?
     private var specByType: [String: MiotDeviceSpec] = [:]
+    private var translationsByType: [String: MiotSpecMultiLanguage] = [:]
     private var jitteredTTLByKey: [String: TimeInterval] = [:]
 
     public static var defaultCacheDirectory: URL {
@@ -304,12 +307,29 @@ public actor MiotSpecStore: MiotSpecSource {
         } else if let found = try await typeIndex()[model] {
             type = found
         } else {
-            return MiotDeviceSpec.inferFallbackSpec(model: model).map { patches.apply(to: $0, model: model) }
+            return localizedFallbackSpec(model: model)
         }
         if let loaded = try? await instance(type: type) {
-            return patches.apply(to: loaded, model: model)
+            return localized(loaded, type: type, model: model)
         }
-        return MiotDeviceSpec.inferFallbackSpec(model: model).map { patches.apply(to: $0, model: model) }
+        return localizedFallbackSpec(model: model)
+    }
+
+    private func localized(_ spec: MiotDeviceSpec, type: String, model: String) -> MiotDeviceSpec {
+        let translated: MiotDeviceSpec
+        if let translations = translationsByType[type] {
+            translated = MiotSpecLocalization.apply(
+                to: spec, translations: translations, language: L10n.currentLanguage
+            )
+        } else {
+            translated = spec
+        }
+        // Declarative patches are applied last so they always beat official translations (#480).
+        return patches.apply(to: translated, model: model)
+    }
+
+    private func localizedFallbackSpec(model: String) -> MiotDeviceSpec? {
+        MiotDeviceSpec.inferFallbackSpec(model: model).map { patches.apply(to: $0, model: model) }
     }
 
     func effectiveTTL(forKey cacheKey: String, base: TimeInterval) -> TimeInterval {
@@ -437,11 +457,11 @@ public actor MiotSpecStore: MiotSpecSource {
 
     private func instance(type: String) async throws -> MiotDeviceSpec? {
         if let cached = specByType[type] { return cached }
-        let safeName = type.replacingOccurrences(of: ":", with: "_") + ".json"
-        let file = cacheDirectory.appendingPathComponent("instances", isDirectory: true).appendingPathComponent(safeName)
+        let file = specCacheFile(type: type)
         let cachedSpec = (try? Data(contentsOf: file)).flatMap { try? JSONDecoder().decode(MiotDeviceSpec.self, from: $0) }
         if let cachedSpec, isFreshCacheFile(file, cacheKey: type, baseMaxAge: specMaxAge) {
             specByType[type] = cachedSpec
+            loadCachedMultiLanguage(type: type)
             return cachedSpec
         }
         do {
@@ -454,13 +474,68 @@ public actor MiotSpecStore: MiotSpecSource {
             let spec = try JSONDecoder().decode(MiotDeviceSpec.self, from: fetched)
             writeCache(fetched, to: file)
             specByType[type] = spec
+            // Translations are fetched only when this spec itself was fetched/refreshed.
+            await refreshMultiLanguage(type: type)
             return spec
         } catch is CancellationError {
             throw CancellationError()
         } catch {
             guard let cachedSpec else { throw error }
+            loadCachedMultiLanguage(type: type)
             logger.warning("MIoT spec refresh failed for \(type, privacy: .public), using stale cached spec: \(error.localizedDescription, privacy: .public)")
             return cachedSpec
+        }
+    }
+
+    private func cacheFileName(for type: String) -> String {
+        type.replacingOccurrences(of: ":", with: "_") + ".json"
+    }
+
+    private func specCacheFile(type: String) -> URL {
+        cacheDirectory.appendingPathComponent("instances", isDirectory: true)
+            .appendingPathComponent(cacheFileName(for: type))
+    }
+
+    private func multiLanguageCacheFile(type: String) -> URL {
+        cacheDirectory.appendingPathComponent("multiLanguage-v\(Self.multiLanguageCacheVersion)", isDirectory: true)
+            .appendingPathComponent(cacheFileName(for: type))
+    }
+
+    private func cachedMultiLanguage(type: String) -> MiotSpecMultiLanguage? {
+        (try? Data(contentsOf: multiLanguageCacheFile(type: type)))
+            .flatMap { try? JSONDecoder().decode(MiotSpecMultiLanguage.self, from: $0) }
+    }
+
+    private func loadCachedMultiLanguage(type: String) {
+        guard translationsByType[type] == nil else { return }
+        if let cached = cachedMultiLanguage(type: type) { translationsByType[type] = cached }
+    }
+
+    /// Official translations are best effort: a failed fetch leaves the raw spec untouched.
+    private func refreshMultiLanguage(type: String) async {
+        let file = multiLanguageCacheFile(type: type)
+        let key = "__multilanguage_v\(Self.multiLanguageCacheVersion)__:\(type)"
+        if let cached = cachedMultiLanguage(type: type),
+           isFreshCacheFile(file, cacheKey: key, baseMaxAge: specMaxAge) {
+            translationsByType[type] = cached
+            return
+        }
+        do {
+            let payload = try await fetchWithMirrorFallback(
+                path: "instance/v2/multiLanguage",
+                queryItems: [URLQueryItem(name: "urn", value: type)]
+            ) { data in
+                (try? JSONDecoder().decode(MiotSpecMultiLanguage.self, from: data)) != nil
+            }
+            let document = try JSONDecoder().decode(MiotSpecMultiLanguage.self, from: payload)
+            writeCache(payload, to: file)
+            translationsByType[type] = document
+        } catch is CancellationError {
+            // Do not discard an otherwise usable spec just because translation was cancelled.
+            loadCachedMultiLanguage(type: type)
+        } catch {
+            loadCachedMultiLanguage(type: type)
+            logger.warning("MIoT multiLanguage refresh failed for \(type, privacy: .public), keeping cached or raw descriptions: \(error.localizedDescription, privacy: .public)")
         }
     }
 
