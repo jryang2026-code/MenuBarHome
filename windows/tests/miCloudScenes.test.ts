@@ -12,6 +12,7 @@ import { makeMiAccount, miAccountId } from "../src/core/miAccountsStore.js";
 import { decodeMiScenes } from "../src/core/miCloud/scenes.js";
 import { MiCloudCrypto } from "../src/core/miCloudCrypto.js";
 import { finishMiSceneConfirmation } from "../src/ui/sceneConfirmation.js";
+import { setHostDualSourceEnabled, setHostHAInvokeOverride } from "../src/ui/cloudRefresh.js";
 import type { HttpResponse, MiSession, MiotDeviceSpec } from "../src/core/miCloudClient.js";
 
 const TEST_SSECURITY = "AQIDBAUGBwgJCgsMDQ4PEA==";
@@ -283,5 +284,44 @@ describe("Mi cloud scenes stay scoped to the selected home", () => {
     assert.notEqual(app.replyBanner?.isError, true, "a deliberate cancel must not surface a failure banner");
     assert.equal(app.replyBanner?.text, bannerBefore?.text);
     assert.equal(app.replyBanner?.text.includes("设备未响应"), false);
+  });
+});
+
+describe("Home Assistant scene rows", () => {
+  it("replaces script rows on every refresh instead of duplicating them", async () => {
+    const app = await mountApp();
+    app.settings.connectionMode = "homeAssistant";
+    app.settings.haBaseURL = "https://ha.example.test:8123";
+    app.settings.haToken = "ha-tok";
+    setHostDualSourceEnabled(app, false);
+    let states: Array<{ entity_id: string; state: string; attributes: Record<string, unknown> }> = [
+      { entity_id: "script.evening", state: "on", attributes: { friendly_name: "晚间脚本" } },
+    ];
+    setHostHAInvokeOverride(app, async <T>(cmd: string): Promise<T> => {
+      if (cmd === "ha_snapshot") {
+        return { areas: [], devices: [], entities: [], states } as unknown as T;
+      }
+      return null as unknown as T;
+    });
+
+    await app.refreshHADevices(false);
+    await app.refreshHADevices(false);
+    assert.equal(
+      app.scenes.filter((scene) => scene.id === "script.evening").length,
+      1,
+      "a poll must replace the script row instead of appending a copy",
+    );
+    assert.ok(
+      app.scenes.some((scene) => scene.sourceBackend === "xiaomiCloud"),
+      "an HA refresh keeps the Xiaomi scene rows",
+    );
+
+    states = [];
+    await app.refreshHADevices(false);
+    assert.equal(
+      app.scenes.some((scene) => scene.id === "script.evening"),
+      false,
+      "a script removed in Home Assistant must disappear",
+    );
   });
 });

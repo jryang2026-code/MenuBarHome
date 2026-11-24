@@ -967,7 +967,13 @@ export async function refreshHADevices(host: MenuMijiaWindowsApp, silent = false
             hiddenDevices: synthesized.hiddenIndexedDevices,
             safetySignalsByDeviceId: synthesized.safetySignalsByDeviceId,
           });
-      host.scenes = [...host.scenes.filter((scene) => scene.sourceBackend === "xiaomiCloud" || scene.accountId !== undefined || !scene.id.startsWith("scene.")), ...home.scenes];
+      // An HA snapshot owns every platform scene and script row (`scene.*` and `script.*`), so
+      // replace them instead of keeping the previous list: retaining by id prefix duplicated
+      // `script.*` rows on every poll and kept deleted scripts startable.
+      const retainedScenes = host.scenes.filter(
+        (scene) => scene.sourceBackend === "xiaomiCloud" || scene.accountId !== undefined,
+      );
+      host.scenes = [...retainedScenes, ...home.scenes];
       if (haClient.lastRawSnapshot && typeof haClient.lastRawSnapshot === "object") {
         void ingestHostHASnapshotForDoorbell(host, haClient.lastRawSnapshot as HASnapshotLike);
       }
