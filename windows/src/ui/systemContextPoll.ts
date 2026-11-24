@@ -1,26 +1,35 @@
 import { WINDOWS_TRIGGER_SOURCES, type AutomationTrigger, type SystemContextEventKind } from "../core/automationEngine.js";
-import { readNativeExternalDisplayCount, readNativeSystemPower } from "./transport.js";
+import {
+  readNativeExternalDisplayCount,
+  readNativeFocusModeStatus,
+  readNativeSystemPower,
+} from "./transport.js";
 
 /**
- * Windows system-signal sampling for the power and external-display triggers.
+ * Windows system-signal sampling for power, external displays, and the slow focus/fullscreen
+ * fallback.
  *
  * macOS keeps one `MacContextSnapshot` poll (10 s, `MacContextObserver.refreshInterval`) and lets
  * `MacContextAutomation.events` decide what changed. Windows uses the same cadence and the same
- * "the previous sample is the baseline" rule, but the two signals come from `system_events.rs`
- * (`GetSystemPowerStatus`, `QueryDisplayConfig`) instead of IOKit. Sleep and display power are
- * *not* sampled here: they are pushed from the native power callbacks in `system_events.rs`,
- * because a 10 s poll cannot observe either before the machine stops running timers.
+ * "the previous sample is the baseline" rule for power (`GetSystemPowerStatus`), external displays
+ * (`QueryDisplayConfig`), and the ≥ 5 s fallback for `SHQueryUserNotificationState` (primary
+ * fullscreen transitions are pushed immediately on `EVENT_SYSTEM_FOREGROUND`). Sleep, display
+ * power, and camera/microphone usage are pushed from `system_events.rs` (power callbacks and
+ * `CapabilityAccessManager` registry change notifications) and are never tight-polled here.
  *
  * A first sample never fires a rule. `AutomationEngine.primePowerBaseline` /
- * `primeExternalDisplayBaseline` seed the engine from it, mirroring macOS, where a nil previous
- * snapshot returns no events — so booting the app on battery power must not run "power
- * disconnected" rules.
+ * `primeExternalDisplayBaseline` / `primeFocusModeBaseline` seed the engine from it, mirroring
+ * macOS, where a nil previous snapshot returns no events — so booting the app on battery power
+ * must not run "power disconnected" rules.
  */
 
-/** Same cadence as `MacContextObserver.refreshInterval`. */
+/** Same cadence as `MacContextObserver.refreshInterval` (also satisfies the ≥ 5 s focus fallback). */
 export const SYSTEM_CONTEXT_POLL_INTERVAL_MS = 10_000;
 
-export type SystemSignalKind = Extract<SystemContextEventKind, "powerChanged" | "externalDisplayChanged">;
+export type SystemSignalKind = Extract<
+  SystemContextEventKind,
+  "powerChanged" | "externalDisplayChanged" | "mediaCaptureChanged" | "focusModeChanged"
+>;
 
 export interface SystemPowerSample {
   readonly hasBattery: boolean;
@@ -34,6 +43,7 @@ export interface NativeSystemSignals {
   /** `null` when the native call was skipped or failed; the previous sample stays in effect. */
   readonly power: SystemPowerSample | null;
   readonly externalDisplayCount: number | null;
+  readonly focusMode?: boolean | null;
 }
 
 export interface SystemSignalBaseline {
@@ -42,6 +52,7 @@ export interface SystemSignalBaseline {
     readonly batteryPercent: number | null;
   } | null;
   readonly externalDisplayCount: number | null;
+  readonly focusMode?: boolean | null;
 }
 
 export interface SystemSignalTransition {
@@ -52,12 +63,14 @@ export interface SystemSignalTransition {
   } | null;
   /** Non-null only when the external display count actually changed. */
   readonly externalDisplayCount: number | null;
+  /** Non-null only when the fullscreen/presentation/quiet-hours state actually changed. */
+  readonly focusMode?: boolean | null;
 }
 
 const TRIGGER_SOURCES: Readonly<Record<string, readonly SystemContextEventKind[] | undefined>> =
   WINDOWS_TRIGGER_SOURCES;
 
-/** Whether an enabled rule waits for this native signal (drives whether we sample at all). */
+/** Whether an enabled rule waits for this native signal (drives whether we sample/watch at all). */
 export function triggerUsesSystemSignal(trigger: AutomationTrigger, kind: SystemSignalKind): boolean {
   const kinds = TRIGGER_SOURCES[trigger];
   return kinds ? kinds.includes(kind) : false;
@@ -71,15 +84,19 @@ export interface SystemSignalRuleLike {
 export interface SystemSignalNeed {
   readonly power: boolean;
   readonly externalDisplayCount: boolean;
+  readonly mediaCapture: boolean;
+  readonly focusMode: boolean;
 }
 
 /**
- * Determines which native Windows system signals (`system_power_status`, `external_display_count`)
- * have at least one enabled automation rule waiting for them.
+ * Determines which native Windows system signals have at least one enabled automation rule
+ * waiting for them.
  */
 export function systemSignalNeed(rules: readonly SystemSignalRuleLike[]): SystemSignalNeed {
   let power = false;
   let externalDisplayCount = false;
+  let mediaCapture = false;
+  let focusMode = false;
   for (const rule of rules) {
     if (rule.isEnabled === false) continue;
     if (!power && triggerUsesSystemSignal(rule.trigger, "powerChanged")) {
@@ -88,12 +105,22 @@ export function systemSignalNeed(rules: readonly SystemSignalRuleLike[]): System
     if (!externalDisplayCount && triggerUsesSystemSignal(rule.trigger, "externalDisplayChanged")) {
       externalDisplayCount = true;
     }
-    if (power && externalDisplayCount) break;
+    if (!mediaCapture && triggerUsesSystemSignal(rule.trigger, "mediaCaptureChanged")) {
+      mediaCapture = true;
+    }
+    if (!focusMode && triggerUsesSystemSignal(rule.trigger, "focusModeChanged")) {
+      focusMode = true;
+    }
+    if (power && externalDisplayCount && mediaCapture && focusMode) break;
   }
-  return { power, externalDisplayCount };
+  return { power, externalDisplayCount, mediaCapture, focusMode };
 }
 
-const EMPTY_BASELINE: SystemSignalBaseline = { power: null, externalDisplayCount: null };
+const EMPTY_BASELINE: SystemSignalBaseline = {
+  power: null,
+  externalDisplayCount: null,
+  focusMode: null,
+};
 
 function resolvePower(
   previous: SystemSignalBaseline["power"],
@@ -113,9 +140,11 @@ export function resolveSystemSignalBaseline(
   next: NativeSystemSignals,
 ): SystemSignalBaseline {
   const base = previous ?? EMPTY_BASELINE;
+  const focusMode = next.focusMode ?? base.focusMode ?? null;
   return {
     power: resolvePower(base.power, next.power),
     externalDisplayCount: next.externalDisplayCount ?? base.externalDisplayCount,
+    ...(focusMode !== null ? { focusMode } : {}),
   };
 }
 
@@ -139,9 +168,13 @@ export function planSystemSignalTransition(
     next.externalDisplayCount !== null &&
     base.externalDisplayCount !== null &&
     next.externalDisplayCount !== base.externalDisplayCount;
+  const nextFocus = next.focusMode ?? null;
+  const prevFocus = base.focusMode ?? null;
+  const focusChanged = nextFocus !== null && prevFocus !== null && nextFocus !== prevFocus;
   return {
     power: powerChanged ? resolvedPower : null,
     externalDisplayCount: displayChanged ? next.externalDisplayCount : null,
+    ...(focusChanged ? { focusMode: nextFocus } : {}),
   };
 }
 
@@ -149,10 +182,12 @@ export function planSystemSignalTransition(
 export async function readNativeSystemSignals(need: {
   readonly power: boolean;
   readonly externalDisplayCount: boolean;
+  readonly focusMode?: boolean;
 }): Promise<NativeSystemSignals> {
-  const [power, externalDisplayCount] = await Promise.all([
+  const [power, externalDisplayCount, focusMode] = await Promise.all([
     need.power ? readNativeSystemPower() : Promise.resolve(null),
     need.externalDisplayCount ? readNativeExternalDisplayCount() : Promise.resolve(null),
+    need.focusMode ? readNativeFocusModeStatus() : Promise.resolve(null),
   ]);
-  return { power, externalDisplayCount };
+  return { power, externalDisplayCount, ...(focusMode !== null ? { focusMode } : {}) };
 }

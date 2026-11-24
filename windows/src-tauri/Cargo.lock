@@ -2019,6 +2019,7 @@ dependencies = [
  "tokio-rustls",
  "tokio-util",
  "tungstenite",
+ "webview2-com",
  "windows",
  "windows-sys 0.59.0",
 ]

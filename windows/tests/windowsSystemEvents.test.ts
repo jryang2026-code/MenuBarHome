@@ -12,9 +12,12 @@ import {
   getHostActivityCenter,
   setEventAutomationRunning,
   notifyDisplayPowerChanged,
+  notifyFocusModeChanged,
+  notifyMediaCaptureChanged,
   notifySystemSleep,
   notifySystemWake,
   pollSystemContextSignals,
+  syncSystemEventWatchers,
   tickSafetyHealthAndAutomation,
 } from "../src/ui/activityStackView.js";
 import { bindLifecycleRecovery, retryIdentityMigration, syncAutomationLifecycle } from "../src/ui/appLifecycle.js";
@@ -31,8 +34,14 @@ import {
 } from "../src/ui/systemContextPoll.js";
 import { readNativeSystemPower } from "../src/ui/transport.js";
 
-/** The three DOM events `system_events.rs` forwards, and the only ones the switch controls. */
-const AUTOMATION_EVENT_TYPES = ["menumijia:system-sleep", "menumijia:system-wake", "menumijia:display-power"];
+/** The five DOM events `system_events.rs` forwards, and the only ones the switch controls. */
+const AUTOMATION_EVENT_TYPES = [
+  "menumijia:system-sleep",
+  "menumijia:system-wake",
+  "menumijia:display-power",
+  "menumijia:media-capture",
+  "menumijia:focus-mode",
+];
 
 let dom: Window | null = null;
 
@@ -82,16 +91,43 @@ function makeLight(): SmartDevice {
 interface NativeStub {
   power: { hasBattery: boolean; onExternalPower: boolean | null; batteryPercent: number | null } | null;
   displays: number | null;
+  mediaCapture: { cameraInUse: boolean; microphoneInUse: boolean } | null;
+  focusMode: boolean | null;
+  readonly watcherSyncs: Array<{ mediaCapture: boolean; focusMode: boolean }>;
   readonly calls: string[];
 }
 
-function stubNative(partial: Partial<Omit<NativeStub, "calls">> = {}): NativeStub {
-  const stub: NativeStub = { power: null, displays: null, calls: [], ...partial };
+function stubNative(partial: Partial<Omit<NativeStub, "calls" | "watcherSyncs">> = {}): NativeStub {
+  const stub: NativeStub = {
+    power: null,
+    displays: null,
+    mediaCapture: null,
+    focusMode: null,
+    watcherSyncs: [],
+    calls: [],
+    ...partial,
+  };
   (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__ = {
-    invoke: async <T>(cmd: string): Promise<T> => {
-      if (cmd === "system_power_status" || cmd === "external_display_count") stub.calls.push(cmd);
+    invoke: async <T>(cmd: string, args?: Record<string, unknown>): Promise<T> => {
+      if (
+        cmd === "system_power_status" ||
+        cmd === "external_display_count" ||
+        cmd === "media_capture_status" ||
+        cmd === "focus_mode_status"
+      ) {
+        stub.calls.push(cmd);
+      }
       if (cmd === "system_power_status") return stub.power as unknown as T;
       if (cmd === "external_display_count") return stub.displays as unknown as T;
+      if (cmd === "media_capture_status") return stub.mediaCapture as unknown as T;
+      if (cmd === "focus_mode_status") return stub.focusMode as unknown as T;
+      if (cmd === "set_system_event_watchers") {
+        stub.watcherSyncs.push({
+          mediaCapture: args?.mediaCapture === true,
+          focusMode: args?.focusMode === true,
+        });
+        return undefined as unknown as T;
+      }
       if (cmd === "is_workstation_locked") return false as unknown as T;
       return undefined as unknown as T;
     },
@@ -228,9 +264,14 @@ describe("Windows power/display sampling plan (systemContextPoll.ts)", () => {
     assert.equal(await readNativeSystemPower(), null);
   });
 
-  it("computes systemSignalNeed only for enabled power/display rules", async () => {
+  it("computes systemSignalNeed only for enabled power/display/media/focus rules", async () => {
     const { systemSignalNeed } = await import("../src/ui/systemContextPoll.js");
-    assert.deepEqual(systemSignalNeed([]), { power: false, externalDisplayCount: false });
+    assert.deepEqual(systemSignalNeed([]), {
+      power: false,
+      externalDisplayCount: false,
+      mediaCapture: false,
+      focusMode: false,
+    });
 
     const awayRule = createAutomationRule({ id: "r-away", trigger: "away", action: LIGHT_OFF_ACTION });
     const disabledPower = createAutomationRule({
@@ -242,6 +283,8 @@ describe("Windows power/display sampling plan (systemContextPoll.ts)", () => {
     assert.deepEqual(systemSignalNeed([awayRule, disabledPower]), {
       power: false,
       externalDisplayCount: false,
+      mediaCapture: false,
+      focusMode: false,
     });
 
     const enabledPower = { ...disabledPower, isEnabled: true };
@@ -250,13 +293,27 @@ describe("Windows power/display sampling plan (systemContextPoll.ts)", () => {
       trigger: "externalDisplayConnected",
       action: LIGHT_OFF_ACTION,
     });
+    const enabledCam = createAutomationRule({
+      id: "r-cam",
+      trigger: "cameraInUse",
+      action: LIGHT_OFF_ACTION,
+    });
+    const enabledFocus = createAutomationRule({
+      id: "r-focus",
+      trigger: "focusModeEnabled",
+      action: LIGHT_OFF_ACTION,
+    });
     assert.deepEqual(systemSignalNeed([awayRule, enabledPower]), {
       power: true,
       externalDisplayCount: false,
+      mediaCapture: false,
+      focusMode: false,
     });
-    assert.deepEqual(systemSignalNeed([enabledPower, enabledDisplay]), {
+    assert.deepEqual(systemSignalNeed([enabledPower, enabledDisplay, enabledCam, enabledFocus]), {
       power: true,
       externalDisplayCount: true,
+      mediaCapture: true,
+      focusMode: true,
     });
   });
 });
@@ -779,5 +836,115 @@ describe("PC context automation runtime switch", () => {
       window.addEventListener = addEventListener;
       window.removeEventListener = removeEventListener;
     }
+  });
+});
+
+describe("Windows camera/microphone and focus/fullscreen triggers", () => {
+  const t0 = new Date(2026, 10, 14, 15, 0, 0).getTime();
+
+  it("fires camera and microphone in-use / released rules from menumijia:media-capture DOM events", async () => {
+    const { app, sent } = trackingApp([
+      createAutomationRule({
+        id: "r-cam-on",
+        trigger: "cameraInUse",
+        action: LIGHT_OFF_ACTION,
+      }),
+      createAutomationRule({
+        id: "r-mic-off",
+        trigger: "microphoneNotInUse",
+        action: { kind: "devices", deviceIds: ["light.desk"], isOn: true },
+      }),
+    ]);
+    const stub = stubNative({ mediaCapture: { cameraInUse: false, microphoneInUse: true } });
+    const stop = bindLifecycleRecovery(app);
+    try {
+      await flush();
+      assert.deepEqual(stub.watcherSyncs, [{ mediaCapture: true, focusMode: false }]);
+      // Baseline primed microphoneInUse=true without firing.
+      assert.deepEqual(sent, []);
+
+      window.dispatchEvent(
+        new window.CustomEvent("menumijia:media-capture", {
+          detail: { cameraInUse: true, microphoneInUse: true },
+        }),
+      );
+      await flush();
+      assert.deepEqual(sent, [{ kind: "setLightPower", entityId: "light.desk", isOn: false }]);
+
+      window.dispatchEvent(
+        new window.CustomEvent("menumijia:media-capture", {
+          detail: { cameraInUse: true, microphoneInUse: false },
+        }),
+      );
+      await flush();
+      assert.deepEqual(sent, [
+        { kind: "setLightPower", entityId: "light.desk", isOn: false },
+        { kind: "setLightPower", entityId: "light.desk", isOn: true },
+      ]);
+    } finally {
+      stop();
+    }
+  });
+
+  it("fires focusModeEnabled/Disabled on menumijia:focus-mode push and on the 10 s slow fallback", async () => {
+    const { app, sent } = trackingApp([
+      createAutomationRule({
+        id: "r-focus-on",
+        trigger: "focusModeEnabled",
+        action: LIGHT_OFF_ACTION,
+      }),
+      createAutomationRule({
+        id: "r-focus-off",
+        trigger: "focusModeDisabled",
+        action: { kind: "devices", deviceIds: ["light.desk"], isOn: true },
+      }),
+    ]);
+    const stub = stubNative({ focusMode: false });
+    const stop = bindLifecycleRecovery(app);
+    try {
+      await flush();
+      assert.deepEqual(stub.watcherSyncs, [{ mediaCapture: false, focusMode: true }]);
+      assert.deepEqual(sent, []);
+
+      // Immediate foreground-hook push fires focusModeEnabled.
+      notifyFocusModeChanged(app, true, t0);
+      await flush();
+      assert.deepEqual(sent, [{ kind: "setLightPower", entityId: "light.desk", isOn: false }]);
+
+      // Slow 10 s fallback catches quiet-hours turning off without a foreground switch.
+      stub.focusMode = false;
+      assert.equal(await pollSystemContextSignals(app, t0 + SYSTEM_CONTEXT_POLL_INTERVAL_MS), true);
+      assert.deepEqual(sent, [
+        { kind: "setLightPower", entityId: "light.desk", isOn: false },
+        { kind: "setLightPower", entityId: "light.desk", isOn: true },
+      ]);
+    } finally {
+      stop();
+    }
+  });
+
+  it("stops native watchers when event automation is turned off or rules are disabled", async () => {
+    const { app } = trackingApp([
+      createAutomationRule({
+        id: "r-cam",
+        trigger: "cameraInUse",
+        action: LIGHT_OFF_ACTION,
+      }),
+    ]);
+    const stub = stubNative({ mediaCapture: { cameraInUse: false, microphoneInUse: false } });
+    await syncSystemEventWatchers(app);
+    assert.deepEqual(stub.watcherSyncs, [{ mediaCapture: true, focusMode: false }]);
+
+    setEventAutomationRunning(app, false);
+    await flush();
+    assert.deepEqual(stub.watcherSyncs, [
+      { mediaCapture: true, focusMode: false },
+      { mediaCapture: false, focusMode: false },
+    ]);
+
+    // With no media/focus rules, notifyMediaCaptureChanged is a no-op while automation is off.
+    notifyMediaCaptureChanged(app, { cameraInUse: true });
+    await flush();
+    assert.equal(getHostActivityCenter(app).recentAutomationRuns.length, 0);
   });
 });
