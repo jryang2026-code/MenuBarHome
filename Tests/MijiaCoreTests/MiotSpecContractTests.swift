@@ -4,11 +4,14 @@ import Testing
 
 @Suite("MIoT spec status=all, specPatches.json, and LAN pid filter")
 struct MiotSpecContractTests {
-    private static func repoRoot() -> URL {
-        URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
+    private static func repoFile(_ relative: String) throws -> Data {
+        var directory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        for _ in 0..<8 {
+            let file = directory.appendingPathComponent(relative)
+            if FileManager.default.fileExists(atPath: file.path) { return try Data(contentsOf: file) }
+            directory.deleteLastPathComponent()
+        }
+        throw CocoaError(.fileNoSuchFile)
     }
 
     @Test("parseInstanceIndex prefers released > omitted > preview > debug and highest version within status")
@@ -90,7 +93,7 @@ struct MiotSpecContractTests {
 
     @Test("Bundled specPatches.json matches Shared/specPatches.json byte-for-byte")
     func bundledSpecPatchesMatchShared() throws {
-        let shared = try Data(contentsOf: Self.repoRoot().appendingPathComponent("Shared/specPatches.json"))
+        let shared = try Self.repoFile("Shared/specPatches.json")
         let bundled = try #require(MiotSpecPatches.bundledData())
         #expect(bundled == shared)
         #expect(MiotSpecPatches.shared.schemaVersion == MiotSpecPatches.supportedSchemaVersion)
@@ -104,7 +107,7 @@ struct MiotSpecContractTests {
             let input: MiotDeviceSpec
             let expected: MiotDeviceSpec
         }
-        let fixtureData = try Data(contentsOf: Self.repoRoot().appendingPathComponent("Tests/Fixtures/spec_patches_golden.json"))
+        let fixtureData = try Self.repoFile("Tests/Fixtures/spec_patches_golden.json")
         let golden = try JSONDecoder().decode(Golden.self, from: fixtureData)
 
         let patched = golden.patches.apply(to: golden.input, model: golden.model)
