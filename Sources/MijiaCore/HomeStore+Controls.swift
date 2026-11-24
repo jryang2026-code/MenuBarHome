@@ -2355,7 +2355,7 @@ extension HomeStore {
 
     public var supportsCustomCameraStreams: Bool { !(provider is DemoHomeProvider) }
 
-    public func resolveCameraStream(for deviceId: String, channel: Int = 0) async throws -> CameraStreamSource {
+    public func resolveCameraStream(for deviceId: String, channel: Int = 0, audioEnabled: Bool = false) async throws -> CameraStreamSource {
         if let reason = capabilityWriteRejection(forDeviceId: deviceId) {
             throw CapabilityControlBlockedError(reason: reason)
         }
@@ -2392,10 +2392,10 @@ extension HomeStore {
                 explicitlyDisabledBackends.insert(.xiaomiCloud)
             }
             return try await dual.resolveCameraStream(
-                for: device, quality: quality, channel: channel, explicitlyDisabledBackends: explicitlyDisabledBackends
+                for: device, quality: quality, channel: channel, audioEnabled: audioEnabled, explicitlyDisabledBackends: explicitlyDisabledBackends
             )
         }
-        return try await provider.resolveCameraStream(for: device, quality: quality, channel: channel)
+        return try await provider.resolveCameraStream(for: device, quality: quality, channel: channel, audioEnabled: audioEnabled)
     }
 
     public func stopCameraStream(for deviceId: String) async {
