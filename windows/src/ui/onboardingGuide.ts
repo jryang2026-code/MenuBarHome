@@ -972,7 +972,11 @@ export function mountOnboardingGuide(host: OnboardingRenderViewHost): void {
       if (!wantsDualSource) return;
       const hasMiNow = hasConnectedMi(host);
       if (!hasMiNow && !hadMiBefore) return;
-      setHostDualSourceEnabled(host as unknown as DualSourceMutableHost, true, { persist: true });
+      // The scan plus its refresh can take a while; a user who turned dual-source off in Settings
+      // meanwhile owns the newer choice, so this deferred write must not switch it back on.
+      const dualHost = host as unknown as DualSourceMutableHost;
+      if (dualHost.dualSourceEnabledOverride !== true || host.settings.dualSourceEnabled !== true) return;
+      setHostDualSourceEnabled(dualHost, true, { persist: true });
       host.saveSettings();
     });
   });

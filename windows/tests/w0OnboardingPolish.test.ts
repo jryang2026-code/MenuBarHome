@@ -5,8 +5,10 @@ import type { Window } from "happy-dom";
 
 import { closeTestWindow, installCssEscape, mountTestWindow } from "./uiHarness.js";
 import { setLanguage } from "../src/core/i18n.js";
+import { DUAL_SOURCE_ENABLED_STORAGE_KEY } from "../src/core/dualSourceProvider.js";
 import { ALL_OFF_HOLD_MS, UNDO_BANNER_SECONDS, UNDO_BANNER_SECONDS_MULTI } from "../src/ui/appConstants.js";
 import { MenuMijiaWindowsApp } from "../src/ui/app.js";
+import { isDualSourceEnabled, setHostDualSourceEnabled } from "../src/ui/cloudRefresh.js";
 import {
   identityMigrationPresentation,
   renderConnectionStatus,
@@ -282,6 +284,34 @@ describe("W0-8 · onboarding address normalization, QR state and remaining guide
     app.render();
     await setImmediate();
     assert.equal(resolveConnectionStatus(app).action?.kind, "leaveDemo", "a healthy demo home keeps its leave action");
+  });
+
+  it("never re-enables dual-source the user turned off while a QR scan was in flight (Nit-4 race)", async () => {
+    const app = await mountApp();
+    app.settings.haBaseURL = "http://192.168.1.50:8123";
+    app.settings.haToken = "ha-token";
+    app.render();
+    await setImmediate();
+
+    await click("#btn-onboarding-add-second-platform");
+    assert.ok(document.querySelector("#btn-start-qr"));
+    app.startXiaomiQRLogin = async () => {
+      // The user changes their mind in Settings while the scan/refresh is still running.
+      setHostDualSourceEnabled(app, false, { persist: true });
+      app.settings.miSession = {
+        userId: "10086",
+        cUserId: "c10086",
+        passToken: "pt-secret",
+        serviceToken: "st-secret",
+        ssecurity: "ss-secret",
+        region: "cn",
+      };
+    };
+    await click("#btn-start-qr");
+    await setImmediate();
+
+    assert.equal(isDualSourceEnabled(app), false, "the newer user choice wins");
+    assert.equal(localStorage.getItem(DUAL_SOURCE_ENABLED_STORAGE_KEY), null);
   });
 
   it("restores preDemoConnectionMode when an HA attempt made from demo fails (Nit-2 comment)", async () => {
