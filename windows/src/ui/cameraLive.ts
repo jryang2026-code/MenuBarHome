@@ -54,6 +54,11 @@ export function isGo2RtcCircuitOpenError(err: unknown): boolean {
   return /熔断|circuit\s*open|circuitopen/i.test(message);
 }
 
+export function isGo2RtcBackingOffError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err ?? "");
+  return /退避重启|backing\s*off|backingoff/i.test(message);
+}
+
 export function formatGo2RtcSupervisorDiagnostics(
   status: Go2RtcSupervisorStatus | null,
   redact: (raw: string) => string,
@@ -1017,6 +1022,11 @@ export class CameraLiveController {
         if (isGo2RtcCircuitOpenError(err)) {
           this.failLivePicture(token, liveFrameFailureText(err));
           return;
+        }
+        if (isGo2RtcBackingOffError(err)) {
+          failureStarted = null;
+          await waitForCameraFrameGap(signal, this.cameraFrameRetryMs);
+          continue;
         }
         failureStarted ??= Date.now();
         if (Date.now() - failureStarted >= this.cameraFrameGiveUpMs) {

@@ -12,6 +12,7 @@ import { STORAGE_KEY } from "../src/ui/appConstants.js";
 import {
   CameraLiveController,
   formatGo2RtcSupervisorDiagnostics,
+  isGo2RtcBackingOffError,
   isGo2RtcCircuitOpenError,
 } from "../src/ui/cameraLive.js";
 
@@ -1173,6 +1174,42 @@ describe("CameraLiveController dual-lens, gateway, manual IP, rotation & multi-c
     await waitFor(() => copied.includes("go2rtcSupervisorState: circuitOpen"));
     assert.match(copied, /go2rtcRecentFailures: 5/);
     assert.match(copied, /go2rtcNextRetryMs: none/);
+  });
+
+  it("keeps frame polling alive during intentional go2rtc backoff past cameraFrameGiveUpMs (#424)", async () => {
+    assert.equal(isGo2RtcBackingOffError(new Error("本地流媒体服务 go2rtc 异常退出，正在等待退避重启（约 32 秒）…")), true);
+    assert.equal(isGo2RtcBackingOffError("backingOff"), true);
+    assert.equal(isGo2RtcBackingOffError(new Error("读取摄像机画面超时")), false);
+
+    let attempts = 0;
+    const ctx = await mountCloudCameraApp({
+      devices: [
+        {
+          did: "cam-bo",
+          name: "阳台摄像机",
+          model: "isa.camera.hlc7",
+          roomName: "阳台",
+          localip: "192.168.1.51",
+        },
+      ],
+      frame: async () => {
+        attempts += 1;
+        if (attempts <= 4) {
+          await new Promise((resolve) => setTimeout(resolve, 25));
+          throw new Error("本地流媒体服务 go2rtc 异常退出，正在等待退避重启（约 32 秒）…");
+        }
+        return "aGVsbG8";
+      },
+    });
+    await waitFor(() => document.querySelector('[data-body-device="cam-bo"]') !== null);
+    const ctrl = ctx.app.cameraLive;
+    ctrl.cameraFrameGiveUpMs = 40;
+    ctrl.cameraFrameRetryMs = 5;
+
+    await click('[data-body-device="cam-bo"]');
+    await waitFor(() => ctrl.liveCameraMode === "mjpeg" && attempts >= 5);
+    assert.equal(ctrl.liveCameraError, null);
+    ctrl.closeCameraLiveView();
   });
 
 });
