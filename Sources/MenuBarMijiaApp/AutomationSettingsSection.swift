@@ -771,6 +771,36 @@ struct AutomationSettingsSection: View {
                 }
                 .fixedSize()
             }
+        case .wifiNetworkJoined, .wifiNetworkLeft:
+            TextField(
+                L10n.tr("Wi-Fi 名称（留空表示任意网络）", "Wi-Fi name (empty = any network)"),
+                text: $newWiFiSSID
+            )
+            .textFieldStyle(.roundedBorder)
+            .frame(maxWidth: 280)
+            .controlSize(.regular)
+        case .lateNightUsage:
+            HStack(spacing: 6) {
+                Text(L10n.tr("从", "From"))
+                    .font(.system(size: DesignTokens.TypeSize.caption))
+                    .foregroundStyle(DesignTokens.secondaryText)
+                hourPicker($newLateNightStart)
+                Text(L10n.tr("到", "to"))
+                    .font(.system(size: DesignTokens.TypeSize.caption))
+                    .foregroundStyle(DesignTokens.secondaryText)
+                hourPicker($newLateNightEnd)
+            }
+        case .calendarMeetingStartingSoon:
+            HStack(spacing: 6) {
+                Text(L10n.tr("提前", "Lead"))
+                    .font(.system(size: DesignTokens.TypeSize.caption))
+                    .foregroundStyle(DesignTokens.secondaryText)
+                Stepper(value: $newCalendarLeadMinutes, in: 1...60) {
+                    Text(L10n.format("%@ 分钟", "%@ min", String(newCalendarLeadMinutes)))
+                        .font(.system(size: DesignTokens.TypeSize.caption))
+                }
+                .fixedSize()
+            }
         case .scheduledTime:
             scheduleEditor($newSchedule)
         default:
