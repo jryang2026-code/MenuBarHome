@@ -101,6 +101,14 @@ public enum UpdateRollout {
         return text
     }
 
+    #if !os(macOS)
+    // swift-corelibs-foundation maps JSON true/false to the shared CFBoolean-backed instances.
+    // JSON numbers are separately allocated NSNumbers, so identity tells them apart even though
+    // `NSNumber(value: 0) is Bool` and `NSNumber(value: 1) is Bool` both evaluate to true.
+    private static let jsonBooleanTrue = NSNumber(value: true)
+    private static let jsonBooleanFalse = NSNumber(value: false)
+    #endif
+
     private static func parseInteger(_ raw: Any) -> Int? {
         #if os(macOS)
         // On Darwin, JSONSerialization returns NSNumber for both numbers and booleans, and
@@ -114,7 +122,11 @@ public enum UpdateRollout {
         }
         return nil
         #else
-        if raw is Bool { return nil }
+        if type(of: raw) == Bool.self { return nil }
+        if let number = raw as? NSNumber,
+           number === Self.jsonBooleanTrue || number === Self.jsonBooleanFalse {
+            return nil
+        }
         if let intValue = raw as? Int { return intValue }
         if let number = raw as? NSNumber {
             return Int(exactly: number)
