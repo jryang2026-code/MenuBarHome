@@ -254,7 +254,7 @@ public actor XiaomiCameraBridge: XiaomiCameraBridging {
         if hasLiveOwnedProcess(in: binDir) {
             return false
         }
-        return scrubPersistedStreamsInFile(binDir.appendingPathComponent("go2rtc.yaml"))
+        return scrubPersistedStreamsInFile(ProcessSupervisor.Go2RTCConfig.Paths(binDirectory: binDir).configFile)
     }
 
     public static func hasLiveOwnedProcess() -> Bool {
@@ -597,33 +597,15 @@ public actor XiaomiCameraBridge: XiaomiCameraBridging {
         return true
     }
 
-    /// `webrtc: listen: ""` keeps go2rtc from opening port 8555. `local_auth` is required
-    /// because v1.9.15 skips Basic auth for every loopback request when it is false.
     static func desiredGo2RTCConfig(ffmpegBin: String, session: Go2RTCSession) -> String {
-        let ffmpeg = yamlDoubleQuoted(ffmpegBin)
-        let apiListen = sanitizedListen(session.apiListen)
-        let rtspListen = sanitizedListen(session.rtspListen)
-        return """
-        api:
-          listen: \(apiListen)
-          username: \(yamlDoubleQuoted(session.username))
-          password: \(yamlDoubleQuoted(session.password))
-          local_auth: true
-        rtsp:
-          listen: \(rtspListen)
-        webrtc:
-          listen: ""
-        log:
-          level: info
-          ffmpeg: error
-        ffmpeg:
-          bin: \(ffmpeg)
-        exec:
-          allow_paths:
-            - \(ffmpeg)
-        menubarmijia:
-          nonce: \(yamlDoubleQuoted(session.nonce))
-        """
+        ProcessSupervisor.Go2RTCConfig.renderConfig(
+            apiListen: session.apiListen,
+            rtspListen: session.rtspListen,
+            username: session.username,
+            password: session.password,
+            nonce: session.nonce,
+            ffmpegBin: ffmpegBin
+        )
     }
 
     static func decideGo2RTCAction(_ probe: Go2RTCOwnershipProbe) -> Go2RTCAction {
@@ -847,9 +829,10 @@ public actor XiaomiCameraBridge: XiaomiCameraBridging {
             try Task.checkCancellation()
             let session = try Self.makeEphemeralGo2RTCSession()
             let desired = Self.desiredGo2RTCConfig(ffmpegBin: ffmpegBin, session: session)
-            let configURL = Self.go2rtcConfigURL()
+            let paths = ProcessSupervisor.Go2RTCConfig.Paths(binDirectory: appSupportBin)
+            let configURL = paths.configFile
             let registrations = Go2RTCRegisteredStreams()
-            let logURL = appSupportBin.appendingPathComponent("go2rtc.log")
+            let logURL = paths.logFile
             _ = FileManager.default.createFile(atPath: logURL.path, contents: nil, attributes: [.posixPermissions: 0o600])
             Self.restrictSecretFile(logURL)
             let record = Go2RTCOwnerRecord(
@@ -1067,23 +1050,22 @@ public actor XiaomiCameraBridge: XiaomiCameraBridging {
         return targetURL.path
     }
 
-    static let forbiddenListenPorts: Set<UInt16> = [1984, 8554, 8555]
+    static let forbiddenListenPorts: Set<UInt16> = ProcessSupervisor.Go2RTCConfig.forbiddenListenPorts
 
     static func supportBinDirectory() -> URL {
-        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("MenuBarMijia/bin", isDirectory: true)
+        ProcessSupervisor.Go2RTCConfig.Paths.discover().binDirectory
     }
 
     static func go2rtcConfigURL() -> URL {
-        supportBinDirectory().appendingPathComponent("go2rtc.yaml")
+        ProcessSupervisor.Go2RTCConfig.Paths.discover().configFile
     }
 
     private static func go2rtcPIDFile(in binDir: URL = supportBinDirectory()) -> SupervisedProcessPIDFile {
-        SupervisedProcessPIDFile(url: binDir.appendingPathComponent("go2rtc.pid"))
+        SupervisedProcessPIDFile(url: ProcessSupervisor.Go2RTCConfig.Paths(binDirectory: binDir).pidFile)
     }
 
     static func go2rtcOwnerURL() -> URL {
-        supportBinDirectory().appendingPathComponent("go2rtc.owner")
+        ProcessSupervisor.Go2RTCConfig.Paths.discover().ownerFile
     }
 
     static func writeSecretFile(_ text: String, to url: URL) throws {
@@ -1100,7 +1082,7 @@ public actor XiaomiCameraBridge: XiaomiCameraBridging {
     }
 
     static func readOwner(in binDir: URL) -> Go2RTCOwnerRecord? {
-        let ownerURL = binDir.appendingPathComponent("go2rtc.owner")
+        let ownerURL = ProcessSupervisor.Go2RTCConfig.Paths(binDirectory: binDir).ownerFile
         guard let text = try? String(contentsOf: ownerURL, encoding: .utf8) else { return nil }
         return Go2RTCOwnerRecord.parse(text)
     }
@@ -1111,36 +1093,15 @@ public actor XiaomiCameraBridge: XiaomiCameraBridging {
     }
 
     static func isAcceptableGo2RTCListen(_ value: String) -> Bool {
-        let prefix = "127.0.0.1:"
-        guard value.hasPrefix(prefix),
-              let port = UInt16(value.dropFirst(prefix.count)),
-              port > 0,
-              !forbiddenListenPorts.contains(port) else {
-            return false
-        }
-        return value == "127.0.0.1:\(port)"
+        ProcessSupervisor.Go2RTCConfig.isAcceptableListen(value)
     }
 
     static func sanitizedListen(_ value: String) -> String {
-        isAcceptableGo2RTCListen(value) ? value : "127.0.0.1:9"
+        ProcessSupervisor.Go2RTCConfig.sanitizedListen(value)
     }
 
     static func yamlDoubleQuoted(_ value: String) -> String {
-        var out = "\""
-        for scalar in value.unicodeScalars {
-            switch scalar {
-            case "\\":
-                out += "\\\\"
-            case "\"":
-                out += "\\\""
-            case "\n", "\r":
-                continue
-            default:
-                out.unicodeScalars.append(scalar)
-            }
-        }
-        out += "\""
-        return out
+        ProcessSupervisor.Go2RTCConfig.yamlDoubleQuoted(value)
     }
 
     static func randomCredentialToken() -> String {

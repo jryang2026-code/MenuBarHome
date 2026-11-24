@@ -2,14 +2,142 @@
 //! and verifiable Windows process identity checks for the managed `go2rtc` helper (#424).
 
 use ring::rand::{SecureRandom, SystemRandom};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::future::Future;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Go2RtcConfigRelativeFiles {
+    config: String,
+    owner: String,
+    pid: String,
+    log: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Go2RtcConfigSpec {
+    schema_version: u32,
+    relative_files: Go2RtcConfigRelativeFiles,
+    forbidden_ports: Vec<u16>,
+    allowed_modules: Vec<String>,
+}
+
+/// Single cross-platform source of truth for go2rtc module allow-list,
+/// forbidden default ports, and relative config file names (#446).
+static GO2RTC_CONFIG_SPEC: LazyLock<Go2RtcConfigSpec> = LazyLock::new(|| {
+    let spec: Go2RtcConfigSpec =
+        serde_json::from_str(include_str!("../../../Shared/go2rtcConfig.json"))
+            .expect("Shared/go2rtcConfig.json must be valid JSON");
+    assert_eq!(spec.schema_version, 1, "unsupported go2rtcConfig schemaVersion");
+    spec
+});
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Go2RtcPaths {
+    pub(crate) bin_dir: PathBuf,
+    pub(crate) config_file: PathBuf,
+    pub(crate) owner_file: PathBuf,
+    pub(crate) pid_file: PathBuf,
+    pub(crate) log_file: PathBuf,
+}
+
+impl Go2RtcPaths {
+    pub(crate) fn from_bin_dir(bin_dir: PathBuf) -> Self {
+        let files = &GO2RTC_CONFIG_SPEC.relative_files;
+        Self {
+            config_file: bin_dir.join(&files.config),
+            owner_file: bin_dir.join(&files.owner),
+            pid_file: bin_dir.join(&files.pid),
+            log_file: bin_dir.join(&files.log),
+            bin_dir,
+        }
+    }
+
+    pub(crate) fn discover() -> Result<Self, String> {
+        let local = std::env::var("LOCALAPPDATA")
+            .map_err(|_| "无法读取 LOCALAPPDATA 目录".to_string())?;
+        Ok(Self::from_bin_dir(
+            Path::new(&local).join("MenuBarMijia").join("bin"),
+        ))
+    }
+}
+
+pub(crate) fn go2rtc_allowed_modules() -> &'static [String] {
+    &GO2RTC_CONFIG_SPEC.allowed_modules
+}
+
+pub(crate) fn go2rtc_forbidden_ports() -> &'static [u16] {
+    &GO2RTC_CONFIG_SPEC.forbidden_ports
+}
+
+pub(crate) fn yaml_double_quoted(value: &str) -> String {
+    let mut out = String::from("\"");
+    for ch in value.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' | '\r' => {}
+            _ => out.push(ch),
+        }
+    }
+    out.push('"');
+    out
+}
+
+pub(crate) fn is_acceptable_go2rtc_listen(value: &str) -> bool {
+    let Some(port_text) = value.strip_prefix("127.0.0.1:") else {
+        return false;
+    };
+    let Ok(port) = port_text.parse::<u16>() else {
+        return false;
+    };
+    port > 0
+        && !go2rtc_forbidden_ports().contains(&port)
+        && value == format!("127.0.0.1:{port}")
+}
+
+pub(crate) fn sanitized_go2rtc_listen(value: &str) -> String {
+    if is_acceptable_go2rtc_listen(value) {
+        value.to_string()
+    } else {
+        "127.0.0.1:9".to_string()
+    }
+}
+
+/// Renders `go2rtc.yaml` using the shared `app.modules` allow-list so macOS and
+/// Windows generate identical security boundaries without leaking credentials
+/// into supervisor diagnostics or event history (#446).
+pub(crate) fn render_go2rtc_config(
+    api_listen: &str,
+    rtsp_listen: &str,
+    username: &str,
+    password: &str,
+    nonce: &str,
+    ffmpeg_bin: &str,
+) -> String {
+    let modules = go2rtc_allowed_modules()
+        .iter()
+        .map(|module| format!("    - {module}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let ffmpeg = yaml_double_quoted(ffmpeg_bin);
+    let api = sanitized_go2rtc_listen(api_listen);
+    let rtsp = sanitized_go2rtc_listen(rtsp_listen);
+    format!(
+        "app:\n  modules:\n{modules}\napi:\n  listen: {api}\n  username: {user}\n  password: {password}\n  local_auth: true\nrtsp:\n  listen: {rtsp}\nwebrtc:\n  listen: \"\"\nlog:\n  level: info\n  ffmpeg: error\nffmpeg:\n  bin: {ffmpeg}\nexec:\n  allow_paths:\n    - {ffmpeg}\nmenubarmijia:\n  nonce: {nonce}\n",
+        user = yaml_double_quoted(username),
+        password = yaml_double_quoted(password),
+        nonce = yaml_double_quoted(nonce),
+    )
+}
 
 pub(crate) const BACKOFF_MAX_SHIFT: u32 = 6;
 pub(crate) const BACKOFF_CAP: Duration = Duration::from_secs(60);
@@ -1016,5 +1144,31 @@ mod tests {
             tokio::task::yield_now().await;
             assert_eq!(launches.load(Ordering::SeqCst), 6);
         });
+    }
+
+    #[test]
+    fn go2rtc_config_spec_loads_shared_allowlist_and_paths() {
+        let modules = go2rtc_allowed_modules();
+        assert!(modules.iter().any(|m| m == "api"));
+        assert!(modules.iter().any(|m| m == "xiaomi"));
+        assert!(modules.iter().any(|m| m == "ffmpeg"));
+        assert!(!modules.iter().any(|m| matches!(m.as_str(), "exec" | "echo" | "expr" | "debug")));
+
+        let paths = Go2RtcPaths::from_bin_dir(PathBuf::from(r"C:\MenuBarMijia\bin"));
+        assert_eq!(paths.config_file, PathBuf::from(r"C:\MenuBarMijia\bin\go2rtc.yaml"));
+        assert_eq!(paths.owner_file, PathBuf::from(r"C:\MenuBarMijia\bin\go2rtc.owner"));
+        assert_eq!(paths.pid_file, PathBuf::from(r"C:\MenuBarMijia\bin\go2rtc.pid"));
+        assert_eq!(paths.log_file, PathBuf::from(r"C:\MenuBarMijia\bin\go2rtc.log"));
+
+        let rendered = render_go2rtc_config(
+            "127.0.0.1:43123",
+            "127.0.0.1:43124",
+            "muser0001",
+            "mpass0001",
+            "mnonce0001",
+            "C:/bin/ffmpeg-silent.exe",
+        );
+        assert!(rendered.starts_with("app:\n  modules:\n    - api\n"));
+        assert!(!rendered.contains("    - exec\n"));
     }
 }

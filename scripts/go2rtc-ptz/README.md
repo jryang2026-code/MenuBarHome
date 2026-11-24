@@ -11,7 +11,7 @@
 | 基座 tag | `v1.9.15` |
 | 基座 commit | `7c05066c90ab6ad1fccb506d5f0408aa31ebe60f` |
 | 补丁文件 | `patches/0001-xiaomi-ptz.patch` |
-| 补丁 SHA-256 | `c00dc5fd01c6270a6a13fe3ede1c0867be154107e7ae7854a4cf3f33575eaf60` |
+| 补丁 SHA-256 | `1321d9ec46d321370e1e05886ae79fb0fc10b2f9693cb1039cf56bb39e9794e9` |
 | 许可 | MIT（保留 go2rtc 版权声明；补丁本身同样以 MIT 提供） |
 
 补丁的思路来自社区真机报告与上游 PR #2531（`bcamarneiro`，commit `1a056d7c29` / `e23a21b9ee`），但这里只保留单会话电机命令与租约端点，没有引入 ONVIF 相关代码。
@@ -46,6 +46,7 @@
    - 响应里 `stopConfirmed` 恒为 false：协议没有可信的停止回执。
 5. **能力表是证据表，不是品牌表**：未收录型号返回 409，不产生任何设备动作。
 6. **hub 中继电池机**：合并上游 PR #2588 的 `subdid` 支持，`mxiang.camera.mwc10` 室内机可以中继 `mwc11` 电池摄像机；同时保留 hub 音频 channel 3 的复用和未知通道跳过。
+7. **CS2 断开主动发 `msgClose`**：回移上游 `AlexxIT/go2rtc` commit [`41ce11e4c0bf`](https://github.com/AlexxIT/go2rtc/commit/41ce11e4c0bfedd87824f1464b541845611856cf)：`cs2.Conn.Close()` 在关闭底层 socket 前先写 `{magic, msgClose, 0, 0}`，避免 UDP 断流后摄像机残留占槽约 20 秒；`miss.Producer.Start()` 在读包报错/取消退出前立即调用 `p.client.Close()` 释放旧会话槽位。
 
 ## 构建
 

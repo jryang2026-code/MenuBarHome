@@ -1139,6 +1139,8 @@ mod tests {
         assert!(written.contains("allow_paths:"));
         assert!(written.contains(&yaml_double_quoted(ffmpeg)));
         assert!(written.contains("webrtc:\n  listen: \"\""));
+        assert!(written.contains("app:\n  modules:\n    - api\n"));
+        assert!(!written.contains("    - exec\n"));
         assert_eq!(
             basic_authorization_value("muser", "mpass"),
             "Basic bXVzZXI6bXBhc3M="
