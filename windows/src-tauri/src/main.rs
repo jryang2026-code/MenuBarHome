@@ -15,6 +15,7 @@ mod placement;
 mod system_events;
 mod update;
 mod wifi;
+mod win_theme;
 mod window;
 mod update_manifest;
 use camera::*;
@@ -310,11 +311,13 @@ fn main() {
             stop_camera_runtime,
             resume_camera_runtime,
             go2rtc_jpeg_frame,
-            go2rtc_supervisor_status
+            go2rtc_supervisor_status,
+            win_theme::win_theme_state
         ])
         .setup(move |app| {
             sweep_stale_update_installers();
             scrub_stale_camera_config_on_startup();
+            let initial_theme = win_theme::init_win_theme(app.handle().clone());
             let _ = install_power_notifications(app.handle().clone());
             let _ = network_monitor::install_network_monitor(app.handle().clone());
             start_companion_runtime(app.handle().clone());
@@ -327,6 +330,7 @@ fn main() {
             load_panel_placement();
             if let Some(main_win) = app.get_webview_window("main") {
                 apply_tool_window_style(&main_win);
+                sync_main_window_chrome(&main_win, false);
                 set_window_cloaked(&main_win, true);
                 let _ = position_popover(&main_win, None, None);
                 let app_for_events = app.handle().clone();
@@ -408,7 +412,11 @@ fn main() {
                 });
 
             if let Some(icon) = app.default_window_icon() {
-                tray_builder = tray_builder.icon(icon.clone());
+                let adapted =
+                    win_theme::adapt_tray_icon_rgba(icon.rgba(), initial_theme.system_uses_light_theme);
+                let themed_icon =
+                    tauri::image::Image::new_owned(adapted, icon.width(), icon.height());
+                tray_builder = tray_builder.icon(themed_icon);
             }
 
             let _tray = tray_builder.build(app)?;
