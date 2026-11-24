@@ -509,29 +509,81 @@ private actor PruneEventLog {
 }
 
 /// Answers the four startup requests from a fixture and then delivers pushed frames in order.
-private actor FixtureSocket: HAWebSocketConnection {
-    private let results: [Int: String]
+actor FixtureSocket: HAWebSocketConnection {
+    private let results: [String: JSONValue]
+    private let compressedSnapshot: [String: JSONValue]?
     private var phase = 0
     private var pending: [Data] = []
     private var waiter: CheckedContinuation<Data, Error>?
     private var isCancelled = false
+    private var legacySubscriptionID: JSONValue?
+    private var pendingLegacyEvents: [[String: JSONValue]] = []
+    private(set) var commands: [[String: JSONValue]] = []
 
-    init(root: [String: JSONValue]) {
-        let encode = { (value: JSONValue?) in String(decoding: (try? JSONEncoder().encode(value ?? .array([]))) ?? Data("[]".utf8), as: UTF8.self) }
-        results = [1: encode(root["areas"]), 2: encode(root["devices"]), 3: encode(root["entities"]), 4: encode(root["states"]), 5: "null"]
+    init(root: [String: JSONValue] = [:], compressedSnapshot: [String: JSONValue]? = nil) {
+        self.compressedSnapshot = compressedSnapshot
+        results = [
+            "config/area_registry/list": root["areas"] ?? .array([]),
+            "config/device_registry/list": root["devices"] ?? .array([]),
+            "config/entity_registry/list": root["entities"] ?? .array([]),
+            "get_states": root["states"] ?? .array([]),
+            "subscribe_events": .null
+        ]
     }
 
     nonisolated func resume() {}
 
     func send(_ text: String) async throws {
-        guard let object = try? JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any],
-              let id = object["id"] as? Int, let result = results[id] else { return }
-        push(#"{"id":\#(id),"type":"result","success":true,"result":\#(result)}"#)
+        let command = try JSONDecoder().decode([String: JSONValue].self, from: Data(text.utf8))
+        guard let id = command["id"], let type = command["type"]?.stringValue else { return }
+        commands.append(command)
+        var reply: [String: JSONValue] = ["id": id, "type": .string("result"), "success": .bool(true)]
+        if type == "subscribe_entities" {
+            if var compressedSnapshot {
+                reply["result"] = .null
+                try push(reply)
+                compressedSnapshot["id"] = id
+                try push(compressedSnapshot)
+            } else {
+                reply["success"] = .bool(false)
+                reply["error"] = .object(["code": .string("unknown_command"), "message": .string("Unknown command.")])
+                try push(reply)
+            }
+        } else if let result = results[type] {
+            reply["result"] = result
+            try push(reply)
+            if type == "subscribe_events" {
+                legacySubscriptionID = id
+                for var event in pendingLegacyEvents {
+                    event["id"] = id
+                    try push(event)
+                }
+                pendingLegacyEvents.removeAll()
+            }
+        }
     }
 
     func push(_ text: String) {
-        let data = Data(text.utf8)
+        do {
+            var message = try JSONDecoder().decode([String: JSONValue].self, from: Data(text.utf8))
+            if let legacySubscriptionID {
+                message["id"] = legacySubscriptionID
+                try push(message)
+            } else {
+                pendingLegacyEvents.append(message)
+            }
+        } catch {
+            Issue.record("Invalid legacy fixture frame: \(error)")
+        }
+    }
+
+    func push(_ message: [String: JSONValue]) throws {
+        let data = try JSONEncoder().encode(message)
         if let waiter { self.waiter = nil; waiter.resume(returning: data) } else { pending.append(data) }
+    }
+
+    func disconnect() {
+        close(with: URLError(.networkConnectionLost))
     }
 
     func receive() async throws -> Data {
@@ -543,11 +595,11 @@ private actor FixtureSocket: HAWebSocketConnection {
         return try await withCheckedThrowingContinuation { waiter = $0 }
     }
 
-    nonisolated func cancel() { Task { await self.close() } }
+    nonisolated func cancel() { Task { await self.close(with: CancellationError()) } }
 
-    private func close() {
+    private func close(with error: any Error) {
         isCancelled = true
-        waiter?.resume(throwing: CancellationError())
+        waiter?.resume(throwing: error)
         waiter = nil
     }
 }

@@ -98,6 +98,8 @@ public struct HAEntityState: Equatable, Sendable {
     public var state: String
     public var attributes: [String: JSONValue]
     public var lastChanged: Date?
+    var lastUpdated: Date?
+    var context: [String: JSONValue] = [:]
 
     public init(
         entityId: String,

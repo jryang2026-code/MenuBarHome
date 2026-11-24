@@ -1,0 +1,36 @@
+[
+  {
+    "id": 4, "type": "event",
+    "event": {"a": {
+      "light.desk": {
+        "s": "off", "a": {"friendly_name": "Desk", "brightness": 64, "effect": "Reading"},
+        "c": "01J00000000000000000000001", "lc": 1730000000.125
+      }
+    }}
+  },
+  {
+    "id": 4, "type": "event",
+    "event": {"c": {"light.desk": {
+      "+": {"s": "on", "a": {"brightness": 128}, "lc": 1730000001.25,
+            "c": {"id": "01J00000000000000000000002", "parent_id": "parent", "user_id": "user"}},
+      "-": {"a": ["effect"]}
+    }}}
+  },
+  {
+    "id": 4, "type": "event",
+    "event": {"c": {"light.desk": {
+      "+": {"a": {"brightness": 192}, "c": "01J00000000000000000000003", "lu": 1730000002.5}
+    }}}
+  },
+  {"id": 4, "type": "event", "event": {"r": ["light.desk"]}},
+  {
+    "id": 4, "type": "event",
+    "event": {"a": {
+      "light.hall": {
+        "s": "on", "a": {"friendly_name": "Hall"},
+        "c": {"id": "01J00000000000000000000004", "parent_id": null, "user_id": "user"},
+        "lc": 1730000003.125, "lu": 1730000004.125
+      }
+    }}
+  }
+]
