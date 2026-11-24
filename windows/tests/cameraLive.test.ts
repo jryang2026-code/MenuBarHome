@@ -9,7 +9,12 @@ import { MiCloudCrypto } from "../src/core/miCloudCrypto.js";
 import { MiCloudClient } from "../src/core/miCloudClient.js";
 import { MenuMijiaWindowsApp } from "../src/ui/app.js";
 import { STORAGE_KEY } from "../src/ui/appConstants.js";
-import { CameraLiveController } from "../src/ui/cameraLive.js";
+import {
+  CameraLiveController,
+  formatGo2RtcSupervisorDiagnostics,
+  isGo2RtcBackingOffError,
+  isGo2RtcCircuitOpenError,
+} from "../src/ui/cameraLive.js";
 
 import { DEVICE_CATEGORY_IDS } from "../src/core/capabilityManifest.js";
 
@@ -1080,6 +1085,131 @@ describe("CameraLiveController dual-lens, gateway, manual IP, rotation & multi-c
       customUrl,
       "Reload must keep using the custom URL saved on the paired card",
     );
+  });
+
+  it("formats redacted go2rtc supervisor diagnostics and fails fast when circuit breaker opens (#424)", async () => {
+    assert.equal(isGo2RtcCircuitOpenError(new Error("本地流媒体服务 go2rtc 多次异常退出，已触发熔断保护")), true);
+    assert.equal(isGo2RtcCircuitOpenError("go2rtc circuitOpen"), true);
+    assert.equal(isGo2RtcCircuitOpenError(new Error("读取摄像机画面超时")), false);
+
+    const redact = (raw: string) =>
+      raw
+        .replace(/https?:\/\/[^\s"'<>]+/gi, "<redacted-url>")
+        .replace(/\b(?:\d{1,3}\.){3}\d{1,3}\b/g, "<redacted-ip>")
+        .replace(/\b[0-9a-fA-F]{24,}\b/g, "<redacted-token>");
+
+    const lines = formatGo2RtcSupervisorDiagnostics(
+      {
+        state: "backingOff",
+        consecutiveFailures: 2,
+        recentFailures: 2,
+        nextRetryMs: 4000,
+        lastExitCode: 1,
+        lastError: "connect http://127.0.0.1:43123 failed for 192.168.1.90 token 0123456789abcdef0123456789abcdef",
+      },
+      redact,
+    );
+    assert.ok(lines.includes("go2rtcSupervisorState: backingOff"));
+    assert.ok(lines.includes("go2rtcConsecutiveFailures: 2"));
+    assert.ok(lines.includes("go2rtcRecentFailures: 2"));
+    assert.ok(lines.includes("go2rtcNextRetryMs: 4000"));
+    assert.ok(lines.includes("go2rtcLastExitCode: 1"));
+    const errorLine = lines.find((line) => line.startsWith("go2rtcLastError:")) ?? "";
+    assert.doesNotMatch(errorLine, /127\.0\.0\.1|192\.168\.1\.90|0123456789abcdef/);
+
+    assert.deepEqual(formatGo2RtcSupervisorDiagnostics(null, redact), [
+      "go2rtcSupervisorState: unavailable",
+    ]);
+
+    const ctx = await mountCloudCameraApp({
+      devices: [
+        {
+          did: "cam-cb",
+          name: "玄关摄像机",
+          model: "isa.camera.hlc7",
+          roomName: "玄关",
+          localip: "192.168.1.50",
+        },
+      ],
+      frame: async () => {
+        throw new Error("本地流媒体服务 go2rtc 多次异常退出，已触发熔断保护，请点击重新连接以重置");
+      },
+    });
+    await waitFor(() => document.querySelector('[data-body-device="cam-cb"]') !== null);
+    const ctrl = ctx.app.cameraLive;
+    ctrl.cameraFrameGiveUpMs = 60_000;
+    ctrl.cameraFrameRetryMs = 5_000;
+
+    const origInvoke = window.__TAURI_INTERNALS__!.invoke;
+    window.__TAURI_INTERNALS__!.invoke = async <T,>(
+      name: string,
+      args?: Record<string, unknown>,
+    ): Promise<T> => {
+      if (name === "go2rtc_supervisor_status") {
+        return {
+          state: "circuitOpen",
+          consecutiveFailures: 4,
+          recentFailures: 5,
+          nextRetryMs: null,
+          lastExitCode: 1,
+          lastError: null,
+        } as unknown as T;
+      }
+      return origInvoke<T>(name, args);
+    };
+
+    await click('[data-body-device="cam-cb"]');
+    await waitFor(() => Boolean(ctrl.liveCameraError && ctrl.liveCameraError.includes("熔断")));
+
+    let copied = "";
+    Object.defineProperty(globalThis.navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText: async (text: string) => {
+          copied = text;
+        },
+      },
+    });
+    await click("#btn-copy-camera-diag");
+    await waitFor(() => copied.includes("go2rtcSupervisorState: circuitOpen"));
+    assert.match(copied, /go2rtcRecentFailures: 5/);
+    assert.match(copied, /go2rtcNextRetryMs: none/);
+  });
+
+  it("keeps frame polling alive during intentional go2rtc backoff past cameraFrameGiveUpMs (#424)", async () => {
+    assert.equal(isGo2RtcBackingOffError(new Error("本地流媒体服务 go2rtc 异常退出，正在等待退避重启（约 32 秒）…")), true);
+    assert.equal(isGo2RtcBackingOffError("backingOff"), true);
+    assert.equal(isGo2RtcBackingOffError(new Error("读取摄像机画面超时")), false);
+
+    let attempts = 0;
+    const ctx = await mountCloudCameraApp({
+      devices: [
+        {
+          did: "cam-bo",
+          name: "阳台摄像机",
+          model: "isa.camera.hlc7",
+          roomName: "阳台",
+          localip: "192.168.1.51",
+        },
+      ],
+      frame: async () => {
+        attempts += 1;
+        if (attempts <= 4) {
+          await new Promise((resolve) => setTimeout(resolve, 25));
+          throw new Error("本地流媒体服务 go2rtc 异常退出，正在等待退避重启（约 32 秒）…");
+        }
+        return "aGVsbG8";
+      },
+    });
+    await waitFor(() => document.querySelector('[data-body-device="cam-bo"]') !== null);
+    const ctrl = ctx.app.cameraLive;
+    ctrl.cameraFrameGiveUpMs = 40;
+    ctrl.cameraFrameRetryMs = 5;
+
+    await click('[data-body-device="cam-bo"]');
+    await waitFor(() => ctrl.liveCameraMode === "mjpeg" && attempts >= 5);
+    assert.equal(ctrl.liveCameraError, null);
+    ctrl.closeCameraLiveView();
   });
 
 });

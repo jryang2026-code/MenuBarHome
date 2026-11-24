@@ -5,6 +5,7 @@ mod camera;
 mod companion;
 mod desktop_shell;
 mod job_object;
+mod process_supervisor;
 mod credentials;
 mod miio;
 mod miio_crypto;
@@ -246,7 +247,7 @@ fn main() {
                             .and_then(|guard| guard.active_shortcut)
                             .is_some_and(|active| &active == shortcut)
                     {
-                        toggle_main_window(app, None, false);
+                        toggle_main_window(app, None, None, false);
                     }
                 })
                 .build(),
@@ -306,7 +307,8 @@ fn main() {
             cancel_camera_preparation,
             stop_camera_runtime,
             resume_camera_runtime,
-            go2rtc_jpeg_frame
+            go2rtc_jpeg_frame,
+            go2rtc_supervisor_status
         ])
         .setup(move |app| {
             sweep_stale_update_installers();
@@ -321,8 +323,11 @@ fn main() {
             let _ = app.global_shortcut().register(default_shortcut);
             load_panel_placement();
             if let Some(main_win) = app.get_webview_window("main") {
-                let _ = position_popover(&main_win, None);
+                apply_tool_window_style(&main_win);
+                set_window_cloaked(&main_win, true);
+                let _ = position_popover(&main_win, None, None);
                 let app_for_events = app.handle().clone();
+                let main_win_for_events = main_win.clone();
                 main_win.on_window_event(move |event| match event {
                     WindowEvent::CloseRequested { api, .. } => {
                         api.prevent_close();
@@ -333,6 +338,9 @@ fn main() {
                             note_panel_focus_loss();
                             request_hide_panel(&app_for_events);
                         }
+                    }
+                    WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                        reclamp_panel_for_scale_change(&main_win_for_events, *scale_factor);
                     }
                     // Drag-to-move: a header press hands over to the OS move loop, and the resulting
                     // moves snap to the nearest work-area corner once the drag settles (#204).
@@ -348,7 +356,7 @@ fn main() {
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id.as_ref() {
-                    "toggle" => toggle_main_window(app, None, false),
+                    "toggle" => toggle_main_window(app, None, None, false),
                     "settings" => {
                         let app_handle = app.clone();
                         tauri::async_runtime::spawn(async move {
@@ -379,17 +387,19 @@ fn main() {
                         button: MouseButton::Left,
                         button_state: MouseButtonState::Down,
                         position,
+                        rect,
                         ..
                     } => {
-                        handle_tray_mouse_down(tray.app_handle(), Some(position));
+                        handle_tray_mouse_down(tray.app_handle(), Some(position), Some(rect));
                     }
                     TrayIconEvent::Click {
                         button: MouseButton::Left,
                         button_state: MouseButtonState::Up,
                         position,
+                        rect,
                         ..
                     } => {
-                        toggle_main_window(tray.app_handle(), Some(position), true);
+                        toggle_main_window(tray.app_handle(), Some(position), Some(rect), true);
                     }
                     _ => {}
                 });
@@ -457,87 +467,88 @@ mod tests {
         assert!(!vis.complete_hide(aborted));
 
         let tray_pt = Some((1_780, 1_060));
+        let tray_rect = Some(Rect::new(1_764, 1_044, 32, 32));
         let near_tray_pt = Some((1_783, 1_058));
         let desktop_pt = Some((620, 480));
 
         let mut tray = PanelVisibilityState::default();
-        tray.note_tray_press_down(false, 1_000, tray_pt);
-        assert_eq!(tray.decide_tray_release(false, 1_060, tray_pt), TrayToggleAction::Present);
+        tray.note_tray_press_down(false, 1_000, tray_pt, tray_rect, 1.0);
+        assert_eq!(tray.decide_tray_release(false, 1_060, tray_pt, tray_rect, 1.0), TrayToggleAction::Present);
         let _ = tray.begin_present();
 
         // Fast tray click while open: focus loss starts hide, release stays Noop, and an immediate
         // second click within 280 ms reopens cleanly instead of being swallowed.
         tray.note_focus_loss(2_000, near_tray_pt);
         let _ = tray.begin_hide(true);
-        tray.note_tray_press_down(false, 2_005, tray_pt);
-        assert_eq!(tray.decide_tray_release(false, 2_060, tray_pt), TrayToggleAction::Noop);
-        tray.note_tray_press_down(false, 2_170, tray_pt);
-        assert_eq!(tray.decide_tray_release(false, 2_220, tray_pt), TrayToggleAction::Present);
+        tray.note_tray_press_down(false, 2_005, tray_pt, tray_rect, 1.0);
+        assert_eq!(tray.decide_tray_release(false, 2_060, tray_pt, tray_rect, 1.0), TrayToggleAction::Noop);
+        tray.note_tray_press_down(false, 2_170, tray_pt, tray_rect, 1.0);
+        assert_eq!(tray.decide_tray_release(false, 2_220, tray_pt, tray_rect, 1.0), TrayToggleAction::Present);
         let _ = tray.begin_present();
 
         // Slow cross-process tray notification (>65 ms after Focused(false)) on the tray icon
         // still recognizes the same click spatially and does not bounce the flyout back open.
         tray.note_focus_loss(2_500, near_tray_pt);
         let _ = tray.begin_hide(true);
-        tray.note_tray_press_down(false, 2_640, tray_pt);
-        assert_eq!(tray.decide_tray_release(false, 2_690, tray_pt), TrayToggleAction::Noop);
+        tray.note_tray_press_down(false, 2_640, tray_pt, tray_rect, 1.0);
+        assert_eq!(tray.decide_tray_release(false, 2_690, tray_pt, tray_rect, 1.0), TrayToggleAction::Noop);
         let _ = tray.begin_present();
 
         // Slow >280 ms press-and-hold on tray while open must keep the panel closed on release,
         // even if the hide animation completed while the button was still held down.
         tray.note_focus_loss(3_000, near_tray_pt);
         let slow_seq = tray.begin_hide(true).expect("starts hide on slow tray hold");
-        tray.note_tray_press_down(false, 3_005, tray_pt);
+        tray.note_tray_press_down(false, 3_005, tray_pt, tray_rect, 1.0);
         assert!(tray.complete_hide(slow_seq));
-        assert_eq!(tray.decide_tray_release(false, 3_620, tray_pt), TrayToggleAction::Noop);
+        assert_eq!(tray.decide_tray_release(false, 3_620, tray_pt, tray_rect, 1.0), TrayToggleAction::Noop);
 
         // Press-down arriving slightly before Focused(false) still dismisses cleanly without
         // poisoning the next click.
         let _ = tray.begin_present();
-        tray.note_tray_press_down(true, 3_700, tray_pt);
+        tray.note_tray_press_down(true, 3_700, tray_pt, tray_rect, 1.0);
         tray.note_focus_loss(3_704, near_tray_pt);
         let _ = tray.begin_hide(true);
-        assert_eq!(tray.decide_tray_release(false, 3_750, tray_pt), TrayToggleAction::Noop);
-        tray.note_tray_press_down(false, 3_840, tray_pt);
-        assert_eq!(tray.decide_tray_release(false, 3_890, tray_pt), TrayToggleAction::Present);
+        assert_eq!(tray.decide_tray_release(false, 3_750, tray_pt, tray_rect, 1.0), TrayToggleAction::Noop);
+        tray.note_tray_press_down(false, 3_840, tray_pt, tray_rect, 1.0);
+        assert_eq!(tray.decide_tray_release(false, 3_890, tray_pt, tray_rect, 1.0), TrayToggleAction::Present);
 
         // Clicking the desktop outside the flyout — even 40 ms before clicking the tray icon —
         // must reopen the flyout, both mid-dismiss and right after complete_hide.
         let _ = tray.begin_present();
         tray.note_focus_loss(5_000, desktop_pt);
         let _ = tray.begin_hide(true);
-        tray.note_tray_press_down(false, 5_040, tray_pt);
-        assert_eq!(tray.decide_tray_release(false, 5_085, tray_pt), TrayToggleAction::Present);
+        tray.note_tray_press_down(false, 5_040, tray_pt, tray_rect, 1.0);
+        assert_eq!(tray.decide_tray_release(false, 5_085, tray_pt, tray_rect, 1.0), TrayToggleAction::Present);
 
         let _ = tray.begin_present();
         tray.note_focus_loss(6_000, desktop_pt);
         let desktop_hide = tray.begin_hide(true).expect("desktop click starts hide");
         assert!(tray.complete_hide(desktop_hide));
-        tray.note_tray_press_down(false, 6_050, tray_pt);
-        assert_eq!(tray.decide_tray_release(false, 6_090, tray_pt), TrayToggleAction::Present);
+        tray.note_tray_press_down(false, 6_050, tray_pt, tray_rect, 1.0);
+        assert_eq!(tray.decide_tray_release(false, 6_090, tray_pt, tray_rect, 1.0), TrayToggleAction::Present);
 
         // Cancelled tray press (Down on tray while open, dragged off without Up) must expire
         // instead of swallowing a subsequent Up-only tap later.
         let _ = tray.begin_present();
-        tray.note_tray_press_down(true, 7_000, tray_pt);
+        tray.note_tray_press_down(true, 7_000, tray_pt, tray_rect, 1.0);
         tray.note_focus_loss(7_010, near_tray_pt);
         let drag_off_hide = tray.begin_hide(true).expect("drag-off press starts hide");
         assert!(tray.complete_hide(drag_off_hide));
-        assert_eq!(tray.decide_tray_release(false, 12_500, tray_pt), TrayToggleAction::Present);
+        assert_eq!(tray.decide_tray_release(false, 12_500, tray_pt, tray_rect, 1.0), TrayToggleAction::Present);
 
         // Pinned popover stays open across focus loss and closes on tray release.
         let _ = tray.begin_present();
-        tray.note_tray_press_down(true, 13_000, tray_pt);
-        assert_eq!(tray.decide_tray_release(true, 13_080, tray_pt), TrayToggleAction::Hide);
+        tray.note_tray_press_down(true, 13_000, tray_pt, tray_rect, 1.0);
+        assert_eq!(tray.decide_tray_release(true, 13_080, tray_pt, tray_rect, 1.0), TrayToggleAction::Hide);
 
         // Fallback timing branch when OS cursor coordinates are unavailable (`None`).
         let _ = tray.begin_present();
         tray.note_focus_loss(14_000, None);
         let _ = tray.begin_hide(true);
-        tray.note_tray_press_down(false, 14_025, None);
-        assert_eq!(tray.decide_tray_release(false, 14_060, None), TrayToggleAction::Noop);
-        tray.note_tray_press_down(false, 14_150, None);
-        assert_eq!(tray.decide_tray_release(false, 14_190, None), TrayToggleAction::Present);
+        tray.note_tray_press_down(false, 14_025, None, None, 1.0);
+        assert_eq!(tray.decide_tray_release(false, 14_060, None, None, 1.0), TrayToggleAction::Noop);
+        tray.note_tray_press_down(false, 14_150, None, None, 1.0);
+        assert_eq!(tray.decide_tray_release(false, 14_190, None, None, 1.0), TrayToggleAction::Present);
 
         // Keyboard Escape requests focus return on hide completion, while mouse focus-loss
         // or regular hide paths leave focus untouched.
@@ -1169,6 +1180,8 @@ mod tests {
             serialize_owner(&Go2RtcOwnerRecord {
                 pid: 0,
                 session: session.clone(),
+                exe_path: None,
+                creation_time: None,
             }),
         )
         .expect("write dead owner");
@@ -1179,15 +1192,33 @@ mod tests {
 
         #[cfg(windows)]
         {
+            // PID alone (missing exe_path / creation_time) is not sufficient proof of ownership.
             std::fs::write(&cfg_path, &rewritten_by_go2rtc).expect("rewrite dirty config");
             std::fs::write(
                 &owner_path,
                 serialize_owner(&Go2RtcOwnerRecord {
                     pid: std::process::id(),
                     session: session.clone(),
+                    exe_path: None,
+                    creation_time: None,
                 }),
             )
-            .expect("write live owner");
+            .expect("write pid-only owner");
+            assert!(scrub_stale_camera_config_in_dir(&root));
+
+            // Full verifiable identity (PID + executable path + creation time) preserves config.
+            let self_id = process_supervisor::current_process_identity().expect("self identity");
+            std::fs::write(&cfg_path, &rewritten_by_go2rtc).expect("rewrite dirty config");
+            std::fs::write(
+                &owner_path,
+                serialize_owner(&Go2RtcOwnerRecord {
+                    pid: self_id.pid,
+                    session: session.clone(),
+                    exe_path: Some(self_id.executable_path),
+                    creation_time: Some(self_id.creation_time_100ns),
+                }),
+            )
+            .expect("write verified live owner");
             assert!(!scrub_stale_camera_config_in_dir(&root));
             assert!(std::fs::read_to_string(&cfg_path)
                 .expect("read preserved config")

@@ -504,7 +504,7 @@ struct DebouncedResumeAndLifecycleTests {
         await provider.resetStartupReplyState()
 
         let collectTask = Task {
-            try await provider.collectInitialRegistryReplies()
+            try await provider.collectInitialRegistryReplies(ids: [1, 2, 3, 4, 5])
         }
 
         // Deliver replies out of order: 4, 2, 5, 1, 3
@@ -521,7 +521,7 @@ struct DebouncedResumeAndLifecycleTests {
         // Verify subscribe_events (id 5) failure is not silently dropped
         await provider.resetStartupReplyState()
         let failingTask = Task {
-            try await provider.collectInitialRegistryReplies()
+            try await provider.collectInitialRegistryReplies(ids: [1, 2, 3, 4, 5])
         }
         await provider.deliverStartupReply(id: 1, message: ["type": .string("result"), "id": .number(1), "success": .bool(true)])
         await provider.deliverStartupReply(id: 5, message: ["type": .string("result"), "id": .number(5), "success": .bool(false)])

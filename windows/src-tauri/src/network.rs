@@ -132,6 +132,44 @@ pub(crate) fn append_bounded_response_chunk(
     Ok(())
 }
 
+struct HttpRedirectScope {
+    follow: bool,
+    allowed_origins: HashSet<String>,
+    original_origin: String,
+    ha_scope: Option<String>,
+}
+
+// Reqwest polls its redirect middleware inside the request future. Scope the authorization
+// to that future so concurrent requests can share a pool without sharing redirect permissions.
+tokio::task_local! {
+    static HTTP_REDIRECT_SCOPE: HttpRedirectScope;
+}
+
+static HTTP_CLIENT: LazyLock<Result<reqwest::Client, String>> = LazyLock::new(|| {
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            let allowed = HTTP_REDIRECT_SCOPE
+                .try_with(|scope| {
+                    scope.follow
+                        && attempt.previous().len() < 5
+                        && redirect_allowed(&scope.original_origin, attempt.url(), &scope.allowed_origins)
+                        && scope.ha_scope.as_ref().is_none_or(|ha| in_ha_scope(attempt.url(), ha))
+                })
+                .unwrap_or(false);
+            if allowed { attempt.follow() } else { attempt.stop() }
+        }))
+        .build()
+        .map_err(|error| format_reqwest_error(&error))
+});
+
+fn in_ha_scope(url: &reqwest::Url, scope: &str) -> bool {
+    let path = url.path().to_ascii_lowercase();
+    let target = format!("{}{}", url.origin().ascii_serialization(), url.path());
+    target.starts_with(&format!("{scope}/api/"))
+        && url.fragment().is_none()
+        && !["%2e", "%2f", "%5c"].iter().any(|&escape| path.contains(escape))
+}
+
 #[tauri::command]
 pub(crate) async fn native_http(
     url: String,
@@ -153,14 +191,6 @@ pub(crate) async fn native_http_with_scope(
     timeout_ms: Option<u64>,
     ha_scope: Option<String>,
 ) -> Result<NativeHttpResponse, String> {
-    fn in_ha_scope(url: &reqwest::Url, scope: &str) -> bool {
-        let path = url.path().to_ascii_lowercase();
-        let target = format!("{}{}", url.origin().ascii_serialization(), url.path());
-        target.starts_with(&format!("{scope}/api/"))
-            && url.fragment().is_none()
-            && !["%2e", "%2f", "%5c"].iter().any(|&escape| path.contains(escape))
-    }
-
     let allowed_origins = allowed_origins_snapshot()?;
     let parsed_url = reqwest::Url::parse(&url).map_err(|e| format!("native_http 地址无效：{e}"))?;
     check_url_allowed(&parsed_url, &allowed_origins)?;
@@ -169,31 +199,13 @@ pub(crate) async fn native_http_with_scope(
     }
 
     let follow = follow_redirects.unwrap_or(true);
-    let policy = if follow {
-        let redirect_origins = allowed_origins.clone();
-        let original_origin = url_origin(&parsed_url).expect("validated request origin");
-        reqwest::redirect::Policy::custom(move |attempt| {
-            if attempt.previous().len() >= 5 {
-                return attempt.stop();
-            }
-            // Even another configured origin must not receive this request's headers or body.
-            if redirect_allowed(&original_origin, attempt.url(), &redirect_origins)
-                && ha_scope.as_ref().is_none_or(|scope| in_ha_scope(attempt.url(), scope))
-            {
-                attempt.follow()
-            } else {
-                attempt.stop()
-            }
-        })
-    } else {
-        reqwest::redirect::Policy::none()
+    let redirect_scope = HttpRedirectScope {
+        follow,
+        allowed_origins,
+        original_origin: url_origin(&parsed_url).expect("validated request origin"),
+        ha_scope,
     };
-
-    let client = reqwest::Client::builder()
-        .redirect(policy)
-        .timeout(Duration::from_millis(clamp_http_timeout_ms(timeout_ms)))
-        .build()
-        .map_err(|e| format_reqwest_error(&e))?;
+    let client = HTTP_CLIENT.as_ref().map_err(Clone::clone)?;
 
     let verb = method.unwrap_or_else(|| "GET".to_string()).to_uppercase();
     let mut req = match verb.as_str() {
@@ -227,7 +239,11 @@ pub(crate) async fn native_http_with_scope(
         req = req.body(b);
     }
 
-    let mut resp = req.send().await.map_err(|e| format_reqwest_error(&e))?;
+    let req = req.timeout(Duration::from_millis(clamp_http_timeout_ms(timeout_ms)));
+    let mut resp = HTTP_REDIRECT_SCOPE
+        .scope(redirect_scope, req.send())
+        .await
+        .map_err(|e| format_reqwest_error(&e))?;
     let status = resp.status().as_u16();
     // A stopped redirect comes back as a 3xx here; surfacing it as an error is
     // clearer than handing the frontend a response from a host it may not use.
@@ -655,6 +671,55 @@ mod ha_scope_tests {
         }
         // The in-scope path itself still reaches the host; the redirect test below asserts that.
         EXTRA_ALLOWED_ORIGINS.write().unwrap().remove(&origin);
+    }
+
+    #[test]
+    fn allowed_redirect_uses_reqwest_semantics_and_reuses_the_connection() {
+        use std::io::{BufRead, BufReader, Read, Write};
+
+        let _guard = crate::ORIGIN_TEST_LOCK.lock().unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let origin = normalize_extra_origin(&base).unwrap();
+        EXTRA_ALLOWED_ORIGINS.write().unwrap().insert(origin.clone());
+        let peer = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+            let mut stream = BufReader::new(stream);
+            for (request, response) in [
+                ("POST /ha/api/start HTTP/1.1", "302 Found\r\nLocation: /ha/api/next"),
+                ("GET /ha/api/next HTTP/1.1", "200 OK"),
+                ("GET /ha/api/again HTTP/1.1", "200 OK"),
+            ] {
+                let mut line = String::new();
+                stream.read_line(&mut line).unwrap();
+                assert_eq!(line.trim_end(), request);
+                loop {
+                    line.clear();
+                    assert!(stream.read_line(&mut line).unwrap() > 0);
+                    if line == "\r\n" { break; }
+                }
+                if request.starts_with("POST") {
+                    let mut body = [0; 4];
+                    stream.read_exact(&mut body).unwrap();
+                    assert_eq!(&body, b"data");
+                }
+                write!(stream.get_mut(), "HTTP/1.1 {response}\r\nContent-Length: 0\r\n\r\n").unwrap();
+            }
+        });
+        let result = tauri::async_runtime::block_on(async {
+            native_http_with_scope(
+                format!("{base}/ha/api/start"), Some("POST".into()), None, Some("data".into()),
+                None, Some(2_000), Some(format!("{base}/ha")),
+            ).await?;
+            native_http_with_scope(
+                format!("{base}/ha/api/again"), None, None, None, Some(false), Some(2_000),
+                Some(format!("{base}/ha")),
+            ).await
+        });
+        EXTRA_ALLOWED_ORIGINS.write().unwrap().remove(&origin);
+        peer.join().unwrap();
+        assert_eq!(result.unwrap().status, 200);
     }
 
     /// A 302 that stays on the allowed origin but leaves the registered Home Assistant subpath must

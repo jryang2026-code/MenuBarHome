@@ -41,13 +41,30 @@ protocol MacContextProviding: AnyObject {
 final class MacContextObserver: MacContextProviding {
     private var handler: (@MainActor (MacContextSnapshot, Date) async -> Void)?
     private var timer: Timer?
+    private var captureTask: Task<Void, Never>?
+    private var observerGeneration: UInt64 = 0
     private var lastCalendarQuery = Date.distantPast
     private var cachedMeetings: [CalendarMeeting] = []
     private let eventStore = EKEventStore()
     private let locationManager = CLLocationManager()
+    private let focusActiveProvider: @MainActor () -> Bool?
+    private let focusFilterReader: @MainActor () async -> FocusFilterQueryResult
+    private let focusFilterDefaults: UserDefaults
     private static let refreshInterval: TimeInterval = 10
     private static let calendarQueryInterval: TimeInterval = 30
     private static let calendarLookahead: TimeInterval = 60 * 60
+
+    init(
+        focusActiveProvider: @escaping @MainActor () -> Bool? = { MacContextObserver.focusActive() },
+        focusFilterReader: @escaping @MainActor () async -> FocusFilterQueryResult = {
+            await MenuBarHomeFocusFilter.currentQueryResult()
+        },
+        focusFilterDefaults: UserDefaults = .standard
+    ) {
+        self.focusActiveProvider = focusActiveProvider
+        self.focusFilterReader = focusFilterReader
+        self.focusFilterDefaults = focusFilterDefaults
+    }
 
     func start(_ handler: @escaping @MainActor (MacContextSnapshot, Date) async -> Void) {
         self.handler = handler
@@ -64,20 +81,54 @@ final class MacContextObserver: MacContextProviding {
     }
 
     func stop() {
+        observerGeneration &+= 1
         timer?.invalidate()
         timer = nil
+        captureTask?.cancel()
+        captureTask = nil
         handler = nil
     }
 
+    func installHandler(_ handler: @escaping @MainActor (MacContextSnapshot, Date) async -> Void) {
+        self.handler = handler
+    }
+
     private func tick() {
-        let now = Date()
+        _ = dispatchTick()
+    }
+
+    /// Captures one snapshot and dispatches `handler` in its own unstructured task once snapshot
+    /// capture/reconciliation settles, so a slow hardware automation never blocks later 10 s polls.
+    @discardableResult
+    func dispatchTick(at now: Date = Date()) -> Task<Void, Never>? {
+        guard captureTask == nil else { return nil }
+        let generation = observerGeneration
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            let snapshot = await self.captureSnapshot(at: now)
+            guard self.observerGeneration == generation else { return }
+            self.captureTask = nil
+            guard !Task.isCancelled, let handler = self.handler else { return }
+            Task { @MainActor in
+                await handler(snapshot, now)
+            }
+        }
+        captureTask = task
+        return task
+    }
+
+    func captureSnapshot(at now: Date = Date()) async -> MacContextSnapshot {
         let (powerSource, batteryPercent) = Self.readPowerState()
-        let focusActive = Self.focusActive()
-        // A Focus that has ended must not leave its filter profile behind: the next Focus may carry
-        // no MenuBarHome filter at all, and a stale profile would keep silencing non-safety
-        // notifications (#575). Safety alerts are unaffected either way — the policy refuses.
-        if focusActive != true { FocusFilterStorage.clear() }
-        let snapshot = MacContextSnapshot(
+        let focusActive = focusActiveProvider()
+        // Reconcile against `MenuBarHomeFocusFilter.current` on every tick so switching directly
+        // from Focus A (with filter) to Focus B (different filter or no filter) replaces or clears
+        // the stale profile even though `focusActive` stays `true` (#443).
+        let focusProfile = await FocusFilterStorage.reconcile(
+            isFocusActive: focusActive,
+            currentFilter: { await self.focusFilterReader() },
+            defaults: focusFilterDefaults
+        )
+        return MacContextSnapshot(
             cameraInUse: Self.cameraInUse(),
             microphoneInUse: Self.microphoneInUse(),
             powerSource: powerSource,
@@ -85,13 +136,10 @@ final class MacContextObserver: MacContextProviding {
             wifiSSID: wifiSSID(),
             isWiFiAuthorized: isWiFiAuthorized,
             isFocusActive: focusActive,
+            focusModeName: focusActive == true ? focusProfile.activeFocusModeName : nil,
             isUserPresent: Self.isUserPresent(),
             meetings: calendarMeetings(now: now)
         )
-        guard let handler else { return }
-        Task { @MainActor in
-            await handler(snapshot, now)
-        }
     }
 
     /// Display wake alone is not user presence: a notification or DarkWake can light up the lock

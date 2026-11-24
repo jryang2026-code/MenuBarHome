@@ -153,6 +153,230 @@ struct NotificationDeliveryPolicyTests {
         FocusFilterStorage.save(Self.quietFilter, defaults: defaults)
         FocusFilterStorage.save(.inactive, defaults: defaults)
         #expect(defaults.data(forKey: FocusFilterStorage.key) == nil)
+
+        // Mode labels trim whitespace, ignore blanks, and decode legacy profiles without the field.
+        let labelled = FocusFilterProfile(
+            isEnabled: true,
+            suppressNonSafetyNotifications: true,
+            focusModeName: "  睡眠  "
+        )
+        #expect(labelled.focusModeName == "睡眠")
+        #expect(labelled.activeFocusModeName == "睡眠")
+        FocusFilterStorage.save(labelled, defaults: defaults)
+        #expect(FocusFilterStorage.load(defaults: defaults) == labelled)
+
+        let legacyData = Data(#"{"isEnabled":true,"suppressNonSafetyNotifications":true}"#.utf8)
+        defaults.set(legacyData, forKey: FocusFilterStorage.key)
+        #expect(FocusFilterStorage.load(defaults: defaults) == Self.quietFilter)
+    }
+
+    @Test("Direct Focus A to Focus B switch replaces or clears the previous profile without silencing hazards")
+    func directFocusSwitchReconcilesProfile() async throws {
+        let suite = "test.focus.reconcile.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let sleepProfile = FocusFilterProfile(
+            isEnabled: true,
+            suppressNonSafetyNotifications: true,
+            focusModeName: "睡眠"
+        )
+        let workLoudProfile = FocusFilterProfile(
+            isEnabled: true,
+            suppressNonSafetyNotifications: false,
+            focusModeName: "工作"
+        )
+        FocusFilterStorage.save(sleepProfile, defaults: defaults)
+
+        // Focus A (quiet "睡眠") -> Focus B (no MenuBarHome filter configured): `isFocusActive` stays
+        // true, `currentFilter` reports `.notFound`, and ordinary notifications are no longer silenced.
+        let cleared = await FocusFilterStorage.reconcile(
+            isFocusActive: true,
+            currentFilter: { .notFound },
+            defaults: defaults
+        )
+        #expect(cleared == .inactive)
+        #expect(FocusFilterStorage.load(defaults: defaults) == .inactive)
+        #expect(
+            !NotificationDeliveryPolicy.resolve(
+                for: .externalAction,
+                isFocusActive: true,
+                focusFilter: cleared
+            ).isSuppressed
+        )
+
+        // Focus A (quiet "睡眠") -> Focus B (loud "工作"): replaces Focus A's profile directly.
+        FocusFilterStorage.save(sleepProfile, defaults: defaults)
+        let switchedToWork = await FocusFilterStorage.reconcile(
+            isFocusActive: true,
+            currentFilter: { .active(workLoudProfile) },
+            defaults: defaults
+        )
+        #expect(switchedToWork == workLoudProfile)
+        #expect(FocusFilterStorage.load(defaults: defaults) == workLoudProfile)
+        #expect(
+            !NotificationDeliveryPolicy.resolve(
+                for: .missedTimer,
+                isFocusActive: true,
+                focusFilter: switchedToWork
+            ).isSuppressed
+        )
+
+        // Focus -> Off clears even if the system filter query would still report a stale entry.
+        FocusFilterStorage.save(sleepProfile, defaults: defaults)
+        let turnedOff = await FocusFilterStorage.reconcile(
+            isFocusActive: false,
+            currentFilter: { .active(sleepProfile) },
+            defaults: defaults
+        )
+        #expect(turnedOff == .inactive)
+        #expect(FocusFilterStorage.load(defaults: defaults) == .inactive)
+
+        // Transient query error (`.unavailable`) preserves the last written profile while active.
+        FocusFilterStorage.save(sleepProfile, defaults: defaults)
+        let unavailable = await FocusFilterStorage.reconcile(
+            isFocusActive: true,
+            currentFilter: { .unavailable },
+            defaults: defaults
+        )
+        #expect(unavailable == sleepProfile)
+        #expect(FocusFilterStorage.load(defaults: defaults) == sleepProfile)
+
+        // Hazard alerts and the doorbell are never suppressed regardless of profile or mode name.
+        let hazard = SafetyAlert(id: "sensor:smoke:device:1", deviceId: "device", title: "", body: "")
+        for filter in [sleepProfile, workLoudProfile, .inactive] {
+            let hazardPolicy = NotificationDeliveryPolicy.resolve(
+                for: .safetyAlert(hazard),
+                isFocusActive: true,
+                focusFilter: filter
+            )
+            #expect(!hazardPolicy.isSuppressed)
+            #expect(hazardPolicy.interruptionLevel == .timeSensitive)
+
+            let doorbellPolicy = NotificationDeliveryPolicy.resolve(
+                for: .doorbell,
+                isFocusActive: true,
+                focusFilter: filter
+            )
+            #expect(!doorbellPolicy.isSuppressed)
+            #expect(doorbellPolicy.interruptionLevel == .timeSensitive)
+        }
+    }
+
+    @Test("Slow Focus filter reconciliation never overwrites a newer perform() profile write")
+    func reconcileDoesNotOverwriteNewerSave() async throws {
+        let suite = "test.focus.race.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let oldProfile = FocusFilterProfile(
+            isEnabled: true,
+            suppressNonSafetyNotifications: true,
+            focusModeName: "睡眠"
+        )
+        let newerProfile = FocusFilterProfile(
+            isEnabled: true,
+            suppressNonSafetyNotifications: false,
+            focusModeName: "工作"
+        )
+        FocusFilterStorage.save(oldProfile, defaults: defaults)
+
+        let resolved = await FocusFilterStorage.reconcile(
+            isFocusActive: true,
+            currentFilter: {
+                // Simulate `perform()` landing while `SetFocusFilterIntent.current` is in flight.
+                FocusFilterStorage.save(newerProfile, defaults: defaults)
+                return .notFound
+            },
+            defaults: defaults
+        )
+        #expect(resolved == newerProfile)
+        #expect(FocusFilterStorage.load(defaults: defaults) == newerProfile)
+    }
+
+    @Test("Clearing empty storage advances the sequence so an older overlapping query cannot resurrect a stale profile")
+    func overlappingClearPreventsStaleResurrection() async throws {
+        let suite = "test.focus.emptyclear.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let staleProfile = FocusFilterProfile(
+            isEnabled: true,
+            suppressNonSafetyNotifications: true,
+            focusModeName: "睡眠"
+        )
+
+        let resolved = await FocusFilterStorage.reconcile(
+            isFocusActive: true,
+            currentFilter: {
+                // Storage starts empty; a newer reconciliation gets `.notFound` and clears first.
+                let newer = await FocusFilterStorage.reconcile(
+                    isFocusActive: true,
+                    currentFilter: { .notFound },
+                    defaults: defaults
+                )
+                #expect(newer == .inactive)
+                return .active(staleProfile)
+            },
+            defaults: defaults
+        )
+        #expect(resolved == .inactive)
+        #expect(FocusFilterStorage.load(defaults: defaults) == .inactive)
+    }
+
+    @MainActor
+    @Test("Older reconciliation completing first does not invalidate a newer overlapping .notFound query")
+    func olderQueryCompletingFirstDoesNotBlockNewerNotFound() async throws {
+        let suite = "test.focus.overlap.order.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let sleepProfile = FocusFilterProfile(
+            isEnabled: true,
+            suppressNonSafetyNotifications: true,
+            focusModeName: "睡眠"
+        )
+
+        var releaseOlder: CheckedContinuation<FocusFilterQueryResult, Never>?
+        var olderStarted: CheckedContinuation<Void, Never>?
+
+        let olderTask = Task {
+            await FocusFilterStorage.reconcile(
+                isFocusActive: true,
+                currentFilter: {
+                    await withCheckedContinuation { continuation in
+                        releaseOlder = continuation
+                        olderStarted?.resume()
+                        olderStarted = nil
+                    }
+                },
+                defaults: defaults
+            )
+        }
+
+        await withCheckedContinuation { started in
+            olderStarted = started
+            if releaseOlder != nil {
+                olderStarted = nil
+                started.resume()
+            }
+        }
+
+        // Start a newer reconciliation before the older one resolves, then resolve the older query
+        // FIRST with Focus A (`sleepProfile`) and the newer query SECOND with `.notFound` (Focus B).
+        let newerResult = await FocusFilterStorage.reconcile(
+            isFocusActive: true,
+            currentFilter: {
+                releaseOlder?.resume(returning: .active(sleepProfile))
+                releaseOlder = nil
+                _ = await olderTask.value
+                return .notFound
+            },
+            defaults: defaults
+        )
+
+        #expect(newerResult == .inactive)
+        #expect(FocusFilterStorage.load(defaults: defaults) == .inactive)
     }
 
     private func expectPolicy(

@@ -32,7 +32,7 @@
 ### 4. 双端范围划分（macOS 与 Windows）
 
 - **macOS**：支持米家云端 + 局域网 miIO UDP（`54321`）混合直连、Home Assistant 局域网 WebSocket、LG webOS 局域网直连（`LGWebOSClient`）及摄像机局域网 P2P 中继（`XiaomiCameraBridge`）。
-- **Windows**：当前支持米家云端 MIoT（`windows/src/core/miCloud/`）、Home Assistant 局域网 WebSocket（`windows/src/core/homeAssistant.ts`）以及摄像机局域网 P2P 流媒体桥接（`windows/src-tauri/src/camera.rs`、`camera_stream.rs`），暂未引入通用设备 miIO UDP `54321` 直连。BLE / Mesh 网关子设备在两端均受限于网关协议，维持云端或 Home Assistant 接入（见 [ADR-0016](0016-central-hub-lan-readonly-verification.md)）。
+- **Windows**：米家正常轮询、单设备回读和控制通过 TypeScript 混合路由与 Rust miIO UDP `54321` 直连，云端补齐局域网缺失的属性。写请求发出后须收到显式回执（#457），仅在原生层能确认写请求还未发出时才回退，出现不完整回执或部分成功时安排设备状态回读。Home Assistant 局域网 WebSocket 和摄像机局域网 P2P 流媒体桥接使用各自的传输。BLE / Mesh 网关子设备在两端均受限于网关协议，维持云端或 Home Assistant 接入（见 [ADR-0016](0016-central-hub-lan-readonly-verification.md)）。
 
 ## 相关
 

@@ -738,7 +738,7 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
       try {
         values =
           propKeys.length > 0
-            ? await client.getProps(propKeys)
+            ? await client.withLAN(rawDevices, allRoomsForCache ?? cachedTopology?.allRooms ?? rooms).getProps(propKeys)
             : new Map<string, unknown>();
       } catch (error) {
         if (!cloudSnapshotIsStale(host, session, stateToken, syncRun, selectedHomeAtStart)) {
