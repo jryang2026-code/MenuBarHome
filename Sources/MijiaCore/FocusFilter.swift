@@ -200,8 +200,10 @@ public enum FocusFilterStorage {
     }
 
     private static func clearUnlocked(defaults: UserDefaults) {
-        guard defaults.object(forKey: key) != nil else { return }
+        // Advance the sequence even when storage is already empty so an older in-flight
+        // reconciliation cannot resurrect a stale profile after an authoritative `.notFound` clear.
         bumpSequenceUnlocked(defaults: defaults)
+        guard defaults.object(forKey: key) != nil else { return }
         defaults.removeObject(forKey: key)
     }
 }

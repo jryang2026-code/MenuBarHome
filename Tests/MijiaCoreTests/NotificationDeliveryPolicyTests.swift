@@ -294,6 +294,36 @@ struct NotificationDeliveryPolicyTests {
         #expect(FocusFilterStorage.load(defaults: defaults) == newerProfile)
     }
 
+    @Test("Clearing empty storage advances the sequence so an older overlapping query cannot resurrect a stale profile")
+    func overlappingClearPreventsStaleResurrection() async throws {
+        let suite = "test.focus.emptyclear.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let staleProfile = FocusFilterProfile(
+            isEnabled: true,
+            suppressNonSafetyNotifications: true,
+            focusModeName: "睡眠"
+        )
+
+        let resolved = await FocusFilterStorage.reconcile(
+            isFocusActive: true,
+            currentFilter: {
+                // Storage starts empty; a newer reconciliation gets `.notFound` and clears first.
+                let newer = await FocusFilterStorage.reconcile(
+                    isFocusActive: true,
+                    currentFilter: { .notFound },
+                    defaults: defaults
+                )
+                #expect(newer == .inactive)
+                return .active(staleProfile)
+            },
+            defaults: defaults
+        )
+        #expect(resolved == .inactive)
+        #expect(FocusFilterStorage.load(defaults: defaults) == .inactive)
+    }
+
     private func expectPolicy(
         for category: NotificationCategory,
         ordinary: NotificationInterruptionLevel,

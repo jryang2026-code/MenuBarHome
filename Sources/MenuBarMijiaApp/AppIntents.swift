@@ -557,6 +557,9 @@ struct MenuBarHomeFocusFilter: SetFocusFilterIntent {
 
     /// Asks the system for this app's active Focus filter (`Self.current`) so direct Focus A → B
     /// switches (especially when Focus B has no filter configured) clear or replace stale profiles.
+    ///
+    /// Uses an explicit continuation race instead of `withTaskGroup` so an unresponsive XPC query
+    /// that ignores cancellation returns `.unavailable` immediately when `timeout` fires.
     static func currentQueryResult(
         timeout: Duration? = .seconds(5),
         reading: @Sendable @escaping () async throws -> MenuBarHomeFocusFilter = { try await Self.current }
@@ -564,17 +567,60 @@ struct MenuBarHomeFocusFilter: SetFocusFilterIntent {
         guard let timeout else {
             return await readQueryResult(reading)
         }
-        return await withTaskGroup(of: FocusFilterQueryResult?.self) { group in
-            group.addTask {
-                await readQueryResult(reading)
+        return await withCheckedContinuation { continuation in
+            let race = FocusQueryRace(continuation: continuation)
+            race.start(timeout: timeout, reading: reading)
+        }
+    }
+
+    private final class FocusQueryRace: @unchecked Sendable {
+        private let lock = NSLock()
+        private var continuation: CheckedContinuation<FocusFilterQueryResult, Never>?
+        private var readerTask: Task<Void, Never>?
+        private var timeoutTask: Task<Void, Never>?
+
+        init(continuation: CheckedContinuation<FocusFilterQueryResult, Never>) {
+            self.continuation = continuation
+        }
+
+        func start(
+            timeout: Duration,
+            reading: @Sendable @escaping () async throws -> MenuBarHomeFocusFilter
+        ) {
+            let reader = Task {
+                let result = await MenuBarHomeFocusFilter.readQueryResult(reading)
+                self.finish(result)
             }
-            group.addTask {
+            let sleeper = Task {
                 try? await Task.sleep(for: timeout)
-                return nil
+                self.finish(.unavailable)
             }
-            let first = await group.next() ?? nil
-            group.cancelAll()
-            return first ?? .unavailable
+            let alreadyFinished = lock.withLock { () -> Bool in
+                guard continuation != nil else { return true }
+                readerTask = reader
+                timeoutTask = sleeper
+                return false
+            }
+            if alreadyFinished {
+                reader.cancel()
+                sleeper.cancel()
+            }
+        }
+
+        func finish(_ result: FocusFilterQueryResult) {
+            let (cont, tasks): (CheckedContinuation<FocusFilterQueryResult, Never>?, [Task<Void, Never>]) =
+                lock.withLock {
+                    guard let cont = continuation else { return (nil, []) }
+                    continuation = nil
+                    let tasks = [readerTask, timeoutTask].compactMap { $0 }
+                    readerTask = nil
+                    timeoutTask = nil
+                    return (cont, tasks)
+                }
+            for task in tasks {
+                task.cancel()
+            }
+            cont?.resume(returning: result)
         }
     }
 

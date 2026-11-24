@@ -165,4 +165,69 @@ struct MacContextObserverTests {
         #expect(offSnapshot.focusModeName == nil)
         #expect(FocusFilterStorage.load(defaults: defaults) == .inactive)
     }
+
+    @Test("Slow automation execution does not block subsequent observer snapshot captures")
+    func slowHandlerDoesNotBlockSubsequentTicks() async throws {
+        let suite = "test.focus.observer.nonblocking.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        @MainActor
+        final class Probe {
+            var mode = "睡眠"
+            var firstStarted = false
+            var firstEnteredContinuation: CheckedContinuation<Void, Never>?
+            var firstRelease: CheckedContinuation<Void, Never>?
+            var secondDoneContinuation: CheckedContinuation<Void, Never>?
+            var seenModes: [String?] = []
+        }
+
+        let probe = Probe()
+        let observer = MacContextObserver(
+            focusActiveProvider: { true },
+            focusFilterReader: {
+                .active(FocusFilterProfile(isEnabled: true, suppressNonSafetyNotifications: true, focusModeName: probe.mode))
+            },
+            focusFilterDefaults: defaults
+        )
+        defer {
+            probe.firstEnteredContinuation?.resume()
+            probe.firstEnteredContinuation = nil
+            probe.firstRelease?.resume()
+            probe.firstRelease = nil
+            probe.secondDoneContinuation?.resume()
+            probe.secondDoneContinuation = nil
+            observer.stop()
+        }
+
+        observer.installHandler { snapshot, _ in
+            probe.seenModes.append(snapshot.focusModeName)
+            if !probe.firstStarted {
+                probe.firstStarted = true
+                probe.firstEnteredContinuation?.resume()
+                probe.firstEnteredContinuation = nil
+                await withCheckedContinuation { continuation in
+                    probe.firstRelease = continuation
+                }
+            } else {
+                probe.secondDoneContinuation?.resume()
+                probe.secondDoneContinuation = nil
+            }
+        }
+
+        await withCheckedContinuation { entered in
+            probe.firstEnteredContinuation = entered
+            _ = observer.dispatchTick()
+        }
+        #expect(probe.firstStarted)
+        #expect(probe.seenModes == ["睡眠"])
+
+        probe.mode = "工作"
+        await withCheckedContinuation { secondDone in
+            probe.secondDoneContinuation = secondDone
+            let secondTick = observer.dispatchTick()
+            #expect(secondTick != nil)
+        }
+        #expect(probe.seenModes == ["睡眠", "工作"])
+    }
 }

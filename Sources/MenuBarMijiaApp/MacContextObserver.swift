@@ -41,7 +41,8 @@ protocol MacContextProviding: AnyObject {
 final class MacContextObserver: MacContextProviding {
     private var handler: (@MainActor (MacContextSnapshot, Date) async -> Void)?
     private var timer: Timer?
-    private var tickTask: Task<Void, Never>?
+    private var captureTask: Task<Void, Never>?
+    private var observerGeneration: UInt64 = 0
     private var lastCalendarQuery = Date.distantPast
     private var cachedMeetings: [CalendarMeeting] = []
     private let eventStore = EKEventStore()
@@ -80,29 +81,40 @@ final class MacContextObserver: MacContextProviding {
     }
 
     func stop() {
+        observerGeneration &+= 1
         timer?.invalidate()
         timer = nil
-        tickTask?.cancel()
-        tickTask = nil
+        captureTask?.cancel()
+        captureTask = nil
         handler = nil
     }
 
-    private func tick() {
-        guard tickTask == nil else { return }
-        let now = Date()
-        tickTask = Task { @MainActor [weak self] in
-            guard let self else { return }
-            defer { self.tickTask = nil }
-            await self.pollOnce(at: now)
-        }
+    func installHandler(_ handler: @escaping @MainActor (MacContextSnapshot, Date) async -> Void) {
+        self.handler = handler
     }
 
-    /// Captures one snapshot (reconciling `FocusFilterStorage` with `MenuBarHomeFocusFilter.current`)
-    /// and delivers it to `handler`. Exposed for deterministic unit tests.
-    func pollOnce(at now: Date = Date()) async {
-        let snapshot = await captureSnapshot(at: now)
-        guard !Task.isCancelled, let handler else { return }
-        await handler(snapshot, now)
+    private func tick() {
+        _ = dispatchTick()
+    }
+
+    /// Captures one snapshot and dispatches `handler` in its own unstructured task once snapshot
+    /// capture/reconciliation settles, so a slow hardware automation never blocks later 10 s polls.
+    @discardableResult
+    func dispatchTick(at now: Date = Date()) -> Task<Void, Never>? {
+        guard captureTask == nil else { return nil }
+        let generation = observerGeneration
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            let snapshot = await self.captureSnapshot(at: now)
+            guard self.observerGeneration == generation else { return }
+            self.captureTask = nil
+            guard !Task.isCancelled, let handler = self.handler else { return }
+            Task { @MainActor in
+                await handler(snapshot, now)
+            }
+        }
+        captureTask = task
+        return task
     }
 
     func captureSnapshot(at now: Date = Date()) async -> MacContextSnapshot {

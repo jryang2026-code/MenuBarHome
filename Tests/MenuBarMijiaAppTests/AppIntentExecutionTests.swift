@@ -609,6 +609,41 @@ struct AppIntentExecutionTests {
         #expect(unavailable == .unavailable)
     }
 
+    @Test("MenuBarHomeFocusFilter.currentQueryResult timeout returns .unavailable without waiting for an uncooperative reader")
+    func focusFilterQueryTimeoutIgnoresCancellation() async {
+        final class Gate: @unchecked Sendable {
+            private let lock = NSLock()
+            private var continuation: CheckedContinuation<MenuBarHomeFocusFilter, Never>?
+
+            func park(_ continuation: CheckedContinuation<MenuBarHomeFocusFilter, Never>) {
+                lock.withLock { self.continuation = continuation }
+            }
+
+            func release() {
+                let cont = lock.withLock { () -> CheckedContinuation<MenuBarHomeFocusFilter, Never>? in
+                    defer { continuation = nil }
+                    return continuation
+                }
+                cont?.resume(returning: MenuBarHomeFocusFilter())
+            }
+
+            var isParked: Bool {
+                lock.withLock { continuation != nil }
+            }
+        }
+
+        let gate = Gate()
+        defer { gate.release() }
+
+        let result = await MenuBarHomeFocusFilter.currentQueryResult(timeout: .milliseconds(20)) {
+            await withCheckedContinuation { continuation in
+                gate.park(continuation)
+            }
+        }
+        #expect(result == .unavailable)
+        #expect(gate.isParked)
+    }
+
     @Test("A Focus start action waits for the snapshot and refuses an unknown quick action")
     func focusStartAction() async throws {
         try await L10n.$overrideLanguage.withValue(.en) {
