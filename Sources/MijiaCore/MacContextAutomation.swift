@@ -126,9 +126,10 @@ public enum MacContextAutomation {
                 cooldown: AutomationPolicy.nightlyCooldown
             )]
         case .away, .back, .externalDisplayConnected, .externalDisplayDisconnected,
-             .screenLocked, .lidClosedSleep, .systemSleep:
-            // Notification-driven, including the three precise away triggers. `AwayArbitrator`
-            // settles those in the app layer; this switch only owns polled signals.
+             .screenLocked, .lidClosedSleep, .systemSleep,
+             .frontmostAppBecame, .frontmostAppLeft:
+            // Notification-driven, including the three precise away triggers and frontmost app
+            // activation. `AwayArbitrator` and `AutomationEngine` own those in the app layer.
             return []
 
         case .cameraInUse:

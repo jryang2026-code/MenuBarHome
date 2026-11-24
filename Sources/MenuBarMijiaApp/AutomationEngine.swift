@@ -13,6 +13,7 @@ struct AutomationEnvironmentProbe {
     var currentWiFi: () -> (ssid: String?, isAuthorized: Bool)
     var isScreenLocked: () -> Bool = { false }
     var externalDisplayCount: () -> Int = { AutomationEngine.activeExternalDisplayCount() }
+    var frontmostAppBundleID: () -> String? = { nil }
 
     static let live = AutomationEnvironmentProbe(
         isLidClosed: { MacHardwareProbe.isLidClosed() },
@@ -20,7 +21,8 @@ struct AutomationEnvironmentProbe {
         isScreenLocked: {
             ScreenLockPolicy.isLocked(session: CGSessionCopyCurrentDictionary() as? [String: Any])
         },
-        externalDisplayCount: { AutomationEngine.activeExternalDisplayCount() }
+        externalDisplayCount: { AutomationEngine.activeExternalDisplayCount() },
+        frontmostAppBundleID: { NSWorkspace.shared.frontmostApplication?.bundleIdentifier }
     )
 }
 
@@ -60,6 +62,7 @@ struct AutomationNotificationCenters {
 @MainActor
 final class AutomationEngine {
     static let shared = AutomationEngine()
+    nonisolated static let frontmostAppBundleIDUserInfoKey = "MenuBarHomeFrontmostAppBundleID"
 
     private let ruleStore: AutomationRuleStore
     private var runStates: [UUID: AutomationRunState] = [:]
@@ -77,6 +80,9 @@ final class AutomationEngine {
     private let logger = Logger(subsystem: "com.jryang1997.MenuBarMijia", category: "Automation")
     private weak var store: HomeStore?
     private var tokens: [(NotificationCenter, any NSObjectProtocol)] = []
+    private var frontmostAppToken: (NotificationCenter, any NSObjectProtocol)?
+    private var hasFrontmostAppBaseline = false
+    private var lastFrontmostAppBundleID: String?
     private var observesSystem = false
     private var observationGeneration: UInt64 = 0
     private var contextObservationID: UUID?
@@ -85,6 +91,7 @@ final class AutomationEngine {
     private var resumeSuppressionUntil: [String: Date] = [:]
     private let now: () -> Date
     var isObservingSystem: Bool { !tokens.isEmpty }
+    var isObservingFrontmostApp: Bool { frontmostAppToken != nil }
     var hasPendingAwayLock: Bool { arbitrator.hasPendingLock }
     private var lastExternalDisplayCount = 0
     private var activeContextProvider: (any MacContextProviding)?
@@ -248,6 +255,67 @@ final class AutomationEngine {
         }
     }
 
+    static func needsFrontmostAppObservation(_ rules: [AutomationRule]) -> Bool {
+        rules.contains { rule in
+            guard rule.isEnabled, rule.trigger.isSupportedOnMacOS else { return false }
+            if rule.trigger.macOSSources.contains(.workspaceDidActivateApplication) {
+                return true
+            }
+            return rule.restoreWhenContextEnds
+                && (rule.restoreTrigger?.macOSSources.contains(.workspaceDidActivateApplication) == true)
+        }
+    }
+
+    private func startFrontmostAppObservation() {
+        guard observesSystem, frontmostAppToken == nil else { return }
+        if let initial = Self.normalizedBundleID(environment.frontmostAppBundleID()) {
+            lastFrontmostAppBundleID = initial
+            hasFrontmostAppBaseline = true
+        } else {
+            lastFrontmostAppBundleID = nil
+            hasFrontmostAppBaseline = false
+        }
+        let generation = observationGeneration
+        let workspace = notificationCenters.workspace
+        let token = workspace.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            let bundleID = Self.bundleIdentifier(from: notification)
+            MainActor.assumeIsolated {
+                guard let self, self.observationGeneration == generation else { return }
+                let firedAt = self.now()
+                Task { @MainActor in
+                    guard self.observationGeneration == generation else { return }
+                    await self.handleFrontmostAppActivated(bundleID: bundleID, at: firedAt)
+                }
+            }
+        }
+        frontmostAppToken = (workspace, token)
+    }
+
+    private func stopFrontmostAppObservation() {
+        if let (center, token) = frontmostAppToken {
+            center.removeObserver(token)
+        }
+        frontmostAppToken = nil
+        hasFrontmostAppBaseline = false
+        lastFrontmostAppBundleID = nil
+    }
+
+    private nonisolated static func bundleIdentifier(from notification: Notification) -> String? {
+        if let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication {
+            return app.bundleIdentifier
+        }
+        return notification.userInfo?[Self.frontmostAppBundleIDUserInfoKey] as? String
+    }
+
+    private static func normalizedBundleID(_ raw: String?) -> String? {
+        let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (trimmed?.isEmpty ?? true) ? nil : trimmed
+    }
+
     /// Settings calls this after a rule is added, removed or toggled so a newly enabled Focus,
     /// calendar or Wi-Fi rule can request its permission immediately and start or stop the 10 s
     /// context poller as needed.
@@ -265,11 +333,12 @@ final class AutomationEngine {
             state.rule.isEnabled && rules.contains(state.rule)
         }
         guard rules.contains(where: \.isEnabled) else {
-            if !tokens.isEmpty || activeContextProvider != nil || !enabled {
+            if !tokens.isEmpty || frontmostAppToken != nil || activeContextProvider != nil || !enabled {
                 observationGeneration &+= 1
             }
             for (center, token) in tokens { center.removeObserver(token) }
             tokens.removeAll()
+            stopFrontmostAppObservation()
             stopContextObservation()
             arbitrationTask?.cancel()
             arbitrationTask = nil
@@ -279,6 +348,11 @@ final class AutomationEngine {
             return
         }
         startSystemObservation()
+        if Self.needsFrontmostAppObservation(rules) {
+            startFrontmostAppObservation()
+        } else {
+            stopFrontmostAppObservation()
+        }
         if Self.needsContextPolling(rules) {
             if injectedContextProvider == nil { MacContextPermissionRequester.requestPermissions(for: rules) }
             startContextObservation()
@@ -371,6 +445,104 @@ final class AutomationEngine {
         }
     }
 
+    /// Evaluates `.frontmostAppLeft` and `.frontmostAppBecame` transitions without polling.
+    /// First observation only warms up the baseline so enabling a rule while an app is already
+    /// active never fires. Privacy: non-matching apps are never stored or logged.
+    func handleFrontmostAppActivated(bundleID: String?, at now: Date = Date()) async {
+        guard let store, store.eventAutomationEnabled else { return }
+        let current = Self.normalizedBundleID(bundleID)
+        if !hasFrontmostAppBaseline {
+            hasFrontmostAppBaseline = true
+            lastFrontmostAppBundleID = current
+            return
+        }
+        let previous = lastFrontmostAppBundleID
+        guard current != previous else { return }
+        lastFrontmostAppBundleID = current
+
+        let generation = observationGeneration
+        let loadedRules = ruleStore.load()
+        if let previous {
+            let restoreRules = loadedRules.filter {
+                $0.isEnabled
+                    && $0.restoreWhenContextEnds
+                    && $0.restoreTrigger == .frontmostAppLeft
+                    && $0.triggerOptions.frontmostAppBundleID == previous
+            }
+            if !restoreRules.isEmpty {
+                await restoreContexts(for: restoreRules, store: store, at: now)
+            }
+            await dispatchFrontmostApp(
+                trigger: .frontmostAppLeft,
+                bundleID: previous,
+                generation: generation,
+                store: store,
+                at: now
+            )
+        }
+        if let current {
+            let restoreRules = loadedRules.filter {
+                $0.isEnabled
+                    && $0.restoreWhenContextEnds
+                    && $0.restoreTrigger == .frontmostAppBecame
+                    && $0.triggerOptions.frontmostAppBundleID == current
+            }
+            if !restoreRules.isEmpty {
+                await restoreContexts(for: restoreRules, store: store, at: now)
+            }
+            await dispatchFrontmostApp(
+                trigger: .frontmostAppBecame,
+                bundleID: current,
+                generation: generation,
+                store: store,
+                at: now
+            )
+        }
+    }
+
+    private func dispatchFrontmostApp(
+        trigger: AutomationTrigger,
+        bundleID: String,
+        generation: UInt64,
+        store: HomeStore,
+        at now: Date
+    ) async {
+        let rules = ruleStore.load().filter {
+            $0.isEnabled
+                && $0.trigger == trigger
+                && $0.triggerOptions.frontmostAppBundleID == bundleID
+        }
+        guard !rules.isEmpty else { return }
+        let reading = wifiReadingForDispatch(at: now)
+        let eligible = rules.filter { rule in
+            guard rule.conditions.lastingMinutes == nil else {
+                store.recordAutomationRun(rule, at: now, reason: .conditionFalse)
+                return false
+            }
+            guard rule.conditions.isWithinTimeWindow(at: now, calendar: calendar) else {
+                store.recordAutomationRun(rule, at: now, reason: .conditionFalse)
+                return false
+            }
+            let result = rule.conditions.evaluate(
+                wifiSSID: reading?.ssid,
+                isAuthorized: reading?.isAuthorized ?? true
+            )
+            if !result.isSatisfied { store.recordAutomationRun(rule, at: now, reason: .conditionFalse) }
+            return result.isSatisfied
+        }
+        for rule in eligible {
+            guard generation == observationGeneration, store.eventAutomationEnabled,
+                  ruleStore.load().contains(rule) else {
+                store.recordAutomationRun(rule, at: now, reason: .writeGateDenied)
+                continue
+            }
+            let dedupeKey = "\(trigger.rawValue).\(rule.id.uuidString)"
+            await run(rule, store: store, at: now, cooldown: {
+                self.deduper.shouldFire(dedupeKey, at: now, cooldown: AutomationPolicy.triggerCooldown)
+            })
+        }
+    }
+
     /// Evaluates every enabled rule against one Mac context snapshot. The pure `MacContextAutomation`
     /// switch decides which signal changed; this method only applies the per-rule cooldown and
     /// executes.
@@ -404,6 +576,25 @@ final class AutomationEngine {
                 }
             }
             self.resumedAt = nil
+        }
+        var restoreRules: [AutomationRule] = []
+        for rule in rules where rule.isEnabled && rule.restoreWhenContextEnds {
+            guard let restoreTrigger = rule.restoreTrigger, restoreTrigger.usesMacContextObserver else { continue }
+            let probe = AutomationRule(
+                id: rule.id,
+                trigger: restoreTrigger,
+                action: rule.action,
+                isEnabled: true,
+                triggerOptions: rule.triggerOptions
+            )
+            if !MacContextAutomation.events(
+                for: probe, previous: previous, current: effective, at: now, calendar: calendar
+            ).isEmpty {
+                restoreRules.append(rule)
+            }
+        }
+        if !restoreRules.isEmpty {
+            await restoreContexts(for: restoreRules, store: store, at: now)
         }
         var candidates: [(rule: AutomationRule, events: [AutomationTriggerEvent], lastingSince: TimeInterval?)] = []
         for rule in rules where rule.isEnabled && rule.trigger.isSupportedOnMacOS {
@@ -760,6 +951,10 @@ final class AutomationEngine {
 
     private func restoreContexts(for trigger: AutomationTrigger, store: HomeStore, at time: Date) async {
         let rules = ruleStore.load().filter { $0.isEnabled && $0.restoreWhenContextEnds && $0.restoreTrigger == trigger }
+        await restoreContexts(for: rules, store: store, at: time)
+    }
+
+    private func restoreContexts(for rules: [AutomationRule], store: HomeStore, at time: Date) async {
         guard !rules.isEmpty else {
             contextStack.pruneExpired(at: time)
             return

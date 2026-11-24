@@ -434,6 +434,67 @@ struct MacContextAutomationTests {
         #expect(AutomationTrigger.systemSleep.macOSSources == [.workspaceWillSleep, .awayArbitrator])
         #expect(AutomationTrigger.externalDisplayConnected.macOSSources == [.screenParametersChanged])
         #expect(AutomationTrigger.externalDisplayDisconnected.macOSSources == [.screenParametersChanged])
+        #expect(AutomationTrigger.frontmostAppBecame.macOSSources == [.workspaceDidActivateApplication])
+        #expect(AutomationTrigger.frontmostAppLeft.macOSSources == [.workspaceDidActivateApplication])
+        #expect(!AutomationTrigger.frontmostAppBecame.usesMacContextObserver)
+        #expect(!AutomationTrigger.frontmostAppLeft.usesMacContextObserver)
+    }
+
+    @Test("Built-in meeting and movie templates create disabled rules with restore enabled and no pre-selected devices")
+    func templatesCreateDisabledRestoreRulesWithoutDevices() throws {
+        let meetingRules = AutomationRuleTemplate.meeting.makeRules()
+        #expect(meetingRules.count == 2)
+        #expect(Set(meetingRules.map(\.trigger)) == [.cameraInUse, .microphoneInUse])
+        for rule in meetingRules {
+            #expect(!rule.isEnabled)
+            #expect(rule.restoreWhenContextEnds)
+            #expect(rule.restoreTrigger == rule.trigger.defaultRestoreTrigger)
+            #expect(!rule.canEnable)
+            if case .devices(let ids, _) = rule.action {
+                #expect(ids.isEmpty)
+            } else {
+                Issue.record("Expected device action for meeting template rule")
+            }
+        }
+
+        let movieRules = AutomationRuleTemplate.movie.makeRules()
+        #expect(movieRules.count == 1)
+        let movie = try #require(movieRules.first)
+        #expect(!movie.isEnabled)
+        #expect(movie.trigger == .frontmostAppBecame)
+        #expect(movie.restoreWhenContextEnds)
+        #expect(movie.restoreTrigger == .frontmostAppLeft)
+        #expect(movie.triggerOptions.frontmostAppBundleID == AutomationRuleTemplate.FrontmostAppPreset.iina.bundleID)
+        #expect(!movie.canEnable)
+        if case .devices(let ids, let isOn) = movie.action {
+            #expect(ids.isEmpty)
+            #expect(!isOn)
+        } else {
+            Issue.record("Expected device action for movie template rule")
+        }
+
+        // Choosing a high-risk device on a restore-on-exit turn-off rule still requires confirmation.
+        let plug = SmartDevice(
+            id: "plug_heater",
+            name: "电暖器插座",
+            roomId: "study",
+            roomName: "书房",
+            model: "cuco.plug.cp1",
+            isOnline: true,
+            kind: .plug(PlugSpec(switchEntityId: "switch.heater", isOn: true))
+        )
+        var configured = movie
+        configured.action = .devices(ids: [plug.id], isOn: false)
+        #expect(configured.canEnable)
+        #expect(configured.highRiskConfirmation(devices: [plug]) != nil)
+
+        // Bundle ID option normalizes whitespace and round-trips through JSON.
+        let encoded = try JSONEncoder().encode(
+            AutomationTriggerOptions(frontmostAppBundleID: "  org.videolan.vlc  ")
+        )
+        let decoded = try JSONDecoder().decode(AutomationTriggerOptions.self, from: encoded)
+        #expect(decoded.frontmostAppBundleID == "org.videolan.vlc")
+        #expect(AutomationTriggerOptions(frontmostAppBundleID: "   ").frontmostAppBundleID == nil)
     }
 
     @Test("Unavailable camera, microphone, or unknown power/battery readings never fabricate transitions")

@@ -57,6 +57,10 @@ public enum AutomationTrigger: String, CaseIterable, Codable, Identifiable, Send
     case calendarMeetingStartingSoon
     /// The Mac is awake and unlocked inside `AutomationTriggerOptions.lateNightWindow`.
     case lateNightUsage
+    /// The frontmost macOS application switched to `AutomationTriggerOptions.frontmostAppBundleID`.
+    case frontmostAppBecame
+    /// The frontmost macOS application switched away from `AutomationTriggerOptions.frontmostAppBundleID`.
+    case frontmostAppLeft
 
     public var supportsLasting: Bool {
         switch self {
@@ -115,6 +119,10 @@ public enum AutomationTrigger: String, CaseIterable, Codable, Identifiable, Send
             return L10n.tr("日历会议即将开始", "Calendar meeting starting soon")
         case .lateNightUsage:
             return L10n.tr("深夜使用电脑", "Late-night computer use")
+        case .frontmostAppBecame:
+            return L10n.tr("前台应用切换为", "Frontmost app became")
+        case .frontmostAppLeft:
+            return L10n.tr("离开前台应用", "Frontmost app left")
         }
     }
 
@@ -135,6 +143,21 @@ public enum AutomationTrigger: String, CaseIterable, Codable, Identifiable, Send
         case .focusModeEnabled, .focusModeDisabled: return "moon.fill"
         case .calendarMeetingStartingSoon: return "calendar.badge.clock"
         case .lateNightUsage: return "moon.stars.fill"
+        case .frontmostAppBecame, .frontmostAppLeft: return "macwindow"
+        }
+    }
+
+    /// Paired exit trigger used when `AutomationRule.restoreWhenContextEnds` is enabled.
+    public var defaultRestoreTrigger: AutomationTrigger? {
+        switch self {
+        case .cameraInUse: return .cameraNotInUse
+        case .microphoneInUse: return .microphoneNotInUse
+        case .frontmostAppBecame: return .frontmostAppLeft
+        case .focusModeEnabled: return .focusModeDisabled
+        case .externalDisplayConnected: return .externalDisplayDisconnected
+        case .powerConnected: return .powerDisconnected
+        case .wifiNetworkJoined: return .wifiNetworkLeft
+        default: return nil
         }
     }
 
@@ -173,6 +196,8 @@ public enum AutomationTrigger: String, CaseIterable, Codable, Identifiable, Send
              .focusModeEnabled, .focusModeDisabled,
              .calendarMeetingStartingSoon, .lateNightUsage:
             return [.macContextObserver]
+        case .frontmostAppBecame, .frontmostAppLeft:
+            return [.workspaceDidActivateApplication]
         }
     }
 
@@ -213,6 +238,8 @@ public enum AutomationTriggerSource: String, CaseIterable, Hashable, Sendable {
     case screenParametersChanged
     /// `MacContextObserver` (10 s poll evaluated via `MacContextAutomation.events`)
     case macContextObserver
+    /// `NSWorkspace.didActivateApplicationNotification`
+    case workspaceDidActivateApplication
 }
 
 /// Permissions the Mac context observer may ask for. They are requested only when the user has an
@@ -376,6 +403,9 @@ public struct AutomationTriggerOptions: Codable, Equatable, Sendable {
     public var lateNightWindow: LateNightWindow
     /// How many minutes before a calendar event starts `.calendarMeetingStartingSoon` fires.
     public var calendarLeadMinutes: Int
+    /// Bundle identifier watched by `.frontmostAppBecame` / `.frontmostAppLeft`. Only the user's
+    /// chosen bundle ID is stored; other apps are never persisted or logged.
+    public var frontmostAppBundleID: String?
 
     public init(
         batteryThresholdPercent: Int = 20,
@@ -384,7 +414,8 @@ public struct AutomationTriggerOptions: Codable, Equatable, Sendable {
         lateNightStartHour: Int = 23,
         lateNightEndHour: Int = 6,
         calendarLeadMinutes: Int = 1,
-        scheduledTime: ScheduledTime? = nil
+        scheduledTime: ScheduledTime? = nil,
+        frontmostAppBundleID: String? = nil
     ) {
         self.batteryThresholdPercent = min(100, max(1, batteryThresholdPercent))
         let trimmedSSID = wifiSSID?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -396,6 +427,8 @@ public struct AutomationTriggerOptions: Codable, Equatable, Sendable {
         )
         self.calendarLeadMinutes = min(60, max(1, calendarLeadMinutes))
         self.scheduledTime = scheduledTime
+        let trimmedBundleID = frontmostAppBundleID?.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.frontmostAppBundleID = (trimmedBundleID?.isEmpty ?? true) ? nil : trimmedBundleID
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -406,6 +439,7 @@ public struct AutomationTriggerOptions: Codable, Equatable, Sendable {
         case lateNightEndHour
         case calendarLeadMinutes
         case scheduledTime
+        case frontmostAppBundleID
     }
 
     public init(from decoder: any Decoder) throws {
@@ -417,7 +451,8 @@ public struct AutomationTriggerOptions: Codable, Equatable, Sendable {
             lateNightStartHour: try container.decodeIfPresent(Int.self, forKey: .lateNightStartHour) ?? 23,
             lateNightEndHour: try container.decodeIfPresent(Int.self, forKey: .lateNightEndHour) ?? 6,
             calendarLeadMinutes: try container.decodeIfPresent(Int.self, forKey: .calendarLeadMinutes) ?? 1,
-            scheduledTime: try container.decodeIfPresent(ScheduledTime.self, forKey: .scheduledTime)
+            scheduledTime: try container.decodeIfPresent(ScheduledTime.self, forKey: .scheduledTime),
+            frontmostAppBundleID: try container.decodeIfPresent(String.self, forKey: .frontmostAppBundleID)
         )
     }
 
@@ -430,6 +465,7 @@ public struct AutomationTriggerOptions: Codable, Equatable, Sendable {
         try container.encode(lateNightWindow.endHour, forKey: .lateNightEndHour)
         try container.encode(calendarLeadMinutes, forKey: .calendarLeadMinutes)
         try container.encodeIfPresent(scheduledTime, forKey: .scheduledTime)
+        try container.encodeIfPresent(frontmostAppBundleID, forKey: .frontmostAppBundleID)
     }
 }
 
@@ -885,8 +921,125 @@ public struct AutomationRule: Codable, Identifiable, Equatable, Sendable {
         }
     }
 
+    /// Whether this rule has enough user-chosen targets to be enabled (template rules start empty).
+    public var canEnable: Bool {
+        if (trigger == .frontmostAppBecame || trigger == .frontmostAppLeft),
+           triggerOptions.frontmostAppBundleID == nil {
+            return false
+        }
+        if case .devices(let ids, _) = action, ids.isEmpty {
+            return false
+        }
+        return true
+    }
+
     public func highRiskConfirmation(devices: [SmartDevice]) -> ManualControlConfirmation? {
-        action.highRiskConfirmation(devices: devices)
+        if let direct = action.highRiskConfirmation(devices: devices) {
+            return direct
+        }
+        if restoreWhenContextEnds, case .devices(let ids, false) = action {
+            return AutomationAction.devices(ids: ids, isOn: true).highRiskConfirmation(devices: devices)
+        }
+        return nil
+    }
+}
+
+/// One-click starter templates shown in Settings › Automation. Templates never pre-select devices
+/// and always start disabled until the user picks devices and turns them on.
+public enum AutomationRuleTemplate: String, CaseIterable, Identifiable, Sendable {
+    case meeting
+    case movie
+
+    public struct FrontmostAppPreset: Identifiable, Equatable, Sendable {
+        public let bundleID: String
+        public let name: String
+
+        public var id: String { bundleID }
+
+        public init(bundleID: String, name: String) {
+            self.bundleID = bundleID
+            self.name = name
+        }
+
+        public static let iina = FrontmostAppPreset(bundleID: "com.colliderli.iina", name: "IINA")
+        public static let quickTime = FrontmostAppPreset(bundleID: "com.apple.QuickTimePlayerX", name: "QuickTime Player")
+        public static let vlc = FrontmostAppPreset(bundleID: "org.videolan.vlc", name: "VLC")
+        public static let infuse = FrontmostAppPreset(bundleID: "com.firecore.infuse", name: "Infuse")
+
+        public static let mediaPlayers: [FrontmostAppPreset] = [.iina, .quickTime, .vlc, .infuse]
+
+        public static func displayLabel(for bundleID: String) -> String {
+            if let preset = mediaPlayers.first(where: { $0.bundleID == bundleID }) {
+                return "\(preset.name) (\(bundleID))"
+            }
+            return bundleID
+        }
+    }
+
+    public var id: String { rawValue }
+
+    public var title: String {
+        switch self {
+        case .meeting: return L10n.tr("开会", "Meeting")
+        case .movie: return L10n.tr("观影", "Movie")
+        }
+    }
+
+    public var symbolName: String {
+        switch self {
+        case .meeting: return "video.fill"
+        case .movie: return "film"
+        }
+    }
+
+    public var detail: String {
+        switch self {
+        case .meeting:
+            return L10n.tr(
+                "摄像头/麦克风开启 → 开补光灯、暂停扫地机，散会还原",
+                "Camera/mic in use → turn on lights, pause vacuum, restore after"
+            )
+        case .movie:
+            return L10n.tr(
+                "切到播放器（如 IINA/QuickTime/VLC/Infuse）→ 关灯，离开还原",
+                "Player app frontmost (IINA/QuickTime/VLC/Infuse) → lights off, restore when left"
+            )
+        }
+    }
+
+    public func makeRules() -> [AutomationRule] {
+        switch self {
+        case .meeting:
+            return [
+                AutomationRule(
+                    trigger: .cameraInUse,
+                    action: .devices(ids: [], isOn: true),
+                    isEnabled: false,
+                    restoreWhenContextEnds: true,
+                    restoreTrigger: .cameraNotInUse
+                ),
+                AutomationRule(
+                    trigger: .microphoneInUse,
+                    action: .devices(ids: [], isOn: false),
+                    isEnabled: false,
+                    restoreWhenContextEnds: true,
+                    restoreTrigger: .microphoneNotInUse
+                ),
+            ]
+        case .movie:
+            return [
+                AutomationRule(
+                    trigger: .frontmostAppBecame,
+                    action: .devices(ids: [], isOn: false),
+                    isEnabled: false,
+                    triggerOptions: AutomationTriggerOptions(
+                        frontmostAppBundleID: FrontmostAppPreset.iina.bundleID
+                    ),
+                    restoreWhenContextEnds: true,
+                    restoreTrigger: .frontmostAppLeft
+                ),
+            ]
+        }
     }
 }
 
