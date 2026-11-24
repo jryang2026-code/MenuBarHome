@@ -8,13 +8,14 @@ use std::collections::BTreeMap;
 use std::future::{pending, Future};
 use std::pin::pin;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
-use tokio::sync::{mpsc, oneshot, OwnedRwLockReadGuard, RwLock};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tokio::sync::{mpsc, oneshot, watch, OwnedRwLockReadGuard, RwLock};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tungstenite::Message;
 
 use self::socket::Socket;
+use crate::network_monitor::ReconnectBackoff;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -40,8 +41,20 @@ const DRAIN_TIMEOUT: Duration = Duration::from_secs(7);
 const CONNECT_TOTAL_TIMEOUT: Duration = Duration::from_secs(8);
 const CONNECT_PER_ADDRESS_TIMEOUT: Duration = Duration::from_secs(5);
 
-#[derive(Default)]
-pub(crate) struct HaConnections(Mutex<HaRegistration>);
+pub(crate) struct HaConnections {
+    registration: Mutex<HaRegistration>,
+    network_epoch: watch::Sender<u64>,
+}
+
+impl Default for HaConnections {
+    fn default() -> Self {
+        let (network_epoch, _) = watch::channel(0u64);
+        Self {
+            registration: Mutex::default(),
+            network_epoch,
+        }
+    }
+}
 
 #[derive(Default)]
 struct HaRegistration {
@@ -55,6 +68,7 @@ struct HaConnection {
     cancel: CancellationToken,
     tasks: Arc<RwLock<()>>,
     websocket: Mutex<Option<HaChannel>>,
+    network_epoch: watch::Sender<u64>,
 }
 
 struct HaTask {
@@ -64,6 +78,14 @@ struct HaTask {
 }
 
 impl HaConnections {
+    /// Signals a network topology change or system resume so any active/handshaking
+    /// WebSocket drops immediately and reconnect backoff resets to 0.
+    pub(crate) fn handle_network_or_resume(&self) {
+        self.network_epoch.send_modify(|epoch| {
+            *epoch = epoch.wrapping_add(1);
+        });
+    }
+
     async fn configure(&self, scope: Option<String>) -> Result<u64, String> {
         self.configure_with_timeout(scope, DRAIN_TIMEOUT).await
     }
@@ -74,7 +96,7 @@ impl HaConnections {
         drain_timeout: Duration,
     ) -> Result<u64, String> {
         let (generation, retiring) = {
-            let mut state = self.0.lock().map_err(|_| STALE)?;
+            let mut state = self.registration.lock().map_err(|_| STALE)?;
             state.generation = state.generation.checked_add(1).ok_or(STALE)?;
             let generation = state.generation;
             if let Some(current) = &state.current {
@@ -89,8 +111,9 @@ impl HaConnections {
                 .await
                 .map_err(|_| STILL_DRAINING.to_string())?;
         }
-        let mut state = self.0.lock().map_err(|_| STALE)?;
+        let mut state = self.registration.lock().map_err(|_| STALE)?;
         if state.generation == generation {
+            let network_epoch = self.network_epoch.clone();
             state.current = scope.map(|scope| {
                 Arc::new(HaConnection {
                     generation,
@@ -98,6 +121,7 @@ impl HaConnections {
                     cancel: CancellationToken::new(),
                     tasks: Arc::default(),
                     websocket: Mutex::default(),
+                    network_epoch,
                 })
             });
         }
@@ -106,7 +130,7 @@ impl HaConnections {
 
     fn acquire(&self, base_url: &str, generation: u64) -> Result<HaTask, String> {
         let scope = connection_scope(base_url)?;
-        let state = self.0.lock().map_err(|_| STALE)?;
+        let state = self.registration.lock().map_err(|_| STALE)?;
         let current = state.current.as_ref().filter(|current| {
             state.generation == generation
                 && current.generation == generation
@@ -225,11 +249,16 @@ impl HaTask {
 
         let worker = self.connection.tasks.clone().try_read_owned().map_err(|_| CANCELLED)?;
         let cancel = self.cancel.clone();
+        let network_epoch = self.connection.network_epoch.subscribe();
         let (sender, receiver) = mpsc::channel(MAX_PENDING);
         let worker_url = url.clone();
         tauri::async_runtime::spawn(async move {
             let _running = worker;
-            let _ = select(pin!(cancel.cancelled()), pin!(run_websocket(&worker_url, receiver))).await;
+            let _ = select(
+                pin!(cancel.cancelled()),
+                pin!(run_websocket(&worker_url, receiver, network_epoch)),
+            )
+            .await;
         });
         *session = Some(HaChannel { url, token_digest, sender: sender.clone() });
         Ok(sender)
@@ -271,9 +300,38 @@ fn endpoint(base_url: &str, token: &str) -> Result<String, String> {
 const MAX_PENDING: usize = 32;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 const CALL_TIMEOUT: Duration = Duration::from_secs(35);
-const INITIAL_RECONNECT_DELAY: Duration = Duration::from_millis(250);
-const MAX_RECONNECT_DELAY: Duration = Duration::from_secs(5);
+const PING_INTERVAL: Duration = Duration::from_secs(25);
+const PONG_TIMEOUT: Duration = Duration::from_secs(3);
+const FAST_BACKOFF_WAIT_LIMIT: Duration = Duration::from_secs(10);
 const REQUEST_TIMED_OUT: &str = "Home Assistant request timed out";
+const PING_TIMED_OUT: &str = "Home Assistant ping timed out";
+const NETWORK_CHANGED: &str = "Home Assistant network changed";
+const BACKING_OFF: &str = "Home Assistant reconnect backing off";
+
+#[derive(Clone, Copy)]
+struct WebSocketTimings {
+    ping_interval: Duration,
+    pong_timeout: Duration,
+    fast_backoff_wait_limit: Duration,
+}
+
+impl Default for WebSocketTimings {
+    fn default() -> Self {
+        Self {
+            ping_interval: PING_INTERVAL,
+            pong_timeout: PONG_TIMEOUT,
+            fast_backoff_wait_limit: FAST_BACKOFF_WAIT_LIMIT,
+        }
+    }
+}
+
+fn jitter_unit_now() -> f64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .subsec_nanos() as f64
+        / 1_000_000_000.0
+}
 
 struct HaChannel {
     url: String,
@@ -337,43 +395,125 @@ async fn send_packet(socket: &mut Socket, packet: Value) -> Result<(), String> {
     socket.send(Message::Text(packet.to_string().into())).await
 }
 
-struct Reconnect {
-    delay: Duration,
-    ready_at: Instant,
+enum ServeOutcome {
+    Shutdown,
+    Disconnected,
+    NetworkReset,
 }
 
-impl Reconnect {
-    fn new() -> Self {
-        Self { delay: INITIAL_RECONNECT_DELAY, ready_at: Instant::now() }
-    }
-
-    fn disconnected(&mut self) {
-        self.ready_at = Instant::now() + self.delay;
-        self.delay = (self.delay * 2).min(MAX_RECONNECT_DELAY);
-    }
+async fn run_websocket(
+    url: &str,
+    requests: mpsc::Receiver<HaRequest>,
+    network_epoch: watch::Receiver<u64>,
+) {
+    run_websocket_with_timings(url, requests, network_epoch, WebSocketTimings::default()).await;
 }
 
-async fn run_websocket(url: &str, mut requests: mpsc::Receiver<HaRequest>) {
-    let mut reconnect = Reconnect::new();
-    while let Some(first) = requests.recv().await {
+async fn run_websocket_with_timings(
+    url: &str,
+    mut requests: mpsc::Receiver<HaRequest>,
+    mut network_epoch: watch::Receiver<u64>,
+    timings: WebSocketTimings,
+) {
+    let mut backoff = ReconnectBackoff::new(std::time::Instant::now());
+    let mut seen_epoch = *network_epoch.borrow_and_update();
+
+    loop {
+        let first = {
+            let next_req = pin!(requests.recv());
+            let net_chg = pin!(network_epoch.changed());
+            match select(next_req, net_chg).await {
+                Either::Left((Some(req), _)) => req,
+                Either::Left((None, _)) => return,
+                Either::Right((Ok(()), _)) => {
+                    seen_epoch = *network_epoch.borrow_and_update();
+                    backoff.reset(std::time::Instant::now());
+                    continue;
+                }
+                Either::Right((Err(_), _)) => return,
+            }
+        };
+
         if first.reply.is_closed() {
             continue;
         }
-        tokio::time::sleep_until(reconnect.ready_at).await;
+        if *network_epoch.borrow() != seen_epoch {
+            seen_epoch = *network_epoch.borrow_and_update();
+            backoff.reset(std::time::Instant::now());
+        }
+
+        let remaining = backoff.remaining(std::time::Instant::now());
+        if remaining > timings.fast_backoff_wait_limit {
+            // Away-from-home slow backoff (30s..300s): fail fast without dialing the network
+            // until the backoff window expires or a network change resets it.
+            let _ = first.reply.send(Err(BACKING_OFF.into()));
+            continue;
+        }
+        if !remaining.is_zero() {
+            let wake_at = Instant::from_std(backoff.ready_at());
+            let woken_by_network = match select(
+                pin!(tokio::time::sleep_until(wake_at)),
+                pin!(network_epoch.changed()),
+            )
+            .await
+            {
+                Either::Left(_) => false,
+                Either::Right((Ok(()), _)) => true,
+                Either::Right((Err(_), _)) => return,
+            };
+            if woken_by_network {
+                seen_epoch = *network_epoch.borrow_and_update();
+                backoff.reset(std::time::Instant::now());
+            }
+        }
         if first.reply.is_closed() {
             continue;
         }
-        match authenticated(url, &first.token).await {
-            Ok(socket) => {
-                if !serve_websocket(socket, first, &mut requests, &mut reconnect).await {
-                    return;
+
+        let dial_outcome = {
+            let auth = pin!(authenticated(url, &first.token));
+            let net_chg = pin!(network_epoch.changed());
+            match select(auth, net_chg).await {
+                Either::Left((result, _)) => Some(result),
+                Either::Right((Ok(()), _)) => {
+                    seen_epoch = *network_epoch.borrow_and_update();
+                    None
+                }
+                Either::Right((Err(_), _)) => return,
+            }
+        };
+
+        match dial_outcome {
+            None => {
+                backoff.reset(std::time::Instant::now());
+                let _ = first.reply.send(Err(NETWORK_CHANGED.into()));
+            }
+            Some(Ok(socket)) => {
+                match serve_websocket(
+                    socket,
+                    first,
+                    &mut requests,
+                    &mut backoff,
+                    &mut network_epoch,
+                    &mut seen_epoch,
+                    timings,
+                )
+                .await
+                {
+                    ServeOutcome::Shutdown => return,
+                    ServeOutcome::NetworkReset => {
+                        backoff.reset(std::time::Instant::now());
+                    }
+                    ServeOutcome::Disconnected => {
+                        backoff.record_failure(std::time::Instant::now(), jitter_unit_now());
+                    }
                 }
             }
-            Err(error) => {
+            Some(Err(error)) => {
                 let _ = first.reply.send(Err(error));
+                backoff.record_failure(std::time::Instant::now(), jitter_unit_now());
             }
         }
-        reconnect.disconnected();
     }
 }
 
@@ -410,32 +550,52 @@ fn command_result(packet: Value) -> Option<(u64, Result<Value, String>)> {
     Some((id, result))
 }
 
+#[derive(Clone, Copy)]
+enum TimerAction {
+    RequestTimedOut,
+    SendPing,
+    PongTimedOut,
+}
+
 enum SocketEvent {
+    NetworkChanged(bool),
+    Timer(TimerAction),
     Request(Option<HaRequest>),
     Message(Result<Message, String>),
-    TimedOut,
 }
 
 async fn serve_websocket(
     mut socket: Socket,
     first: HaRequest,
     requests: &mut mpsc::Receiver<HaRequest>,
-    reconnect: &mut Reconnect,
-) -> bool {
+    backoff: &mut ReconnectBackoff,
+    network_epoch: &mut watch::Receiver<u64>,
+    seen_epoch: &mut u64,
+    timings: WebSocketTimings,
+) -> ServeOutcome {
     let mut outstanding = BTreeMap::new();
     let mut id = 1u64;
+    let mut last_activity = Instant::now();
+    let mut pending_ping: Option<(u64, Instant)> = None;
+
     match write_request(&mut socket, id, first).await {
-        Ok(Some(sent)) => { outstanding.insert(id, sent); }
+        Ok(Some(sent)) => {
+            outstanding.insert(id, sent);
+        }
         Ok(None) => {}
-        Err(_) => return true,
+        Err(_) => return ServeOutcome::Disconnected,
     }
-    let failure = loop {
-        let deadline = outstanding.first_key_value().map(|(_, sent)| sent.deadline);
-        let expiry = async {
-            match deadline {
-                Some(at) => tokio::time::sleep_until(at).await,
-                None => pending::<()>().await,
+    let (failure, outcome) = loop {
+        let req_deadline = outstanding.first_key_value().map(|(_, sent)| sent.deadline);
+        let (timer_at, timer_action) = match (req_deadline, pending_ping) {
+            (Some(req_at), Some((_, pong_at))) if req_at <= pong_at => {
+                (req_at, TimerAction::RequestTimedOut)
             }
+            (_, Some((_, pong_at))) => (pong_at, TimerAction::PongTimedOut),
+            (Some(req_at), None) if req_at <= last_activity + timings.ping_interval => {
+                (req_at, TimerAction::RequestTimedOut)
+            }
+            (_, None) => (last_activity + timings.ping_interval, TimerAction::SendPing),
         };
         let can_accept = outstanding.len() < MAX_PENDING;
         let outgoing = async {
@@ -446,39 +606,86 @@ async fn serve_websocket(
             }
         };
         let event = {
+            let network = pin!(network_epoch.changed());
+            let timer = pin!(tokio::time::sleep_until(timer_at));
             let outgoing = pin!(outgoing);
             let incoming = pin!(socket.read());
-            let activity = select(outgoing, incoming);
-            match select(pin!(expiry), activity).await {
-                Either::Left(_) => SocketEvent::TimedOut,
+            let control = select(network, timer);
+            let io = select(outgoing, incoming);
+            match select(control, io).await {
+                Either::Left((Either::Left((changed, _)), _)) => {
+                    SocketEvent::NetworkChanged(changed.is_ok())
+                }
+                Either::Left((Either::Right(_), _)) => SocketEvent::Timer(timer_action),
                 Either::Right((Either::Left((request, _)), _)) => SocketEvent::Request(request),
                 Either::Right((Either::Right((message, _)), _)) => SocketEvent::Message(message),
             }
         };
         match event {
-            SocketEvent::TimedOut => break REQUEST_TIMED_OUT.to_string(),
-            SocketEvent::Request(None) => return false,
+            SocketEvent::NetworkChanged(true) => {
+                *seen_epoch = *network_epoch.borrow_and_update();
+                break (NETWORK_CHANGED.to_string(), ServeOutcome::NetworkReset);
+            }
+            SocketEvent::NetworkChanged(false) => {
+                break (CANCELLED.to_string(), ServeOutcome::Shutdown);
+            }
+            SocketEvent::Timer(TimerAction::RequestTimedOut) => {
+                break (REQUEST_TIMED_OUT.to_string(), ServeOutcome::Disconnected);
+            }
+            SocketEvent::Timer(TimerAction::PongTimedOut) => {
+                break (PING_TIMED_OUT.to_string(), ServeOutcome::Disconnected);
+            }
+            SocketEvent::Timer(TimerAction::SendPing) => {
+                id += 1;
+                let ping_id = id;
+                let pong_deadline = Instant::now() + timings.pong_timeout;
+                match tokio::time::timeout_at(
+                    pong_deadline,
+                    send_packet(&mut socket, json!({"id": ping_id, "type": "ping"})),
+                )
+                .await
+                {
+                    Ok(Ok(())) => {
+                        pending_ping = Some((ping_id, pong_deadline));
+                    }
+                    Ok(Err(error)) => break (error, ServeOutcome::Disconnected),
+                    Err(_) => break (PING_TIMED_OUT.to_string(), ServeOutcome::Disconnected),
+                }
+            }
+            SocketEvent::Request(None) => return ServeOutcome::Shutdown,
             SocketEvent::Request(Some(request)) => {
                 id += 1;
                 match write_request(&mut socket, id, request).await {
-                    Ok(Some(sent)) => { outstanding.insert(id, sent); }
+                    Ok(Some(sent)) => {
+                        outstanding.insert(id, sent);
+                    }
                     Ok(None) => {}
-                    Err(error) => break error,
+                    Err(error) => break (error, ServeOutcome::Disconnected),
                 }
             }
             SocketEvent::Message(Ok(Message::Text(text))) => {
+                last_activity = Instant::now();
                 let Ok(packet) = serde_json::from_str::<Value>(&text) else {
-                    break "Invalid Home Assistant response".into();
+                    break ("Invalid Home Assistant response".into(), ServeOutcome::Disconnected);
                 };
+                if packet["type"] == "pong" {
+                    if pending_ping.is_some_and(|(pid, _)| packet["id"].as_u64() == Some(pid)) {
+                        pending_ping = None;
+                    }
+                    continue;
+                }
                 // Subscription events can be routed here without consuming command replies.
                 if let Some((id, result)) = command_result(packet) {
                     if let Some(sent) = outstanding.remove(&id) {
-                        reconnect.delay = INITIAL_RECONNECT_DELAY;
+                        backoff.reset(std::time::Instant::now());
                         let _ = sent.reply.send(result);
                     }
                 }
             }
-            SocketEvent::Message(Err(error)) => break error,
+            SocketEvent::Message(Ok(Message::Pong(_))) => {
+                last_activity = Instant::now();
+            }
+            SocketEvent::Message(Err(error)) => break (error, ServeOutcome::Disconnected),
             SocketEvent::Message(Ok(_)) => {}
         }
     };
@@ -486,7 +693,7 @@ async fn serve_websocket(
     for (_, sent) in outstanding {
         let _ = sent.reply.send(Err(failure.clone()));
     }
-    true
+    outcome
 }
 
 impl HaTask {
@@ -1256,6 +1463,119 @@ mod tests {
                 .execute(url, ROTATED, command("light.study")).await.unwrap_err();
             assert_eq!(error, "Home Assistant authentication rejected");
             connections.configure(None).await.unwrap();
+        });
+        peer.join().unwrap();
+    }
+
+    #[test]
+    fn network_change_drops_idle_websocket_immediately_and_reestablishes_on_next_request() {
+        const TOKEN: &str = "fixture-token";
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let base = format!("http://{address}");
+        let url = format!("ws://{address}/api/websocket");
+        let (first_dropped_tx, first_dropped_rx) = tokio::sync::oneshot::channel();
+        let peer = std::thread::spawn(move || {
+            let mut first = fixture_socket(&listener, TOKEN);
+            send_fixture(&mut first, "auth_ok");
+            let req = fixture_request(&mut first);
+            fixture_result(&mut first, &req["id"], Value::Null);
+            // Expect the client to drop this socket promptly on network change.
+            assert!(first.read().is_err());
+            let _ = first_dropped_tx.send(());
+
+            let mut second = fixture_socket(&listener, TOKEN);
+            send_fixture(&mut second, "auth_ok");
+            let req2 = fixture_request(&mut second);
+            fixture_result(&mut second, &req2["id"], Value::Null);
+            let _ = second.read();
+        });
+
+        let command = |entity: &str| HaServiceCall {
+            domain: "light".into(),
+            service: "turn_off".into(),
+            entity_id: entity.into(),
+            data: Default::default(),
+        };
+        tauri::async_runtime::block_on(async {
+            let connections = HaConnections::default();
+            let scope = connection_scope(&base).unwrap();
+            let generation = connections.configure(Some(scope)).await.unwrap();
+            let task = connections.acquire(&base, generation).unwrap();
+            task.execute(url.clone(), TOKEN, command("light.before")).await.unwrap();
+
+            // Trigger network change; idle socket must drop immediately without waiting for timeout.
+            connections.handle_network_or_resume();
+            tokio::time::timeout(Duration::from_secs(2), first_dropped_rx)
+                .await
+                .unwrap()
+                .unwrap();
+
+            // Next request re-establishes immediately (0ms backoff after network reset).
+            let started = Instant::now();
+            task.execute(url, TOKEN, command("light.after")).await.unwrap();
+            assert!(
+                started.elapsed() < Duration::from_secs(2),
+                "re-establish after network change took too long: {:?}",
+                started.elapsed()
+            );
+            drop(task);
+            connections.configure(None).await.unwrap();
+        });
+        peer.join().unwrap();
+    }
+
+    #[test]
+    fn ping_pong_liveness_drops_dead_socket_when_pong_times_out() {
+        const TOKEN: &str = "fixture-token";
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let url = format!("ws://{address}/api/websocket");
+        let (closed_tx, closed_rx) = tokio::sync::oneshot::channel();
+        let peer = std::thread::spawn(move || {
+            let mut sock = fixture_socket(&listener, TOKEN);
+            send_fixture(&mut sock, "auth_ok");
+            let first = fixture_request(&mut sock);
+            fixture_result(&mut sock, &first["id"], Value::Null);
+
+            // Expect a ping packet; intentionally withhold the pong to simulate a half-open socket.
+            let ping = fixture_request(&mut sock);
+            assert_eq!(ping["type"], "ping");
+            assert!(ping["id"].as_u64().is_some());
+            assert!(sock.read().is_err());
+            let _ = closed_tx.send(());
+        });
+
+        tauri::async_runtime::block_on(async {
+            let (tx, rx) = mpsc::channel(4);
+            let (_epoch_tx, epoch_rx) = watch::channel(0u64);
+            let timings = WebSocketTimings {
+                ping_interval: Duration::from_millis(80),
+                pong_timeout: Duration::from_millis(120),
+                fast_backoff_wait_limit: Duration::from_secs(10),
+            };
+            let worker = tauri::async_runtime::spawn(async move {
+                run_websocket_with_timings(&url, rx, epoch_rx, timings).await;
+            });
+
+            let (reply_tx, reply_rx) = oneshot::channel();
+            tx.send(HaRequest {
+                packet: json!({"type": "get_states"}),
+                token: TOKEN.into(),
+                reply: reply_tx,
+            })
+            .await
+            .unwrap();
+            assert!(reply_rx.await.unwrap().is_ok());
+
+            // Dead socket must be detected and dropped well within 2 seconds.
+            tokio::time::timeout(Duration::from_secs(2), closed_rx)
+                .await
+                .unwrap()
+                .unwrap();
+
+            drop(tx);
+            worker.await.unwrap();
         });
         peer.join().unwrap();
     }

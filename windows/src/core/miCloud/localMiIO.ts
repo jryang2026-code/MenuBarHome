@@ -4,11 +4,17 @@ import { MiCloudError, type MiSession } from "./session.js";
 
 type Invoke = NonNullable<Window["__TAURI_INTERNALS__"]>["invoke"];
 type Endpoint = { did: string; ip: string; token: string };
-type Health = { ip: string; token: string; failures: number; retryAt: number };
+type Health = { epoch: number; ip: string; token: string; failures: number; retryAt: number };
 
 // Device records also feed diagnostics and snapshots. Keep credentials outside that data.
 const recordTokens = new WeakMap<MiDeviceRecord, string>();
 const sessionHealth = new WeakMap<MiSession, Map<string, Health>>();
+let localMiIONetworkEpoch = 0;
+
+/** Clears per-device LAN failure cooldowns across all sessions after a network change or resume. */
+export function resetLocalMiIOHealth(): void {
+  localMiIONetworkEpoch += 1;
+}
 
 export function rememberMiIODeviceToken(record: MiDeviceRecord, raw: unknown): void {
   if (typeof raw !== "string") return;
@@ -58,7 +64,10 @@ export class LocalMiIO {
     const endpoint = this.#endpoints.get(did);
     if (!endpoint) return undefined;
     const health = this.#health.get(did);
-    if (health && (health.ip !== endpoint.ip || health.token !== endpoint.token)) {
+    if (
+      health &&
+      (health.epoch !== localMiIONetworkEpoch || health.ip !== endpoint.ip || health.token !== endpoint.token)
+    ) {
       this.#health.delete(did);
     } else if (health && Date.now() < health.retryAt) {
       return undefined;
@@ -68,9 +77,12 @@ export class LocalMiIO {
 
   private recordFailure(endpoint: Endpoint): void {
     const previous = this.#health.get(endpoint.did);
-    const failures = previous?.ip === endpoint.ip && previous.token === endpoint.token
-      ? previous.failures + 1 : 1;
+    const failures =
+      previous?.epoch === localMiIONetworkEpoch && previous.ip === endpoint.ip && previous.token === endpoint.token
+        ? previous.failures + 1
+        : 1;
     this.#health.set(endpoint.did, {
+      epoch: localMiIONetworkEpoch,
       ip: endpoint.ip,
       token: endpoint.token,
       failures,
