@@ -1221,18 +1221,16 @@ impl MiIOClient {
             }
         };
 
-        if let Some(resp_id) = json.get("id").and_then(Value::as_u64) {
-            if resp_id != req_id {
-                if !allow_post_send_retry {
-                    self.inner
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .sessions
-                        .remove(did);
-                    return Err(MiIOError::AmbiguousActionOutcome);
-                }
-                return Err(MiIOError::MalformedPacket);
+        if json.get("id").and_then(Value::as_u64) != Some(req_id) {
+            if !allow_post_send_retry {
+                self.inner
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .sessions
+                    .remove(did);
+                return Err(MiIOError::AmbiguousActionOutcome);
             }
+            return Err(MiIOError::MalformedPacket);
         }
 
         if !self.shut_down.load(Ordering::Acquire) {
@@ -1558,6 +1556,51 @@ mod tests {
         let err = tauri::async_runtime::block_on(client.call_action(&call, &ep)).unwrap_err();
         assert_eq!(err, MiIOError::AmbiguousActionOutcome);
         assert_eq!(sends.load(Ordering::SeqCst), 2); // 1 HELLO + 1 action, no retry
+    }
+
+    #[test]
+    fn missing_or_nonnumeric_response_id_is_rejected() {
+        let token_hex = "0123456789abcdef0123456789abcdef";
+        let token = validate_token(token_hex).unwrap();
+        let transport = Arc::new(MockTransport {
+            send_fn: Box::new(move |pkt, _host, _port, _timeout| {
+                Box::pin(async move {
+                    if pkt == HELLO_PACKET {
+                        return Ok(make_hello_reply(1001, 50, &token));
+                    }
+                    let (hdr, _) = decode_packet(&pkt, &token).unwrap();
+                    let resp = json!({ "id": null, "result": [{ "code": 0 }] });
+                    Ok(encode_packet(
+                        hdr.device_id,
+                        hdr.stamp + 1,
+                        &token,
+                        &serde_json::to_vec(&resp).unwrap(),
+                        0,
+                    )
+                    .unwrap())
+                })
+            }),
+            bcast_fn: Box::new(|_, _, _| Box::pin(async { Ok(vec![]) })),
+        });
+        let client = MiIOClient::new(transport);
+        let ep = MiIOEndpointInput {
+            did: "1001".into(),
+            ip: "192.168.1.20".into(),
+            token: token_hex.into(),
+        };
+        let action_err = tauri::async_runtime::block_on(client.call_action(
+            &MiIOActionCallInput { did: "1001".into(), siid: 2, aiid: 1, inputs: vec![] },
+            &ep,
+        ))
+        .unwrap_err();
+        assert_eq!(action_err, MiIOError::AmbiguousActionOutcome);
+
+        let read_err = tauri::async_runtime::block_on(client.get_props(
+            &[MiIOPropKeyInput { did: "1001".into(), siid: 2, piid: 1 }],
+            &ep,
+        ))
+        .unwrap_err();
+        assert_eq!(read_err, MiIOError::MalformedPacket);
     }
 
     #[test]
