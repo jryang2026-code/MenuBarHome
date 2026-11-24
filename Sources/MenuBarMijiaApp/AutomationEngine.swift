@@ -311,7 +311,7 @@ final class AutomationEngine {
         default:
             break
         }
-        await restoreContexts(for: trigger, store: store, at: now)
+        await restoreContextsIfNeeded(for: trigger, store: store, at: now)
         let rules = AutomationMatcher.rules(for: trigger, in: ruleStore.load())
         // An empty list must not burn the cooldown; the user may add a rule a moment later.
         guard !rules.isEmpty else { return }
@@ -405,6 +405,29 @@ final class AutomationEngine {
             }
             self.resumedAt = nil
         }
+
+        // Restoration is keyed by the paired exit signal, which may not have its own rule. Probe
+        // each configured restore trigger directly so a context frame is restored even when the
+        // user only created the entering rule.
+        var restoreTriggers: [AutomationTrigger] = []
+        for rule in rules where rule.isEnabled && rule.restoreWhenContextEnds {
+            guard let restoreTrigger = rule.restoreTrigger else { continue }
+            let probe = AutomationRule(
+                trigger: restoreTrigger,
+                action: .devices(ids: [], isOn: false),
+                triggerOptions: rule.triggerOptions
+            )
+            let events = MacContextAutomation.events(
+                for: probe, previous: previous, current: effective, at: now, calendar: calendar
+            )
+            if !events.isEmpty && !restoreTriggers.contains(restoreTrigger) {
+                restoreTriggers.append(restoreTrigger)
+            }
+        }
+        for trigger in restoreTriggers {
+            await restoreContextsIfNeeded(for: trigger, store: store, at: now)
+        }
+
         var candidates: [(rule: AutomationRule, events: [AutomationTriggerEvent], lastingSince: TimeInterval?)] = []
         for rule in rules where rule.isEnabled && rule.trigger.isSupportedOnMacOS {
             let events = MacContextAutomation.events(
@@ -756,6 +779,19 @@ final class AutomationEngine {
             store.devices.first(where: { $0.id == snapshot.deviceID })?.automationContextValue() == snapshot.applied
         }
         _ = contextStack.push(ruleID: capture.ruleID, snapshots: applied, at: time)
+    }
+
+    private func restoreContextsIfNeeded(for trigger: AutomationTrigger, store: HomeStore, at time: Date) async {
+        guard !isSystemAsleep else { return }
+        let hasRestoreRule = ruleStore.load().contains {
+            $0.isEnabled && $0.restoreWhenContextEnds && $0.restoreTrigger == trigger
+        }
+        guard hasRestoreRule else {
+            contextStack.pruneExpired(at: time)
+            return
+        }
+        guard deduper.shouldFire(trigger, at: time) else { return }
+        await restoreContexts(for: trigger, store: store, at: time)
     }
 
     private func restoreContexts(for trigger: AutomationTrigger, store: HomeStore, at time: Date) async {
