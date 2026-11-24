@@ -46,7 +46,7 @@ export async function refreshMiScenes(
   const seen = new Set<string>();
   for (const room of rooms) {
     const { homeId } = room;
-    const owner = room.ownerUid ?? (room.isSharedHome ? null : userId);
+    const owner = room.ownerUid;
     if (!homeId || !owner || seen.has(homeId)) continue;
     seen.add(homeId);
     try {
