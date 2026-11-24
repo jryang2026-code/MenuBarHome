@@ -4,10 +4,12 @@
 
 ## 当前交接快照
 
-- 更新时间：2026-11-24 20:50 CST（Wave 0 收口，Wave 1 启动）
-- `main`：`0b9e9498`，CI 绿
+- 更新时间：2026-11-25（Wave 1 收口，Wave 2A 启动）
+- `main`：`0922147`（Wave 1 全部合入，main CI 绿）
+- Wave 1：12/12 DONE（#471–#484 + main 187b6743）
 - Wave 0：8/8 DONE（#463 #464 #465 #466 #467 #468 #469 + main 1682695f）
 - 已完成不再派活：`#453`、`#461`（Windows Rust miIO 原生层）、`#460`（WidgetKit 签名可行性 spike）、`#462`（调研总纲）
+- Codex 云端审查额度耗尽（#479–#484 均 usage limit）：设备写入/网络 PR 由主控兜底审 diff
 - main 红一次（#467 新增 TV 撤销测试抖动）已由 2caf7730 修绿
 - 需作者拍板：`v1.5.0` 发版、`#12` SignPath 申请启动
 
@@ -43,21 +45,30 @@
 | W1-4 P0-3a Win Rust 连接池 + 持久 HA WebSocket | — | Codex sol6.2 | 无 | PR | DONE | #471 + #473 已合 | network.rs / home_assistant.rs |
 | W1-5 #443 专注模式名过滤 | #443 | Hydrogen High | W1-1 | PR | DONE | #475 已合 | |
 | W1-6 P0-3b macOS HA subscribe_entities | — | Codex sol6.2 | W1-4 | PR | DONE | #477 → main d19785d | HomeProvider.swift，与 W1-7 macOS 部分串行 |
-| W1-7 P0-4 休眠/网络切换半开 TCP 斩杀 | — | Neon Mid（Win network_monitor.rs）+ Codex sol6.2（macOS） | W1-3、W1-6 | PR | IN_PROGRESS | W1-7a Neon(Win) + W1-7b Codex(mac) | 双端拆两个 PR |
+| W1-7 P0-4 休眠/网络切换半开 TCP 斩杀 | — | Neon Mid（Win network_monitor.rs）+ Codex sol6.2（macOS） | W1-3、W1-6 | PR | DONE | W1-7a #482 + W1-7b #484 已合（Codex 卡死后由 Hydrogen 补测试 + DarkWake 10min 上限） | 双端拆两个 PR ；备忘：Win 退避 >10s 时 HA 请求直接失败，HA 重启（无网络变化）后最长约 5 分钟不可控 → Wave 2 评估“用户主动操作绕过退避” |
 | W1-8 P0-5a Win 米家局域网 Part 2 + 写确认 | #457 | Codex sol6.2 | W1-4 | PR | DONE | #478 → main 27a8dfc | TS 混合路由 |
-| W1-9 P0-5b status=all + Shared/specPatches.json | — | Neon Mid | W1-8 | PR | IN_PROGRESS | | 跨端契约 |
-| W1-10 P0-8 Per-Field writeEpoch 零回弹 | — | Codex sol6.2 | W1-8 | PR | IN_PROGRESS | | 控制写入 + 黄金语料；datasource:1 真机部分 HUMAN_GATE（#411） |
+| W1-9 P0-5b status=all + Shared/specPatches.json | — | Neon Mid | W1-8 | PR | DONE | #480 → main 1a4c6f5 | 跨端契约；multiLanguage 官方翻译缓存未做（留 Wave 2） |
+| W1-10 P0-8 Per-Field writeEpoch 零回弹 | — | Codex sol6.2 | W1-8 | PR | DONE | #479 + #483 已合 | 控制写入 + 黄金语料；datasource:1 真机部分 HUMAN_GATE（#411） |
 | W1-11 #424/#446 摄像机桥接监督与 go2rtc 收敛 | #424 #446 | Neon Mid | W1-3 | PR | DONE | #476 已合（#424） | 可延至 Wave 2A 的 P1-2 ；#424 已做（+1736 行，内聚未拆）；#446 go2rtc CS2 补丁 + 打包链路未做，需独立 PR |
-| W1-12 #446 go2rtc CS2 补丁与配置收敛 | #446 | Neon Mid | W1-11 | PR | IN_PROGRESS | | 打包链路高风险，配置收敛可拆 |
+| W1-12 #446 go2rtc CS2 补丁与配置收敛 | #446 | Neon Mid | W1-11 | PR | DONE | #481 → main 0922147 | 打包链路高风险，配置收敛可拆 |
 
 ## Wave 2A：P1 桌面护城河与手感
 
 | ID | 关联已有Issue | 模型分派 | 前置依赖 | 通道 | 状态 | PR/SHA | 交接备注 |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| P1-1 桌面即传感器 2.0 | #430 #431 #432 | Codex sol6.2 + Neon Mid | Wave 1 | PR | TODO | | |
-| P1-2 摄像机桌面盯屏 | #445 #447 | Neon Mid | P0-6 | PR | TODO | | |
-| P1-3 首屏美学减法 + 零弹窗确认 | — | Hydrogen High / Neon Mid | Wave 1 | 样式快车道 / L2-L3 PR | TODO | | |
-| P1-4 Win 原生材质 + WebView2 瘦身 | — | Neon Mid | P0-6 | PR | TODO | | |
+| W2A-1 macOS 自动化定时触发 + 持续 N 分钟 | #430 #431 | Codex sol6.2 | Wave 1 | PR | IN_PROGRESS | | AutomationRule/AutomationEngine；对齐 Windows 现有语义 |
+| W2A-2 macOS 自动化事件源守卫 | #432 | Hydrogen High | W2A-1 | PR | TODO | | 移植 Windows 守卫 |
+| W2A-3 P1-1 Context Stack 状态栈无痕还原 | — | Codex sol6.2 | W2A-1 | PR | TODO | | 双端；尊重人工中途接管；后台自动写入高风险 |
+| W2A-4 P1-1 Win 摄像头/麦克风占用 + 全屏探测事件源 | — | Neon Mid | Wave 1 | PR | IN_PROGRESS | | system_events.rs：CapabilityAccessManager、SHQueryUserNotificationState |
+| W2A-5 P1-1 macOS 前台应用事件 + 开会/观影模板 | — | Neon Mid | W2A-3 | PR | TODO | | |
+| W2A-6 P1-2 Win 摄像机事件库 + 静帧墙 | #447 | Neon Mid | Wave 1 | PR | IN_PROGRESS | | |
+| W2A-7 P1-2 摄像机仅收听模式 + 防抢蓝牙 HFP | #445 | Hydrogen High | Wave 1 | PR | IN_PROGRESS | | 静音预览 `&audio=0` |
+| W2A-8 P1-2 PiP 置顶副窗 + 门铃自动弹出 + 钉选开关 | — | Neon Mid | W2A-6 | PR | TODO | | 双端 |
+| W2A-9 P1-3a 首屏 ≤3 层 + 卡片微交互（纯样式） | — | Hydrogen High / Neon Mid | Wave 1 | 快车道main / PR | TODO | | 含 P0-7 遗留：45s 温热卸载 + 200ms 伸缩 |
+| W2A-10 P1-3b L2/L3 原位长按/滑轨安全确认 | — | Neon Mid | W2A-9 | PR | TODO | | 复用 ManualControlPolicy；键盘/VoiceOver 兜底 |
+| W2A-11 P1-4 Win 原生材质 + 系统强调色 + WebView2 瘦身 | — | Neon Mid | Wave 1 | PR | IN_PROGRESS | | 严禁 SetProcessWorkingSetSize(-1,-1)、严禁双岛盲开 Acrylic |
+| W2A-12 Win 用户主动操作绕过 HA 退避 | — | Codex sol6.2 | Wave 1 | PR | TODO | | 来自 #482 备忘；并入 #484 Codex P2：macOS 锁屏/仅显示器休眠时网络拓扑变化仍触发后台重连，宜延迟到恢复活跃 |
+| W2A-13 multiLanguage 官方翻译缓存 | — | Hydrogen High | Wave 1 | PR | TODO | | 来自 W1-9 遗留 |
 
 ## Wave 2B：P1 写入管线、热键与安全底座
 
