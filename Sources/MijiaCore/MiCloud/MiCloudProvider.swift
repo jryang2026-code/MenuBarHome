@@ -832,7 +832,7 @@ public actor MiCloudProvider: HomeProvider {
         var seen = Set<String>()
         var refreshed: [MiCloudScene] = []
         for room in rooms where !room.homeId.isEmpty && !seen.contains(room.homeId) {
-            guard let owner = room.ownerUid,
+            guard let owner = MiCloudScene.ownerUid(for: room, userId: session.userId),
                   !owner.isEmpty else { continue }
             seen.insert(room.homeId)
             do {

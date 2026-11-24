@@ -9,7 +9,8 @@ import { MenuMijiaWindowsApp } from "../src/ui/app.js";
 import { STORAGE_KEY } from "../src/ui/appConstants.js";
 import { setLanguage } from "../src/core/i18n.js";
 import { makeMiAccount, miAccountId } from "../src/core/miAccountsStore.js";
-import { decodeMiScenes } from "../src/core/miCloud/scenes.js";
+import { decodeMiScenes, refreshMiScenes, sceneOwnerUid } from "../src/core/miCloud/scenes.js";
+import { MiCloudClient, type MiRoom } from "../src/core/miCloudClient.js";
 import { MiCloudCrypto } from "../src/core/miCloudCrypto.js";
 import { finishMiSceneConfirmation } from "../src/ui/sceneConfirmation.js";
 import { setHostDualSourceEnabled, setHostHAInvokeOverride } from "../src/ui/cloudRefresh.js";
@@ -175,6 +176,43 @@ describe("Mi cloud scene golden corpus", () => {
     assert.deepEqual(scenes.map((scene) => scene.id), ["11", "12", "13", "14", "15"]);
     // `scene_name` wins over `name`; an empty/blank field falls back to the other one.
     assert.deepEqual(scenes.map((scene) => scene.name), ["回家", "晚安", "晨起", "夜读", "新名"]);
+  });
+});
+
+describe("Mi scene owner resolution (#451)", () => {
+  interface SceneOwnerCorpus {
+    readonly sessionUserId: string;
+    readonly result: Record<string, unknown>;
+    readonly expectedSceneRequests: readonly { homeId: string; ownerUid: string }[];
+  }
+
+  it("runs the shared corpus: owned homes without uid fall back, shared homes without uid stay skipped", async () => {
+    const corpus = JSON.parse(
+      readFileSync(new URL("../../Tests/Fixtures/mi_cloud_scene_homes_golden.json", import.meta.url), "utf8"),
+    ) as SceneOwnerCorpus;
+    const rooms: MiRoom[] = MiCloudClient.parseRooms(corpus.result);
+    const requested: Array<{ homeId: string; ownerUid: string }> = [];
+    const client = {
+      manualScenes: async (homeId: string, ownerUid: string) => {
+        requested.push({ homeId, ownerUid });
+        return [];
+      },
+    };
+
+    const snapshot = await refreshMiScenes(client, rooms, corpus.sessionUserId, undefined, 0);
+
+    // The corpus also pins the negative case: home-2003 (shared, no uid) is never queried.
+    assert.deepEqual(requested, corpus.expectedSceneRequests);
+    assert.deepEqual(snapshot, { refreshedAt: 0, scenes: [] });
+  });
+
+  it("resolves the owner per home: own uid wins, owned falls back, shared stays skipped", () => {
+    assert.equal(sceneOwnerUid({ ownerUid: "7" }, "42"), "7");
+    assert.equal(sceneOwnerUid({}, "42"), "42");
+    assert.equal(sceneOwnerUid({ ownerUid: "" }, "42"), "42");
+    assert.equal(sceneOwnerUid({ isSharedHome: true }, "42"), null);
+    assert.equal(sceneOwnerUid({ isSharedHome: true, ownerUid: "9" }, "42"), "9");
+    assert.equal(sceneOwnerUid({}, ""), null);
   });
 });
 

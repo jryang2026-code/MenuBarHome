@@ -1039,6 +1039,17 @@ actor StubMiCloudAPI: MiCloudAPI {
 
     func homeRooms() async throws -> [MiRoom] { rooms }
 
+    /// Scenes per home id the stub answers with; refreshed tests mutate this between polls.
+    private var sceneLists: [String: [MiCloudScene]] = [:]
+    private(set) var manualScenesCalls: [(homeId: String, ownerUid: String)] = []
+
+    func setSceneLists(_ lists: [String: [MiCloudScene]]) { sceneLists = lists }
+
+    func manualScenes(homeId: String, ownerUid: String) async throws -> [MiCloudScene] {
+        manualScenesCalls.append((homeId, ownerUid))
+        return sceneLists[homeId] ?? []
+    }
+
     /// Devices only reachable by did, like those in a home shared with this account (#134).
     var didOnlyDevices: [MiDeviceRecord] = []
     private(set) var devicesByDidCalls: [[String]] = []
@@ -1339,6 +1350,78 @@ struct MiCloudProviderTests {
         #expect(await log.snapshots.first?.devices == [MiotFixtures.expectedLight])
         #expect(await log.snapshots.first?.homes == [HomeOption(id: "owner-home", name: "爸妈家", deviceCount: 2)])
         #expect(await api.devicesByDidCalls == [["123", "ir-remote"]])
+        await provider.shutdown()
+    }
+
+    @Test("Scene owner resolution: owned without uid falls back to the session, shared stays skipped (#451)")
+    func sceneOwnerUidResolution() {
+        #expect(MiCloudScene.ownerUid(for: MiRoom(id: "r", name: "", dids: [], homeId: "h", ownerUid: "7"), userId: "42") == "7")
+        #expect(MiCloudScene.ownerUid(for: MiRoom(id: "r", name: "", dids: [], homeId: "h"), userId: "42") == "42")
+        #expect(MiCloudScene.ownerUid(for: MiRoom(id: "r", name: "", dids: [], homeId: "h", ownerUid: ""), userId: "42") == "42")
+        #expect(MiCloudScene.ownerUid(for: MiRoom(id: "r", name: "", dids: [], homeId: "h", isSharedHome: true), userId: "42") == nil)
+        #expect(MiCloudScene.ownerUid(for: MiRoom(id: "r", name: "", dids: [], homeId: "h", isSharedHome: true, ownerUid: "9"), userId: "42") == "9")
+        #expect(MiCloudScene.ownerUid(for: MiRoom(id: "r", name: "", dids: [], homeId: "h"), userId: "") == nil)
+    }
+
+    /// Rooms, session user and the expected `(homeId, ownerUid)` scene requests, straight from the
+    /// shared corpus both platforms' refresh loops run against (#451).
+    private struct SceneOwnerCorpus {
+        let rooms: [MiRoom]
+        let userId: String
+        let requests: [(homeId: String, ownerUid: String)]
+    }
+
+    private static func loadSceneOwnerCorpus() throws -> SceneOwnerCorpus {
+        let url = try GoldenCorpusTests.locateGoldenFixture("Tests/Fixtures/mi_cloud_scene_homes_golden.json")
+        let corpus = try JSONDecoder().decode(JSONValue.self, from: Data(contentsOf: url))
+        let rooms = MiCloudClient.parseRooms(corpus["result"] ?? .null)
+        let requests = (corpus["expectedSceneRequests"]?.arrayValue ?? []).compactMap { entry -> (String, String)? in
+            guard let homeId = entry["homeId"]?.idString, let owner = entry["ownerUid"]?.idString else { return nil }
+            return (homeId, owner)
+        }
+        #expect(!rooms.isEmpty, "the scene owner corpus must parse into rooms")
+        #expect(!requests.isEmpty, "the scene owner corpus must name the expected requests")
+        return SceneOwnerCorpus(
+            rooms: rooms,
+            userId: corpus["sessionUserId"]?.idString ?? "",
+            requests: requests.map { (homeId: $0.0, ownerUid: $0.1) }
+        )
+    }
+
+    @Test("An owned home whose room page omits uid still gets its scenes (#451)")
+    func sceneRefreshFollowsOwnerCorpus() async throws {
+        let corpus = try Self.loadSceneOwnerCorpus()
+        let api = StubMiCloudAPI(devices: [], rooms: corpus.rooms, values: [:])
+        await api.setSceneLists([
+            "home-2002": [MiCloudScene(id: "1", name: "晚安", homeId: "home-2002", ownerUid: corpus.userId)],
+            "home-2001": [MiCloudScene(id: "2", name: "回家", homeId: "home-2001", ownerUid: corpus.userId)],
+        ])
+        let session = MiSession(userId: corpus.userId, cUserId: "c", ssecurity: Vectors.ssecurity, serviceToken: "tok")
+        let provider = MiCloudProvider(
+            sessionLoader: { session },
+            apiFactory: { _ in api },
+            specSource: StubSpecSource(),
+            pollInterval: .seconds(60),
+            followUpDelay: .milliseconds(10),
+            selectedHomeLoader: { nil }
+        )
+        let (log, task) = consume(provider)
+        defer { task.cancel() }
+
+        #expect(await log.wait { _ in
+            let calls = await api.manualScenesCalls
+            return calls.count == corpus.requests.count
+        })
+        let calls = await api.manualScenesCalls
+        // The corpus also pins the negative case: a shared home without uid stays unqueried.
+        #expect(calls.count == corpus.requests.count)
+        for (call, expected) in zip(calls, corpus.requests) {
+            #expect(call.homeId == expected.homeId && call.ownerUid == expected.ownerUid)
+        }
+        #expect(await log.wait { log in
+            let snapshots = await log.snapshots
+            return snapshots.contains { $0.scenes.contains { $0.name == "晚安" } }
+        })
         await provider.shutdown()
     }
 
