@@ -75,16 +75,16 @@ extension HomeStore {
         if rejectDeviceWriteIfCapabilityDisabled(deviceId: device.id) != nil { return nil }
         // A tap on an LG TV is answered over the LAN, so the expired Mi session does not refuse it.
         guard !rejectWritesBlockedByMiSession(needsMi: !lgClientServes(device)) else { return nil }
-        guard device.isOnline else {
-            showToast(L10n.tr("\(device.name) 当前离线（可能断电）", "\(device.name) is offline (unplugged)"), isError: true)
+        guard let idx = devices.firstIndex(where: { $0.id == device.id }) else { return nil }
+        let initial = devices[idx]
+        guard initial.isOnline else {
+            showToast(L10n.tr("\(initial.name) 当前离线（可能断电）", "\(initial.name) is offline (unplugged)"), isError: true)
             return nil
         }
         guard device.isPrimaryToggleable else {
             if hasDetailDrawer(for: device) { toggleExpanded(device.id) }
             return nil
         }
-        guard let idx = devices.firstIndex(where: { $0.id == device.id }) else { return nil }
-        let initial = devices[idx]
         guard !rejectControlWhileLocked() else { return nil }
 
         let planned: ConfirmedPrimaryAction
@@ -375,6 +375,10 @@ extension HomeStore {
             return nil
         }
         self.clearManualWriteSession(for: deviceId, bumpRevision: coverOrigin == nil)
+        let writeEpoch = writeEpochNow()
+        for field in OptimisticField.primaryPowerFields(for: current.kind) {
+            fieldWriteEpochs[.field(deviceId, field)] = writeEpoch
+        }
 
         // A cover is write-only: the motor reports its position only after it moves, so the
         // commanded row and travel origin are shown and locked before the send. A snapshot that

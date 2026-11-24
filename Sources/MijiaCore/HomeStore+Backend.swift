@@ -624,22 +624,10 @@ extension HomeStore {
             var merged: [SmartDevice] = []
             let existingById = Dictionary(self.devices.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
 
+            var reportedDevices: [String: SmartDevice] = [:]
+            var reportedFacets = snapshot.deviceFacets
             for device in snapshot.devices {
                 var incoming = device
-                if case .cover(var cover) = incoming.kind {
-                    let reported = cover.reportedPositionPercent ?? cover.positionPercent
-                    let previousPosition = lastCoverPositions[incoming.id]
-                    lastCoverPositions[incoming.id] = reported
-                    if cover.motionIsInferred, previousPosition == reported {
-                        // The position did not move between reports, so the difference against the
-                        // target is not travel. Clear the inferred label and show where the motor
-                        // actually stopped instead of latching the target.
-                        cover.positionPercent = reported
-                        cover.motion = .stopped
-                        cover.motionIsInferred = false
-                        incoming.kind = .cover(cover)
-                    }
-                }
                 rawDeviceNames[incoming.id] = incoming.name
                 let backendChanged = previousBackends[incoming.id] != nil
                     && previousBackends[incoming.id] != snapshot.deviceBackends[incoming.id]
@@ -657,6 +645,30 @@ extension HomeStore {
                         debounceTasks.removeValue(forKey: key)?.cancel()
                     }
                 }
+                let captured = snapshot.devicePollCapturedEpochs[incoming.id]
+                let staleFields = Set(fieldWriteEpochs.compactMap { key, epoch -> OptimisticField? in
+                    guard key.deviceId == incoming.id, let captured, captured < epoch else { return nil }
+                    return key.field
+                })
+                if !staleFields.contains(.coverPosition), case .cover(var cover) = incoming.kind {
+                    let reported = cover.reportedPositionPercent ?? cover.positionPercent
+                    let previousPosition = lastCoverPositions[incoming.id]
+                    lastCoverPositions[incoming.id] = reported
+                    if cover.motionIsInferred, previousPosition == reported {
+                        // The position did not move between reports, so the difference against the
+                        // target is not travel. Clear the inferred label and show where the motor
+                        // actually stopped instead of latching the target.
+                        cover.positionPercent = reported
+                        cover.motion = .stopped
+                        cover.motionIsInferred = false
+                        incoming.kind = .cover(cover)
+                    }
+                }
+                if let baseline = lastReportedDevices[incoming.id] {
+                    reportedDevices[incoming.id] = device.mergingOptimisticFields(from: baseline, lockedFields: staleFields)
+                } else {
+                    reportedDevices[incoming.id] = device
+                }
                 pruneExpiredOptimisticLocks(for: incoming.id, at: now)
                 // A primary power toggle is waiting for this read-back, so an older primary-power
                 // lock must not hide the device's own property snapshot while unrelated field locks
@@ -670,12 +682,12 @@ extension HomeStore {
                         || readBackTickets.isInFlight(incoming.id)
                 }
                 if readBackNeedsSnapshot {
-                    for field in OptimisticField.primaryPowerFields(for: incoming.kind) {
+                    for field in OptimisticField.primaryPowerFields(for: incoming.kind).subtracting(staleFields) {
                         optimisticFieldLocks.removeValue(forKey: .field(incoming.id, field))
                     }
                 }
                 var lockedFields = activeLockedFields(for: incoming.id, at: now)
-                if lockedFields.contains(.coverPosition),
+                if lockedFields.contains(.coverPosition), !staleFields.contains(.coverPosition),
                    let local = existingById[incoming.id],
                    coverTravelTakesOver(deviceId: incoming.id, local: local, incoming: incoming) {
                     // The motor has confirmed the command, so its own report is authoritative.
@@ -689,6 +701,7 @@ extension HomeStore {
                         lockedFields.remove(.coverPosition)
                     }
                 }
+                lockedFields.formUnion(staleFields)
                 if !lockedFields.contains(.coverPosition) {
                     coverCommandOrigins.removeValue(forKey: incoming.id)
                 }
@@ -713,19 +726,28 @@ extension HomeStore {
             }
             // 更多设置 rows lock independently per controlId: a write in flight keeps only that
             // facet's local value until the lock expires or a read-back confirms it (#5).
-            var nextReportedDevices = Dictionary(
-                snapshot.devices.map { ($0.id, $0) },
-                uniquingKeysWith: { first, _ in first }
-            )
+
             if let lgDev = latestLGDevice, lgConfig.isEnabled, capabilitySelection.enabledCategories.contains(.tv),
-               nextReportedDevices[lgDev.id] == nil {
-                nextReportedDevices[lgDev.id] = lgDev
+               reportedDevices[lgDev.id] == nil {
+                reportedDevices[lgDev.id] = lgDev
             }
-            lastReportedDevices = nextReportedDevices
-            lastReportedFacets = snapshot.deviceFacets
+            lastReportedDevices = reportedDevices
             var nextFacets: [String: [FacetControl]] = [:]
             for device in snapshot.devices {
                 var lockedControlIds = activeLockedFacetControlIds(for: device.id, at: now)
+                let captured = snapshot.facetPollCapturedEpochs[device.id]
+                let staleControls = Set((snapshot.deviceFacets[device.id] ?? []).compactMap { facet -> String? in
+                    guard let captured, let epoch = facetWriteEpochs[Self.facetLockKey(device.id, facet.id)],
+                          captured < epoch else { return nil }
+                    return facet.id
+                })
+                lockedControlIds.formUnion(staleControls)
+                if !staleControls.isEmpty {
+                    let baseline = lastReportedFacets[device.id] ?? []
+                    reportedFacets[device.id] = snapshot.deviceFacets[device.id]?.compactMap { facet in
+                        staleControls.contains(facet.id) ? baseline.first { $0.id == facet.id } : facet
+                    }
+                }
                 if case .generic(let spec) = device.kind,
                    let powerControlId = spec.powerControl?.id,
                    activeLockedFields(for: device.id, at: now).contains(.power) {
@@ -752,6 +774,7 @@ extension HomeStore {
                     nextFacets[device.id] = local
                 }
             }
+            lastReportedFacets = reportedFacets
             let facetsChanged = deviceFacets != nextFacets
             if facetsChanged { deviceFacets = nextFacets }
 

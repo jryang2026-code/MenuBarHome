@@ -240,7 +240,8 @@ public actor HAWebSocketProvider: HomeProvider {
     private var activeWebSocket: (any HAWebSocketConnection)?
     private var handshakingWebSocket: (any HAWebSocketConnection)?
     private var nextWebSocketMessageId: Int = 5
-    private var pendingRefreshStateIds: Set<Int> = []
+    private var pendingRefreshStateIds: [Int: ContinuousClock.Instant] = [:]
+    private var initialStatesCapturedEpoch: ContinuousClock.Instant?
     private var pendingStreamRequests: [Int: CheckedContinuation<String?, Never>] = [:]
     private var startupReplies: [Int: [String: JSONValue]] = [:]
     private var startupWaiters: [Int: CheckedContinuation<[String: JSONValue], Error>] = [:]
@@ -480,11 +481,11 @@ public actor HAWebSocketProvider: HomeProvider {
         guard !isShutDown else { return }
         if let ws = activeWebSocket {
             let id = allocateWebSocketMessageId()
-            pendingRefreshStateIds.insert(id)
+            pendingRefreshStateIds[id] = .now
             do {
                 try await sendJSON(ws: ws, ["id": id, "type": "get_states"])
             } catch {
-                pendingRefreshStateIds.remove(id)
+                pendingRefreshStateIds.removeValue(forKey: id)
             }
         } else if handshakingWebSocket == nil {
             restartLoop()
@@ -769,14 +770,20 @@ public actor HAWebSocketProvider: HomeProvider {
                     if (1...5).contains(id) {
                         deliverStartupReply(id: id, message: msg)
                     }
-                    let isRefresh = pendingRefreshStateIds.remove(id) != nil
+                    let refreshCapturedEpoch = pendingRefreshStateIds.removeValue(forKey: id)
+                    let isRefresh = refreshCapturedEpoch != nil
                     if !isRefresh && !(1...4).contains(id) {
                         if !(1...5).contains(id) {
                             logger.debug("Ignoring Home Assistant result id \(id, privacy: .public) with no open request")
                         }
                         continue
                     }
-                    if let home = try snapshot.receive(msg, isRefreshStatesResult: isRefresh, typePrunePolicy: typePrunePolicyLoader()) {
+                    if let home = try snapshot.receive(
+                        msg,
+                        isRefreshStatesResult: isRefresh,
+                        typePrunePolicy: typePrunePolicyLoader(),
+                        pollCapturedEpoch: id == 4 ? initialStatesCapturedEpoch : refreshCapturedEpoch
+                    ) {
                         coalesceTask?.cancel()
                         coalesceTask = nil
                         hasPendingCoalescedSynthesis = false
@@ -784,7 +791,7 @@ public actor HAWebSocketProvider: HomeProvider {
                         publish(home, force: isRefresh || lastEmittedHome == nil)
                     }
                 } else if msg["type"]?.stringValue == "event" {
-                    let shouldSynthesize = snapshot.ingestStateChangedEvent(msg, typePrunePolicy: typePrunePolicyLoader())
+                    let shouldSynthesize = snapshot.ingestStateChangedEvent(msg, typePrunePolicy: typePrunePolicyLoader(), capturedEpoch: .now)
                     for ring in snapshot.takeDoorbellRings() {
                         emitEvent?(.doorbellRang(ring))
                     }
@@ -871,6 +878,7 @@ public actor HAWebSocketProvider: HomeProvider {
         try await sendJSON(ws: ws, ["id": 1, "type": "config/area_registry/list"])
         try await sendJSON(ws: ws, ["id": 2, "type": "config/device_registry/list"])
         try await sendJSON(ws: ws, ["id": 3, "type": "config/entity_registry/list"])
+        initialStatesCapturedEpoch = .now
         try await sendJSON(ws: ws, ["id": 4, "type": "get_states"])
         try await sendJSON(ws: ws, [
             "id": 5,

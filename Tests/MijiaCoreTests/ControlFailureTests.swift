@@ -184,21 +184,17 @@ struct ControlFailureTests {
     }
 
     @Test("An error raised before anything reached an offline device keeps its own copy")
-    func localErrorOnOfflineDeviceIsNotOffline() async throws {
-        let unsupported = try await failureToast(for: MiotCommandError.unsupported("测试"), online: false)
-        #expect(unsupported.message == "台灯 操作未生效")
-
-        let unconfigured = try await failureToast(
-            for: HomeProviderError.backendNotConfigured(.homeAssistant),
-            online: false
-        )
-        #expect(unconfigured.message == "台灯 操作未生效")
+    func localErrorOnOfflineDeviceIsNotOffline() {
+        for error: any Error in [MiotCommandError.unsupported("测试"), HomeProviderError.backendNotConfigured(.homeAssistant)] {
+            let message = ControlFailure.userMessage(for: error, deviceName: "台灯", isDeviceOnline: false, adjustment: false)
+            #expect(message == "台灯 操作未生效")
+        }
     }
 
-    @Test("A cancelled write shows no failure toast, even for an offline device")
+    @Test("A cancelled write shows no failure toast")
     func cancelledWriteIsSilent() async throws {
         for error: any Error & Sendable in [CancellationError(), URLError(.cancelled)] {
-            let store = try await makeStore(error: error, online: false)
+            let store = try await makeStore(error: error)
             let exits = store.manualWriteExits
             store.setLightEffect("lamp", effect: "Night")
             await waitUntil { store.manualWriteExits > exits }

@@ -82,10 +82,13 @@ struct HAHomeSnapshot {
         return stale
     }
 
+    private var stateCaptureEpochs: [String: ContinuousClock.Instant] = [:]
+
     mutating func receive(
         _ message: [String: JSONValue],
         isRefreshStatesResult: Bool = false,
-        typePrunePolicy: HATypePrunePolicy = .unpruned
+        typePrunePolicy: HATypePrunePolicy = .unpruned,
+        pollCapturedEpoch: ContinuousClock.Instant? = nil
     ) throws -> SynthesizedHome? {
         if message["type"]?.stringValue == "result", let id = message["id"]?.intValue {
             guard (1...4).contains(id) || isRefreshStatesResult else { return nil }
@@ -103,8 +106,18 @@ struct HAHomeSnapshot {
                 var nextStates: [String: HAEntityState] = [:]
                 for value in entries {
                     guard let state = Self.parseState(value) else { throw ReadError.invalidResponse }
+                    if let pollCapturedEpoch, let previousEpoch = stateCaptureEpochs[state.entityId], previousEpoch > pollCapturedEpoch {
+                        nextStates[state.entityId] = states[state.entityId]
+                        continue
+                    }
                     nextStates[state.entityId] = state
+                    stateCaptureEpochs[state.entityId] = pollCapturedEpoch
                     if let timestamp = DoorbellRing.timestamp(state) { doorbellTimestamps[state.entityId] = timestamp }
+                }
+                if let pollCapturedEpoch {
+                    for (entityId, epoch) in stateCaptureEpochs where epoch > pollCapturedEpoch {
+                        nextStates[entityId] = states[entityId]
+                    }
                 }
                 states = nextStates
             default:
@@ -118,12 +131,17 @@ struct HAHomeSnapshot {
         } else {
             return nil
         }
-        return synthesizeCurrent(typePrunePolicy: typePrunePolicy)
+        guard var home = synthesizeCurrent(typePrunePolicy: typePrunePolicy) else { return nil }
+        if let pollCapturedEpoch {
+            home.devicePollCapturedEpochs = home.devicePollCapturedEpochs.mapValues { min($0, pollCapturedEpoch) }
+        }
+        return home
     }
 
     mutating func ingestStateChangedEvent(
         _ message: [String: JSONValue],
-        typePrunePolicy: HATypePrunePolicy = .unpruned
+        typePrunePolicy: HATypePrunePolicy = .unpruned,
+        capturedEpoch: ContinuousClock.Instant? = nil
     ) -> Bool {
         guard message["type"]?.stringValue == "event",
               case .object(let event) = message["event"],
@@ -140,6 +158,7 @@ struct HAHomeSnapshot {
                     rings.append(DoorbellRing(deviceId: deviceId, entityId: state.entityId, firedAt: timestamp))
                 }
             }
+            stateCaptureEpochs[state.entityId] = capturedEpoch
             let previous = states.updateValue(state, forKey: state.entityId)
             guard pendingInitialResults.isEmpty else { return false }
             if state.entityId.hasPrefix("event.") {
@@ -165,6 +184,7 @@ struct HAHomeSnapshot {
                   states.removeValue(forKey: entityId) != nil else {
                 return false
             }
+            stateCaptureEpochs[entityId] = capturedEpoch
             doorbellTimestamps.removeValue(forKey: entityId)
             guard pendingInitialResults.isEmpty else { return false }
             if appliedPrunePolicy == typePrunePolicy, !consumedEntityIds.contains(entityId) {
@@ -194,9 +214,11 @@ struct HAHomeSnapshot {
         for index in home.devices.indices {
             let device = home.devices[index]
             let rows = cardEntities[device.id] ?? []
-            for entityId in DeviceSynthesizer.haCardReadKeys(
+            let readKeys = DeviceSynthesizer.haCardReadKeys(
                 for: device, entities: rows, facets: home.deviceFacets[device.id] ?? []
-            ) {
+            )
+            home.devicePollCapturedEpochs[device.id] = readKeys.compactMap { stateCaptureEpochs[$0] }.max()
+            for entityId in readKeys {
                 cardCategoriesByEntityId[entityId, default: []].insert(device.capabilityCategoryID)
             }
             home.devices[index].providerSafetySignals = DeviceSynthesizer.haSafetySignals(
