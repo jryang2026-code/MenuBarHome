@@ -22,6 +22,18 @@ export function rememberMiIODeviceToken(record: MiDeviceRecord, raw: unknown): v
   if (/^[\da-f]{32}$/i.test(token)) recordTokens.set(record, token);
 }
 
+/**
+ * Product-id (`pid` / `connect_type`) classes eligible for direct LAN miIO UDP 54321:
+ * Wi-Fi (0), Wi-Fi+BLE (8), Combo/Matter-WiFi (12), Wi-Fi+BLE-Mesh (23).
+ * Non-Wi-Fi subdevices (Zigbee, BLE, Mesh, IR, virtual/group) are excluded.
+ */
+export const LAN_ELIGIBLE_PIDS: ReadonlySet<number> = new Set([0, 8, 12, 23]);
+
+/** Returns `true` when `pid` is absent (deferring to IP/token checks) or in `LAN_ELIGIBLE_PIDS`. */
+export function isLANEligiblePID(pid: number | undefined): boolean {
+  return pid === undefined || LAN_ELIGIBLE_PIDS.has(pid);
+}
+
 function isPrivateIPv4(ip: string): boolean {
   const [a, b = 0] = ip.split(".").map(Number);
   return a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168);
@@ -54,6 +66,7 @@ export class LocalMiIO {
       const token = recordTokens.get(device);
       if (device.isOnline && !device.isShared && !shared.has(device.did) &&
           !device.splitParentDid && !device.parentDid && !device.did.startsWith("group.") &&
+          isLANEligiblePID(device.pid) &&
           ip && isPrivateIPv4(ip) && token) {
         this.#endpoints.set(device.did, { did: device.did, ip, token });
       }

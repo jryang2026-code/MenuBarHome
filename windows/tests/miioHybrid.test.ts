@@ -115,11 +115,17 @@ describe("Xiaomi LAN-first routing", () => {
     for (const fields of [
       { token: "" }, { localip: "8.8.8.8" }, { isOnline: false }, { share_flag: 1 },
       { extra: { split: { parentId: "1002", moduleId: 2 } } },
+      { pid: 3 }, { pid: 6 }, { pid: 15 }, { pid: 16 }, { pid: "16" }, { pid: 17 },
     ]) {
       const { client, lan } = fixture(() => assert.fail(), [record(fields)]);
       await client.getProps([power]);
       await client.action(action);
       assert.deepEqual(lan, []);
+    }
+    for (const pid of [0, 8, 12, 23, "8", "23"]) {
+      const { client, lan } = fixture(() => ({ values: [{ ...power, value: true }] }), [record({ pid })]);
+      assert.deepEqual(await client.getProps([power]), new Map([["1001.2.1", true]]));
+      assert.deepEqual(lan, ["miio_get_props"]);
     }
     const { client, lan } = fixture(() => assert.fail(), [record()],
       [{ id: "shared", name: "shared", dids: [power.did], isSharedHome: true }]);

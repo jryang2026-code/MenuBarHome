@@ -1535,7 +1535,7 @@ public actor MiCloudProvider: HomeProvider {
             let did = record.miotDid
             let ip = record.localIp?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             let token = record.token?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            guard !token.isEmpty else {
+            guard !token.isEmpty, LocalMiIOClient.isLANEligiblePID(record.pid) else {
                 lanBindingsByDid.removeValue(forKey: did); lanHealthByDid.removeValue(forKey: did); continue
             }
             let seeded = seededDiscoveredIPs[did]?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1559,6 +1559,7 @@ public actor MiCloudProvider: HomeProvider {
               !sharedHomeDids.contains(record.miotDid),
               record.splitParentDid == nil,
               !record.did.hasPrefix("group."),
+              LocalMiIOClient.isLANEligiblePID(record.pid),
               let ip = (binding?.effectiveIP ?? record.localIp)?.trimmingCharacters(in: .whitespacesAndNewlines),
               LocalMiIOClient.isPrivateRFC1918IPv4(ip),
               let token = (binding?.token ?? record.token)?.trimmingCharacters(in: .whitespacesAndNewlines),
