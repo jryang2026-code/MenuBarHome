@@ -1254,7 +1254,9 @@ private struct CameraStillWall: View {
     let store: HomeStore
 
     private var cameras: [SmartDevice] {
-        store.devices.filter { if case .camera = $0.kind { return true }; return false }.prefix(4).map { $0 }
+        let allCameras = store.devices.filter { if case .camera = $0.kind { return true }; return false }
+        let withEvents = allCameras.filter { store.cameraEventStore.latestEvent(for: $0.id) != nil }
+        return Array((withEvents + allCameras.filter { camera in !withEvents.contains(where: { $0.id == camera.id }) }).prefix(4))
     }
 
     var body: some View {
