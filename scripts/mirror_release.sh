@@ -23,6 +23,8 @@
 #   GITEE_MIRROR_REPO / GITCODE_MIRROR_REPO  owner/repo on the mirror (default jryang2026-code/MenuBarHome)
 #   MIRROR_MAX_ASSET_BYTES             per-file ceiling; larger files are reported and skipped (default 100 MiB)
 #   MIRROR_BUDGET_SECONDS              total time budget for this run (default 600)
+#   MIRROR_TARGET_BRANCH               branch the mirror creates a missing tag on (default: the
+#                                      mirror repository's own default branch)
 #   MIRROR_API_BASE                    API root override, used only by scripts/test_mirror_release.sh
 #   GITHUB_STEP_SUMMARY                written to when the runner sets it
 set -uo pipefail
@@ -109,11 +111,8 @@ api_get() {
     curl -sS --max-time "$(curl_timeout)" "${api_base}${path}${join}access_token=${token}"
 }
 
-# The asset names the mirror already carries for this tag; empty output when the release is absent.
-release_assets_json() {
-    local tag_path
-    tag_path="$(python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$tag")"
-    api_get "/repos/${repo}/releases/tags/${tag_path}"
+quote_component() {
+    python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$1"
 }
 
 asset_names() {
@@ -122,7 +121,7 @@ try:
     data = json.load(sys.stdin)
 except Exception:
     data = {}
-for asset in (data.get("assets") or []):
+for asset in ((data or {}).get("assets") or []):
     name = asset.get("name") or ""
     if name:
         print(name)'
@@ -134,32 +133,73 @@ try:
     data = json.load(sys.stdin)
 except Exception:
     data = {}
-print(data.get("id") or "")'
+print((data or {}).get("id") or "")'
+}
+
+# "present" / "missing" / "error" for a lookup body.
+#
+# Gitee answers a tag without a release with HTTP 200 and a JSON `null`, so the status code alone is
+# not enough: a null body, an empty body and an object without a tag_name all mean "create it".
+release_state() {
+    python3 -c 'import json,sys
+raw = sys.stdin.read().strip()
+if raw == "":
+    print("missing")
+    raise SystemExit
+try:
+    data = json.loads(raw)
+except Exception:
+    print("error")
+    raise SystemExit
+if data is None:
+    print("missing")
+elif isinstance(data, dict) and data.get("tag_name"):
+    print("present")
+else:
+    print("missing")'
+}
+
+# The branch a missing tag is created on: the mirror repository's own default branch, because a
+# release-only mirror (no source pushed) may use master, trunk or anything else.
+mirror_branch() {
+    if [ -n "${MIRROR_TARGET_BRANCH:-}" ]; then
+        printf '%s\n' "$MIRROR_TARGET_BRANCH"
+        return
+    fi
+    local branch
+    branch="$(api_get "/repos/${repo}" 2>/dev/null | python3 -c 'import json,sys
+try:
+    print((json.load(sys.stdin) or {}).get("default_branch") or "")
+except Exception:
+    print("")')"
+    printf '%s\n' "${branch:-main}"
 }
 
 create_release() {
     local body="大陆镜像：与 GitHub Release ${tag} 同一批安装包（未重新编译）。更新清单与签名与 GitHub 版本一致。"
+    local branch
+    branch="$(mirror_branch)"
     case "$target" in
         gitee)
             curl -sS --max-time "$(curl_timeout)" -X POST \
                 --data-urlencode "access_token=${token}" \
                 --data-urlencode "tag_name=${tag}" \
                 --data-urlencode "name=MenuBarHome ${version}" \
-                --data-urlencode "target_commitish=main" \
+                --data-urlencode "target_commitish=${branch}" \
                 --data-urlencode "prerelease=false" \
                 --data-urlencode "body=${body}" \
                 "${api_base}/repos/${repo}/releases"
             ;;
         gitcode)
             # GitCode documents a JSON body, a query token, and a release keyed by tag — no id.
-            python3 - "$tag" "$version" "$body" > "$scratch/release.json" <<'PY'
+            python3 - "$tag" "$version" "$body" "$branch" > "$scratch/release.json" <<'PY'
 import json, sys
-tag, version, body = sys.argv[1], sys.argv[2], sys.argv[3]
+tag, version, body, branch = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 json.dump({
     "tag_name": tag,
     "name": f"MenuBarHome {version}",
     "body": body,
-    "target_commitish": "main",
+    "target_commitish": branch,
     "prerelease": False,
 }, sys.stdout, ensure_ascii=False)
 PY
@@ -223,13 +263,17 @@ probe="$(curl -sS --max-time "$(curl_timeout)" -w '\n%{http_code}' \
     "${api_base}/repos/${repo}/releases/tags/${tag_path}?access_token=${token}" 2>/dev/null || true)"
 probe_code="${probe##*$'\n'}"
 probe_body="${probe%$'\n'*}"
+probe_state="$(printf '%s' "$probe_body" | release_state)"
+if [ "$probe_code" = "404" ]; then
+    probe_state="missing"
+fi
 id="$(printf '%s' "$probe_body" | release_id)"
 names=""
 
-if [ "$probe_code" = "200" ]; then
+if [ "$probe_code" = "200" ] && [ "$probe_state" = "present" ]; then
     names="$(printf '%s' "$probe_body" | asset_names)"
     say "✅ ${target} 已有 ${tag} 的 release（${id:-tag 寻址}）"
-elif [ "$probe_code" = "404" ]; then
+elif [ "$probe_state" = "missing" ]; then
     say "ℹ️  ${target} 上没有 ${tag}，创建 release"
     created="$(create_release)"
     id="$(printf '%s' "$created" | release_id)"

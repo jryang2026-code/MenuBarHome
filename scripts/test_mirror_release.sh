@@ -76,8 +76,8 @@ def tag_from_releases_path(path):
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
-    def _reply(self, code, payload=None):
-        body = b"" if payload is None else json.dumps(payload).encode()
+    def _reply(self, code, payload=None, raw=None):
+        body = raw if raw is not None else (b"" if payload is None else json.dumps(payload).encode())
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
@@ -120,8 +120,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
             tag = tag_from_releases_path(path)
             if tag in state["releases"]:
                 self._reply(200, self._release_payload(tag))
+            elif tag == "v6.0.0":
+                # Gitee answers a tag without a release with HTTP 200 and a JSON null.
+                self._reply(200, raw=b"null")
             else:
                 self._reply(404, {"message": "not found"})
+            return
+        if path.strip("/") == "repos/owner/repo":
+            self._reply(200, {"full_name": "owner/repo", "default_branch": "trunk"})
             return
         self._reply(404, {"message": "not found"})
 
@@ -182,6 +188,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     return
                 state["releases"][tag] = {"id": state["next_id"], "assets": []}
                 state["next_id"] += 1
+                log(f"CREATE-BRANCH {payload.get('target_commitish') or ''}")
                 self._reply(200, self._release_payload(tag))
                 return
             if content_type == "application/x-www-form-urlencoded":
@@ -190,6 +197,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 tag = (fields.get("tag_name") or [""])[0]
                 state["releases"][tag] = {"id": state["next_id"], "assets": []}
                 state["next_id"] += 1
+                log(f"CREATE-BRANCH {(fields.get('target_commitish') or [''])[0]}")
                 payload = self._release_payload(tag)
                 payload["id"] = state["releases"][tag]["id"]
                 self._reply(201, payload)
@@ -273,7 +281,17 @@ check "GitCode 首跑按 tag 申请上传地址" test "$(count_in "$work/request
 check "GitCode 首跑 PUT 两个附件" test "$(count_in "$work/requests.log" 'PUT /upload/v2.0.0/')" = "2"
 check "GitCode 首跑不伪装成 Gitee 附件上传" test "$(count_in "$work/requests.log" 'attach_files')" = "0"
 
-# 5. A rejecting mirror: every asset is attempted, each failure is named, exit is non-zero.
+# 5. Gitee answers a missing tag with HTTP 200 + JSON null: that still means "create it".
+rm -f "$work/requests.log"
+GITEE_TOKEN="t" GITEE_MIRROR_REPO="owner/repo" bash "$SCRIPT" gitee v6.0.0 6.0.0 "$work/assets" \
+    > "$work/nullbody.log" 2>&1
+check "Gitee 的 null 响应按缺 release 处理并建出来" grep -q 'gitee release 已创建' "$work/nullbody.log"
+check "Gitee 的 null 响应之后照常上传两个附件" test "$(count_in "$work/requests.log" 'POST /repos/owner/repo/releases/[0-9]*/attach_files')" = "2"
+
+# 6. A release-only mirror may not have `main`; the tag is created on its own default branch.
+check "创建 release 用镜像仓库的默认分支（trunk）" grep -q 'CREATE-BRANCH trunk' "$work/requests.log"
+
+# 7. A rejecting mirror: every asset is attempted, each failure is named, exit is non-zero.
 curl -sS -o /dev/null -X POST "${MIRROR_API_BASE}/__fail_uploads" 2>/dev/null || true
 rm -f "$work/requests.log"
 GITCODE_TOKEN="t" GITCODE_MIRROR_REPO="owner/repo" bash "$SCRIPT" gitcode v3.0.0 3.0.0 "$work/assets" \
@@ -282,14 +300,14 @@ check "上传被拒时退出码非零（交给 continue-on-error 收成警告）
 check "上传被拒时逐个附件报告失败" test "$(count_in "$work/fail.log" '失败（HTTP')" = "2"
 check "上传被拒时点名 HTTP 状态" grep -q 'HTTP 500' "$work/fail.log"
 
-# 6. An asset over the ceiling is skipped with a warning, and that alone is not a failure.
+# 8. An asset over the ceiling is skipped with a warning, and that alone is not a failure.
 rm -f "$work/requests.log"
 GITCODE_TOKEN="t" GITCODE_MIRROR_REPO="owner/repo" MIRROR_MAX_ASSET_BYTES=1 \
     bash "$SCRIPT" gitcode v4.0.0 4.0.0 "$work/assets" > "$work/oversize.log" 2>&1
 check "超上限附件被跳过并写明原因" grep -q '超过单文件上限' "$work/oversize.log"
 check "仅超上限时退出码 0" test "$?" = "0"
 
-# 7. The time budget stops the run instead of letting a stall hit the job timeout.
+# 9. The time budget stops the run instead of letting a stall hit the job timeout.
 rm -f "$work/requests.log"
 GITCODE_TOKEN="t" GITCODE_MIRROR_REPO="owner/repo" MIRROR_BUDGET_SECONDS=0 \
     bash "$SCRIPT" gitcode v5.0.0 5.0.0 "$work/assets" > "$work/budget.log" 2>&1

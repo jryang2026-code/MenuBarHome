@@ -17,6 +17,7 @@
 | | Gitee | GitCode |
 | --- | --- | --- |
 | 建 release | `POST /releases`，表单体，响应带 `id` | `POST /releases`，**JSON** 体，响应**没有** release `id` |
+| 缺 tag 时落在哪个分支 | `target_commitish` 取**镜像仓自己的默认分支**（`GET /repos/{repo}` → `default_branch`），不是假设 `main` | 同上 |
 | 寻址 | `releases/{id}/attach_files` | `releases/{tag}/…`，只用 tag |
 | 上传 | multipart `POST attach_files` | `GET releases/{tag}/upload_url` 拿预签名地址 → `PUT` 文件（带上签名要求的 header） |
 
@@ -82,6 +83,8 @@ GITEE_TOKEN=*** GITEE_MIRROR_REPO=owner/repo MIRROR_BUDGET_SECONDS=300 \
 - **HTTP 404 且日志里是创建 release 那一步**：镜像仓库不存在，或 `*_MIRROR_REPO` 写错（必须是 `owner/repo`）。
 - **上传被跳过**：单文件超过 `MIRROR_MAX_ASSET_BYTES`（默认 100 MiB），镜像站点的单附件上限通常就在这里。
 - **「时间预算用尽」**：300 秒内没传完，重跑一次（release 与已传附件会被复用）或调大 `MIRROR_BUDGET_SECONDS`（同时确认 job 的 `timeout-minutes` 够）。
+- **建 release 报分支不存在**：release-only 镜像仓没有 `main` 时，脚本用仓库的 `default_branch` 建 tag；仍要指定就设 `MIRROR_TARGET_BRANCH=<分支或 commit SHA>`（环境变量，不需要新 secret）。
+- **Gitee 返回 200 但体是 `null`**：这是「这个 tag 还没有 release」的另一种说法，脚本按缺 release 处理并创建；自检里有一条专门钉这个分支。
 - **想临时停掉某个镜像**：删掉对应 secret 即可，下一次发布该步骤自动跳过。
 
 ## 安全边界
