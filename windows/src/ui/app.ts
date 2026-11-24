@@ -181,6 +181,13 @@ import {
 } from "./panelSplitTiles.js";
 
 import { SCHEDULED_COMMANDS_STORAGE_KEY, ScheduledCommandStore, isScheduledCommandsEnabled } from "../core/scheduledCommands.js";
+import {
+  CameraEventStore,
+  StillWallCaptureThrottler,
+  createTauriCameraEventPersistence,
+  selectStillWallCameras,
+  type CameraStillWallRenderState,
+} from "../core/cameraEventStore.js";
 import { scheduledCommandIdentity, setScheduledCommandsRunning } from "./scheduledCommands.js";
 
 export { undoBannerMs, undoDeviceCount } from "./undoTracker.js";
@@ -230,6 +237,8 @@ export class MenuMijiaWindowsApp {
     this.settings.miCloudRegion,
   );
   public sensorHistoryUi: SensorHistoryUiState = createSensorHistoryUiState();
+  public readonly cameraEventStore: CameraEventStore;
+  public readonly stillWallThrottler: StillWallCaptureThrottler;
   public activityCenter: HostActivityCenter | null = null;
   public activityWindowLifecycleAbort: AbortController | null = null;
   public miAccountsStore: MiAccountsStore | null = null;
@@ -644,6 +653,15 @@ export class MenuMijiaWindowsApp {
       this.settings.cachedModelTypes,
     );
     this.cameraLive = new CameraLiveController(this);
+    this.cameraEventStore = new CameraEventStore({
+      persistence: createTauriCameraEventPersistence(),
+    });
+    this.stillWallThrottler = new StillWallCaptureThrottler({
+      isLiveActive: () => this.cameraLive.activeLiveCameraId !== null,
+    });
+    void this.cameraEventStore.load().then((loaded) => {
+      if (loaded.length > 0) this.queueBackgroundRender();
+    });
     const initialSelection = resolveHostMiSelectionState(this);
     if (initialSelection.mode !== "freshInstall") {
       this.cameraLive.setCameraCategoryEnabled(initialSelection.selection.enabledCategories.includes("camera"));
@@ -2180,6 +2198,48 @@ export class MenuMijiaWindowsApp {
     return renderRoomBrowseMenuHtml(gridModel, this.isRoomBrowseMenuOpen, (v) => this.escapeHtml(v));
   }
 
+  public cameraStillWallCameras(limit = 4): SmartDevice[] {
+    return selectStillWallCameras(
+      this.presentationDevices,
+      (id) => this.cameraEventStore.latestEvent(id) !== null,
+      limit,
+    );
+  }
+
+  public cameraStillWallState(): CameraStillWallRenderState | null {
+    const cameras = this.cameraStillWallCameras();
+    if (!cameras.some((camera) => this.cameraEventStore.latestEvent(camera.id) !== null)) {
+      return null;
+    }
+    return {
+      tiles: cameras.map((camera) => {
+        const event = this.cameraEventStore.latestEvent(camera.id);
+        let snapshotDataUrl = event ? this.cameraEventStore.snapshotDataUrl(event) : null;
+        if (event && event.snapshotFile && !snapshotDataUrl) {
+          void this.cameraEventStore.hydrateSnapshot(event).then((loaded) => {
+            if (loaded) this.queueBackgroundRender();
+          });
+        }
+        return {
+          id: camera.id,
+          name: camera.name,
+          isOnline: camera.isOnline,
+          snapshotDataUrl,
+          hasEvent: event !== null,
+        };
+      }),
+    };
+  }
+
+  public onCameraFrameCaptured(cameraId: string | null, jpegBase64: string): void {
+    if (!cameraId || !jpegBase64) return;
+    const latest = this.cameraEventStore.latestEvent(cameraId);
+    if (!latest || latest.snapshotFile !== null) return;
+    if (this.cameraEventStore.attachSnapshot(latest.id, jpegBase64)) {
+      this.queueBackgroundRender();
+    }
+  }
+
   public renderDeviceTile(dev: SmartDevice, span: number, index: number): string {
     if (this.sensorHistoryUi.lastRecordedDevicesRef !== this.devices) {
       syncSensorHistoryHost(this);
@@ -2206,6 +2266,7 @@ export class MenuMijiaWindowsApp {
       speakerDrawerState: getSpeakerDrawerItemState(this, dev.id),
       energyScope: energyScopeForHost(this),
       sensorHistoryUi: this.sensorHistoryUi,
+      cameraStillWall: dev.kind.kind === "camera" ? this.cameraStillWallState() : null,
       panelTheme: this.settings.panelTheme,
       isCompactGridMode: this.settings.isCompactGridMode,
       escapeHtml: (v) => this.escapeHtml(v),
