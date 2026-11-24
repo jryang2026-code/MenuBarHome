@@ -239,6 +239,9 @@ public actor MiCloudProvider: HomeProvider {
     public func shutdown() async {
         guard !isShutDown else { return }
         isShutDown = true
+        for task in channelWriteTasks.values { task.cancel() }
+        for entry in pendingChannelWrites.values.joined() { entry.reply.resume(throwing: MiIOError.shutDown) }
+        pendingChannelWrites.removeAll()
         pendingLANRetry = nil
         pendingRefreshAfterPoll = false
         loopTask?.cancel()
@@ -2011,6 +2014,154 @@ public actor MiCloudProvider: HomeProvider {
         return ((try? MiotCommandMapper.map(command, spec: spec)) != nil, confirmed)
     }
 
+    @TaskLocal static var channelWriteStillAllowed: (@Sendable () async -> Bool)?
+
+    private struct ChannelWrite {
+        let id: UUID
+        let command: DeviceCommand
+        let property: MiotPropWrite
+        let reportCloudWriteDenial: Bool
+        let stillAllowed: (@Sendable () async -> Bool)?
+        let reply: CheckedContinuation<Void, any Error>
+    }
+
+    private var pendingChannelWrites: [String: [ChannelWrite]] = [:]
+    private var channelWriteTasks: [String: Task<Void, Never>] = [:]
+    var channelWriteSleep: @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
+
+    func setChannelWriteSleepForTesting(_ sleep: @escaping @Sendable (Duration) async throws -> Void) {
+        channelWriteSleep = sleep
+    }
+
+    func pendingChannelWriteCountForTesting(did: String) -> Int { pendingChannelWrites[did]?.count ?? 0 }
+
+    private func enqueueChannelWrite(
+        _ command: DeviceCommand, property: MiotPropWrite, reportCloudWriteDenial: Bool
+    ) async throws {
+        let did = property.did
+        let id = UUID()
+        try await withTaskCancellationHandler {
+            try Task.checkCancellation()
+            try await withCheckedThrowingContinuation { continuation in
+                let entry = ChannelWrite(
+                    id: id, command: command, property: property, reportCloudWriteDenial: reportCloudWriteDenial,
+                    stillAllowed: Self.channelWriteStillAllowed, reply: continuation
+                )
+                if let earlier = pendingChannelWrites[did]?.first(where: {
+                    $0.property.siid == property.siid && $0.property.piid == property.piid
+                }) {
+                    cancelChannelWrite(did: did, id: earlier.id)
+                }
+                pendingChannelWrites[did, default: []].append(entry)
+                if channelWriteTasks[did] == nil {
+                    channelWriteTasks[did] = Task { [weak self] in
+                        await self?.drainChannelWrites(did: did)
+                    }
+                }
+            }
+        } onCancel: {
+            Task { await self.cancelChannelWrite(did: did, id: id) }
+        }
+    }
+
+    private func cancelChannelWrite(did: String, id: UUID) {
+        guard let index = pendingChannelWrites[did]?.firstIndex(where: { $0.id == id }),
+              let entry = pendingChannelWrites[did]?.remove(at: index) else { return }
+        entry.reply.resume(throwing: CancellationError())
+    }
+
+    private func drainChannelWrites(did: String) async {
+        defer {
+            channelWriteTasks.removeValue(forKey: did)
+            pendingChannelWrites.removeValue(forKey: did)
+        }
+        while !isShutDown, let pending = pendingChannelWrites[did], !pending.isEmpty {
+            try? await channelWriteSleep(.milliseconds(100))
+            guard !isShutDown else { return }
+            let window = pendingChannelWrites[did] ?? []
+            for entry in window where await entry.stillAllowed?() == false {
+                cancelChannelWrite(did: did, id: entry.id)
+            }
+            let windowIDs = Set(window.map(\.id))
+            let batch = pendingChannelWrites[did, default: []].filter { windowIDs.contains($0.id) }
+            pendingChannelWrites[did]?.removeAll { windowIDs.contains($0.id) }
+            guard !batch.isEmpty else { continue }
+            do {
+                if batch.count == 1, let entry = batch.first {
+                    try await execute(entry.command, reportCloudWriteDenial: entry.reportCloudWriteDenial, allowChannelBatch: false)
+                    entry.reply.resume()
+                } else {
+                    let (outcomes, viaCloud) = try await sendChannelBatch(batch, did: did)
+                    for (index, entry) in batch.enumerated() {
+                        switch outcomes[index] {
+                        case .success:
+                            entry.reply.resume()
+                        case .failure(let error):
+                            if viaCloud, entry.reportCloudWriteDenial, Self.isExplicitWriteDenial(error) {
+                                entry.reply.resume(throwing: CloudWriteDenied(error: error))
+                            } else {
+                                entry.reply.resume(throwing: error)
+                            }
+                        }
+                    }
+                }
+            } catch {
+                for entry in batch { entry.reply.resume(throwing: error) }
+            }
+        }
+    }
+
+    private static func isExplicitWriteDenial(_ error: MiCloudError) -> Bool {
+        guard case .deviceError(let code, _) = error else { return false }
+        return [-704010000, -704012904, -704030023].contains(code)
+    }
+
+    private func sendChannelBatch(
+        _ batch: [ChannelWrite], did: String
+    ) async throws -> ([Result<Void, MiCloudError>], viaCloud: Bool) {
+        let writes = batch.map(\.property)
+        guard !isShutDown, let api else { throw MiCloudError.notLoggedIn }
+        guard let record = commandRecord(for: did), let spec = specsByModel[record.model],
+              !MiotSynthesizer.isMainsBreaker(spec),
+              writes.allSatisfy({ Self.channelPowerProperty($0, in: spec) }) else {
+            throw MiotCommandError.unsupported(did)
+        }
+        defer { scheduleFollowUpPoll(for: record) }
+        if !isLocalNetworkDenied, let localClient, let endpoint = lanEndpoint(for: record) {
+            do {
+                let result = try await localClient.setPropVerdicts(writes, endpoint: endpoint)
+                let rtt = await localClient.lastRoundTripMs(for: record.miotDid)
+                recordLANSuccess(did: record.miotDid, rttMs: rtt)
+                return (result, false)
+            } catch let error as MiIOError where error == .shutDown {
+                throw error
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch let error as MiCloudError {
+                throw error
+            } catch {
+                recordLANFailure(did: record.miotDid, error: error)
+            }
+            for entry in batch where await entry.stillAllowed?() == false {
+                throw CancellationError()
+            }
+            guard !isShutDown else { throw MiIOError.shutDown }
+        }
+        do {
+            let result = try await performCloudCall { try await api.setPropVerdicts(writes) }
+            guard result.count == writes.count else { throw MiCloudError.badResponse("Incomplete channel write verdicts") }
+            return (result, true)
+        } catch MiCloudError.sessionExpired {
+            report(MiCloudError.sessionExpired)
+            throw MiCloudError.sessionExpired
+        }
+    }
+
+    private static func channelPowerProperty(_ write: MiotPropWrite, in spec: MiotDeviceSpec) -> Bool {
+        guard let service = spec.service(iid: write.siid), ["switch", "outlet"].contains(service.shortName) else { return false }
+        return service.properties.contains { $0.iid == write.piid && $0.shortName == "on" && $0.isWritable }
+    }
+
     struct CloudWriteDenied: Error {
         let error: MiCloudError
     }
@@ -2019,7 +2170,7 @@ public actor MiCloudProvider: HomeProvider {
         try await execute(command, reportCloudWriteDenial: false)
     }
 
-    func execute(_ command: DeviceCommand, reportCloudWriteDenial: Bool) async throws {
+    func execute(_ command: DeviceCommand, reportCloudWriteDenial: Bool, allowChannelBatch: Bool = true) async throws {
         let entityId = command.targetEntityId
         if case .activateScene = command,
            let scope = MiCloudScene.accountID(for: entityId) {
@@ -2039,6 +2190,13 @@ public actor MiCloudProvider: HomeProvider {
             throw MiotCommandError.unsupported("设备规格未加载")
         }
         let write = try MiotCommandMapper.map(command, spec: spec)
+        if allowChannelBatch, case .setSwitch = command,
+           case .setProps(let writes) = write, writes.count == 1, let property = writes.first,
+           Self.channelPowerProperty(property, in: spec),
+           spec.services.filter({ ["switch", "outlet"].contains($0.shortName) }).count > 1 {
+            try await enqueueChannelWrite(command, property: property, reportCloudWriteDenial: reportCloudWriteDenial)
+            return
+        }
         var executedViaLAN = false
         if !isLocalNetworkDenied, let localClient, let endpoint = lanEndpoint(for: record) {
             do {

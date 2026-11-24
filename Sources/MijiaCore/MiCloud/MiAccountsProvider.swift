@@ -846,7 +846,7 @@ public actor MiAccountsProvider: HomeProvider {
         }
     }
 
-    private struct WriteCandidate {
+    private struct WriteCandidate: Sendable {
         let ownerId: String
         let session: MiSession
         let child: MiCloudProvider
@@ -951,7 +951,13 @@ public actor MiAccountsProvider: HomeProvider {
             }
             guard isWriteCandidateStillValid(candidate) else { continue }
             do {
-                try await candidate.child.execute(command, reportCloudWriteDenial: !confirmed)
+                let precedingGate = MiCloudProvider.channelWriteStillAllowed
+                try await MiCloudProvider.$channelWriteStillAllowed.withValue({ [weak self] in
+                    guard await precedingGate?() != false else { return false }
+                    return await self?.isWriteCandidateStillValid(candidate) == true
+                }) {
+                    try await candidate.child.execute(command, reportCloudWriteDenial: !confirmed)
+                }
                 return
             } catch let denial as MiCloudProvider.CloudWriteDenied {
                 if (lastFallbackError as? MiCloudError) != .sessionExpired {
