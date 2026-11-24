@@ -105,11 +105,10 @@ export function setCustomApplyCommand(
 
 export function getHostApplyCommand(
   host: MenuMijiaWindowsApp,
-): (command: DeviceCommand, readBackPower?: boolean) => Promise<boolean> {
+): (command: DeviceCommand, readBackPower?: boolean, userInitiated?: boolean) => Promise<boolean> {
   const custom = customApplyCommandByHost.get(host);
   if (!custom) {
-    return (command: DeviceCommand, readBackPower = false) =>
-      applyCommand(host, command, readBackPower);
+    return (command, readBackPower, userInitiated) => applyCommand(host, command, readBackPower, userInitiated);
   }
   return (command: DeviceCommand, readBackPower = false) => {
     const targetDeviceId = deviceOwningEntityId(
@@ -867,6 +866,7 @@ export async function applyCommand(
   host: MenuMijiaWindowsApp,
   command: DeviceCommand,
   readBackPower = false,
+  userInitiated = true,
 ): Promise<boolean> {
   const sourceRevision = host.sourceRevision;
   const homeRevision = host.homeRevision;
@@ -946,7 +946,7 @@ export async function applyCommand(
     if (effectiveMode === "homeAssistant") {
       command = homeAssistantCommand(command, host.devices, host.deviceFacets);
     }
-    const readPower = await dispatchCloudCommand(host, command, readBackPower, originalCommand.entityId);
+    const readPower = await dispatchCloudCommand(host, command, readBackPower, originalCommand.entityId, userInitiated);
     if (typeof readPower === "boolean") command = withReadPower(command, readPower);
   } catch (error) {
     if (sourceRevision !== host.sourceRevision) return false;
@@ -1222,8 +1222,9 @@ function kindOwnsEntity(kind: DeviceKind, entityId: string): boolean {
 async function dispatchCloudCommand(
   host: MenuMijiaWindowsApp,
   command: DeviceCommand,
-  readBackPower = false,
-  originalEntityId = command.entityId,
+  readBackPower: boolean,
+  originalEntityId: string,
+  userInitiated: boolean,
 ): Promise<boolean | null> {
   const sourceRevision = host.sourceRevision;
   const homeRevision = host.homeRevision;
@@ -1254,6 +1255,7 @@ async function dispatchCloudCommand(
   try {
     return await provider.execute(command, {
       readBackPower,
+      userInitiated,
       beforeSend,
       beforeFallback: async () => {
         if (await isWorkstationLockBlockingControl(host)) {

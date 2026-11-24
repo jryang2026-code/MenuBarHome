@@ -1609,7 +1609,7 @@ export class HomeAssistantClient {
     return (await this.snapshotWithPrune(null)).home;
   }
   /** One round of registries plus states, split by the host device-type selection (P3b-W). */
-  async snapshotWithPrune(prune: HaTypePruneOptions | null): Promise<HASynthesizedResult> {
+  async snapshotWithPrune(prune: HaTypePruneOptions | null, userInitiated = false): Promise<HASynthesizedResult> {
     const lease = acquireHaTransportLease(this.baseURL, { token: this.token });
     if (!lease) {
       throw new HaBlockedRequestError(haConnectionScope(this.baseURL) ?? "ha:");
@@ -1618,6 +1618,7 @@ export class HomeAssistantClient {
       const raw = await invokeHaWithLease<unknown>(lease, this.invoke, "ha_snapshot", {
         baseUrl: this.baseURL,
         token: this.token,
+        ...(userInitiated ? { userInitiated } : {}),
       });
       if (!lease.isCurrent()) {
         throw new HaBlockedRequestError(lease.scope ?? "ha:");
@@ -1628,7 +1629,7 @@ export class HomeAssistantClient {
       lease.release();
     }
   }
-  async execute(command: DeviceCommand): Promise<void> {
+  async execute(command: DeviceCommand, userInitiated = false): Promise<void> {
     const lease = acquireHaTransportLease(this.baseURL, { token: this.token });
     if (!lease) {
       throw new HaBlockedRequestError(haConnectionScope(this.baseURL) ?? "ha:");
@@ -1638,6 +1639,7 @@ export class HomeAssistantClient {
         baseUrl: this.baseURL,
         token: this.token,
         command: haServiceCall(command),
+        ...(userInitiated ? { userInitiated } : {}),
       });
       if (!lease.isCurrent()) {
         throw new HaBlockedRequestError(lease.scope ?? "ha:");

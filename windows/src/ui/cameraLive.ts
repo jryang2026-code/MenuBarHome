@@ -88,6 +88,73 @@ export function formatGo2RtcSupervisorDiagnostics(
   return lines;
 }
 
+/**
+ * Builds a go2rtc HTTP stream URL (`/api/stream.mp4`, `/api/stream.m3u8`, `/api/stream.mjpeg`).
+ * Muted previews add `&audio=0` so audio is not requested until the user explicitly opts in (#445, P1-2).
+ */
+export function buildGo2RtcStreamUrl(
+  origin: string,
+  streamName: string,
+  options?: { readonly format?: "mp4" | "m3u8" | "mjpeg"; readonly audioEnabled?: boolean },
+): string {
+  const cleanOrigin = origin.trim().replace(/\/+$/, "");
+  const format = options?.format ?? "m3u8";
+  const audioEnabled = Boolean(options?.audioEnabled);
+  const encodedSrc = encodeURIComponent(streamName);
+  switch (format) {
+    case "mp4":
+      return audioEnabled
+        ? `${cleanOrigin}/api/stream.mp4?src=${encodedSrc}&mp4=all`
+        : `${cleanOrigin}/api/stream.mp4?src=${encodedSrc}&mp4&audio=0`;
+    case "m3u8":
+      return audioEnabled
+        ? `${cleanOrigin}/api/stream.m3u8?src=${encodedSrc}`
+        : `${cleanOrigin}/api/stream.m3u8?src=${encodedSrc}&video=all&audio=0`;
+    case "mjpeg":
+      return `${cleanOrigin}/api/stream.mjpeg?src=${encodedSrc}`;
+  }
+}
+
+/**
+ * Applies the muted-preview (`audio=0`) vs listen-only (`audio` requested) parameter to a
+ * `xiaomi://` or go2rtc HTTP stream URL (`stream.mp4` / `stream.m3u8`).
+ */
+export function withGo2RtcAudioQuery(rawUrl: string, audioEnabled: boolean): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    return rawUrl;
+  }
+  const protocol = parsed.protocol.toLowerCase();
+  if (protocol === "xiaomi:") {
+    parsed.searchParams.set("audio", audioEnabled ? "1" : "0");
+    return parsed.toString();
+  }
+  if (protocol !== "http:" && protocol !== "https:") return rawUrl;
+  const path = parsed.pathname.toLowerCase();
+  if (!path.endsWith("/api/stream.mp4") && !path.endsWith("/api/stream.m3u8")) {
+    return rawUrl;
+  }
+  if (audioEnabled) {
+    if (parsed.searchParams.get("audio") === "0") {
+      parsed.searchParams.delete("audio");
+    }
+    if (path.endsWith("/api/stream.m3u8") && parsed.searchParams.get("video") === "all") {
+      parsed.searchParams.delete("video");
+    }
+    if (path.endsWith("/api/stream.mp4") && parsed.searchParams.get("mp4") === "") {
+      parsed.searchParams.set("mp4", "all");
+    }
+  } else {
+    if (path.endsWith("/api/stream.m3u8") && !parsed.searchParams.has("video")) {
+      parsed.searchParams.set("video", "all");
+    }
+    parsed.searchParams.set("audio", "0");
+  }
+  return parsed.toString();
+}
+
 export function normalizeCameraRotation(value: unknown): CameraRotationDeg {
   return value === 90 || value === 180 || value === 270 ? value : 0;
 }
@@ -270,6 +337,8 @@ export class CameraLiveController {
   }
   /** Only a raw `<video>` element can carry audio; it starts muted like the macOS HLS player (#29). */
   public liveCameraMuted = true;
+  /** Detected from active `<video>` metadata (`null` if unknown / unsupported by WebView). */
+  public liveCameraHasAudioTrack: boolean | null = null;
   public liveCameraQualityApplies = true;
   public liveCameraImgEl: HTMLImageElement | null = null;
   public liveCameraRawMediaEl: HTMLImageElement | HTMLVideoElement | null = null;
@@ -487,6 +556,7 @@ export class CameraLiveController {
     this.activeLiveCameraId = dev.id;
     this.activeLiveCameraSnapshot = dev;
     this.liveCameraMuted = true;
+    this.liveCameraHasAudioTrack = null;
     this.liveCameraQualityApplies = true;
     this.liveCameraHidden = false;
     this.clearCameraKeepAlive();
@@ -611,6 +681,7 @@ export class CameraLiveController {
     this.activeLiveCameraSnapshot = null;
     this.syncModalEscapeListener();
     this.liveCameraMuted = true;
+    this.liveCameraHasAudioTrack = null;
     this.liveCameraQualityApplies = true;
     this.liveCameraStreamURL = null;
     this.liveCameraLoading = false;
@@ -869,6 +940,7 @@ export class CameraLiveController {
     }
     this.liveCameraRawMediaEl?.remove();
     this.liveCameraRawMediaEl = null;
+    this.liveCameraHasAudioTrack = null;
     this.liveCameraMode = null;
     this.liveCameraMjpegSrc = null;
     if (this.activeLiveCameraId) {
@@ -935,8 +1007,40 @@ export class CameraLiveController {
     }
     this.liveCameraRawMediaEl = rawMedia;
     if (rawMedia.tagName === "VIDEO") {
+      const updateVideoOnly = (hasAudio: boolean) => {
+        if (this.liveCameraHasAudioTrack === hasAudio) return;
+        this.liveCameraHasAudioTrack = hasAudio;
+        if (!hasAudio) {
+          (rawMedia as HTMLVideoElement).muted = true;
+          this.liveCameraMuted = true;
+        }
+        this.host.render();
+      };
       rawMedia.addEventListener("loadedmetadata", () => {
-        if (this.liveCameraRawMediaEl === rawMedia) this.applyRotationToLiveMedia();
+        if (this.liveCameraRawMediaEl !== rawMedia) return;
+        this.applyRotationToLiveMedia();
+        const tracks = (rawMedia as HTMLVideoElement & { audioTracks?: { readonly length: number } }).audioTracks;
+        if (tracks !== undefined && typeof tracks.length === "number") {
+          updateVideoOnly(tracks.length > 0);
+        }
+      });
+      rawMedia.addEventListener("timeupdate", () => {
+        if (this.liveCameraRawMediaEl !== rawMedia) return;
+        const video = rawMedia as HTMLVideoElement & {
+          webkitAudioDecodedByteCount?: number;
+          webkitVideoDecodedByteCount?: number;
+        };
+        if (typeof video.webkitAudioDecodedByteCount !== "number") return;
+        if (video.webkitAudioDecodedByteCount > 0) {
+          updateVideoOnly(true);
+        } else if (
+          !video.muted &&
+          typeof video.webkitVideoDecodedByteCount === "number" &&
+          video.webkitVideoDecodedByteCount > 0 &&
+          video.currentTime >= 0.5
+        ) {
+          updateVideoOnly(false);
+        }
       });
       rawMedia.addEventListener("volumechange", () => {
         if (this.liveCameraRawMediaEl !== rawMedia) return;
@@ -1578,6 +1682,9 @@ export class CameraLiveController {
                 quality: this.cameraStreamQualities[dev.id] ?? DEFAULT_CAMERA_STREAM_QUALITY,
                 ...(channel > 0 ? { channel } : {}),
                 ...(subdid ? { subdid } : {}),
+                // Windows P2P renders MJPEG frames via go2rtc_jpeg_frame (`p2p-mjpeg`, video-only),
+                // so keep audio suppressed (`audio=0`) on the bridge stream.
+                audioEnabled: false,
               }, token);
               if (stale()) {
                 // The close path already tore down once; this late start re-created a

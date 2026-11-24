@@ -15,6 +15,7 @@ private actor MockCameraLifecycleProvider: HomeProvider {
     private var pauseFirstResolve = false
     private var hangStop = false
     private(set) var resolveCallOrder: [Int] = []
+    private(set) var resolveAudioFlags: [Bool] = []
     private(set) var stoppedDeviceIDs: [String] = []
     private var resolveCount = 0
     var streamToReturn: CameraStreamSource
@@ -41,6 +42,16 @@ private actor MockCameraLifecycleProvider: HomeProvider {
         quality: XiaomiCameraStreamQuality,
         channel: Int
     ) async throws -> CameraStreamSource {
+        try await resolveCameraStream(for: device, quality: quality, channel: channel, audioEnabled: false)
+    }
+
+    func resolveCameraStream(
+        for device: SmartDevice,
+        quality: XiaomiCameraStreamQuality,
+        channel: Int,
+        audioEnabled: Bool
+    ) async throws -> CameraStreamSource {
+        resolveAudioFlags.append(audioEnabled)
         resolveCount += 1
         let index = resolveCount
         resolveCallOrder.append(index)
@@ -542,6 +553,112 @@ struct CameraLiveLifecycleTests {
                 #expect(CameraStreamWaitCopy.mjpeg != CameraStreamWaitCopy.encryptedP2P)
             }
         }
+    }
+
+    @MainActor
+    @Test("Listen-only camera audio starts muted, detects HLS and go2rtc audio capability, requests audio on opt-in, and resets on close")
+    func listenOnlyAudioLifecycleForHLSAndGo2RTC() async throws {
+        _ = NSApplication.shared
+        let defaults = UserDefaults(suiteName: "CameraAudioLifecycle-\(UUID().uuidString)")!
+        let cam = Self.makeCameraDevice(id: "cam-audio-1")
+
+        // 1. HLS stream: starts muted, hides capability until tracks report, exposes audio or videoOnly accurately
+        let hlsURL = try #require(URL(string: "http://127.0.0.1:43123/live.m3u8"))
+        let hlsProvider = MockCameraLifecycleProvider(streamToReturn: .hls(hlsURL))
+        let hlsStore = HomeStore(provider: hlsProvider, defaults: defaults)
+        hlsStore.devices = [cam]
+        let controller = CameraLivePanelController()
+        controller.presentsActively = false
+        controller.frameDefaults = defaults
+        controller.install(with: hlsStore)
+        defer { controller.closePanel() }
+
+        controller.present(device: cam)
+        for _ in 0..<200 where controller.streamSource == nil { await Task.yield() }
+        #expect(controller.isMuted == true)
+        #expect(await hlsProvider.resolveAudioFlags == [false])
+        #expect(controller.currentAudioStatus == .hidden)
+
+        controller.updateActiveStreamAudioAvailable(true)
+        #expect(controller.currentAudioStatus == .audio(isMuted: true))
+        controller.toggleMute()
+        #expect(controller.isMuted == false)
+        #expect(controller.currentAudioStatus == .audio(isMuted: false))
+
+        controller.updateActiveStreamAudioAvailable(false)
+        #expect(controller.currentAudioStatus == .videoOnly)
+
+        controller.closePanel()
+        #expect(controller.isMuted == true)
+        #expect(controller.detectedAudioTrack == nil)
+        await hlsProvider.waitForStop(deviceID: cam.id)
+
+        // 2. go2rtc fMP4 muted preview (&audio=0) -> opt-in listen-only re-resolves with audioEnabled: true
+        let mutedMP4 = try #require(URL(string: "http://127.0.0.1:43123/api/stream.mp4?src=cam_raw_1&mp4&audio=0"))
+        let listenMP4 = try #require(URL(string: "http://127.0.0.1:43123/api/stream.mp4?src=cam_raw_1&mp4=all"))
+        let go2rtcProvider = MockCameraLifecycleProvider(streamToReturn: .liveMP4(mutedMP4, mjpegFallback: nil, ptz: nil))
+        let go2rtcStore = HomeStore(provider: go2rtcProvider, defaults: defaults)
+        go2rtcStore.devices = [cam]
+        controller.install(with: go2rtcStore)
+
+        controller.present(device: cam)
+        for _ in 0..<200 where controller.streamSource == nil { await Task.yield() }
+        #expect(controller.isMuted == true)
+        #expect(controller.currentAudioStatus == .audio(isMuted: true))
+        #expect(await go2rtcProvider.resolveAudioFlags == [false])
+
+        await go2rtcProvider.setStreamToReturn(.liveMP4(listenMP4, mjpegFallback: nil, ptz: nil))
+        controller.toggleMute()
+        for _ in 0..<200 where await go2rtcProvider.resolveAudioFlags.count < 2 { await Task.yield() }
+        #expect(controller.isMuted == false)
+        #expect(await go2rtcProvider.resolveAudioFlags == [false, true])
+
+        controller.updateActiveStreamAudioAvailable(true)
+        #expect(controller.currentAudioStatus == .audio(isMuted: false))
+
+        controller.closePanel()
+        #expect(controller.isMuted == true)
+
+        // 3. Custom URL containing audio=0 must not re-negotiate or expose fake opt-in when video-only
+        let customDefaults = UserDefaults(suiteName: "CameraCustomAudio-\(UUID().uuidString)")!
+        let customProvider = MockCameraLifecycleProvider(streamToReturn: .demo(deviceId: cam.id))
+        let customStore = HomeStore(provider: customProvider, defaults: customDefaults)
+        customStore.devices = [cam]
+        customStore.setCameraCustomStreamURL("http://192.168.1.10:1984/api/stream.mp4?src=cam&audio=0", for: cam.id)
+        controller.install(with: customStore)
+        controller.present(device: cam)
+        for _ in 0..<200 where controller.streamSource == nil { await Task.yield() }
+        #expect(controller.currentAudioStatus == .hidden)
+        controller.updateActiveStreamAudioAvailable(false)
+        #expect(controller.currentAudioStatus == .videoOnly)
+        controller.toggleMute()
+        #expect(await customProvider.resolveAudioFlags.isEmpty)
+        controller.closePanel()
+    }
+
+    @Test("Camera audio player and controller never touch microphone capture or input audio APIs")
+    func cameraAudioNeverOpensMicrophoneInput() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        for rel in [
+            "Sources/MenuBarMijiaApp/CameraLiveVideoPlayer.swift",
+            "Sources/MenuBarMijiaApp/CameraLivePanelController.swift",
+            "Sources/MenuBarMijiaApp/CameraLivePlayback.swift",
+        ] {
+            let text = try String(contentsOf: root.appendingPathComponent(rel), encoding: .utf8)
+            #expect(!text.contains("AVCapture"))
+            #expect(!text.contains("AVAudioEngine"))
+            #expect(!text.contains("AVAudioInputNode"))
+            #expect(!text.contains("AVAudioSession"))
+        }
+    }
+}
+
+private extension MockCameraLifecycleProvider {
+    func setStreamToReturn(_ source: CameraStreamSource) {
+        streamToReturn = source
     }
 }
 

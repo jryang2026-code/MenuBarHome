@@ -20,6 +20,7 @@ pub(crate) async fn start_xiaomi_camera_bridge(
     quality: Option<String>,
     channel: Option<u32>,
     subdid: Option<String>,
+    audio_enabled: Option<bool>,
 ) -> Result<String, String> {
     let _bridge_order = CAMERA_BRIDGE_LOCK.lock().await;
     let cam_ip = parse_camera_lan_ip(&local_ip)?;
@@ -61,6 +62,7 @@ pub(crate) async fn start_xiaomi_camera_bridge(
         uid.as_deref(),
         channel,
         subdid.as_deref(),
+        audio_enabled.unwrap_or(false),
     );
 
     put_stream(&http, &session, &raw_name, &xiaomi_url)

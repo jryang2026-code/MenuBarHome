@@ -419,7 +419,7 @@ extension ControlCenterPanel {
     }
 
     var showsGroupingBar: Bool {
-        showsGroupingSegments || listCutTitle != nil
+        showsGroupingSegments || listCutTitle != nil || hasQuickDrawerContent
     }
 
     /// The order the digit shortcuts and the card badges share: every card the column draws, in
@@ -486,6 +486,13 @@ extension ControlCenterPanel {
             }
             if !showsGroupingSegments {
                 Spacer(minLength: 0)
+            }
+            if hasQuickDrawerContent {
+                PanelQuickDrawerToggleButton(
+                    isExpanded: quickDrawerState.isExpanded,
+                    theme: .liquidGlass,
+                    action: toggleQuickDrawer
+                )
             }
         }
     }

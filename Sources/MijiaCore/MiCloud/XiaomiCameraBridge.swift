@@ -20,16 +20,44 @@ public protocol XiaomiCameraBridging: Sendable {
         uid: String?,
         quality: XiaomiCameraStreamQuality,
         channel: Int,
-        subdid: String?
+        subdid: String?,
+        audioEnabled: Bool
     ) async throws -> XiaomiCameraStreamEndpoints
 
     func stopBridge(did: String, subdid: String?) async
 
-    func probeRegisteredStream(candidates: [String]) async -> URL?
+    func probeRegisteredStream(candidates: [String], audioEnabled: Bool) async -> URL?
 }
 
 extension XiaomiCameraBridging {
-    public func probeRegisteredStream(candidates: [String]) async -> URL? { nil }
+    public func startBridge(
+        did: String,
+        model: String,
+        localIP: String,
+        clientPublic: String,
+        clientPrivate: String,
+        devicePublic: String,
+        sign: String,
+        vendor: String,
+        uid: String?,
+        quality: XiaomiCameraStreamQuality,
+        channel: Int,
+        subdid: String?
+    ) async throws -> XiaomiCameraStreamEndpoints {
+        try await startBridge(
+            did: did, model: model, localIP: localIP,
+            clientPublic: clientPublic, clientPrivate: clientPrivate,
+            devicePublic: devicePublic, sign: sign, vendor: vendor,
+            uid: uid, quality: quality, channel: channel, subdid: subdid,
+            audioEnabled: false
+        )
+    }
+
+    public func probeRegisteredStream(candidates: [String]) async -> URL? {
+        await probeRegisteredStream(candidates: candidates, audioEnabled: false)
+    }
+
+    public func probeRegisteredStream(candidates: [String], audioEnabled: Bool) async -> URL? { nil }
 }
 
 /// Local go2rtc URLs for one bridged camera (#97).
@@ -317,7 +345,8 @@ public actor XiaomiCameraBridge: XiaomiCameraBridging {
         uid: String?,
         quality: XiaomiCameraStreamQuality,
         channel: Int,
-        subdid: String?
+        subdid: String?,
+        audioEnabled: Bool
     ) async throws -> XiaomiCameraStreamEndpoints {
         let trimmedIP = localIP.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let ipv4 = Self.parsePrivateOrLoopbackIPv4(trimmedIP) else {
@@ -375,7 +404,8 @@ public actor XiaomiCameraBridge: XiaomiCameraBridging {
             quality: quality,
             uid: uid,
             channel: channel,
-            subdid: subdid
+            subdid: subdid,
+            audioEnabled: audioEnabled
         )
         let xiaomiURL = "xiaomi://127.0.0.1:\(relayPort)?\(query)"
 
@@ -389,9 +419,10 @@ public actor XiaomiCameraBridge: XiaomiCameraBridging {
         try await putStream(http: session, owner: owner.session, name: mjpegName, src: mjpegSource)
         try checkRuntime(epoch)
 
-        // `mp4` (empty) selects go2rtc's H.264 + H.265 fMP4 profile, so the camera's own
-        // bitstream reaches VideoToolbox without an FFmpeg transcode in between.
-        guard let mp4URL = Self.streamURL(session: owner.session, path: "/api/stream.mp4", query: "src=\(Self.urlEncode(rawName))&mp4"),
+        // Muted previews keep `&audio=0` so neither go2rtc nor the camera starts an audio track;
+        // explicit listen-only unmute switches to `&mp4=all` so AAC/Opus/G.711 audio passes through.
+        let mp4Query = Self.go2rtcStreamQuery(path: "/api/stream.mp4", streamName: rawName, audioEnabled: audioEnabled)
+        guard let mp4URL = Self.streamURL(session: owner.session, path: "/api/stream.mp4", query: mp4Query),
               let mjpegURL = Self.streamURL(session: owner.session, path: "/api/stream.mjpeg", query: "src=\(Self.urlEncode(mjpegName))") else {
             throw HomeProviderError.serviceCallFailed(500, "Invalid go2rtc stream URL")
         }
@@ -503,7 +534,7 @@ public actor XiaomiCameraBridge: XiaomiCameraBridging {
         return "cam_raw_\(cleanDid)\(suffix)"
     }
 
-    public func probeRegisteredStream(candidates: [String]) async -> URL? {
+    public func probeRegisteredStream(candidates: [String], audioEnabled: Bool) async -> URL? {
         guard let owner = activeOwner else { return nil }
         let lowered = candidates.map { $0.lowercased() }.filter { !$0.isEmpty }
         guard !lowered.isEmpty,
@@ -525,7 +556,8 @@ public actor XiaomiCameraBridge: XiaomiCameraBridging {
             return lowered.contains { lower == $0 || lower.contains($0) || $0.contains(lower) }
         }
         guard let src = matchedKey else { return nil }
-        return Self.streamURL(session: owner.session, path: "/api/stream.m3u8", query: "src=\(Self.urlEncode(src))")
+        let query = Self.go2rtcStreamQuery(path: "/api/stream.m3u8", streamName: src, audioEnabled: audioEnabled)
+        return Self.streamURL(session: owner.session, path: "/api/stream.m3u8", query: query)
     }
 
     private func stopBridgeInternal(http: URLSession, names: [String]) async {
@@ -1297,6 +1329,41 @@ public actor XiaomiCameraBridge: XiaomiCameraBridging {
         String(did.unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) || $0 == "_" })
     }
 
+    /// Builds the query string for a go2rtc HTTP stream endpoint (`/api/stream.mp4`,
+    /// `/api/stream.m3u8`, `/api/stream.mjpeg`). Muted previews append `&audio=0` so audio
+    /// tracks are not requested until the user opts into listen-only playback (#445, P1-2).
+    public static func go2rtcStreamQuery(path: String, streamName: String, audioEnabled: Bool) -> String {
+        let encoded = urlEncode(streamName)
+        switch path {
+        case "/api/stream.mp4":
+            return audioEnabled
+                ? "src=\(encoded)&mp4=all"
+                : "src=\(encoded)&mp4&audio=0"
+        case "/api/stream.m3u8":
+            return audioEnabled
+                ? "src=\(encoded)"
+                : "src=\(encoded)&video=all&audio=0"
+        default:
+            return "src=\(encoded)"
+        }
+    }
+
+    /// Builds a go2rtc HTTP stream URL on `baseURL` with the muted/listen-only audio parameter (#445).
+    public static func go2rtcStreamURL(baseURL: URL, path: String, streamName: String, audioEnabled: Bool) -> URL? {
+        guard var comps = URLComponents(url: baseURL, resolvingAgainstBaseURL: false) else {
+            return nil
+        }
+        comps.path = path.hasPrefix("/") ? path : "/" + path
+        comps.percentEncodedQuery = go2rtcStreamQuery(path: comps.path, streamName: streamName, audioEnabled: audioEnabled)
+        return comps.url
+    }
+
+    /// True when a stream URL explicitly suppresses audio for a muted preview (`audio=0`).
+    public static func isMutedPreviewURL(_ url: URL) -> Bool {
+        guard let comps = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return false }
+        return comps.queryItems?.contains(where: { $0.name == "audio" && $0.value == "0" }) == true
+    }
+
     public static func xiaomiStreamQuery(
         clientPublic: String,
         clientPrivate: String,
@@ -1307,7 +1374,8 @@ public actor XiaomiCameraBridge: XiaomiCameraBridging {
         quality: XiaomiCameraStreamQuality,
         uid: String?,
         channel: Int,
-        subdid: String?
+        subdid: String?,
+        audioEnabled: Bool = false
     ) -> String {
         let subtype = quality.subtypeQueryValue
         var query = [
@@ -1318,7 +1386,7 @@ public actor XiaomiCameraBridge: XiaomiCameraBridging {
             "vendor=\(urlEncode(vendor))",
             "transport=udp",
             "subtype=\(subtype)",
-            "audio=0",
+            "audio=\(audioEnabled ? "1" : "0")",
             "model=\(urlEncode(model))",
         ].joined(separator: "&")
         if let uid, !uid.isEmpty {
