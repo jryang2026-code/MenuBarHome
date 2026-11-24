@@ -1500,20 +1500,11 @@ extension HomeStore {
         }
     }
 
+    /// The toast a paused quick action shows when someone runs it. Device groups are display stacks
+    /// now, so no runtime path runs a paused `group:` marker through this text: a group that no
+    /// automatic pass can clear is released from its settings row (`pausedQuickActionsRequiringManualResume`).
     func pausedQuickActionMessage(for action: QuickAction) -> String {
-        pausedQuickActionMessage(forPausedID: action.rawValue, title: action.title)
-    }
-
-    /// The toast a paused quick action or device group shows when someone runs it. A pause that no
-    /// automatic pass can clear names the manual resume instead of a cause the user cannot act on.
-    func pausedQuickActionMessage(forPausedID id: String, title: String) -> String {
-        if pausedQuickActionRequiresManualResume(id) {
-            return L10n.format(
-                "「%@」已暂停且不再记录原连接，需要手动恢复：设置 › 常规 › 自动化与外部控制",
-                "“%@” stays paused without the connection it lost, so it cannot resume on its own; resume it manually in Settings › General › Automation & External Control",
-                title
-            )
-        }
+        let id = action.rawValue
         let categories = QuickActionReferenceKind(rawValue: id)?.targetCategories ?? []
         let hasDisabledScope = (pausedQuickActionScopes[id] ?? []).contains { scope in
             guard let connection = CapabilityReferenceEngine.connectionCapability(forScope: scope),
@@ -1575,10 +1566,18 @@ extension HomeStore {
         return loadDeviceGroupReferences().groups.first { $0.id == groupId }?.name ?? groupId
     }
 
+    /// True when a `group:` pause marker has nothing left to resume: the group was deleted, or it lost
+    /// every member. Only the marker is left, so both the manual release and revalidation drop it.
+    private static func pausedGroupIsGone(_ id: String, groupById: [String: DeviceGroupReference]) -> Bool {
+        let groupId = String(id.dropFirst(Self.pausedQuickActionGroupIDPrefix.count))
+        guard let group = groupById[groupId] else { return true }
+        return group.memberDeviceIds.isEmpty
+    }
+
     /// Resumes one paused quick action or group on the user's word. Its pause markers cannot settle
     /// once the connection they were paused for is gone, so the user replaces them; the targets are
     /// still re-checked with the availability rule auto-resume uses, never a fresh write gate. A group
-    /// the user deleted has no targets left to check, so the same word drops its stale marker.
+    /// the user deleted or emptied has no targets left to check, so the same word drops its stale marker.
     @discardableResult
     public func resumePausedQuickAction(id: String) -> Bool {
         guard pausedQuickActionIDs.contains(id) else { return false }
@@ -1588,25 +1587,22 @@ extension HomeStore {
             groupRefs.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first }
         )
         let title = pausedQuickActionTitle(id)
-        if id.hasPrefix(Self.pausedQuickActionGroupIDPrefix) {
-            let groupId = String(id.dropFirst(Self.pausedQuickActionGroupIDPrefix.count))
-            if groupById[groupId] == nil {
-                // A deleted group leaves its marker with nothing left to resume, so the manual action is
-                // the only cleanup path. An unreadable group store cannot prove the group is gone.
-                guard corruptedGroupStores.isEmpty else {
-                    showToast(
-                        L10n.format(
-                            "「%@」的分组记录无法读取，暂时无法恢复",
-                            "“%@” cannot resume yet; its device group record is unreadable",
-                            title
-                        ),
-                        isError: true
-                    )
-                    return false
-                }
-                clearPausedQuickActionMarkers(id)
-                return true
+        if id.hasPrefix(Self.pausedQuickActionGroupIDPrefix), Self.pausedGroupIsGone(id, groupById: groupById) {
+            // A deleted or emptied group leaves its marker with nothing left to resume, so the manual
+            // action is the only cleanup path. An unreadable group store cannot prove either is gone.
+            guard corruptedGroupStores.isEmpty else {
+                showToast(
+                    L10n.format(
+                        "「%@」的分组记录无法读取，暂时无法恢复",
+                        "“%@” cannot resume yet; its device group record is unreadable",
+                        title
+                    ),
+                    isError: true
+                )
+                return false
             }
+            clearPausedQuickActionMarkers(id)
+            return true
         }
         let availableSet = Set(CapabilityReferenceEngine.partitionDevices(
             devices: indexed, selection: capabilitySelection, safetyPolicy: effectiveSafetyRetentionPolicy()
@@ -2293,7 +2289,7 @@ extension HomeStore {
         let indexed = currentIndexedDevicesList()
         let indexedById = Dictionary(uniqueKeysWithValues: indexed.map { ($0.id, $0) })
         let sceneRefs = currentSceneReferences()
-        let (groups, _) = loadDeviceGroupReferences()
+        let (groups, corruptedGroupStores) = loadDeviceGroupReferences()
         let groupById = Dictionary(uniqueKeysWithValues: groups.map { ($0.id, $0) })
         let ruleStore = AutomationRuleStore(defaults: userDefaults)
         var rules = ruleStore.load()
@@ -2359,6 +2355,13 @@ extension HomeStore {
             var remainingQA: Set<String> = []
             for qaId in pausedQuickActionIDs {
                 let isGroup = qaId.hasPrefix(Self.pausedQuickActionGroupIDPrefix)
+                // A group that was deleted, or lost every member, has nothing left to resume: its marker
+                // is stale bookkeeping rather than a pause, so no pass and no settings row needs it. An
+                // unreadable group store cannot prove either, so its markers stay for the manual path.
+                if isGroup, corruptedGroupStores.isEmpty,
+                   Self.pausedGroupIsGone(qaId, groupById: groupById) {
+                    continue
+                }
                 let scopes = pausedQuickActionScopes[qaId] ?? []
                 guard (!isGroup || !scopes.isEmpty),
                       pausedItemScopesAreSettled(scopes, requiresOriginalHA: isGroup),

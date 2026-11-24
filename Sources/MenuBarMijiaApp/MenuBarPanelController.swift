@@ -683,6 +683,9 @@ final class MenuBarPanelController: NSObject {
         if speech.isListening || speech.isHoldToTalk || isStatusItemPressActive {
             return true
         }
+        // A pending shrink is settled by one more tick; without it an idle readout keeps the wider
+        // reserve until the next text change (#420). The tick clears the flag, so the loop stops again.
+        if MenuBarWidthStabilizer.needsSettle(widthState) { return true }
         if store.undoBanner != nil || store.toastNotice != nil {
             return true
         }
@@ -799,7 +802,9 @@ final class MenuBarPanelController: NSObject {
             button.attributedTitle = Self.statusTitle(text, isSpeech: speech.isListening)
             contentChanged = true
         }
-        if contentChanged {
+        // A pending shrink owes one more unchanged reading before it commits; skipping the block because
+        // the text stopped changing would hold the wider reserve until the next text change (#420).
+        if contentChanged || MenuBarWidthStabilizer.needsSettle(widthState) {
             let measured = Self.measuredStatusItemWidth(button: button, text: text)
             widthState = MenuBarWidthStabilizer.update(
                 state: widthState,
