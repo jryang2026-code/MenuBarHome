@@ -594,6 +594,11 @@ pub(crate) fn focus_mode_status() -> Option<bool> {
 
 struct SendHandle(windows_sys::Win32::Foundation::HANDLE);
 unsafe impl Send for SendHandle {}
+impl SendHandle {
+    fn as_raw(&self) -> windows_sys::Win32::Foundation::HANDLE {
+        self.0
+    }
+}
 
 struct MediaWatcherHandle {
     stop_event: SendHandle,
@@ -639,7 +644,7 @@ fn start_media_watcher(app: AppHandle) {
     let join = std::thread::Builder::new()
         .name("mbh-media-watch".to_string())
         .spawn(move || {
-            let stop_event = stop_for_thread.0;
+            let stop_event = stop_for_thread.as_raw();
             let webcam_event = unsafe { CreateEventW(std::ptr::null(), 0, 0, std::ptr::null()) };
             let mic_event = unsafe { CreateEventW(std::ptr::null(), 0, 0, std::ptr::null()) };
             let webcam_path = encode_wide_nul(CONSENT_STORE_WEBCAM);
