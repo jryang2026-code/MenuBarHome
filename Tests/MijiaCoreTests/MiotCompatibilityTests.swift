@@ -270,4 +270,181 @@ struct MiotCompatibilityTests {
         )
     }
 
+    @Test("MIoT television spec 123888.tv.xhzn11 synthesizes a TV card and maps power, volume, mute, and source (#442)")
+    func televisionFixtureCardAndCommands() throws {
+        let spec = try MiotCoverageBaselineTests.coverageSpec("123888.tv.xhzn11")
+        let device = MiDeviceRecord(did: "tv1", name: "客厅电视", model: "123888.tv.xhzn11", isOnline: true)
+        let values: [MiotPropKey: JSONValue] = [
+            .init(did: "tv1", siid: 2, piid: 1): .number(2), // Busy
+            .init(did: "tv1", siid: 2, piid: 5): .number(1), // HDMI 1
+            .init(did: "tv1", siid: 3, piid: 1): .number(1), // Playing
+            .init(did: "tv1", siid: 4, piid: 1): .number(36),
+            .init(did: "tv1", siid: 4, piid: 2): .bool(false),
+        ]
+        let home = MiotSynthesizer.synthesize(devices: [device], rooms: [], specs: [device.model: spec], values: values)
+        let smart = try #require(home.devices.first)
+        guard case .tv(let tv) = smart.kind else {
+            Issue.record("123888.tv.xhzn11 was not synthesized as .tv")
+            return
+        }
+        #expect(tv.mediaEntityId == "miot:tv1:2")
+        #expect(tv.state == "playing")
+        #expect(tv.volumePercent == 36)
+        #expect(tv.volumeWritable)
+        #expect(tv.volumePresent)
+        #expect(!tv.isMuted)
+        #expect(tv.muteSwitchEntityId == "miot:tv1:4#mute")
+        #expect(tv.currentSource == "HDMI 1")
+        #expect(tv.availableSources == ["HDMI 1", "HDMI 2"])
+        #expect(tv.powerOnActionId == "miot-action:tv1:2:2")
+        #expect(tv.powerOffActionId == "miot-action:tv1:2:1")
+        #expect(tv.powerWritable)
+        #expect(smart.isActiveOn)
+
+        #expect(try MiotCommandMapper.map(.pressButton(entityId: try #require(tv.powerOnActionId)), spec: spec)
+            == .action(.init(did: "tv1", siid: 2, aiid: 2)))
+        #expect(try MiotCommandMapper.map(.pressButton(entityId: try #require(tv.powerOffActionId)), spec: spec)
+            == .action(.init(did: "tv1", siid: 2, aiid: 1)))
+        #expect(try MiotCommandMapper.map(.setSwitch(entityId: tv.mediaEntityId, isOn: true), spec: spec)
+            == .action(.init(did: "tv1", siid: 2, aiid: 2)))
+        #expect(try MiotCommandMapper.map(.setSwitch(entityId: tv.mediaEntityId, isOn: false), spec: spec)
+            == .action(.init(did: "tv1", siid: 2, aiid: 1)))
+        #expect(try MiotCommandMapper.map(.setSwitch(entityId: try #require(tv.muteSwitchEntityId), isOn: true), spec: spec)
+            == .setProps([.init(did: "tv1", siid: 4, piid: 2, value: .bool(true))]))
+        #expect(try MiotCommandMapper.map(.mediaSetVolume(entityId: tv.mediaEntityId, volumeLevel: 0.48), spec: spec)
+            == .setProps([.init(did: "tv1", siid: 4, piid: 1, value: .number(48))]))
+        #expect(try MiotCommandMapper.map(.mediaSelectSource(entityId: tv.mediaEntityId, source: "HDMI 2"), spec: spec)
+            == .setProps([.init(did: "tv1", siid: 2, piid: 5, value: .number(2))]))
+
+        let required = Set(MiotSynthesizer.requiredProps(for: device, spec: spec))
+        #expect(required == Set(values.keys))
+
+        // TVs are not listed in ModelActionPolicy's hazard table, matching Windows confirmation behavior.
+        #expect(!ManualControlPolicy.requiresConfirmation(.power(true), for: smart))
+        #expect(!ManualControlPolicy.requiresConfirmation(.power(false), for: smart))
+    }
+
+    @Test("Same-service MIoT TV disambiguates mute from power and handles standby status")
+    func sameServiceTelevisionAndStandby() throws {
+        let spec = MiotDeviceSpec(
+            type: "urn:miot-spec-v2:device:television:0000A010:xiaomi-tv2:1",
+            services: [
+                MiotService(
+                    iid: 2,
+                    type: "urn:miot-spec-v2:service:television:0000781B:xiaomi-tv2:1",
+                    properties: [
+                        MiotProperty(iid: 1, type: "urn:miot-spec-v2:property:on:00000006:xiaomi-tv2:1", format: "bool", access: ["read", "write", "notify"]),
+                        MiotProperty(iid: 2, type: "urn:miot-spec-v2:property:mute:00000040:xiaomi-tv2:1", format: "bool", access: ["read", "write", "notify"]),
+                    ]
+                )
+            ]
+        )
+        let device = MiDeviceRecord(did: "tv2", name: "书房电视", model: "xiaomi.tv.tv2", isOnline: true)
+        let home = MiotSynthesizer.synthesize(
+            devices: [device], rooms: [], specs: [device.model: spec],
+            values: [
+                .init(did: "tv2", siid: 2, piid: 1): .bool(true),
+                .init(did: "tv2", siid: 2, piid: 2): .bool(false),
+            ]
+        )
+        let smart = try #require(home.devices.first)
+        guard case .tv(let tv) = smart.kind else {
+            Issue.record("same-service TV was not synthesized as .tv")
+            return
+        }
+        #expect(tv.mediaEntityId == "miot:tv2:2")
+        #expect(tv.muteSwitchEntityId == "miot:tv2:2#mute")
+        #expect(tv.state == "on")
+        #expect(!tv.volumeWritable)
+        #expect(!tv.volumePresent)
+        #expect(tv.powerWritable)
+
+        #expect(try MiotCommandMapper.map(.setSwitch(entityId: "miot:tv2:2#mute", isOn: true), spec: spec)
+            == .setProps([.init(did: "tv2", siid: 2, piid: 2, value: .bool(true))]))
+        #expect(try MiotCommandMapper.map(.setSwitch(entityId: "miot:tv2:2", isOn: false), spec: spec)
+            == .setProps([.init(did: "tv2", siid: 2, piid: 1, value: .bool(false))]))
+    }
+
+    @Test("TV volume write prefers companion speaker service to match buildTV, and TV power actions are undoable")
+    @MainActor
+    func tvVolumePrecedenceAndPowerActionUndo() async throws {
+        // 1. Companion speaker volume wins over television service volume in both buildTV and MiotCommandMapper.
+        let dualVolumeSpec = MiotDeviceSpec(
+            type: "urn:miot-spec-v2:device:television:0000A010:xiaomi-dualvol:1",
+            services: [
+                MiotService(
+                    iid: 2,
+                    type: "urn:miot-spec-v2:service:television:0000781B:xiaomi-dualvol:1",
+                    properties: [
+                        MiotProperty(iid: 1, type: "urn:miot-spec-v2:property:volume:00000013:xiaomi-dualvol:1", format: "uint8", access: ["read", "write"], valueRange: [0, 10, 1]),
+                    ]
+                ),
+                MiotService(
+                    iid: 4,
+                    type: "urn:miot-spec-v2:service:speaker:0000781C:xiaomi-dualvol:1",
+                    properties: [
+                        MiotProperty(iid: 1, type: "urn:miot-spec-v2:property:volume:00000013:xiaomi-dualvol:1", format: "uint8", access: ["read", "write"], valueRange: [0, 100, 1]),
+                    ]
+                ),
+            ]
+        )
+        let dualDev = MiDeviceRecord(did: "tv3", name: "测试电视", model: "xiaomi.tv.dualvol", isOnline: true)
+        let dualHome = MiotSynthesizer.synthesize(
+            devices: [dualDev], rooms: [], specs: [dualDev.model: dualVolumeSpec],
+            values: [
+                .init(did: "tv3", siid: 2, piid: 1): .number(5),
+                .init(did: "tv3", siid: 4, piid: 1): .number(40),
+            ]
+        )
+        guard case .tv(let dualTV) = dualHome.devices.first?.kind else {
+            Issue.record("expected .tv")
+            return
+        }
+        #expect(dualTV.volumePercent == 40)
+        #expect(try MiotCommandMapper.map(.mediaSetVolume(entityId: dualTV.mediaEntityId, volumeLevel: 0.65), spec: dualVolumeSpec)
+            == .setProps([.init(did: "tv3", siid: 4, piid: 1, value: .number(65))]))
+
+        // 2. Action-powered MIoT TV (123888.tv.xhzn11) resolves assistant undo and undo banner cleanly.
+        let tvSpec = try MiotCoverageBaselineTests.coverageSpec("123888.tv.xhzn11")
+        let tvRecord = MiDeviceRecord(did: "tv1", name: "客厅电视", model: "123888.tv.xhzn11", isOnline: true)
+        let tvHome = MiotSynthesizer.synthesize(
+            devices: [tvRecord],
+            rooms: [.init(id: "r1", name: "客厅", dids: ["tv1"])],
+            specs: [tvRecord.model: tvSpec],
+            values: [:]
+        )
+        let standbyTV = try #require(tvHome.devices.first)
+        #expect(!standbyTV.isActiveOn)
+
+        let turnOnSuggestion = AssistantSuggestion(
+            id: "s1",
+            title: "打开客厅电视",
+            intents: [DeviceIntent(targetId: standbyTV.id, operation: .power(true))]
+        )
+        #expect(HomeStore.isAssistantSuggestionReversible(turnOnSuggestion, devices: [standbyTV]))
+
+        let mock = MockHomeProvider(snapshot: SynthesizedHome(rooms: tvHome.rooms, devices: [standbyTV]))
+        let suite = "test.tvundo.\(UUID().uuidString)"
+        let store = HomeStore(provider: mock, defaultsSuiteName: suite)
+        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        store.assistantAutoResetTiming = .never
+        try await store.waitForTestSnapshot()
+        store.setAIAssistantEnabled(true)
+
+        await store.applyAssistantSuggestion(turnOnSuggestion, offersUndoBanner: true)
+        store.pauseUndoBannerCountdown()
+        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while await mock.executedCommands.isEmpty, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(await mock.executedCommands == [.pressButton(entityId: "miot-action:tv1:2:2")])
+        #expect(store.devices.first?.isActiveOn == true)
+        #expect(store.undoBanner?.restoreCommands == [.pressButton(entityId: "miot-action:tv1:2:1")])
+
+        let undoTask = try #require(store.undoTurnAllOff())
+        await undoTask.value
+        #expect(await mock.executedCommands.last == .pressButton(entityId: "miot-action:tv1:2:1"))
+        #expect(store.devices.first?.isActiveOn == false)
+    }
+
 }

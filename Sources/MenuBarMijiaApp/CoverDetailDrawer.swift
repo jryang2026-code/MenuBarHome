@@ -140,7 +140,7 @@ struct InlinePrimaryControl {
             iconName = "speaker.wave.2.fill"
             label = L10n.tr("音量", "Volume")
         case .tv(let spec):
-            guard device.isActiveOn else { return nil }
+            guard device.isActiveOn, spec.volumeWritable, spec.volumePresent else { return nil }
             target = .volume
             value = Double(spec.volumePercent)
             range = 0...100

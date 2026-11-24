@@ -29,9 +29,8 @@ struct MiotCoverageBaselineTests {
         var summary: Summary
         var models: [String: Entry]
         /// Models Windows classifies differently today; the Windows suite expects these instead.
-        /// `scripts/check_device_rules.py` ratchets the count (1 today: the MIoT television card,
-        /// which macOS has no builder for), so a second divergence fails the gate and a stale one
-        /// has to be deleted rather than kept.
+        /// `scripts/check_device_rules.py` ratchets the count (0 today), so any new divergence
+        /// fails the gate and a stale one has to be deleted rather than kept.
         var windowsDivergences: [String: Entry]
     }
 
@@ -120,7 +119,9 @@ struct MiotCoverageBaselineTests {
         let goldenURL = try coverageFixture("Tests/Fixtures/miot_coverage_golden.json")
         if ProcessInfo.processInfo.environment["RECORD_MIOT_COVERAGE"] == "1" {
             if let previous = try? JSONDecoder().decode(Golden.self, from: Data(contentsOf: goldenURL)) {
-                measured.windowsDivergences = previous.windowsDivergences
+                measured.windowsDivergences = previous.windowsDivergences.filter { model, entry in
+                    measured.models[model] != entry
+                }
             }
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
@@ -143,7 +144,6 @@ struct MiotCoverageBaselineTests {
             "ctest.inskil.duyr",      // insect killer: was a camera
             "asu.projector.apro",     // projector: was a speaker
             "gimi.projector.fm01",
-            "123888.tv.xhzn11",       // television: was a speaker
             "xiaomi.split_tv.b1",
             "chuangmi.radio.v1",
             "miot.handdry.hd3",       // hand dryer: was a vacuum
@@ -156,6 +156,7 @@ struct MiotCoverageBaselineTests {
             #expect(models[model]?.service == nil, "\(model) must not borrow another device's service")
         }
         let kept: [String: String] = [
+            "123888.tv.xhzn11": "television",
             "cuco.acpartner.ap2a": "air-conditioner",  // AC companion outlet
             "chuangmi.door.515a01": "video-doorbell",
             "bymiot.relay.wlv1": "switch",

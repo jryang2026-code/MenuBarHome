@@ -70,7 +70,7 @@ extension HomeStore {
             stepClimateTemperature(dev.id, delta: Double(delta) * 1.0)
         case .speaker(let s):
             setSpeakerVolume(dev.id, percent: max(0, min(100, s.volumePercent + delta * 10)))
-        case .tv(let s):
+        case .tv(let s) where s.volumeWritable:
             setSpeakerVolume(dev.id, percent: max(0, min(100, s.volumePercent + delta * 10)))
         case .cover(let s) where s.positionWritable:
             let current = s.positionPercent ?? 0
