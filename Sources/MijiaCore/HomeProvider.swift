@@ -779,7 +779,8 @@ public actor HAWebSocketProvider: HomeProvider {
                     if isStartup {
                         deliverStartupReply(id: id, message: msg)
                     }
-                    let isRefresh = pendingRefreshStateIds.removeValue(forKey: id) != nil
+                    let refreshCapturedEpoch = pendingRefreshStateIds.removeValue(forKey: id)
+                    let isRefresh = refreshCapturedEpoch != nil
                     if !isRefresh && !isInitialStates && !(1...3).contains(id) {
                         if !isStartup {
                             logger.debug("Ignoring Home Assistant result id \(id, privacy: .public) with no open request")
