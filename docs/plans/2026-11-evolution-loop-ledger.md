@@ -5,8 +5,8 @@
 ## 当前交接快照
 
 - 更新时间：2026-11-25（Wave 2B + 只读通用摄像机收口，v1.5.0 发版准备）
-- `main`：`34f5c5b`（W3-CAM 两端合入：#529 #531 #530；文档已同步 README / platform-matrix / GLOSSARY / 冒烟清单）
-- 待合：#532 氛围撤销基线竞态（真 bug：异步刷新覆盖了撤销基线，MoodCaptureTests:109 抖动根因），v1.5.0 必带
+- `main`：`57956c1`（W3-CAM 两端合入：#529 #531 #530；文档同步 791a7eb9；#532 修氛围撤销基线竞态——真 bug，MoodCaptureTests:109 抖动根因）
+- v1.5.0 功能已齐：等作者真机冒烟（docs/plans/2026-11-v1.5.0-smoke-checklist.md）→ 改版本号/CHANGELOG → 打 tag
 - Wave 2B：15/15 DONE（#504–#528）；发版前真机冒烟清单见 docs/plans/2026-11-v1.5.0-smoke-checklist.md；release-checklist 文档同步已完成 main dbb72c40（CI 绿）；过时素材待重录：readme-v3 的 keyboard-search.gif、panel-themes.gif、all-off-undo.gif、hold-to-talk.gif、settings.gif、windows-fluent.png（需真机录制，HUMAN_GATE）
 - Wave 2A：14/14 DONE（#485–#503）
 - Wave 1：12/12 DONE（#471–#484 + main 187b6743）
