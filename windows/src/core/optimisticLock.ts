@@ -66,6 +66,7 @@ interface DeviceLockEntry {
   expiresAtMs: number;
   revision: number;
   coverOriginPosition: number | null;
+  ignoreCoverMovement?: boolean;
   /** Kind fields this lock cycle wrote, so an equal-to-baseline value still needs confirmation. */
   dirtyFields: Set<string>;
   /** 更多设置 facet ids this lock cycle wrote, for the same reason. */
@@ -76,6 +77,7 @@ interface DeviceLockEntry {
 export interface OptimisticLockSnapshot {
   readonly expiresAtMs: number;
   readonly coverOriginPosition: number | null;
+  readonly ignoreCoverMovement?: boolean;
   readonly dirtyFields: readonly string[];
   readonly dirtyFacetIds: readonly string[];
 }
@@ -203,6 +205,7 @@ export function lockOptimistic(
     readonly nowMs?: number;
     readonly writeEpoch?: number;
     readonly coverOriginPosition?: number | null;
+    readonly ignoreCoverMovement?: boolean;
     readonly baselineDevice?: SmartDevice | null;
     readonly baselineFacets?: readonly FacetControl[];
   },
@@ -249,6 +252,7 @@ export function lockOptimistic(
     expiresAtMs: nowMs + durationMs,
     revision,
     coverOriginPosition,
+    ignoreCoverMovement: options?.ignoreCoverMovement ?? (prevActive ? prev.ignoreCoverMovement : undefined),
     dirtyFields,
     dirtyFacetIds,
   });
@@ -784,7 +788,7 @@ export function mergeHomeSnapshotRespectingLocks(
       // A cover is write-only: only its own travel confirms the command, and a snapshot cannot
       // stand in for it (`standards-store-locks-timers.md` §14).
       state.readBackInFlight.delete(incoming.id);
-      if (staleFields.size === 0 && coverTravelTakesOver(lock.coverOriginPosition, local.kind, incoming.kind)) {
+      if (staleFields.size === 0 && !lock.ignoreCoverMovement && coverTravelTakesOver(lock.coverOriginPosition, local.kind, incoming.kind)) {
         state.locks.delete(incoming.id);
         mergedDevices.push(incoming);
         adoptReadyFacets();

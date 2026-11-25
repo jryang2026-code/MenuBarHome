@@ -31,6 +31,7 @@ import type { HttpTransport } from "../core/miCloudClient.js";
 import { withAliases } from "./panelPrefs.js";
 import { executeBuiltInQuickAction } from "./speechGuard.js";
 import { buildHostCapabilityContext, isDualSourceEnabled } from "./cloudRefresh.js";
+import { buildDiffPreview, requiresDiffPreview } from "../core/assistantDiffPreview.js";
 import {
   evaluateDisabledUtteranceGate,
   evaluateIntentsWriteGate,
@@ -51,7 +52,12 @@ function localParseOptions(host: MenuMijiaWindowsApp): LocalIntentParseOptions {
   };
 }
 
-export async function handleNaturalCommand(host: MenuMijiaWindowsApp, rawInput: string, fromScheduled = false): Promise<void> {
+export async function handleNaturalCommand(
+  host: MenuMijiaWindowsApp,
+  rawInput: string,
+  fromScheduled = false,
+  preferDiffPreview = false,
+): Promise<void> {
     let trimmed = rawInput.trim();
     if (!trimmed) return;
     const sourceRevision = host.sourceRevision;
@@ -60,6 +66,7 @@ export async function handleNaturalCommand(host: MenuMijiaWindowsApp, rawInput: 
     const assistantEpoch = host.assistantEpoch;
     // A new command replaces any question still waiting for cloud consent, and old suggestions.
     host.pendingCloudConsent = null;
+    host.pendingDiffPreview = null;
     host.pendingSuggestions = [];
 
     const delaySpec = !fromScheduled ? DelayPhrase.extract(trimmed) : null;
@@ -388,6 +395,23 @@ export async function handleNaturalCommand(host: MenuMijiaWindowsApp, rawInput: 
           queueScheduledCommand(host, delaySpec, sanitized);
           return;
         }
+        host.render();
+        return;
+      }
+      if (preferDiffPreview && sanitized.length > 0 && requiresDiffPreview(sanitized, aliasedDevices)) {
+        const replyText = plan.reply || IntentReply.describe(sanitized, aliasedDevices, host.scenes);
+        host.pendingDiffPreview = buildDiffPreview({
+          intents: sanitized,
+          devices: aliasedDevices,
+          scenes: host.scenes,
+          replyText,
+          sourceLabel,
+          utterance: trimmed,
+          recordHabits: plan.source === "local" && !fromScheduled,
+          learnAfterRun: host.settings.habitLearningEnabled && plan.source === "model",
+          sourceRevision,
+        });
+        host.isResolvingIntent = false;
         host.render();
         return;
       }
