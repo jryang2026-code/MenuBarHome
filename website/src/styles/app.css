@@ -1,0 +1,1005 @@
+@import "tailwindcss" source("../");
+@source "../../index.html";
+@import "lenis/dist/lenis.css";
+
+@font-face {
+  font-family: "Inter Variable";
+  src: url("/fonts/inter-latin-wght-normal.woff2") format("woff2-variations"),
+       url("/fonts/inter-latin-wght-normal.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Instrument Serif";
+  src: url("/fonts/instrument-serif-latin-400-normal.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: "Instrument Serif";
+  src: url("/fonts/instrument-serif-latin-400-italic.woff2") format("woff2");
+  font-weight: 400;
+  font-style: italic;
+  font-display: swap;
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: "JetBrains Mono Variable";
+  src: url("/fonts/jetbrains-mono-latin-wght-normal.woff2") format("woff2-variations"),
+       url("/fonts/jetbrains-mono-latin-wght-normal.woff2") format("woff2");
+  font-weight: 100 800;
+  font-style: normal;
+  font-display: swap;
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+/* CJK Editorial Display: LXGW WenKai (霞鹜文楷 v1.530 Medium) — strictly CJK-only unicode-range + optical baseline alignment to Instrument Serif */
+@font-face {
+  font-family: "LXGW WenKai";
+  src: url("/fonts/lxgw-wenkai-medium-zh.woff2") format("woff2");
+  font-weight: 400 700;
+  font-style: normal;
+  font-display: swap;
+  size-adjust: 94%;
+  ascent-override: 96%;
+  descent-override: 26%;
+  line-gap-override: 0%;
+  unicode-range: U+2E80-2EFF, U+3000-303F, U+3400-4DBF, U+4E00-9FFF, U+F900-FAFF, U+FE30-FE4F, U+FF00-FFEF;
+}
+
+/* CJK Humanist Body/UI: LXGW Neo XiHei (霞鹜新晰黑 v1.309) — strictly CJK-only unicode-range + optical baseline alignment to Inter Variable */
+@font-face {
+  font-family: "LXGW Neo XiHei";
+  src: url("/fonts/lxgw-neo-xihei-zh.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+  size-adjust: 96%;
+  ascent-override: 96%;
+  descent-override: 24%;
+  line-gap-override: 0%;
+  unicode-range: U+2E80-2EFF, U+3000-303F, U+3400-4DBF, U+4E00-9FFF, U+F900-FAFF, U+FE30-FE4F, U+FF00-FFEF;
+}
+
+@theme {
+  /* V2 Warm Off-White / Rice-Paper Cream Editorial Palette */
+  --color-cream: #f6f2eb;
+  --color-sand: #eee7dc;
+  --color-paper: #fbf9f5;
+  --color-stage-warm: #e8dccb;
+
+  --color-ink-primary: #1e1a16;
+  --color-ink-secondary: #4a433b;
+  --color-ink-tertiary: #665e54;
+  --color-ink-light: #f6f2eb;
+  --color-ink-editorial-accent: #9a4a12;
+
+  --color-amber-sunset: #d97706;
+  --color-amber-glow: #f59e0b;
+  --color-imac-blue: #4a78ab;
+  --color-imac-chin: #a2bdd8;
+  --color-plug-emerald: #1d9a48;
+
+  /* Editorial Multi-Font System (EN default: zero CJK font transfer; ZH activates LXGW WenKai + LXGW Neo XiHei via :lang(zh)) */
+  --font-display: "Instrument Serif", "Noto Serif SC", "Source Han Serif SC", "Songti SC", "STSong", "Noto Serif CJK SC", Georgia, serif;
+  --font-sans: "Inter Variable", ui-sans-serif, -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Noto Sans SC", "Microsoft YaHei", sans-serif;
+  --font-mono: "JetBrains Mono Variable", "SFMono-Regular", "SF Mono", ui-monospace, Menlo, Consolas, monospace;
+
+  --ease-apple-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-apple-drawer: cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+:root {
+  color-scheme: light;
+  accent-color: #9a4a12;
+  caret-color: #9a4a12;
+  scrollbar-color: #c2b6a4 #f6f2eb;
+  background-color: #f6f2eb;
+  color: #1e1a16;
+  --font-text: var(--font-sans);
+  font-family: var(--font-sans);
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  text-rendering: optimizeLegibility;
+}
+
+/* Chinese Editorial Pairing: Instrument Serif × LXGW WenKai (Display) + Inter Variable × LXGW Neo XiHei (Body/UI/Mono-CJK) */
+:root:lang(zh),
+:root:lang(zh-CN) {
+  --font-display: "Instrument Serif", "LXGW WenKai", "Noto Serif SC", "Songti SC", "STSong", Georgia, serif;
+  --font-sans: "Inter Variable", "LXGW Neo XiHei", ui-sans-serif, -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Noto Sans SC", "Microsoft YaHei", sans-serif;
+  --font-mono: "JetBrains Mono Variable", "LXGW Neo XiHei", "SFMono-Regular", "SF Mono", ui-monospace, Menlo, Consolas, monospace;
+  --font-text: var(--font-sans);
+}
+
+::selection {
+  background-color: rgba(154, 74, 18, 0.16);
+  color: #1e1a16;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background-color: #f6f2eb;
+  color: #1e1a16;
+  overflow-x: clip;
+}
+
+/* Visually hidden utility keeping accessibility tree intact */
+.visually-hidden:where(:not(:focus-within, :active)) {
+  position: absolute !important;
+  clip-path: inset(50%) !important;
+  overflow: hidden !important;
+  width: 1px !important;
+  height: 1px !important;
+  margin: -1px !important;
+  padding: 0 !important;
+  border: 0 !important;
+  white-space: nowrap !important;
+}
+
+/* Accessible high-contrast keyboard focus ring (5.6:1 on #f6f2eb cream; 10.7:1 amber on dark surfaces) */
+:where(a, button, input, [tabindex]):focus-visible {
+  outline: 2px solid #9a4a12;
+  outline-offset: 2px;
+}
+
+:where(.hairline-terminal-warm, .bg-\[\#1e1a16\], .bg-\[\#1c1917\], .bg-\[\#14110f\], [data-dark-surface="true"])
+  :where(a, button, input, [tabindex]):focus-visible {
+  outline-color: #fbbf24;
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ==========================================================================
+   Editorial Multi-Font Typography System (EN Instrument Serif + ZH Songti)
+   Wrapped in @layer components so Tailwind utility overrides always win cleanly
+   ========================================================================== */
+
+@layer components {
+  .font-editorial {
+    font-family: var(--font-display);
+    font-weight: 400;
+    font-optical-sizing: auto;
+    font-kerning: normal;
+    font-feature-settings: "liga" 1, "kern" 1;
+    letter-spacing: -0.02em;
+    text-wrap: balance;
+  }
+
+  :lang(zh-CN) .font-editorial {
+    font-weight: 500;
+    letter-spacing: 0.005em;
+    font-synthesis: none;
+  }
+
+  /* Shared Display Scale — ensures strict H1 > H2 > H3 hierarchy across every section */
+  .editorial-h1 {
+    font-family: var(--font-display);
+    font-size: clamp(50px, 6.8vw, 82px);
+    line-height: 0.96;
+    font-weight: 400;
+    letter-spacing: -0.024em;
+    color: #1e1a16;
+    font-optical-sizing: auto;
+    font-feature-settings: "liga" 1, "kern" 1;
+    text-wrap: balance;
+  }
+
+  :lang(zh-CN) .editorial-h1 {
+    font-size: clamp(42px, 5.4vw, 68px);
+    line-height: 1.16;
+    font-weight: 500;
+    letter-spacing: 0.008em;
+    font-synthesis: none;
+  }
+
+  .editorial-h2 {
+    font-family: var(--font-display);
+    font-size: clamp(34px, 4.2vw, 48px);
+    line-height: 1.05;
+    font-weight: 400;
+    letter-spacing: -0.02em;
+    color: #1e1a16;
+    font-optical-sizing: auto;
+    font-feature-settings: "liga" 1, "kern" 1;
+    text-wrap: balance;
+  }
+
+  :lang(zh-CN) .editorial-h2 {
+    font-size: clamp(30px, 3.6vw, 42px);
+    line-height: 1.22;
+    font-weight: 500;
+    letter-spacing: 0.005em;
+    font-synthesis: none;
+  }
+
+  .editorial-h3 {
+    font-family: var(--font-sans);
+    font-size: 18px;
+    line-height: 1.35;
+    font-weight: 600;
+    letter-spacing: -0.015em;
+    color: #1e1a16;
+    text-wrap: balance;
+  }
+
+  /* Calligraphic serif italic emphasis (native italic on EN, crisp non-slanted focal ink on CJK WenKai) */
+  .editorial-italic {
+    font-family: var(--font-display);
+    font-style: italic;
+    font-weight: 400;
+    font-synthesis-style: none;
+    letter-spacing: -0.01em;
+    color: var(--color-ink-editorial-accent);
+    padding-right: 0.04em;
+  }
+
+  :lang(zh-CN) .editorial-italic {
+    font-weight: 500;
+    letter-spacing: 0.005em;
+    font-synthesis: none;
+    padding-right: 0;
+  }
+
+  /* Quieter charcoal italic variant when warm amber accent is already present nearby */
+  .editorial-italic-ink {
+    font-family: var(--font-display);
+    font-style: italic;
+    font-weight: 400;
+    font-synthesis-style: none;
+    letter-spacing: -0.01em;
+    color: #1e1a16;
+    padding-right: 0.04em;
+  }
+
+  :lang(zh-CN) .editorial-italic-ink {
+    font-weight: 500;
+    letter-spacing: 0.005em;
+    font-synthesis: none;
+    padding-right: 0;
+  }
+
+  /* Comfortable high-contrast editorial lead copy (> 8:1 on #f6f2eb cream) */
+  .editorial-lead {
+    font-family: var(--font-sans);
+    font-size: clamp(16px, 1.35vw, 17.5px);
+    line-height: 1.62;
+    color: #4a433b;
+    max-width: 56ch;
+    text-wrap: pretty;
+  }
+
+  /* Restrained tracked mono metadata / group kicker (13px floor, 6.5:1 on cream) */
+  .editorial-eyebrow {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    font-family: var(--font-mono);
+    font-size: 13px;
+    font-weight: 500;
+    line-height: 1.35;
+    letter-spacing: 0.03em;
+    color: #8c400e;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Tabular mono proof highlight pills & inline technical specs */
+  .metric-mono {
+    display: inline-flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.35rem;
+    max-width: 100%;
+    border-radius: 14px;
+    background-color: rgba(30, 26, 22, 0.055);
+    box-shadow: inset 0 0 0 1px rgba(38, 30, 22, 0.11);
+    padding: 0.28rem 0.7rem;
+    font-family: var(--font-mono);
+    font-size: 13px;
+    font-weight: 500;
+    line-height: 1.4;
+    letter-spacing: -0.01em;
+    color: #2b241d;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .metric-mono-accent {
+    background-color: rgba(154, 74, 18, 0.09);
+    box-shadow: inset 0 0 0 1px rgba(154, 74, 18, 0.24);
+    color: #7c380c;
+  }
+
+  .metric-inline {
+    font-family: var(--font-mono);
+    font-size: 0.9em;
+    font-weight: 500;
+    letter-spacing: -0.015em;
+    color: #1e1a16;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Quiet editorial link underline & subtle card lift (respects reduced motion) */
+  .editorial-link {
+    text-decoration-line: underline;
+    text-decoration-color: rgba(30, 26, 22, 0.24);
+    text-underline-offset: 4px;
+    text-decoration-thickness: 1px;
+    transition: color 150ms ease, text-decoration-color 150ms ease;
+  }
+
+  .editorial-link:hover {
+    color: #9a4a12;
+    text-decoration-color: rgba(154, 74, 18, 0.65);
+  }
+
+  .editorial-card-hover {
+    transition:
+      transform 180ms var(--ease-apple-out),
+      box-shadow 180ms ease,
+      background-color 180ms ease;
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .editorial-card-hover:hover {
+      transform: translateY(-2px);
+      box-shadow:
+        inset 0 0 0 1px rgba(38, 30, 22, 0.13),
+        0 16px 34px -22px rgba(45, 32, 18, 0.28);
+    }
+  }
+}
+
+/* Warm architectural 1px hairline surfaces */
+.hairline-sand {
+  background-color: #eee7dc;
+  box-shadow: inset 0 0 0 1px rgba(38, 30, 22, 0.085);
+}
+
+.hairline-paper {
+  background-color: #fbf9f5;
+  box-shadow:
+    inset 0 0 0 1px rgba(38, 30, 22, 0.09),
+    0 12px 32px -24px rgba(45, 32, 18, 0.24);
+}
+
+.hairline-download {
+  background-color: #fbf9f5;
+  box-shadow:
+    inset 0 0 0 1px rgba(38, 30, 22, 0.1),
+    0 24px 60px -36px rgba(45, 32, 18, 0.22);
+}
+
+.hairline-terminal-warm {
+  background-color: #1c1917;
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 245, 230, 0.08),
+    0 16px 36px -24px rgba(28, 22, 16, 0.45);
+}
+
+/* Warm frosted glass nav pill & HUD capsule over sunlit 3D room */
+.glass-pill-warm {
+  background-color: rgba(251, 248, 242, 0.78);
+  backdrop-filter: blur(18px) saturate(1.45);
+  -webkit-backdrop-filter: blur(18px) saturate(1.45);
+  box-shadow:
+    inset 0 0 0 1px rgba(38, 30, 22, 0.11),
+    inset 0 1px 0 rgba(255, 255, 255, 0.75),
+    0 6px 20px -10px rgba(48, 34, 18, 0.25);
+}
+
+.glass-pill-warm:hover {
+  background-color: rgba(255, 253, 249, 0.92);
+}
+
+/* Native MenuBarHome Classic · Light shell infused with Liquid Glass optical translucency & Fresnel rims */
+.classic-lg-shell {
+  position: relative;
+  background: linear-gradient(
+    162deg,
+    rgba(255, 255, 255, 0.72) 0%,
+    rgba(248, 245, 239, 0.58) 52%,
+    rgba(253, 251, 247, 0.68) 100%
+  );
+  backdrop-filter: blur(38px) saturate(1.95) brightness(1.03);
+  -webkit-backdrop-filter: blur(38px) saturate(1.95) brightness(1.03);
+  box-shadow:
+    inset 0 1.5px 1px rgba(255, 255, 255, 0.96),
+    inset 0 -1px 1px rgba(255, 255, 255, 0.45),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.66),
+    0 0 0 0.5px rgba(38, 30, 22, 0.11),
+    0 28px 64px -20px rgba(42, 28, 14, 0.30);
+}
+
+.liquid-glass-card {
+  position: relative;
+  background: linear-gradient(
+    165deg,
+    rgba(255, 255, 255, 0.76) 0%,
+    rgba(252, 250, 246, 0.56) 100%
+  );
+  backdrop-filter: blur(18px) saturate(1.5);
+  -webkit-backdrop-filter: blur(18px) saturate(1.5);
+  box-shadow:
+    inset 0 1.5px 0.5px rgba(255, 255, 255, 0.95),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.62),
+    0 0 0 0.5px rgba(38, 30, 22, 0.07),
+    0 6px 18px -10px rgba(42, 28, 14, 0.16);
+}
+
+.liquid-glass-pill {
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.80) 0%,
+    rgba(249, 246, 240, 0.58) 100%
+  );
+  backdrop-filter: blur(22px) saturate(1.7);
+  -webkit-backdrop-filter: blur(22px) saturate(1.7);
+  box-shadow:
+    inset 0 1.5px 0.5px rgba(255, 255, 255, 0.96),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.62),
+    0 0 0 0.5px rgba(38, 30, 22, 0.09),
+    0 4px 12px -6px rgba(42, 28, 14, 0.16);
+}
+
+.liquid-glass-pill:hover {
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.94) 0%,
+    rgba(253, 250, 246, 0.78) 100%
+  );
+}
+
+.liquid-glass-track {
+  background: rgba(38, 30, 22, 0.055);
+  box-shadow:
+    inset 0 1px 2px rgba(38, 30, 22, 0.06),
+    inset 0 0 0 0.5px rgba(255, 255, 255, 0.65);
+}
+
+/* Pure GPU-composited Apple-spring click-to-reveal entrance (mounted cleanly on iMac Focus) */
+@keyframes lgPopoverIn {
+  from {
+    opacity: 0;
+    transform: translate3d(0, -10px, 0) scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+.lg-popover-enter {
+  transform-origin: top right;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .lg-popover-enter {
+    animation: lgPopoverIn 420ms cubic-bezier(0.22, 1, 0.36, 1) 80ms both;
+  }
+}
+
+/* Warm frosted bottom HUD capsule */
+.warm-hud {
+  background: linear-gradient(
+    180deg,
+    rgba(255, 253, 249, 0.76) 0%,
+    rgba(249, 244, 236, 0.62) 100%
+  );
+  backdrop-filter: blur(26px) saturate(1.65);
+  -webkit-backdrop-filter: blur(26px) saturate(1.65);
+  box-shadow:
+    inset 0 1.5px 1px rgba(255, 255, 255, 0.88),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.45),
+    0 0 0 0.5px rgba(38, 30, 22, 0.11),
+    0 14px 36px -16px rgba(44, 30, 14, 0.25);
+}
+
+/* Unified warm cream edge scrim — keeps bottom-left typography ultra-legible & blends hero seamlessly into #f6f2eb */
+.hero-warm-scrim {
+  background:
+    linear-gradient(180deg, rgba(246, 242, 235, 0.58) 0%, rgba(246, 242, 235, 0) 14%),
+    radial-gradient(74% 72% at 18% 80%, rgba(246, 242, 235, 0.96) 0%, rgba(246, 242, 235, 0.78) 52%, rgba(246, 242, 235, 0) 82%),
+    linear-gradient(0deg, #f6f2eb 0%, rgba(246, 242, 235, 0.84) 16%, rgba(246, 242, 235, 0) 40%);
+}
+
+/* Reduced transparency fallback */
+@media (prefers-reduced-transparency: reduce) {
+  .glass-pill-warm,
+  .classic-lg-shell,
+  .liquid-glass-card,
+  .liquid-glass-pill,
+  .liquid-glass-track,
+  .warm-hud {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    background: #fbf9f5;
+  }
+}
+
+/* Tactile beveled light-sand keycap */
+.kbd-cap-warm {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 26px;
+  height: 25px;
+  padding: 0 7.5px;
+  border-radius: 6px;
+  background: linear-gradient(180deg, #ffffff 0%, #f6f1e8 100%);
+  color: #1e1a16;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  font-weight: 500;
+  line-height: 1;
+  letter-spacing: -0.01em;
+  font-variant-numeric: tabular-nums;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.9),
+    inset 0 0 0 1px rgba(38, 30, 22, 0.14),
+    0 1.5px 0 rgba(38, 30, 22, 0.18);
+  transition: transform 140ms var(--ease-apple-out), background-color 140ms ease;
+}
+
+.kbd-cap-warm[data-pressed="true"] {
+  transform: translateY(1px) scale(0.96);
+  background: rgba(154, 74, 18, 0.15);
+  color: #7c380c;
+  box-shadow: inset 0 0 0 1px rgba(154, 74, 18, 0.45);
+}
+
+/* Tactile button press spring */
+.btn-tactile {
+  transition:
+    transform 150ms var(--ease-apple-out),
+    background-color 150ms ease,
+    color 150ms ease,
+    box-shadow 150ms ease;
+}
+
+.btn-tactile:active {
+  transform: scale(0.97);
+}
+
+/* Custom Range Sliders (native input[type=range] with crisp warm styling) */
+input[type="range"].mbh-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 20px;
+  background: transparent;
+  cursor: pointer;
+}
+
+input[type="range"].mbh-slider::-webkit-slider-runnable-track {
+  height: 6px;
+  border-radius: 9999px;
+}
+
+input[type="range"].mbh-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 15px;
+  height: 15px;
+  margin-top: -4.5px;
+  border-radius: 9999px;
+  background: #ffffff;
+  box-shadow:
+    0 1px 4px rgba(30, 24, 18, 0.36),
+    inset 0 0 0 1px rgba(30, 24, 18, 0.14);
+  transition: transform 140ms var(--ease-apple-out);
+}
+
+input[type="range"].mbh-slider:active::-webkit-slider-thumb {
+  transform: scale(1.12);
+}
+
+input[type="range"].mbh-slider::-moz-range-track {
+  height: 6px;
+  border-radius: 9999px;
+}
+
+input[type="range"].mbh-slider::-moz-range-thumb {
+  width: 15px;
+  height: 15px;
+  border: 1px solid rgba(30, 24, 18, 0.16);
+  border-radius: 9999px;
+  background: #ffffff;
+  box-shadow: 0 1px 4px rgba(30, 24, 18, 0.36);
+}
+
+/* Hero editorial entrance — opt-in only under prefers-reduced-motion: no-preference */
+@keyframes heroFadeLift {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.hero-enter-item {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .hero-enter-item {
+    animation: heroFadeLift 520ms var(--ease-apple-out) both;
+  }
+  .hero-enter-item-delay-1 {
+    animation-delay: 80ms;
+  }
+  .hero-enter-item-delay-2 {
+    animation-delay: 150ms;
+  }
+  .hero-enter-item-delay-3 {
+    animation-delay: 220ms;
+  }
+}
+
+/* Doorbell PiP Ghost-to-Pin transition */
+.pip-ghost {
+  opacity: 0.42;
+  transform: scale(0.96) translateY(6px);
+  filter: blur(1px);
+}
+
+.pip-pinned {
+  opacity: 1;
+  transform: scale(1) translateY(0);
+  filter: blur(0);
+}
+
+/* ==========================================================================
+   Fancy GitHub Star CTA & Editorial Star Invitation (GPU-composited only)
+   ========================================================================== */
+
+@layer components {
+  .editorial-italic-gold {
+    font-family: var(--font-display);
+    font-style: italic;
+    font-weight: 400;
+    font-synthesis-style: none;
+    letter-spacing: -0.01em;
+    color: #fbbf24;
+    padding-right: 0.04em;
+  }
+
+  :lang(zh-CN) .editorial-italic-gold {
+    font-weight: 500;
+    letter-spacing: 0.005em;
+    font-synthesis: none;
+    padding-right: 0;
+  }
+
+  /* Warm dark-espresso editorial spotlight surface for GitHub Star invitation */
+  .hairline-star-card {
+    position: relative;
+    background:
+      radial-gradient(64% 90% at 88% 12%, rgba(217, 119, 6, 0.16) 0%, rgba(217, 119, 6, 0.04) 48%, rgba(28, 25, 23, 0) 78%),
+      linear-gradient(165deg, #211d19 0%, #181512 100%);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 245, 228, 0.12),
+      inset 0 0 0 1px rgba(255, 245, 228, 0.08),
+      0 24px 56px -34px rgba(24, 18, 12, 0.62);
+  }
+
+  .fancy-star-btn {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 9999px;
+    overflow: visible;
+    isolation: isolate;
+    text-decoration: none;
+    cursor: pointer;
+    transition:
+      transform 150ms var(--ease-apple-out),
+      background-color 180ms ease,
+      box-shadow 200ms ease,
+      color 160ms ease;
+  }
+
+  .fancy-star-btn:active {
+    transform: scale(0.97);
+  }
+
+  /* Variant 1: Top Nav warm-frosted pill */
+  .fancy-star-nav {
+    background: linear-gradient(180deg, rgba(255, 253, 249, 0.86) 0%, rgba(248, 243, 235, 0.78) 100%);
+    backdrop-filter: blur(18px) saturate(1.45);
+    -webkit-backdrop-filter: blur(18px) saturate(1.45);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.88),
+      inset 0 0 0 1px rgba(38, 30, 22, 0.12),
+      0 4px 16px -8px rgba(48, 34, 18, 0.22);
+  }
+
+  .fancy-star-nav[data-starred="true"] {
+    background: linear-gradient(180deg, rgba(255, 251, 242, 0.94) 0%, rgba(250, 241, 225, 0.88) 100%);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.9),
+      inset 0 0 0 1px rgba(154, 74, 18, 0.30),
+      0 6px 18px -8px rgba(154, 74, 18, 0.24);
+  }
+
+  /* Variant 2: Sculptural dark-espresso golden-rim spotlight pill */
+  .fancy-star-spotlight {
+    background: linear-gradient(180deg, #2b251f 0%, #1c1814 100%);
+    box-shadow:
+      inset 0 1px 0 rgba(254, 243, 199, 0.32),
+      inset 0 0 0 1px rgba(245, 158, 11, 0.38),
+      0 1px 2px rgba(0, 0, 0, 0.38),
+      0 14px 32px -14px rgba(217, 119, 6, 0.38);
+  }
+
+  .fancy-star-spotlight[data-starred="true"] {
+    box-shadow:
+      inset 0 1px 0 rgba(254, 243, 199, 0.45),
+      inset 0 0 0 1px rgba(251, 191, 36, 0.62),
+      0 14px 34px -12px rgba(217, 119, 6, 0.52);
+  }
+
+  .fancy-star-spotlight:focus-visible {
+    outline: 2px solid #fbbf24;
+    outline-offset: 3px;
+  }
+
+  /* Variant 3: Compact warm-amber nudge pill */
+  .fancy-star-subtle {
+    background: rgba(154, 74, 18, 0.09);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.65),
+      inset 0 0 0 1px rgba(154, 74, 18, 0.24);
+  }
+
+  .fancy-star-subtle[data-starred="true"] {
+    background: rgba(217, 119, 6, 0.14);
+    box-shadow: inset 0 0 0 1px rgba(154, 74, 18, 0.38);
+  }
+
+  /* Pointer-tracking golden radial glow (leaf element — zero inherited recalc) */
+  .fancy-star-pointer-sheen {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    border-radius: inherit;
+    opacity: 0;
+    background: radial-gradient(
+      110px circle at var(--star-mx, 50%) var(--star-my, 50%),
+      rgba(251, 191, 36, 0.26) 0%,
+      rgba(217, 119, 6, 0.08) 48%,
+      transparent 76%
+    );
+    transition: opacity 220ms ease;
+  }
+
+  /* Oblique specular golden sweep triggered on hover */
+  .fancy-star-sweep {
+    position: absolute;
+    inset: -2px;
+    pointer-events: none;
+    opacity: 0;
+    background: linear-gradient(
+      112deg,
+      transparent 24%,
+      rgba(251, 191, 36, 0.22) 47%,
+      rgba(255, 251, 235, 0.44) 51%,
+      rgba(251, 191, 36, 0.16) 56%,
+      transparent 76%
+    );
+    transform: translate3d(-120%, 0, 0);
+  }
+
+  .fancy-star-icon {
+    transition:
+      transform 220ms var(--ease-apple-out),
+      color 180ms ease,
+      fill 180ms ease;
+  }
+
+  @media (hover: hover) and (pointer: fine) {
+    .fancy-star-nav:hover {
+      background: linear-gradient(180deg, rgba(255, 254, 251, 0.96) 0%, rgba(252, 247, 238, 0.92) 100%);
+      box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.96),
+        inset 0 0 0 1px rgba(154, 74, 18, 0.28),
+        0 8px 22px -10px rgba(154, 74, 18, 0.28);
+    }
+
+    .fancy-star-spotlight:hover {
+      transform: translateY(-1px);
+      box-shadow:
+        inset 0 1px 0 rgba(254, 243, 199, 0.48),
+        inset 0 0 0 1px rgba(251, 191, 36, 0.68),
+        0 18px 38px -12px rgba(217, 119, 6, 0.56);
+    }
+
+    .fancy-star-spotlight:hover .fancy-star-pointer-sheen {
+      opacity: 1;
+    }
+
+    .fancy-star-subtle:hover {
+      background: rgba(154, 74, 18, 0.14);
+      box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.7),
+        inset 0 0 0 1px rgba(154, 74, 18, 0.36);
+    }
+
+    .fancy-star-btn:hover .fancy-star-icon {
+      transform: scale(1.12) rotate(-10deg);
+      fill: #f59e0b;
+      color: #f59e0b;
+    }
+
+    .fancy-star-btn:hover .fancy-star-sweep {
+      animation: fancyStarSweep 640ms var(--ease-apple-out) forwards;
+    }
+  }
+
+  /* 8-ray geometric golden micro-spark celebration burst */
+  .fancy-star-burst {
+    position: absolute;
+    inset: 50% auto auto 50%;
+    width: 0;
+    height: 0;
+    pointer-events: none;
+  }
+
+  .fancy-star-spark {
+    position: absolute;
+    left: 0;
+    top: 0;
+    opacity: 0;
+    will-change: transform, opacity;
+    animation: fancyStarSpark 520ms cubic-bezier(0.16, 1, 0.3, 1) var(--sdelay, 0ms) forwards;
+  }
+
+  .fancy-star-spark-diamond {
+    width: 5px;
+    height: 5px;
+    margin: -2.5px 0 0 -2.5px;
+    background: #fbbf24;
+    border-radius: 1px;
+  }
+
+  .fancy-star-spark-dot {
+    width: 3.5px;
+    height: 3.5px;
+    margin: -1.75px 0 0 -1.75px;
+    background: #fef3c7;
+    border-radius: 9999px;
+  }
+
+  /* Rolling tabular odometer counter */
+  .star-odometer {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    overflow: hidden;
+    line-height: 1.2;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .star-odometer-out {
+    position: absolute;
+    inset: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    pointer-events: none;
+    animation: starCountOut 320ms var(--ease-apple-out) forwards;
+  }
+
+  .star-odometer-in {
+    display: inline-flex;
+    align-items: center;
+    animation: starCountIn 320ms var(--ease-apple-out) forwards;
+  }
+
+  /* Calm non-blocking inline post-download / post-copy star nudge entrance */
+  .star-nudge-enter {
+    animation: starNudgeIn 240ms var(--ease-apple-out) both;
+  }
+}
+
+@keyframes fancyStarSweep {
+  0% {
+    opacity: 0;
+    transform: translate3d(-120%, 0, 0);
+  }
+  20% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translate3d(130%, 0, 0);
+  }
+}
+
+@keyframes fancyStarSpark {
+  0% {
+    opacity: 0;
+    transform: translate3d(0, 0, 0) rotate(var(--srot, 0deg)) scale(0.6);
+  }
+  22% {
+    opacity: 1;
+    transform: translate3d(calc(var(--sx) * 0.55), calc(var(--sy) * 0.55), 0) rotate(var(--srot, 0deg)) scale(1.1);
+  }
+  100% {
+    opacity: 0;
+    transform: translate3d(var(--sx), var(--sy), 0) rotate(var(--srot, 0deg)) scale(0.3);
+  }
+}
+
+@keyframes starCountOut {
+  from {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+  to {
+    opacity: 0;
+    transform: translate3d(0, -105%, 0);
+  }
+}
+
+@keyframes starCountIn {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 105%, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+@keyframes starNudgeIn {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 6px, 0) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fancy-star-btn:hover .fancy-star-sweep,
+  .fancy-star-spark,
+  .star-odometer-out,
+  .star-odometer-in,
+  .star-nudge-enter {
+    animation: none !important;
+  }
+
+  .fancy-star-spark,
+  .star-odometer-out {
+    display: none !important;
+  }
+
+  .fancy-star-btn:hover .fancy-star-icon,
+  .fancy-star-spotlight:hover {
+    transform: none !important;
+  }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .fancy-star-nav {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    background: #fbf9f5;
+  }
+}

@@ -1,0 +1,6 @@
+node_modules/
+dist/
+.taste-skill/
+.ssr-tmp/
+*.tsbuildinfo
+__pycache__/
