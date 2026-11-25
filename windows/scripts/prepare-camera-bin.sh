@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Stages the two Windows camera helpers that ship inside the installer:
-#   go2rtc.exe        MIT, downloaded from the pinned release and SHA-256 checked
+#   go2rtc.exe        MIT, built from the pinned source with the shared patch
 #   ffmpeg-silent.exe minimal LGPL build produced by build-ffmpeg-min.sh
 #
 # The runtime still downloads go2rtc when this staging step was skipped (for
@@ -9,39 +9,47 @@
 set -euo pipefail
 
 go2rtc_version="1.9.15"
-go2rtc_sha256="5b448fc90f15c925406d8da0984301985e385050222c1c2bbdf0a76fe4b1e9cb"
+go2rtc_commit="7c05066c90ab6ad1fccb506d5f0408aa31ebe60f"
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "${script_dir}/../.." && pwd)"
 out_dir="${1:-${repo_root}/windows/src-tauri/camera-bin}"
 
 mkdir -p "${out_dir}"
 out_dir="$(cd "${out_dir}" && pwd)"
-work_dir="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/menubarmijia-camera-bin"
-if command -v cygpath >/dev/null 2>&1; then
-  work_dir="$(cygpath -u "${work_dir}")"
-fi
-mkdir -p "${work_dir}"
-
-if [[ ! -f "${out_dir}/go2rtc.exe" || "${FORCE:-0}" == "1" ]]; then
-  archive="${work_dir}/go2rtc_win64.zip"
-  if [[ ! -f "${archive}" ]]; then
-    echo "▶ 下载 go2rtc ${go2rtc_version}"
-    curl -fL --retry 3 --retry-delay 2 --max-time 300 \
-      "https://github.com/AlexxIT/go2rtc/releases/download/v${go2rtc_version}/go2rtc_win64.zip" \
-      -o "${archive}"
-  fi
-  echo "${go2rtc_sha256}  ${archive}" | sha256sum -c -
-  rm -rf "${work_dir}/unpacked"
-  python -m zipfile -e "${archive}" "${work_dir}/unpacked"
-  cp "${work_dir}/unpacked/go2rtc.exe" "${out_dir}/go2rtc.exe"
+if command -v sha256sum >/dev/null 2>&1; then
+  sha256=(sha256sum)
+else
+  sha256=(shasum -a 256)
 fi
 
-if [[ ! -f "${out_dir}/GO2RTC-LICENSE.txt" || "${FORCE:-0}" == "1" ]]; then
-  curl -fL --retry 3 --retry-delay 2 --max-time 60 \
-    "https://raw.githubusercontent.com/AlexxIT/go2rtc/v${go2rtc_version}/LICENSE" \
-    -o "${out_dir}/GO2RTC-LICENSE.txt"
+patch_file="${repo_root}/scripts/go2rtc-ptz/patches/0001-xiaomi-ptz.patch"
+patch_sha="$("${sha256[@]}" "${patch_file}" | awk '{print $1}')"
+if [[ ! -s "${out_dir}/go2rtc.exe" || ! -s "${out_dir}/go2rtc.exe.sha256" ||
+      ! -s "${out_dir}/GO2RTC-LICENSE.txt" ||
+      "$("${sha256[@]}" "${out_dir}/go2rtc.exe" | awk '{print $1}')" != "$(cat "${out_dir}/go2rtc.exe.sha256")" ||
+      "$(cat "${out_dir}/go2rtc.patch.sha256" 2>/dev/null || true)" != "${patch_sha}" ||
+      "${FORCE:-0}" == "1" ]]; then
+  work_dir="$(mktemp -d)"
+  trap 'rm -rf "${work_dir}"' EXIT
+  go_bin="$(bash "${repo_root}/scripts/go2rtc-ptz/go_ready.sh")"
+  git -c advice.detachedHead=false clone -c core.autocrlf=false --quiet --depth 1 --branch "v${go2rtc_version}" https://github.com/AlexxIT/go2rtc.git "${work_dir}/go2rtc"
+  test "$(git -C "${work_dir}/go2rtc" rev-parse HEAD)" = "${go2rtc_commit}"
+  awk '{sub(/\r$/, ""); print}' "${patch_file}" | git -C "${work_dir}/go2rtc" apply --index
+
+  echo "▶ 构建 Windows go2rtc ${go2rtc_version}"
+  (
+    cd "${work_dir}/go2rtc"
+    CGO_ENABLED=0 GOOS=windows GOARCH=amd64 "${go_bin}" build -trimpath -buildvcs=false -ldflags "-s -w" -o "${work_dir}/go2rtc.exe" .
+  )
+  "${sha256[@]}" "${work_dir}/go2rtc.exe" | awk '{print $1}' > "${work_dir}/go2rtc.exe.sha256"
+  cp "${work_dir}/go2rtc.exe" "${work_dir}/go2rtc.exe.sha256" "${out_dir}/"
+  cp "${work_dir}/go2rtc/LICENSE" "${out_dir}/GO2RTC-LICENSE.txt"
+  printf '%s\n' "${patch_sha}" > "${out_dir}/go2rtc.patch.sha256"
 fi
 
+if [[ "${2:-}" == "--go2rtc-only" ]]; then
+  exit 0
+fi
 bash "${script_dir}/build-ffmpeg-min.sh" "${out_dir}"
 
 echo "✅ Windows 摄像机组件已就绪："

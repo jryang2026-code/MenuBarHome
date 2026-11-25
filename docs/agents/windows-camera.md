@@ -27,10 +27,11 @@
 
 ## 3. Helper 内置与 Windows 构建坑
 
-- **内置二进制**：`src-tauri/camera-bin/` 打包 `go2rtc.exe`（v1.9.15，SHA-256 `5b448fc90f15c925406d8da0984301985e385050222c1c2bbdf0a76fe4b1e9cb`）与最小化 LGPLv2.1 `ffmpeg`（v7.1.2，开启 `httpproxy`/`hls`/`https`/`schannel` 与 h264/hevc→mjpeg，无 libx264，PE 头 `pe_offset + 24 + 68` 的 `Subsystem` 置 `2` GUI + `CREATE_NO_WINDOW` 防黑框闪屏，附 `GO2RTC-LICENSE.txt` 与 `FFMPEG-LICENSE.txt`）。保留已提交的 `camera-bin/README.md` 防 `bundle.resources: ["camera-bin/*"]` 空匹配。
-- **运行时落地**：MSI 安装目录可能只读，首次使用从 `resource_dir().join("camera-bin")` 以临时文件原子重命名拷入 `%LOCALAPPDATA%\MenuBarMijia\bin`（不覆盖已有文件）；缺失时回退 3 次退避下载或提示手动放置路径。
+- **内置二进制**：`src-tauri/camera-bin/` 打包 `go2rtc.exe`（固定 v1.9.15 源码，应用与 macOS 共用的 `scripts/go2rtc-ptz/patches/0001-xiaomi-ptz.patch`）与最小化 LGPLv2.1 `ffmpeg`（v7.1.2，开启 `httpproxy`/`hls`/`https`/`schannel` 与 h264/hevc→mjpeg，无 libx264，PE 头 `pe_offset + 24 + 68` 的 `Subsystem` 置 `2` GUI + `CREATE_NO_WINDOW` 防黑框闪屏，附 `GO2RTC-LICENSE.txt` 与 `FFMPEG-LICENSE.txt`）。保留已提交的 `camera-bin/README.md` 防 `bundle.resources: ["camera-bin/*"]` 空匹配。
+- **运行时落地**：MSI 安装目录可能只读，首次使用从 `resource_dir().join("camera-bin")` 以临时文件原子重命名拷入 `%LOCALAPPDATA%\MenuBarMijia\bin`。内置 go2rtc 通过随包 SHA-256 校验后替换旧版本或损坏的副本。缺少内置组件时可退避下载校验固定的上游原版，用于米家和 HA 摄像机。通用摄像机需要带只读端点的内置版本。
 - **本机与 CI 构建**：
   - 本机默认 GNU 工具链会让 `tauri build` 构建脚本崩 `0xc0000005` 且 CLI **仍报 `exit 0`**——必须看日志，构建走 `windows/build-win.bat`（`vcvars64.bat` + 清 `CC`/`CXX` + `RUSTUP_TOOLCHAIN=stable-x86_64-pc-windows-msvc` + `npm run tauri -- build --target x86_64-pc-windows-msvc`）。改了前端 TS 必须重跑 `tauri build` 才会打进内嵌 exe。
+  - CI 和发版共用 `camera-bin` 工作流，通过 Go 1.26.10 编译并以补丁哈希更新缓存。本机可执行 `bash windows/scripts/prepare-camera-bin.sh` 打包同一版本。
   - MSYS2 下 `RUNNER_TEMP` 为 `D:\a\_temp`，GNU `tar` 会把 `D:` 当远程主机，须 `cygpath -u` + `tar --force-local`。
   - Git Bash 调 `taskkill`/`tasklist` 加 `MSYS_NO_PATHCONV=1`；单文件测试走 `node windows/scripts/test-file.mjs <file>`（Node 22 原生剥离 TS 类型，无需额外转译器）。
 
@@ -39,3 +40,9 @@
 1. **应用内「复制诊断」**：先看 `online`、`connectionMode`、`hasCustomURL` 与原始错误区分云端掉线、密钥协商、组件下载（`download_go2rtc_win64` 45s/120s 网络截断）与桥接转码；对外答复修复状态前用 `git tag --contains <commit>` 核实是否已进发版 tag。
 2. **绕过 App 独立基线**（`.scratch/camera-diag/diag.ts`）：读凭据管理器 `mi_session.com.jryang.menubarmijia` 直跑协商 + UDP 中继 + go2rtc，数 `/api/stream.mjpeg` 12 秒内 `0xFFD9` 帧数（读取循环只丢弃计数，不做正则拼接）。健康值：326–412 帧/12s，首帧 <3s。
 3. **App 内 WebView2 验证**（`cdp-drive.mjs`）：以 `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=19222`（先 `netstat` 避开被 `svchost` 占用的 9223）启动安装版 exe，每 400ms 比对 `Page.captureScreenshot` PNG 哈希并核对连续 `open → close → open` 三次均出画。
+
+## 5. 通用摄像机只读接入与凭据/配置安全（RTSP / ONVIF / ISAPI / 大华 / Tapo）
+
+- **契约与凭据隔离**：配置遵循 `Shared/genericCameraSources.schema.json`（与 `Tests/Fixtures/generic_camera_sources_golden.json` 黄金用例对齐），配置 JSON 绝不保存账号密码；凭据仅通过 `secure_store_*` 写入 Windows 凭据管理器，目标名为 `generic-camera:<id>`。
+- **运行时注册与回收**：Rust 从 Windows 凭据管理器读取凭据，解析并校验摄像机 IP 后，将带有 `#menubarmijia-readonly=1#audio=0#media=video` 的源地址放入已认证的回环 `PATCH /api/menubarmijia/readonly?id=…` 请求体。补丁在内存中创建原始流和 MJPEG 流，停止预览或完成连接测试时通过同一路径发送 `DELETE` 回收。通用流的凭据只进入请求体和内存，不写入 `go2rtc.yaml` 的 `streams:` 段，应用错误仅报告状态。
+- **局域网与进程隔离**：默认只允许私有 IP 和本地主机名，外部地址需要用户确认。ONVIF 返回的流必须指向已校验的 IP，RTSP 在只读模式下拒绝重定向。通用流复用现有 go2rtc 监督器（#476）和 Windows Job Object 资源上限（#504）。

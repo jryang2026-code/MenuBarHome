@@ -5,6 +5,16 @@ import {
   type CameraStreamQuality,
 } from "../core/cameraQuality.js";
 import {
+  genericCameraIdFromDeviceId,
+  genericCameraToSmartDevice,
+  isGenericCameraDeviceId,
+  isPrivateOrLocalCameraHost,
+  normalizeGenericCameraHost,
+  redactGenericCameraUrl,
+  type GenericCameraConfig,
+  type GenericCameraProfile,
+} from "../core/genericCameras.js";
+import {
   CameraHubCatalog,
   parsePrivateLanIpv4,
   resolveLiveCameraTarget,
@@ -184,6 +194,8 @@ interface CameraBridgeBinding {
   readonly subdid: string | null;
   /** Set when the stream is a locally registered HLS bridge rather than a Xiaomi P2P session. */
   readonly localHls?: boolean;
+  /** Set when the stream is a read-only generic camera bridge (RTSP/ONVIF/ISAPI/Dahua/Tapo). */
+  readonly genericCameraId?: string;
 }
 
 /** One cloud start. Identity is the lease, so a later start for the same device is a different entry. */
@@ -509,7 +521,7 @@ export class CameraLiveController {
       this.host.render();
       return;
     }
-    const dev = this.host.devices.find((d) => d.id === deviceId);
+    const dev = this.allDevicesWithGeneric().find((d) => d.id === deviceId);
     if (!dev) {
       const state = resolveHostMiSelectionState(this.host);
       const disabledHaSnap = resolveDisabledHaDeviceByEntity(deviceId, state.knownDisabledHaDevices);
@@ -524,7 +536,8 @@ export class CameraLiveController {
       return;
     }
     if (dev.kind.kind !== "camera") return;
-    if (this.resolveCameraSource(dev).backend === "homeAssistant" && !isHostHaEnabled(this.host)) {
+    const genericConfig = this.findGenericCameraConfig(dev.id);
+    if (!genericConfig && this.resolveCameraSource(dev).backend === "homeAssistant" && !isHostHaEnabled(this.host)) {
       const scope = haConnectionScope(this.host.settings.haBaseURL, this.host.settings.haToken) ?? "ha:disabled";
       const msg = controlTargetRejectionMessage(
         { code: "connectionScopeDisabled", connection: "home-assistant", scope },
@@ -591,6 +604,10 @@ export class CameraLiveController {
     this.requestDetachedPipWindow(dev, options);
     if (options?.alreadyCountedLockBlock) {
       this.liveCameraError = t("屏幕已锁定，已拦截设备控制指令");
+    } else if (genericConfig && window.__TAURI_INTERNALS__?.invoke) {
+      this.liveCameraQualityApplies = false;
+      this.liveCameraLoading = true;
+      void this.bridgeGenericCameraToMjpeg(dev.id, genericConfig, this.detachedPipActive ? "sub" : "main");
     } else if (dev.kind.isOn && this.liveCameraStreamURL && window.__TAURI_INTERNALS__?.invoke) {
       this.liveCameraLoading = true;
       void this.playCustomCameraUrl(dev.id, this.liveCameraStreamURL);
@@ -960,9 +977,16 @@ export class CameraLiveController {
     this.liveCameraMode = null;
     this.liveCameraMjpegSrc = null;
     if (this.activeLiveCameraId) {
+      const binding = this.cameraBridgeBindings.get(this.activeLiveCameraId);
       const stopPayload = this.buildStopBridgePayload(this.activeLiveCameraId);
       this.cameraBridgeBindings.delete(this.activeLiveCameraId);
-      if (this.categoryEnabled) void this.runNativeCameraOperation("stop_xiaomi_camera_bridge", stopPayload);
+      if (this.categoryEnabled) {
+        if (binding?.genericCameraId) {
+          void this.runNativeCameraOperation("stop_generic_camera_bridge", { id: binding.genericCameraId });
+        } else {
+          void this.runNativeCameraOperation("stop_xiaomi_camera_bridge", stopPayload);
+        }
+      }
     }
   }
 
@@ -1409,26 +1433,134 @@ export class CameraLiveController {
   }
 
   public reconnectCameraLiveView(streamUrlOverride?: string | null): void {
-    const dev = this.host.devices.find((d) => d.id === this.activeLiveCameraId);
+    const dev = this.allDevicesWithGeneric().find((d) => d.id === this.activeLiveCameraId);
     if (!dev || dev.kind.kind !== "camera") return;
-    if (this.resolveCameraSource(dev).backend === "xiaomiCloud") {
+    const genericConfig = this.findGenericCameraConfig(dev.id);
+    if (!genericConfig && this.resolveCameraSource(dev).backend === "xiaomiCloud") {
       this.reconnectingP2PSessionId = this.p2pSessionKeyForDevice(dev);
     }
     this.stopLiveTransport();
-    this.liveCameraQualityApplies = true;
+    this.liveCameraQualityApplies = !genericConfig;
     const rawStreamUrl = this.cameraStreamURLs[dev.id] ?? streamUrlOverride ?? null;
-    this.liveCameraStreamURL = rawStreamUrl
-      ? this.normalizeWindowsCameraStreamUrl(rawStreamUrl)
-      : this.resolveHaCameraStreamUrl(dev);
+    this.liveCameraStreamURL = genericConfig
+      ? null
+      : rawStreamUrl
+        ? this.normalizeWindowsCameraStreamUrl(rawStreamUrl)
+        : this.resolveHaCameraStreamUrl(dev);
     this.liveCameraError = null;
     this.liveCameraLoading = false;
-    if (this.liveCameraStreamURL && window.__TAURI_INTERNALS__?.invoke) {
+    if (genericConfig && window.__TAURI_INTERNALS__?.invoke) {
+      this.liveCameraLoading = true;
+      void this.bridgeGenericCameraToMjpeg(dev.id, genericConfig, this.detachedPipActive ? "sub" : "main");
+    } else if (this.liveCameraStreamURL && window.__TAURI_INTERNALS__?.invoke) {
       this.liveCameraLoading = true;
       void this.playCustomCameraUrl(dev.id, this.liveCameraStreamURL);
     } else if (!this.liveCameraStreamURL && this.resolveCameraSource(dev).backend === "xiaomiCloud") {
       void this.resolveCloudCameraStream(dev);
     }
     this.host.render();
+  }
+
+  private allDevicesWithGeneric(): SmartDevice[] {
+    const existing = this.host.devices;
+    const generic = this.host.settings.genericCameras ?? [];
+    if (generic.length === 0) return [...existing];
+    const seen = new Set(existing.map((d) => d.id));
+    const merged = [...existing];
+    for (const cam of generic) {
+      const synth = genericCameraToSmartDevice(cam, tr3("通用摄像机", "通用攝影機", "Generic Cameras"));
+      if (!seen.has(synth.id)) {
+        seen.add(synth.id);
+        merged.push(synth);
+      }
+    }
+    return merged;
+  }
+
+  private findGenericCameraConfig(deviceId: string): GenericCameraConfig | null {
+    const id = genericCameraIdFromDeviceId(deviceId);
+    if (!id) return null;
+    return (this.host.settings.genericCameras ?? []).find((c) => c.id === id) ?? null;
+  }
+
+  public async bridgeGenericCameraToMjpeg(
+    devId: string,
+    config: GenericCameraConfig,
+    profile: GenericCameraProfile,
+  ): Promise<boolean> {
+    if (!this.categoryEnabled || !window.__TAURI_INTERNALS__?.invoke) return false;
+    const token = this.liveCameraToken;
+    this.liveCameraLoading = true;
+    this.host.render();
+    try {
+      if (this.host.settings.blockControlWhileLocked) {
+        if (
+          await rejectIfControlBlockedWhileLocked(this.host, {
+            beforeRender: () => {
+              if (this.liveCameraToken === token && this.activeLiveCameraId === devId) {
+                this.liveCameraLoading = false;
+                this.liveCameraError = t("屏幕已锁定，已拦截设备控制指令");
+              }
+            },
+          })
+        ) {
+          return false;
+        }
+        if (this.liveCameraToken !== token || this.activeLiveCameraId !== devId) return false;
+      }
+      const allowNonLocal =
+        isPrivateOrLocalCameraHost(config.host) ||
+        (this.host.settings.genericCameraConsentHosts ?? []).includes(normalizeGenericCameraHost(config.host));
+      const mjpegName = await this.runNativeCameraOperation<string>(
+        "bridge_generic_camera_stream",
+        {
+          id: config.id,
+          kind: config.kind,
+          host: config.host,
+          port: config.port ?? null,
+          path: config.path ?? null,
+          channel: config.channel ?? 1,
+          profile,
+          customSource: (profile === "sub" ? config.subStream ?? (config.kind === "rtsp" ? config.mainStream : undefined) : config.mainStream) ?? null,
+          allowNonLocal,
+        },
+        token,
+      );
+      if (this.liveCameraToken !== token || this.activeLiveCameraId !== devId) {
+        if (token >= this.lastDisabledToken && mjpegName && this.activeLiveCameraId !== devId) {
+          void this.runNativeCameraOperation("stop_generic_camera_bridge", { id: config.id });
+        }
+        return false;
+      }
+      if (mjpegName) {
+        this.cameraBridgeBindings.set(devId, {
+          did: `generic_${config.id}`,
+          channel: 0,
+          subdid: null,
+          localHls: true,
+          genericCameraId: config.id,
+        });
+        this.liveCameraStreamURL = mjpegName;
+        this.liveCameraError = null;
+        this.liveCameraLoading = false;
+        this.startMjpegTransport(mjpegName);
+        this.host.render();
+        this.attachLiveMedia();
+        return true;
+      }
+      this.liveCameraStreamURL = null;
+      this.liveCameraError = t("本地视频桥接未返回可用流，请检查网络后重试");
+      this.liveCameraLoading = false;
+      this.host.render();
+    } catch (err) {
+      if (this.liveCameraToken === token && this.activeLiveCameraId === devId) {
+        this.liveCameraStreamURL = null;
+        this.liveCameraError = redactGenericCameraUrl(err instanceof Error ? err.message : String(err));
+        this.liveCameraLoading = false;
+        this.host.render();
+      }
+    }
+    return false;
   }
 
   public resolveCloudCameraStream(dev: SmartDevice): Promise<void> {
@@ -2060,7 +2192,7 @@ export class CameraLiveController {
     } else {
       mediaKind = "error";
     }
-    const playableCameras = this.host.devices
+    const playableCameras = this.allDevicesWithGeneric()
       .filter((item) => item.kind.kind === "camera" && (item.id === dev.id || !CameraHubCatalog.isHub(item.model)))
       .map((cam) => ({
         id: cam.id,
@@ -2068,9 +2200,11 @@ export class CameraLiveController {
         roomName: cam.roomName,
         isActiveOnline: cam.isOnline && cam.kind.kind === "camera" && cam.kind.isOn,
       }));
+    const isGeneric = isGenericCameraDeviceId(dev.id);
     const hasDualLenses =
-      this.host.settings.connectionMode === "xiaomiCloud" && !customURL && (k.lenses?.length ?? 0) > 1;
+      !isGeneric && this.host.settings.connectionMode === "xiaomiCloud" && !customURL && (k.lenses?.length ?? 0) > 1;
     const showManualIpFallback =
+      !isGeneric &&
       this.host.settings.connectionMode === "xiaomiCloud" &&
       !customURL &&
       (this.liveCameraNeedsManualIp || Boolean(savedManualIp) || Boolean(this.liveCameraLocalIpError));

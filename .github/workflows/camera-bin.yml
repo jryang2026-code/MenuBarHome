@@ -1,8 +1,8 @@
 name: Camera binaries
 
 # Builds the two Windows camera helpers that are embedded in the installer.
-# Called by ci.yml (PR gate) and release.yml (tag release) so the same pinned
-# go2rtc release and minimal LGPL ffmpeg build reach both artifacts.
+# Called by ci.yml (PR gate) and release.yml (tag release) so the same patched
+# go2rtc build and minimal LGPL ffmpeg build reach both artifacts.
 
 on:
   workflow_call:
@@ -26,11 +26,17 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: windows/src-tauri/camera-bin
-          key: camera-bin-${{ hashFiles('windows/scripts/build-ffmpeg-min.sh', 'windows/scripts/prepare-camera-bin.sh', 'windows/scripts/patch_pe_subsystem.py') }}
+          key: camera-bin-${{ hashFiles('windows/scripts/build-ffmpeg-min.sh', 'windows/scripts/prepare-camera-bin.sh', 'windows/scripts/patch_pe_subsystem.py', 'scripts/go2rtc-ptz/go_ready.sh', 'scripts/go2rtc-ptz/patches/0001-xiaomi-ptz.patch', '.github/workflows/camera-bin.yml') }}
+      - if: steps.camera-bin-cache.outputs.cache-hit != 'true'
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version: '1.26.10'
+          cache: false
       - if: steps.camera-bin-cache.outputs.cache-hit != 'true'
         uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2
         with:
           msystem: MINGW64
+          path-type: inherit
           update: false
           install: >-
             mingw-w64-x86_64-gcc
@@ -38,13 +44,14 @@ jobs:
             nasm
             python
             curl
+            git
       - name: Build go2rtc and minimal ffmpeg
         if: steps.camera-bin-cache.outputs.cache-hit != 'true'
         run: bash scripts/prepare-camera-bin.sh src-tauri/camera-bin
       - name: Require both camera helpers
         # 以前脚本会补齐缺失的文件；命中缓存跳过脚本后，用这一步挡住不完整的缓存。
         shell: bash
-        run: test -s src-tauri/camera-bin/go2rtc.exe && test -s src-tauri/camera-bin/ffmpeg-silent.exe && test -s src-tauri/camera-bin/GO2RTC-LICENSE.txt
+        run: test -s src-tauri/camera-bin/go2rtc.exe && test -s src-tauri/camera-bin/go2rtc.exe.sha256 && test -s src-tauri/camera-bin/ffmpeg-silent.exe && test -s src-tauri/camera-bin/GO2RTC-LICENSE.txt
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: camera-bin

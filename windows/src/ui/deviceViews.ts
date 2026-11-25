@@ -509,7 +509,8 @@ function renderPrimaryDrawer(
     }
     if (k.kind === "camera") {
       const hasStillWall = Boolean(cameraStillWall && cameraStillWall.tiles.length > 0);
-      if (!hasStillWall && k.powerWritable === false && k.availableNightShots.length === 0 && !k.motionDetectionEntityId) return "";
+      const isGeneric = dev.id.startsWith("generic-camera:");
+      if (!hasStillWall && !isGeneric && k.powerWritable === false && k.availableNightShots.length === 0 && !k.motionDetectionEntityId) return "";
       const id = escapeHtml(dev.id);
       const motionOn = Boolean(k.isMotionDetectionOn);
       const stillWallHtml = hasStillWall && cameraStillWall

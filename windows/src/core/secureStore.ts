@@ -14,6 +14,7 @@
  */
 
 import { ASSISTANT_PROVIDER_PRESETS, assistantEndpointIdentity, inferAssistantPreset } from "./assistant/provider.js";
+import { sanitizeGenericCamerasList, type GenericCameraCredentials } from "./genericCameras.js";
 import { normalizeMiCloudRegion, type MiSession } from "./miCloudClient.js";
 import { clearPersistedMiSessionExpired,
   clearPersistedMiSessionExpiredFor,
@@ -24,12 +25,44 @@ export const WIN32_CRED_MAX_BLOB_BYTES = 2560;
 
 export type AssistantPresetCredentialName = `assistant_api_key_${string}`;
 export type MiAccountCredentialName = `mi_session_${string}`;
+export type GenericCameraCredentialName = `generic-camera:${string}`;
 export type SecureCredentialName =
   | "mi_session"
   | "ha_token"
   | "assistant_api_key"
   | AssistantPresetCredentialName
-  | MiAccountCredentialName;
+  | MiAccountCredentialName
+  | GenericCameraCredentialName;
+
+export function genericCameraCredentialName(cameraId: string): GenericCameraCredentialName {
+  const cleaned = cameraId.trim();
+  if (!/^[A-Za-z0-9_-]{1,64}$/.test(cleaned)) {
+    throw new Error(`Invalid generic camera credential id: ${cameraId}`);
+  }
+  return `generic-camera:${cleaned}`;
+}
+
+export function serializeGenericCameraCredential(creds: GenericCameraCredentials): string {
+  const username = creds.username ?? "";
+  const password = creds.password ?? "";
+  if (username === "" && password === "") return "";
+  return JSON.stringify({ username, password });
+}
+
+export function parseGenericCameraCredential(raw: string | null): GenericCameraCredentials | null {
+  if (!raw || raw.trim() === "") return null;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    const rec = parsed as Record<string, unknown>;
+    return {
+      username: typeof rec.username === "string" ? rec.username : "",
+      password: typeof rec.password === "string" ? rec.password : "",
+    };
+  } catch {
+    return null;
+  }
+}
 
 export function assistantApiKeyCredentialName(presetId: string): AssistantPresetCredentialName {
   return `assistant_api_key_${presetId}`;
@@ -102,6 +135,9 @@ export function hasCredentials(credentials: CredentialSnapshot): boolean {
 export function sanitizeSettingsForStorage<T extends object>(settings: T): Record<string, unknown> {
   const copy = { ...settings } as Record<string, unknown>;
   for (const field of CREDENTIAL_SETTINGS_FIELDS) delete copy[field];
+  if (Array.isArray(copy.genericCameras)) {
+    copy.genericCameras = sanitizeGenericCamerasList(copy.genericCameras);
+  }
   const cache = copy.cachedHAHome;
   if (cache && typeof cache === "object" && "home" in cache) {
     const home = cache.home;

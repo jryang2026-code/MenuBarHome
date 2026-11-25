@@ -1,5 +1,6 @@
 import type { HabitEntry, HabitRecordingReceipt } from "../core/assistant.js";
 import type { CameraStreamQuality } from "../core/cameraQuality.js";
+import type { GenericCameraConfig } from "../core/genericCameras.js";
 import type { LanguagePreference } from "../core/i18n.js";
 import type { MiSession } from "../core/miCloudClient.js";
 import type { DeviceCommand, DeviceIntent, SmartDevice, SynthesizedHome } from "../core/models.js";
@@ -163,6 +164,10 @@ export interface PersistedSettings {
   cameraStreamURLs?: Record<string, string>;
   /** Per-camera Xiaomi stream quality (#97); missing or unknown values mean `hd`. */
   cameraStreamQualities?: Record<string, CameraStreamQuality>;
+  /** Read-only generic cameras (RTSP / ONVIF / ISAPI / Dahua / Tapo); credentials live in Windows Credential Manager. */
+  genericCameras?: GenericCameraConfig[];
+  /** Non-local generic camera hosts explicitly confirmed by the user. */
+  genericCameraConsentHosts?: string[];
 }
 
 export interface UndoStep {
