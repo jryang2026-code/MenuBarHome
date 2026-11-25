@@ -4,6 +4,17 @@ import os
 import Darwin
 #endif
 
+private final class LockedFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+
+    func withLock<T>(_ body: (inout Bool) -> T) -> T {
+        lock.lock()
+        defer { lock.unlock() }
+        return body(&value)
+    }
+}
+
 // MARK: - UDP Transport Seam
 
 public struct MiIOBroadcastReply: Equatable, Sendable {
@@ -58,7 +69,7 @@ enum DarwinBSDMiIOBroadcastScanner {
 
     static func probeBroadcast(packet: Data, port: UInt16, timeout: Duration) async throws -> [MiIOBroadcastReply] {
         try Task.checkCancellation()
-        let cancelFlag = OSAllocatedUnfairLock(initialState: false)
+        let cancelFlag = LockedFlag()
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { cont in
                 broadcastQueue.async {
@@ -70,7 +81,7 @@ enum DarwinBSDMiIOBroadcastScanner {
         } onCancel: { cancelFlag.withLock { $0 = true } }
     }
 
-    private static func performBlockingBroadcast(packet: Data, port: UInt16, timeout: Duration, cancelFlag: OSAllocatedUnfairLock<Bool>) throws -> [MiIOBroadcastReply] {
+    private static func performBlockingBroadcast(packet: Data, port: UInt16, timeout: Duration, cancelFlag: LockedFlag) throws -> [MiIOBroadcastReply] {
         var localIPs: Set<String> = ["0.0.0.0", "127.0.0.1"], broadcastIPs: Set<String> = ["255.255.255.255"]
         var ifap: UnsafeMutablePointer<ifaddrs>?
         if getifaddrs(&ifap) == 0, let first = ifap {

@@ -1,12 +1,22 @@
 import Foundation
-import os
 import Testing
 @testable import MijiaCore
 
 struct MiCloudRateLimiterTests {
+    private final class TestClock: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value = 0.0
+
+        var uptime: Double { lock.withLock { value } }
+
+        func setUptime(_ uptime: Double) {
+            lock.withLock { value = uptime }
+        }
+    }
+
     @Test func pollsCanOnlySpendTheReadBucket() {
-        let clock = OSAllocatedUnfairLock(initialState: 0.0)
-        let limiter = MiCloudRateLimiter(uptime: { clock.withLock { $0 } })
+        let clock = TestClock()
+        let limiter = MiCloudRateLimiter(uptime: { clock.uptime })
         for _ in 0..<12 {
             #expect(limiter.admit(account: "a", write: false) == .admitted(generation: 0))
         }
@@ -15,16 +25,16 @@ struct MiCloudRateLimiterTests {
             #expect(limiter.admit(account: "a", write: true) == .admitted(generation: 0))
         }
         #expect(limiter.admit(account: "a", write: true) == .limited)
-        clock.withLock { $0 = 0.5 }
+        clock.setUptime(0.5)
         #expect(limiter.admit(account: "a", write: true) == .admitted(generation: 0))
         #expect(limiter.admit(account: "a", write: false) == .waitForReadToken(0.5))
     }
 
     @Test(arguments: ["30", "Thu, 01 Jan 1970 00:00:30 GMT"])
     func retryAfterSetsMinimumReadPause(_ header: String) {
-        let clock = OSAllocatedUnfairLock(initialState: 0.0)
+        let clock = TestClock()
         let limiter = MiCloudRateLimiter(
-            uptime: { clock.withLock { $0 } },
+            uptime: { clock.uptime },
             wallClock: { Date(timeIntervalSince1970: 0) },
             jitter: { 0.5 }
         )
@@ -35,9 +45,9 @@ struct MiCloudRateLimiterTests {
             #expect(limiter.admit(account: "a", write: true) == .admitted(generation: 1))
         }
         #expect(limiter.admit(account: "a", write: true) == .limited)
-        clock.withLock { $0 = 59.99 }
+        clock.setUptime(59.99)
         #expect(limiter.admit(account: "a", write: false) == .limited)
-        clock.withLock { $0 = 60 }
+        clock.setUptime(60)
         #expect(limiter.admit(account: "a", write: false) == .admitted(generation: 1))
     }
 
