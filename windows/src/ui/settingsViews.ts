@@ -738,11 +738,18 @@ function renderHomeAssistantCredentialsBlock(ctx: SettingsViewContext): string {
           <label for="settings-ha-url" style="margin: 0;">${ctx.escapeHtml(
             tr3("Home Assistant 地址 (URL)", "Home Assistant 位址 (URL)", "Home Assistant URL"),
           )}</label>
-          <button type="button" class="cc-inline-pill" id="btn-fill-default-ha" ${hasHaUrl ? "disabled" : ""}>${ctx.escapeHtml(
-            tr3("填入常用地址", "填入常用位址", "Fill Default Address"),
-          )}</button>
+          <div class="cc-ha-url-actions">
+            <button type="button" class="cc-inline-pill" id="btn-settings-discover-ha">${ctx.escapeHtml(
+              t("在局域网中查找"),
+            )}</button>
+            <button type="button" class="cc-inline-pill" id="btn-fill-default-ha" ${hasHaUrl ? "disabled" : ""}>${ctx.escapeHtml(
+              tr3("填入常用地址", "填入常用位址", "Fill Default Address"),
+            )}</button>
+          </div>
         </div>
         <input id="settings-ha-url" class="cc-input" type="url" value="${ctx.escapeHtml(ctx.settings.haBaseURL)}" placeholder="http://homeassistant.local:8123" />
+        <p class="cc-ha-discover-status" id="settings-ha-discover-status" role="status" hidden></p>
+        <div class="cc-ha-candidates" id="settings-ha-candidates" hidden></div>
         <p class="cc-field-hint" style="margin: 4px 0 0;">${ctx.escapeHtml(
           tr3(
             "不确定地址？可在 Home Assistant 网页设置里查看。",

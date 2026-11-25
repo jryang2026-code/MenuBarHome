@@ -1345,6 +1345,28 @@ async fn supervise_go2rtc_restart(
             return;
         }
 
+        if is_first_failure && pending_error.is_none() {
+            let reason = GO2RTC_PROCESS
+                .lock()
+                .ok()
+                .and_then(|guard| {
+                    guard
+                        .as_ref()
+                        .map(|managed| managed.inspect_exit_reason(pending_exit_code))
+                })
+                .unwrap_or_else(|| {
+                    crate::job_object::classify_helper_exit_reason(
+                        pending_exit_code,
+                        crate::job_object::compute_job_limits(
+                            crate::job_object::JobHardLimits::camera_default(),
+                        ),
+                        None,
+                    )
+                });
+            crate::job_object::log_sanitized_reason(&reason);
+            pending_error = Some(reason);
+        }
+
         let retry_plan = {
             let Ok(mut guard) = GO2RTC_SUPERVISOR.lock() else {
                 return;

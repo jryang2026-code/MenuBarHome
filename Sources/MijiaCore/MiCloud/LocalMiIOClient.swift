@@ -667,11 +667,31 @@ public actor LocalMiIOClient {
     }
 
     public func setProps(_ writes: [MiotPropWrite], endpoint: MiIODeviceEndpoint) async throws {
-        guard !writes.isEmpty else { return }
+        _ = try await writeProperties(writes, endpoint: endpoint) { chunk, result in
+            guard let items = result.arrayValue, items.count == chunk.count else {
+                throw MiCloudError.badResponse(L10n.tr("设备未返回写入结果", "Device returned no write verdict"))
+            }
+            try MiCloudClient.checkWriteCodes(items)
+            return []
+        }
+    }
+
+    func setPropVerdicts(_ writes: [MiotPropWrite], endpoint: MiIODeviceEndpoint) async throws -> [Result<Void, MiCloudError>] {
+        try await writeProperties(writes, endpoint: endpoint) { chunk, result in
+            MiCloudClient.propertyVerdicts(result, for: chunk)
+        }
+    }
+
+    private func writeProperties(
+        _ writes: [MiotPropWrite], endpoint: MiIODeviceEndpoint,
+        verdicts: @escaping @Sendable ([MiotPropWrite], JSONValue) throws -> [Result<Void, MiCloudError>]
+    ) async throws -> [Result<Void, MiCloudError>] {
+        guard !writes.isEmpty else { return [] }
         let tokenData = try validatedToken(endpoint.token)
         let host = try validatedHost(endpoint.ip)
         let chunks = MiIOPacket.chunked(writes, maxBatchSize: maxBatchSize)
-        try await enqueueSerialized(did: endpoint.did) {
+        return try await enqueueSerialized(did: endpoint.did) {
+            var outcomes: [Result<Void, MiCloudError>] = []
             for chunk in chunks {
                 try Task.checkCancellation()
                 let params: [JSONValue] = chunk.map {
@@ -689,8 +709,9 @@ public actor LocalMiIOClient {
                     method: "set_properties",
                     params: .array(params)
                 )
-                try Self.checkWriteCodes(result.arrayValue ?? [])
+                outcomes += try verdicts(chunk, result)
             }
+            return outcomes
         }
     }
 

@@ -171,6 +171,7 @@ public protocol MiCloudAPI: Sendable {
     func lightGroupMembers(groupDids: [String]) async throws -> [String: [String]]
     func getProps(_ keys: [MiotPropKey]) async throws -> [MiotPropKey: JSONValue]
     func setProps(_ writes: [MiotPropWrite]) async throws
+    func setPropVerdicts(_ writes: [MiotPropWrite]) async throws -> [Result<Void, MiCloudError>]
     func action(_ call: MiotActionCall) async throws
     func callAction(_ call: MiotActionCall) async throws -> JSONValue
     func sensorHistory(
@@ -187,6 +188,11 @@ public protocol MiCloudAPI: Sendable {
 }
 
 extension MiCloudAPI {
+    public func setPropVerdicts(_ writes: [MiotPropWrite]) async throws -> [Result<Void, MiCloudError>] {
+        try await setProps(writes)
+        return writes.map { _ in .success(()) }
+    }
+
     public func manualScenes(homeId: String, ownerUid: String) async throws -> [MiCloudScene] { [] }
     public func runManualScene(_ scene: MiCloudScene) async throws { throw MiotCommandError.unsupported(scene.id) }
     public func devices(dids: [String]) async throws -> [MiDeviceRecord] { [] }
@@ -846,19 +852,43 @@ public actor MiCloudClient: MiCloudAPI {
 
     public func setProps(_ writes: [MiotPropWrite]) async throws {
         guard !writes.isEmpty else { return }
+        let result = try await writeProperties(writes)
+        guard let items = result.arrayValue, !items.isEmpty else {
+            throw MiCloudError.badResponse(L10n.tr("设备未返回写入结果", "Device returned no write verdict"))
+        }
+        try Self.checkWriteCodes(items)
+    }
+
+    public func setPropVerdicts(_ writes: [MiotPropWrite]) async throws -> [Result<Void, MiCloudError>] {
+        let result = try await writeProperties(writes)
+        return Self.propertyVerdicts(result, for: writes)
+    }
+
+    private func writeProperties(_ writes: [MiotPropWrite]) async throws -> JSONValue {
         let params: [JSONValue] = writes.map {
             .object([
                 "did": .string($0.did), "siid": .number(Double($0.siid)),
                 "piid": .number(Double($0.piid)), "value": $0.value,
             ])
         }
-        let result = try await request("miotspec/prop/set", data: .object(["params": .array(params)]))
-        // One row per write is the cloud's acknowledgement; no rows means nothing was decided, and
-        // the old zero-iteration loop reported that as a success.
-        guard let items = result.arrayValue, !items.isEmpty else {
-            throw MiCloudError.badResponse(L10n.tr("设备未返回写入结果", "Device returned no write verdict"))
+        return try await request("miotspec/prop/set", data: .object(["params": .array(params)]))
+    }
+
+    static func propertyVerdicts(_ result: JSONValue, for writes: [MiotPropWrite]) -> [Result<Void, MiCloudError>] {
+        let items = result.arrayValue ?? []
+        return writes.map { write in
+            let matches = items.filter {
+                $0["did"]?.idString == write.did && $0["siid"]?.intValue == write.siid
+                    && $0["piid"]?.intValue == write.piid
+            }
+            guard matches.count == 1, let code = matches[0]["code"]?.intValue else {
+                return .failure(.badResponse(L10n.tr("设备未返回写入结果", "Device returned no write verdict")))
+            }
+            if code >= 0 { return .success(()) }
+            return .failure(.deviceError(
+                code: code, message: L10n.tr("设备未响应或离线", "Device did not respond or is offline")
+            ))
         }
-        try Self.checkWriteCodes(items)
     }
 
     public func action(_ call: MiotActionCall) async throws {
