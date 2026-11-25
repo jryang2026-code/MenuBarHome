@@ -339,6 +339,7 @@ run_script_self_tests() {
     echo "🧪 运行契约与脚本工具自检 (--script-tests)..."
     run_contract_checks
     if [ -n "$PYTHON_BIN" ]; then
+        run_clean_env "$PYTHON_BIN" scripts/check_doc_links.py --self-test
         run_clean_env "$PYTHON_BIN" scripts/test_mijia_cli.py
         run_clean_env "$PYTHON_BIN" scripts/update_manifest.py self-test
         run_clean_env "$PYTHON_BIN" scripts/probe_lan_gateway.py --self-test
@@ -372,6 +373,7 @@ SCOPE_WINDOWS=true
 SCOPE_CORE=true
 SCOPE_RAYCAST=true
 SCOPE_SCRIPTS=false
+SCOPE_WEBSITE=true
 SCOPE_GO2RTC=false
 MACOS_APP_CHANGED=1
 
@@ -432,6 +434,7 @@ if [ "$CHANGED_ONLY" = "1" ]; then
     SCOPE_CORE="$core"
     SCOPE_RAYCAST="$raycast"
     SCOPE_SCRIPTS="$scripts"
+    SCOPE_WEBSITE="$website"
     SCOPE_GO2RTC="$go2rtc"
 
     MACOS_APP_CHANGED=0
@@ -439,7 +442,7 @@ if [ "$CHANGED_ONLY" = "1" ]; then
         MACOS_APP_CHANGED=1
     fi
 
-    echo "🎯 增量门禁命中范围：macos=${SCOPE_MACOS} core=${SCOPE_CORE} windows=${SCOPE_WINDOWS} raycast=${SCOPE_RAYCAST} scripts=${SCOPE_SCRIPTS} go2rtc=${SCOPE_GO2RTC}"
+    echo "🎯 增量门禁命中范围：macos=${SCOPE_MACOS} core=${SCOPE_CORE} windows=${SCOPE_WINDOWS} raycast=${SCOPE_RAYCAST} website=${SCOPE_WEBSITE} scripts=${SCOPE_SCRIPTS} go2rtc=${SCOPE_GO2RTC}"
     if [ "$RUN_SCRIPT_TESTS" != "1" ]; then
         if [ "$SCOPE_SCRIPTS" = "true" ] || printf '%s\n' "$changed_list" | grep -q '^nas/'; then
             run_script_self_tests
@@ -518,6 +521,10 @@ windows_npm() {
 raycast_npm() {
     cd "$ROOT_DIR/raycast"
     npm test && npm run typecheck
+}
+
+website_npm() {
+    npm --prefix "$ROOT_DIR/website" run typecheck
 }
 
 run_swift_gate() {
@@ -604,6 +611,18 @@ run_raycast_gate() {
     [ "$status" -eq 0 ]
 }
 
+run_website_gate() {
+    if [ ! -d "website/node_modules" ]; then
+        record_gate_result "Website=skip"
+        echo "⏭️  跳过 Website 门槛：未找到 website/node_modules（先 npm ci --prefix website）"
+        return 0
+    fi
+    local status=0
+    run_logged "Website 类型检查" website_npm || status=$?
+    record_gate_result "Website=${status}"
+    [ "$status" -eq 0 ]
+}
+
 run_go2rtc_gate() {
     local go err status=0
     err="$(mktemp)"
@@ -627,6 +646,9 @@ if [ "$SCOPE_WINDOWS" = "true" ]; then
 fi
 if [ "$SCOPE_RAYCAST" = "true" ]; then
     add_gate_step "Raycast 扩展" run_raycast_gate
+fi
+if [ "$SCOPE_WEBSITE" = "true" ]; then
+    add_gate_step "Website 类型检查" run_website_gate
 fi
 if [ "$SCOPE_GO2RTC" = "true" ] || [ "${MMB_FORCE_GO2RTC:-0}" = "1" ]; then
     add_gate_step "go2rtc 云台补丁" run_go2rtc_gate

@@ -106,14 +106,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
             tag = tag_from_releases_path(path)
             name = (query.get("file_name") or [""])[0]
             port = self.server.server_address[1]
+            headers = {
+                "x-obs-meta-project-id": "p",
+                "x-obs-acl": "public-read",
+                "x-obs-callback": "c",
+                "Content-Type": "application/octet-stream",
+            }
+            if name == "evil":
+                # A hostile pre-signed header tries to inject another curl -K directive.
+                headers["x-obs-acl"] = "public-read\nurl = \"http://evil.invalid\""
             self._reply(200, {
                 "url": f"http://127.0.0.1:{port}/upload/{urllib.parse.quote(tag)}/{urllib.parse.quote(name)}",
-                "headers": {
-                    "x-obs-meta-project-id": "p",
-                    "x-obs-acl": "public-read",
-                    "x-obs-callback": "c",
-                    "Content-Type": "application/octet-stream",
-                },
+                "headers": headers,
             })
             return
         if "/releases/tags/" in path:
@@ -123,6 +127,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             elif tag == "v6.0.0":
                 # Gitee answers a tag without a release with HTTP 200 and a JSON null.
                 self._reply(200, raw=b"null")
+            elif tag == "v7.0.0":
+                # A 500 with a JSON body must never be read as "missing".
+                self._reply(500, {"message": "boom"})
             else:
                 self._reply(404, {"message": "not found"})
             return
@@ -183,6 +190,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     self._reply(400, {"message": "body is not JSON"})
                     return
                 tag = payload.get("tag_name") or ""
+                if tag == "v8.0.0":
+                    self._reply(500, {"message": "create boom"})
+                    return
                 if tag in state["releases"]:
                     self._reply(400, {"message": "release exists"})
                     return
@@ -313,6 +323,29 @@ GITCODE_TOKEN="t" GITCODE_MIRROR_REPO="owner/repo" MIRROR_BUDGET_SECONDS=0 \
     bash "$SCRIPT" gitcode v5.0.0 5.0.0 "$work/assets" > "$work/budget.log" 2>&1
 check "时间预算用尽时说明并停下" grep -q '时间预算' "$work/budget.log"
 check "时间预算用尽时不吞掉失败（退出码 0，附件留给下次补齐）" test "$?" = "0"
+
+# 10. A 500 probe is an error, not a missing release: never attempt to create on top of it.
+rm -f "$work/requests.log"
+GITEE_TOKEN="t" GITEE_MIRROR_REPO="owner/repo" bash "$SCRIPT" gitee v7.0.0 7.0.0 "$work/assets" \
+    > "$work/probe500.log" 2>&1
+check "HTTP 500 查询响应按错误处理" grep -q '查询 release 失败（HTTP 500）' "$work/probe500.log"
+check "HTTP 500 查询后不创建 release" test "$(count_in "$work/requests.log" 'POST /repos/owner/repo/releases ')" = "0"
+
+# 11. GitCode creation failure is checked, not silently announced as success.
+rm -f "$work/requests.log"
+GITCODE_TOKEN="t" GITCODE_MIRROR_REPO="owner/repo" bash "$SCRIPT" gitcode v8.0.0 8.0.0 "$work/assets" \
+    > "$work/create500.log" 2>&1
+check "GitCode 创建失败按 HTTP 状态报错" grep -q '创建 release 失败（HTTP 500）' "$work/create500.log"
+check "GitCode 创建失败时不假装已创建" test "$(count_in "$work/create500.log" 'gitcode release 已创建')" = "0"
+
+# 12. A hostile pre-signed header cannot inject a second curl -K directive.
+mkdir -p "$work/evil-assets"
+printf 'evil-bytes' > "$work/evil-assets/evil"
+rm -f "$work/requests.log"
+GITCODE_TOKEN="t" GITCODE_MIRROR_REPO="owner/repo" bash "$SCRIPT" gitcode v9.0.0 9.0.0 "$work/evil-assets" \
+    > "$work/inject.log" 2>&1
+check "含换行的 curl -K 字段被拒绝" grep -q '上传 evil 失败' "$work/inject.log"
+check "注入的换行没有产生额外上传" test "$(count_in "$work/requests.log" 'PUT /upload/v9.0.0/')" = "0"
 
 if [ "$failures" -gt 0 ]; then
     echo "❌ 镜像自检未通过：${failures} 项" >&2

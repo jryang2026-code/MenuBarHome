@@ -2,7 +2,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-ALL_KEYS=(code macos windows core raycast scripts macos_build appintents windows_native nas go2rtc)
+ALL_KEYS=(code macos windows core raycast scripts website macos_build appintents windows_native nas go2rtc)
 failures=0
 
 expect_true_keys() {
@@ -46,6 +46,10 @@ expect_true_keys "non-Markdown repo metadata skips CI jobs" \
 expect_true_keys "Windows frontend source sets code and windows only" \
     "windows/src/ui/onboardingGuide.ts\n" \
     code windows
+
+expect_true_keys "website source sets code and website only" \
+    "website/src/components/hero/HeroSection.tsx\nwebsite/vite.config.ts\n" \
+    code website
 
 expect_true_keys "empty input falls back to full CI" \
     "" \

@@ -6,6 +6,8 @@ on:
     paths:
       - 'website/**'
       - '.github/workflows/deploy-website.yml'
+  release:
+    types: [published]
   workflow_dispatch:
 
 permissions:
@@ -34,7 +36,27 @@ jobs:
 
       - name: Install dependencies and build website
         working-directory: website
-        run: npm ci && npm run build
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          release_tag=""
+          # A published prerelease (v1.2.3-beta.1) is not a download target; use the latest
+          # stable published release instead of letting the build emit 404 download links.
+          if [ "$EVENT_NAME" = "release" ] && [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            release_tag="$RELEASE_TAG"
+          else
+            release_tag="$(gh api "repos/${{ github.repository }}/releases/latest" --jq .tag_name 2>/dev/null || true)"
+          fi
+          if [ -n "$release_tag" ]; then
+            export WEBSITE_RELEASE_VERSION="$release_tag"
+            echo "使用已发布版本 ${release_tag} 构建网站"
+          else
+            echo "没有已发布的 GitHub Release，沿用 VERSION：$(tr -d '[:space:]' < ../VERSION)"
+          fi
+          npm ci && npm run build
 
       - name: Configure GitHub Pages
         uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5

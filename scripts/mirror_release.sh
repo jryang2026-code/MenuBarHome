@@ -78,6 +78,29 @@ flush_summary() {
     printf '%s\n' "${summary_lines[@]}" >> "$GITHUB_STEP_SUMMARY"
 }
 
+# Some curl transport errors echo the URL, and every token here rides in that URL. Mask it
+# before anything reaches stderr, while keeping the rest of the diagnostic readable.
+mask_curl_stderr() {
+    local log="$1"
+    [ -s "$log" ] || return 0
+    python3 - "$log" "$token" <<'PY'
+import sys
+log_path, secret = sys.argv[1], sys.argv[2]
+with open(log_path, encoding="utf-8", errors="replace") as handle:
+    for line in handle:
+        sys.stderr.write(line.replace(secret, "***"))
+PY
+}
+
+curl_safe() {
+    local status=0
+    curl "$@" 2>"$scratch/curl.err" || status=$?
+    if [ "$status" -ne 0 ]; then
+        mask_curl_stderr "$scratch/curl.err"
+    fi
+    return "$status"
+}
+
 if [ -z "$token" ]; then
     say "跳过 ${target} 镜像：未设置 ${token_env}（在仓库 Secrets 里配置后自动生效）"
     flush_summary
@@ -108,7 +131,7 @@ api_get() {
     case "$path" in
         *\?*) join="&" ;;
     esac
-    curl -sS --max-time "$(curl_timeout)" "${api_base}${path}${join}access_token=${token}"
+    curl_safe -sS --max-time "$(curl_timeout)" "${api_base}${path}${join}access_token=${token}"
 }
 
 quote_component() {
@@ -141,6 +164,13 @@ print((data or {}).get("id") or "")'
 # Gitee answers a tag without a release with HTTP 200 and a JSON `null`, so the status code alone is
 # not enough: a null body, an empty body and an object without a tag_name all mean "create it".
 release_state() {
+    local code="$1"
+    # Only HTTP 200 bodies can describe a release; 404 means missing, everything else is an error.
+    case "$code" in
+        200) ;;
+        404) printf 'missing\n'; return ;;
+        *) printf 'error\n'; return ;;
+    esac
     python3 -c 'import json,sys
 raw = sys.stdin.read().strip()
 if raw == "":
@@ -181,14 +211,15 @@ create_release() {
     branch="$(mirror_branch)"
     case "$target" in
         gitee)
-            curl -sS --max-time "$(curl_timeout)" -X POST \
+            curl_safe -sS --max-time "$(curl_timeout)" -X POST \
+                -o "$scratch/create.json" -w '%{http_code}' \
                 --data-urlencode "access_token=${token}" \
                 --data-urlencode "tag_name=${tag}" \
                 --data-urlencode "name=MenuBarHome ${version}" \
                 --data-urlencode "target_commitish=${branch}" \
                 --data-urlencode "prerelease=false" \
                 --data-urlencode "body=${body}" \
-                "${api_base}/repos/${repo}/releases"
+                "${api_base}/repos/${repo}/releases" > "$scratch/create.code" || true
             ;;
         gitcode)
             # GitCode documents a JSON body, a query token, and a release keyed by tag — no id.
@@ -203,12 +234,14 @@ json.dump({
     "prerelease": False,
 }, sys.stdout, ensure_ascii=False)
 PY
-            curl -sS --max-time "$(curl_timeout)" -X POST \
+            curl_safe -sS --max-time "$(curl_timeout)" -X POST \
+                -o "$scratch/create.json" -w '%{http_code}' \
                 -H "Content-Type: application/json" \
                 --data-binary "@$scratch/release.json" \
-                "${api_base}/repos/${repo}/releases?access_token=${token}"
+                "${api_base}/repos/${repo}/releases?access_token=${token}" > "$scratch/create.code" || true
             ;;
     esac
+    tr -d '[:space:]' < "$scratch/create.code" 2>/dev/null || true
 }
 
 # Gitee: multipart POST to the release. GitCode: ask for a pre-signed URL, then PUT the file with
@@ -221,7 +254,7 @@ upload_asset() {
                 warn "${target} 上传 ${name} 失败（拿不到 release id）"
                 return 1
             fi
-            curl -sS --max-time "$(curl_timeout)" -o /dev/null -w '%{http_code}' -X POST \
+            curl_safe -sS --max-time "$(curl_timeout)" -o /dev/null -w '%{http_code}' -X POST \
                 -F "access_token=${token}" \
                 -F "file=@${asset}" \
                 "${api_base}/repos/${repo}/releases/${id}/attach_files"
@@ -233,7 +266,7 @@ upload_asset() {
             tag_path="$(python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$tag")"
             api_get "/repos/${repo}/releases/${tag_path}/upload_url?file_name=${encoded_name}" \
                 > "$scratch/upload.json" || return 1
-            python3 - "$scratch/upload.json" > "$scratch/upload.curl" <<'PY'
+            python3 - "$scratch/upload.json" > "$scratch/upload.curl.tmp" <<'PY'
 import json, sys
 try:
     with open(sys.argv[1], encoding="utf-8") as handle:
@@ -243,14 +276,19 @@ except Exception:
 url = info.get("url") or ""
 if not url:
     sys.exit(1)
-def quote(value):
-    return str(value).replace("\\", "\\\\").replace('"', '\\"')
-print(f'url = "{quote(url)}"')
+def quote(value, label):
+    text = str(value)
+    if "\r" in text or "\n" in text:
+        sys.exit(f"curl -K 配置字段 {label} 含换行，已拒绝写入")
+    return text.replace("\\", "\\\\").replace('"', '\\"')
+print(f'url = "{quote(url, "url")}"')
 for key, value in (info.get("headers") or {}).items():
-    print(f'header = "{quote(key)}: {quote(value)}"')
+    print(f'header = "{quote(key, "header key")}: {quote(value, "header value")}"')
 PY
-            [ -s "$scratch/upload.curl" ] || return 1
-            curl -sS --max-time "$(curl_timeout)" -o /dev/null -w '%{http_code}' \
+            [ "$?" -eq 0 ] || return 1
+            [ -s "$scratch/upload.curl.tmp" ] || return 1
+            mv "$scratch/upload.curl.tmp" "$scratch/upload.curl"
+            curl_safe -sS --max-time "$(curl_timeout)" -o /dev/null -w '%{http_code}' \
                 -K "$scratch/upload.curl" -T "$asset"
             ;;
     esac
@@ -259,24 +297,38 @@ PY
 say "ℹ️  ${target}（${repo}）：同步 ${tag}"
 
 tag_path="$(python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$tag")"
-probe="$(curl -sS --max-time "$(curl_timeout)" -w '\n%{http_code}' \
-    "${api_base}/repos/${repo}/releases/tags/${tag_path}?access_token=${token}" 2>/dev/null || true)"
-probe_code="${probe##*$'\n'}"
-probe_body="${probe%$'\n'*}"
-probe_state="$(printf '%s' "$probe_body" | release_state)"
-if [ "$probe_code" = "404" ]; then
-    probe_state="missing"
-fi
+probe_code=000
+curl_safe -sS --max-time "$(curl_timeout)" -o "$scratch/probe.json" -w '%{http_code}' \
+    "${api_base}/repos/${repo}/releases/tags/${tag_path}?access_token=${token}" \
+    > "$scratch/probe.code" || true
+probe_code="$(tr -d '[:space:]' < "$scratch/probe.code" 2>/dev/null || true)"
+[ -n "$probe_code" ] || probe_code=000
+probe_body="$(cat "$scratch/probe.json" 2>/dev/null || true)"
+case "$probe_code" in
+    200) probe_state="$(printf '%s' "$probe_body" | release_state 200)" ;;
+    404) probe_state="missing" ;;
+    *)   probe_state="error" ;;
+esac
 id="$(printf '%s' "$probe_body" | release_id)"
 names=""
 
 if [ "$probe_code" = "200" ] && [ "$probe_state" = "present" ]; then
     names="$(printf '%s' "$probe_body" | asset_names)"
     say "✅ ${target} 已有 ${tag} 的 release（${id:-tag 寻址}）"
-elif [ "$probe_state" = "missing" ]; then
+elif [ "$probe_code" = "404" ] || { [ "$probe_code" = "200" ] && [ "$probe_state" = "missing" ]; }; then
     say "ℹ️  ${target} 上没有 ${tag}，创建 release"
-    created="$(create_release)"
+    create_code="$(create_release)"
+    created="$(cat "$scratch/create.json" 2>/dev/null || true)"
     id="$(printf '%s' "$created" | release_id)"
+    case "$create_code" in
+        200|201|202) ;;
+        *)
+            warn "${target} 创建 release 失败（HTTP ${create_code:-无响应}）"
+            summary "- ${target}: ❌ 创建 ${tag} release 失败（HTTP ${create_code:-无响应}）"
+            flush_summary
+            exit 1
+            ;;
+    esac
     if [ "$target" = "gitee" ] && [ -z "$id" ]; then
         warn "${target} 创建 release 失败（响应里没有 id）"
         summary "- ${target}: ❌ 创建 ${tag} release 失败"

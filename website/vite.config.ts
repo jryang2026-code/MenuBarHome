@@ -6,7 +6,12 @@ import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 
 const websiteDir = path.dirname(fileURLToPath(import.meta.url));
-const appVersion = fs.readFileSync(path.resolve(websiteDir, '../VERSION'), 'utf8').trim();
+const fileVersion = fs.readFileSync(path.resolve(websiteDir, '../VERSION'), 'utf8').trim();
+const releaseVersion = process.env.WEBSITE_RELEASE_VERSION?.trim().replace(/^v/, '');
+if (releaseVersion && !/^\d+\.\d+\.\d+$/.test(releaseVersion)) {
+  throw new Error(`WEBSITE_RELEASE_VERSION 必须是 x.y.z（收到：${process.env.WEBSITE_RELEASE_VERSION}）`);
+}
+const appVersion = releaseVersion || fileVersion;
 
 export default defineConfig({
   base: './',
