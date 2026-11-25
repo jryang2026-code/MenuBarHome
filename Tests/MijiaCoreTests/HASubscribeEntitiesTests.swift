@@ -113,6 +113,121 @@ struct HASubscribeEntitiesTests {
         await provider.shutdown()
     }
 
+    @Test("Compressed updates with capturedEpoch prevent stale get_states refreshes from rolling back state")
+    func compressedUpdatesPreventStaleGetStatesRollback() throws {
+        let frames = try Self.frames()
+        var snapshot = HAHomeSnapshot()
+        let t0 = ContinuousClock.now, tPoll = t0.advanced(by: .seconds(1)), tEvent = t0.advanced(by: .seconds(2))
+        for id in 1...3 {
+            _ = try snapshot.receive(["id": .number(Double(id)), "type": .string("result"), "success": .bool(true), "result": .array([])])
+        }
+        #expect(try snapshot.ingestCompressedStates(frames[0]["event"], typePrunePolicy: .unpruned, capturedEpoch: t0))
+        #expect(try snapshot.ingestCompressedStates(frames[1]["event"], typePrunePolicy: .unpruned, capturedEpoch: tEvent))
+        #expect(snapshot.states["light.desk"]?.state == "on")
+
+        let staleRefresh: [String: JSONValue] = [
+            "id": .number(99), "type": .string("result"), "success": .bool(true),
+            "result": .array([.object(["entity_id": .string("light.desk"), "state": .string("off"), "attributes": .object(["friendly_name": .string("Desk")])])]),
+        ]
+        let refreshedHome = try #require(try snapshot.receive(staleRefresh, isRefreshStatesResult: true, pollCapturedEpoch: tPoll))
+        #expect(snapshot.states["light.desk"]?.state == "on" && refreshedHome.devices.first?.isActiveOn == true)
+
+        #expect(try snapshot.ingestCompressedStates(frames[3]["event"], typePrunePolicy: .unpruned, capturedEpoch: t0.advanced(by: .seconds(3))))
+        let afterRemove = try #require(try snapshot.receive(staleRefresh, isRefreshStatesResult: true, pollCapturedEpoch: tPoll))
+        #expect(snapshot.states["light.desk"] == nil && afterRemove.devices.isEmpty)
+    }
+
+    @Test("Empty initial subscribe_entities {} frame completes initialization without error", .timeLimit(.minutes(1)))
+    func acceptsEmptyInitialCompressedFrame() async throws {
+        var snapshot = HAHomeSnapshot()
+        for id in 1...3 {
+            _ = try snapshot.receive(["id": .number(Double(id)), "type": .string("result"), "success": .bool(true), "result": .array([])])
+        }
+        #expect(try snapshot.ingestCompressedStates(.object([:]), typePrunePolicy: .unpruned, capturedEpoch: .now))
+        #expect(snapshot.states.isEmpty && snapshot.synthesizeCurrent()?.devices.isEmpty == true)
+
+        var malformed = HAHomeSnapshot()
+        #expect(throws: HAHomeSnapshot.ReadError.invalidResponse) {
+            _ = try malformed.ingestCompressedStates(.object(["a": .string("bad")]), typePrunePolicy: .unpruned)
+        }
+
+        let socket = FixtureSocket(compressedSnapshot: ["id": .number(4), "type": .string("event"), "event": .object([:])])
+        let attempts = ProviderTestCounter()
+        let provider = Self.makeProvider()
+        await provider.setTestSeams(connectOverride: nil, reconnectSleep: { _ in }, webSocketFactory: { _ in _ = attempts.increment(); return socket })
+        var events = provider.events().makeAsyncIterator()
+        #expect(try await Self.nextSnapshot(&events).devices.isEmpty && attempts.value == 1)
+        await provider.shutdown()
+    }
+
+    @Test("removeLiveState ignores unknown entities and full get_states prunes expired deletion tombstones")
+    func boundsStateCaptureEpochsAndPrunesExpiredTombstones() throws {
+        let frames = try Self.frames()
+        var snapshot = HAHomeSnapshot()
+        let t0 = ContinuousClock.now
+        let tStalePoll = t0.advanced(by: .seconds(1))
+        let tRemove = t0.advanced(by: .seconds(2))
+        let tFreshPoll = t0.advanced(by: .seconds(3))
+
+        for id in 1...3 {
+            _ = try snapshot.receive([
+                "id": .number(Double(id)), "type": .string("result"),
+                "success": .bool(true), "result": .array([]),
+            ])
+        }
+        #expect(try snapshot.ingestCompressedStates(frames[0]["event"], typePrunePolicy: .unpruned, capturedEpoch: t0))
+        #expect(snapshot.stateCaptureEpochs.keys.sorted() == ["light.desk"])
+
+        // Removing non-existent entity IDs must not grow stateCaptureEpochs.
+        _ = try snapshot.ingestCompressedStates(
+            .object(["r": .array([.string("light.nonexistent_1"), .string("switch.nonexistent_2")])]),
+            typePrunePolicy: .unpruned,
+            capturedEpoch: tRemove
+        )
+        _ = snapshot.ingestStateChangedEvent(
+            [
+                "type": .string("event"),
+                "event": .object([
+                    "event_type": .string("state_changed"),
+                    "data": .object([
+                        "entity_id": .string("light.nonexistent_3"),
+                        "new_state": .null,
+                    ]),
+                ]),
+            ],
+            typePrunePolicy: .unpruned,
+            capturedEpoch: tRemove
+        )
+        #expect(snapshot.stateCaptureEpochs.keys.sorted() == ["light.desk"])
+
+        // Removing an existing entity records a tombstone that blocks stale get_states resurrection.
+        #expect(try snapshot.ingestCompressedStates(frames[3]["event"], typePrunePolicy: .unpruned, capturedEpoch: tRemove))
+        #expect(snapshot.states["light.desk"] == nil)
+        #expect(snapshot.stateCaptureEpochs["light.desk"] == tRemove)
+
+        let staleRefresh: [String: JSONValue] = [
+            "id": .number(99), "type": .string("result"), "success": .bool(true),
+            "result": .array([
+                .object(["entity_id": .string("light.desk"), "state": .string("on"), "attributes": .object([:])]),
+            ]),
+        ]
+        _ = try snapshot.receive(staleRefresh, isRefreshStatesResult: true, pollCapturedEpoch: tStalePoll)
+        #expect(snapshot.states["light.desk"] == nil)
+        #expect(snapshot.stateCaptureEpochs["light.desk"] == tRemove)
+
+        // A newer full get_states omitting light.desk prunes the expired tombstone.
+        let newerRefresh: [String: JSONValue] = [
+            "id": .number(100), "type": .string("result"), "success": .bool(true),
+            "result": .array([
+                .object(["entity_id": .string("light.hall"), "state": .string("off"), "attributes": .object([:])]),
+            ]),
+        ]
+        _ = try snapshot.receive(newerRefresh, isRefreshStatesResult: true, pollCapturedEpoch: tFreshPoll)
+        #expect(snapshot.states["light.desk"] == nil)
+        #expect(snapshot.stateCaptureEpochs["light.desk"] == nil)
+        #expect(snapshot.stateCaptureEpochs == ["light.hall": tFreshPoll])
+    }
+
     private static func makeProvider() -> HAWebSocketProvider {
         HAWebSocketProvider(
             baseURLString: "http://192.0.2.10:8123", token: "test-token",

@@ -23,7 +23,7 @@ struct HAHomeSnapshot {
     private var devices: [HADeviceEntry] = []
     private var entities: [HAEntityEntry] = []
     private(set) var states: [String: HAEntityState] = [:]
-    private var stateCaptureEpochs: [String: ContinuousClock.Instant] = [:]
+    private(set) var stateCaptureEpochs: [String: ContinuousClock.Instant] = [:]
     private var pendingInitialResults: Set<Int> = [1, 2, 3, 4]
     private var rings: [DoorbellRing] = []
     /// Last valid press timestamp per doorbell entity. It survives `unavailable`, so a doorbell
@@ -118,6 +118,9 @@ struct HAHomeSnapshot {
                     for (entityId, epoch) in stateCaptureEpochs where epoch > pollCapturedEpoch {
                         nextStates[entityId] = states[entityId]
                     }
+                    stateCaptureEpochs = stateCaptureEpochs.filter { entityId, recordedEpoch in
+                        nextStates[entityId] != nil || !(pollCapturedEpoch > recordedEpoch)
+                    }
                 }
                 states = nextStates
                 if isInitialStatesResult { pendingInitialResults.remove(4) }
@@ -156,23 +159,31 @@ struct HAHomeSnapshot {
         } else if data["new_state"] == .null {
             let entityId = data["entity_id"]?.stringValue ?? data["old_state"]?["entity_id"]?.stringValue
             guard let entityId, Self.isSupportedSmartHomeDomain(entityId) else { return false }
-            return removeLiveState(entityId, typePrunePolicy: typePrunePolicy)
+            return removeLiveState(entityId, typePrunePolicy: typePrunePolicy, capturedEpoch: capturedEpoch)
         }
         return false
     }
 
     mutating func ingestCompressedStates(
         _ event: JSONValue?,
-        typePrunePolicy: HATypePrunePolicy
+        typePrunePolicy: HATypePrunePolicy,
+        capturedEpoch: ContinuousClock.Instant? = nil
     ) throws -> Bool {
         guard case .object(let updates) = event else { throw ReadError.invalidResponse }
         let isInitial = pendingInitialResults.contains(4)
         var needsSynthesis = false
         if isInitial {
-            guard case .object(let additions) = updates["a"] else { throw ReadError.invalidResponse }
+            let additions: [String: JSONValue]
+            if let rawAdditions = updates["a"] {
+                guard case .object(let object) = rawAdditions else { throw ReadError.invalidResponse }
+                additions = object
+            } else {
+                additions = [:]
+            }
             var initialStates: [String: HAEntityState] = [:]
             for (entityId, value) in additions {
                 initialStates[entityId] = try Self.parseCompressedState(entityId, value)
+                if let capturedEpoch { stateCaptureEpochs[entityId] = capturedEpoch }
             }
             states = initialStates
             doorbellTimestamps = initialStates.compactMapValues(DoorbellRing.timestamp)
@@ -181,11 +192,11 @@ struct HAHomeSnapshot {
         } else if case .object(let additions) = updates["a"] {
             for (entityId, value) in additions {
                 let state = try Self.parseCompressedState(entityId, value)
-                if ingestLiveState(state, typePrunePolicy: typePrunePolicy) { needsSynthesis = true }
+                if ingestLiveState(state, typePrunePolicy: typePrunePolicy, capturedEpoch: capturedEpoch) { needsSynthesis = true }
             }
         }
         for entityId in updates["r"]?.stringArrayValue ?? [] {
-            if removeLiveState(entityId, typePrunePolicy: typePrunePolicy) { needsSynthesis = true }
+            if removeLiveState(entityId, typePrunePolicy: typePrunePolicy, capturedEpoch: capturedEpoch) { needsSynthesis = true }
         }
         if case .object(let changes) = updates["c"] {
             for (entityId, diff) in changes {
@@ -209,7 +220,7 @@ struct HAHomeSnapshot {
                 } else if let lastUpdated = Self.parseCompressedTimestamp(additions?["lu"]) {
                     state.lastUpdated = lastUpdated
                 }
-                if ingestLiveState(state, typePrunePolicy: typePrunePolicy) { needsSynthesis = true }
+                if ingestLiveState(state, typePrunePolicy: typePrunePolicy, capturedEpoch: capturedEpoch) { needsSynthesis = true }
             }
         }
         return needsSynthesis
@@ -250,8 +261,16 @@ struct HAHomeSnapshot {
         return true
     }
 
-    private mutating func removeLiveState(_ entityId: String, typePrunePolicy: HATypePrunePolicy) -> Bool {
-        guard states.removeValue(forKey: entityId) != nil, Self.isSupportedSmartHomeDomain(entityId) else {
+    private mutating func removeLiveState(
+        _ entityId: String,
+        typePrunePolicy: HATypePrunePolicy,
+        capturedEpoch: ContinuousClock.Instant? = nil
+    ) -> Bool {
+        let removed = states.removeValue(forKey: entityId)
+        if let capturedEpoch, removed != nil {
+            stateCaptureEpochs[entityId] = capturedEpoch
+        }
+        guard removed != nil, Self.isSupportedSmartHomeDomain(entityId) else {
             return false
         }
         doorbellTimestamps.removeValue(forKey: entityId)

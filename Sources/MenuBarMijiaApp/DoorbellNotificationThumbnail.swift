@@ -32,7 +32,7 @@ enum DoorbellNotificationThumbnail {
         configuration.timeoutIntervalForResource = 3
         configuration.waitsForConnectivity = false
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
-        return URLSession(configuration: configuration)
+        return URLSession(configuration: configuration, delegate: HARedirectBlockingDelegate.shared, delegateQueue: nil)
     }()
 
     static func snapshotData(for device: SmartDevice, store: HomeStore) async -> Data? {
@@ -52,18 +52,23 @@ enum DoorbellNotificationThumbnail {
                 triedSnapshotProxy = true
                 if let data = await fetchJPEGData(
                     with: snapshotProxyRequest(for: url, store: store),
-                    validateHAEndpoint: HAPlaintextConsent.matchesServerOrigin(url, serverBaseURL: store.serverURLString),
+                    validateEndpoint: true,
                     until: deadline
                 ) {
                     return writePicture(from: data)
                 }
             }
-            if let url = CameraLivePanelController.shared.runningFrameJPEGURL(forDeviceId: device.id),
-               let data = await fetchJPEGData(
-                   with: XiaomiCameraBridge.authorizedURLRequest(for: url),
-                   until: deadline
-               ) {
-                return writePicture(from: data)
+            if let url = CameraLivePanelController.shared.runningFrameJPEGURL(forDeviceId: device.id) {
+                let isAllowedLoopback = await HAPlaintextConsent.isAllowedLoopbackStreamURL(
+                    url, customStreamURL: store.cameraCustomStreamURL(for: device.id)
+                )
+                if let data = await fetchJPEGData(
+                    with: XiaomiCameraBridge.authorizedURLRequest(for: url),
+                    validateEndpoint: !isAllowedLoopback,
+                    until: deadline
+                ) {
+                    return writePicture(from: data)
+                }
             }
             guard awaitsPopupStream(device: device) else { return nil }
             let remaining = ContinuousClock.now.duration(to: deadline)
@@ -112,7 +117,7 @@ enum DoorbellNotificationThumbnail {
     /// The download is raced against the remaining budget, so a slow camera cannot push the
     /// notification past its deadline; a cancelled download simply yields no picture.
     private static func fetchJPEGData(
-        with request: URLRequest, validateHAEndpoint: Bool = false, until deadline: ContinuousClock.Instant
+        with request: URLRequest, validateEndpoint: Bool = false, until deadline: ContinuousClock.Instant
     ) async -> Data? {
         let remaining = ContinuousClock.now.duration(to: deadline)
         guard remaining > .zero else { return nil }
@@ -120,7 +125,7 @@ enum DoorbellNotificationThumbnail {
         let response = await withTaskGroup(of: (Data, URLResponse)?.self) { group in
             group.addTask {
                 do {
-                    if validateHAEndpoint, let url = request.url {
+                    if validateEndpoint, let url = request.url {
                         try await HAPlaintextConsent.validateConnectionAddress(url)
                     }
                     return try await session.data(for: request)
