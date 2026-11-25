@@ -290,7 +290,7 @@ final class UnsupportedDeviceScanner {
         // Bounds the whole socket read so a half-open connection cannot leave Settings spinning.
         configuration.timeoutIntervalForResource = 20
         configuration.waitsForConnectivity = false
-        let session = URLSession(configuration: configuration)
+        let session = URLSession(configuration: configuration, delegate: HARedirectBlockingDelegate.shared, delegateQueue: nil)
         let socket = session.webSocketTask(with: url)
         socket.resume()
         defer {

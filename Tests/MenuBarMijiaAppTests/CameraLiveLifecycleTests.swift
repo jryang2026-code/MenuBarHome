@@ -371,7 +371,7 @@ struct CameraLiveLifecycleTests {
         controller.mjpegWatchdogInterval = .seconds(1)
         controller.mjpegMaxAttempts = 3
 
-        let mjpegURL = try #require(URL(string: "http://127.0.0.1:43123/api/stream.mjpeg?src=cam_mjpeg_1"))
+        let mjpegURL = try #require(URL(string: "http://192.0.2.10:43123/api/stream.mjpeg?src=cam_mjpeg_1"))
         let cam = Self.makeCameraDevice(id: "cam-mjpeg-1")
         let provider = MockCameraLifecycleProvider(pauseFirstResolve: false, streamToReturn: .mjpeg(mjpegURL))
         let store = HomeStore(provider: provider, defaults: InMemoryUserDefaults())
@@ -568,7 +568,7 @@ struct CameraLiveLifecycleTests {
         let cam = Self.makeCameraDevice(id: "cam-audio-1")
 
         // 1. HLS stream: starts muted, hides capability until tracks report, exposes audio or videoOnly accurately
-        let hlsURL = try #require(URL(string: "http://127.0.0.1:43123/live.m3u8"))
+        let hlsURL = try #require(URL(string: "http://192.0.2.10:43123/live.m3u8"))
         let hlsProvider = MockCameraLifecycleProvider(streamToReturn: .hls(hlsURL))
         let hlsStore = HomeStore(provider: hlsProvider, defaults: defaults)
         hlsStore.devices = [cam]
@@ -653,6 +653,34 @@ struct CameraLiveLifecycleTests {
         controller.toggleMute()
         #expect(await customProvider.resolveAudioFlags.isEmpty)
         controller.closePanel()
+    }
+
+    @Test("Prohibited HLS and MJPEG URLs are blocked before mounting playback or opening a session")
+    func blocksProhibitedCameraStreamURLsBeforePlayback() async throws {
+        let prohibitedHLS = try #require(URL(string: "http://169.254.169.254/latest/meta-data/master.m3u8"))
+        let prohibitedNAT64 = try #require(URL(string: "http://[64:ff9b::127.0.0.1]:8123/api/stream.mjpeg"))
+        let prohibitedLoopback = try #require(URL(string: "http://127.0.0.1:8080/live.m3u8"))
+        #expect(!HAPlaintextConsent.allowsImmediatePlaybackURL(prohibitedHLS))
+        #expect(!HAPlaintextConsent.allowsImmediatePlaybackURL(prohibitedNAT64))
+        #expect(!HAPlaintextConsent.allowsImmediatePlaybackURL(prohibitedLoopback, allowsLoopback: false))
+        #expect(HAPlaintextConsent.allowsImmediatePlaybackURL(prohibitedLoopback, allowsLoopback: true))
+        #expect(!HAPlaintextConsent.allowsImmediatePlaybackURL(prohibitedHLS, allowsLoopback: true))
+
+        for source in [CameraStreamSource.hls(prohibitedHLS), .hls(prohibitedLoopback), .mjpeg(prohibitedNAT64)] {
+            let controller = CameraLivePanelController()
+            controller.presentsActively = false
+            defer { controller.closePanel() }
+            let cam = Self.makeCameraDevice(id: "cam-blocked-\(UUID().uuidString)")
+            let provider = MockCameraLifecycleProvider(streamToReturn: source)
+            let store = HomeStore(provider: provider, defaults: InMemoryUserDefaults())
+            store.devices = [cam]
+            controller.install(with: store)
+            controller.activeDeviceId = cam.id
+
+            controller.reloadStream()
+            try await awaitState { !controller.isLoadingStream && controller.errorMessage != nil }
+            #expect(controller.streamSource == nil)
+        }
     }
 
     @Test("Camera audio player and controller never touch microphone capture or input audio APIs")

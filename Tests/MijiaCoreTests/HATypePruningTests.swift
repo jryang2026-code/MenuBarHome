@@ -528,7 +528,7 @@ actor FixtureSocket: HAWebSocketConnection {
             "config/entity_registry/list": root["entities"] ?? .array([]),
             "get_states": root["states"] ?? .array([]),
             "subscribe_events": .null
-        ]
+        ].merging(root.filter { $0.key == "camera/stream" }) { _, custom in custom }
     }
 
     nonisolated func resume() {}

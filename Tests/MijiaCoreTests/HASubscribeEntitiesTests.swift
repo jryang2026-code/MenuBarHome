@@ -113,6 +113,53 @@ struct HASubscribeEntitiesTests {
         await provider.shutdown()
     }
 
+    @Test("Compressed updates with capturedEpoch prevent stale get_states refreshes from rolling back state")
+    func compressedUpdatesPreventStaleGetStatesRollback() throws {
+        let frames = try Self.frames()
+        var snapshot = HAHomeSnapshot()
+        let t0 = ContinuousClock.now, tPoll = t0.advanced(by: .seconds(1)), tEvent = t0.advanced(by: .seconds(2))
+        for id in 1...3 {
+            _ = try snapshot.receive(["id": .number(Double(id)), "type": .string("result"), "success": .bool(true), "result": .array([])])
+        }
+        #expect(try snapshot.ingestCompressedStates(frames[0]["event"], typePrunePolicy: .unpruned, capturedEpoch: t0))
+        #expect(try snapshot.ingestCompressedStates(frames[1]["event"], typePrunePolicy: .unpruned, capturedEpoch: tEvent))
+        #expect(snapshot.states["light.desk"]?.state == "on")
+
+        let staleRefresh: [String: JSONValue] = [
+            "id": .number(99), "type": .string("result"), "success": .bool(true),
+            "result": .array([.object(["entity_id": .string("light.desk"), "state": .string("off"), "attributes": .object(["friendly_name": .string("Desk")])])]),
+        ]
+        let refreshedHome = try #require(try snapshot.receive(staleRefresh, isRefreshStatesResult: true, pollCapturedEpoch: tPoll))
+        #expect(snapshot.states["light.desk"]?.state == "on" && refreshedHome.devices.first?.isActiveOn == true)
+
+        #expect(try snapshot.ingestCompressedStates(frames[3]["event"], typePrunePolicy: .unpruned, capturedEpoch: t0.advanced(by: .seconds(3))))
+        let afterRemove = try #require(try snapshot.receive(staleRefresh, isRefreshStatesResult: true, pollCapturedEpoch: tPoll))
+        #expect(snapshot.states["light.desk"] == nil && afterRemove.devices.isEmpty)
+    }
+
+    @Test("Empty initial subscribe_entities {} frame completes initialization without error", .timeLimit(.minutes(1)))
+    func acceptsEmptyInitialCompressedFrame() async throws {
+        var snapshot = HAHomeSnapshot()
+        for id in 1...3 {
+            _ = try snapshot.receive(["id": .number(Double(id)), "type": .string("result"), "success": .bool(true), "result": .array([])])
+        }
+        #expect(try snapshot.ingestCompressedStates(.object([:]), typePrunePolicy: .unpruned, capturedEpoch: .now))
+        #expect(snapshot.states.isEmpty && snapshot.synthesizeCurrent()?.devices.isEmpty == true)
+
+        var malformed = HAHomeSnapshot()
+        #expect(throws: HAHomeSnapshot.ReadError.invalidResponse) {
+            _ = try malformed.ingestCompressedStates(.object(["a": .string("bad")]), typePrunePolicy: .unpruned)
+        }
+
+        let socket = FixtureSocket(compressedSnapshot: ["id": .number(4), "type": .string("event"), "event": .object([:])])
+        let attempts = ProviderTestCounter()
+        let provider = Self.makeProvider()
+        await provider.setTestSeams(connectOverride: nil, reconnectSleep: { _ in }, webSocketFactory: { _ in _ = attempts.increment(); return socket })
+        var events = provider.events().makeAsyncIterator()
+        #expect(try await Self.nextSnapshot(&events).devices.isEmpty && attempts.value == 1)
+        await provider.shutdown()
+    }
+
     private static func makeProvider() -> HAWebSocketProvider {
         HAWebSocketProvider(
             baseURLString: "http://192.0.2.10:8123", token: "test-token",

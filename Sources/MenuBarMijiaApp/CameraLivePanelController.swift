@@ -191,13 +191,14 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
     public private(set) var autoCloseRemainingSeconds: Int?
     var hasPendingDoorbellAutoDismiss: Bool { doorbellDismissTask != nil && doorbellOwnsClose }
     private var isClosing = false
+    private(set) var streamAllowsLoopback = false
     private let mjpegSessionLock = OSAllocatedUnfairLock<URLSession?>(initialState: nil)
     private let snapshotSession: URLSession = {
         let cfg = URLSessionConfiguration.ephemeral
         cfg.connectionProxyDictionary = [:]
         cfg.timeoutIntervalForRequest = 6
         cfg.waitsForConnectivity = false
-        return URLSession(configuration: cfg)
+        return URLSession(configuration: cfg, delegate: HARedirectBlockingDelegate.shared, delegateQueue: nil)
     }()
 
     override init() {
@@ -790,6 +791,7 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
         detectedAudioTrack = nil
         snapshotImage = nil
         streamSource = nil
+        streamAllowsLoopback = false
         isLoadingStream = false
     }
 
@@ -1157,6 +1159,15 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
                     for: deviceId, channel: channel, audioEnabled: audioEnabled, genericStream: genericStream
                 )
                 guard !Task.isCancelled else { return }
+                let allowsLoopback: Bool
+                switch resolved {
+                case .hls(let url), .mjpeg(let url), .snapshot(let url):
+                    allowsLoopback = try await self.validatePlaybackURL(url, for: deviceId)
+                case .liveMP4, .demo:
+                    allowsLoopback = false
+                }
+                guard !Task.isCancelled else { return }
+                self.streamAllowsLoopback = allowsLoopback
                 self.streamSource = resolved
                 self.isLoadingStream = false
                 switch resolved {
@@ -1318,13 +1329,32 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
                         }
                     }
                 }
+                var policyBlockedError: Error?
                 if let override = self.consumeMJPEGOverride {
                     await override(url, handleFrame)
                 } else {
-                    await self.consumeMJPEGConnection(url: url, onFrame: handleFrame)
+                    do {
+                        _ = try await self.validatePlaybackURL(url, for: targetDeviceID ?? self.activeDeviceId)
+                        await self.consumeMJPEGConnection(url: url, onFrame: handleFrame)
+                    } catch {
+                        if error is HAEndpointResolutionError || (error as? URLError)?.code == .badURL {
+                            policyBlockedError = error
+                        }
+                    }
                 }
                 watchdog.cancel()
                 if Task.isCancelled { break }
+                if let policyBlockedError {
+                    self.setMJPEGSession(nil)
+                    self.snapshotImage = nil
+                    self.streamSource = nil
+                    self.streamAllowsLoopback = false
+                    self.errorMessage = (policyBlockedError as? LocalizedError)?.errorDescription ?? policyBlockedError.localizedDescription
+                    if let deviceID = targetDeviceID ?? self.activeDeviceId {
+                        self.scheduleStopCameraStream(for: deviceID)
+                    }
+                    return
+                }
                 if frameCount >= 2,
                    let firstFrameAt,
                    let lastFrameAt,
@@ -1441,11 +1471,25 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
         }
     }
 
+    private func validatePlaybackURL(_ url: URL, for deviceId: String?) async throws -> Bool {
+        let custom = deviceId.flatMap { store?.cameraCustomStreamURL(for: $0) }
+        if await HAPlaintextConsent.isAllowedLoopbackStreamURL(url, customStreamURL: custom) {
+            return true
+        }
+        try await HAPlaintextConsent.validateConnectionAddress(url)
+        return false
+    }
+
     private func consumeMJPEGConnection(
         url: URL,
         onFrame: @escaping @MainActor (NSImage) -> Void
     ) async {
         setMJPEGSession(nil)
+        do {
+            _ = try await validatePlaybackURL(url, for: activeDeviceId)
+        } catch {
+            return
+        }
         let cfg = URLSessionConfiguration.ephemeral
         cfg.connectionProxyDictionary = [:]
         cfg.timeoutIntervalForRequest = 25
@@ -1498,13 +1542,17 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
 
         var req = XiaomiCameraBridge.authorizedURLRequest(for: targetURL)
         req.cachePolicy = .reloadIgnoringLocalCacheData
-        let isHAEndpoint = if let store, store.deviceBackend(for: currentDevice?.id ?? "") == .homeAssistant {
-            HAPlaintextConsent.matchesServerOrigin(targetURL, serverBaseURL: store.serverURLString)
-        } else {
-            false
+        let deviceId = currentDevice?.id ?? ""
+        let isHADevice = store?.deviceBackend(for: deviceId) == .homeAssistant
+        let matchesHAOrigin = store.map {
+            HAPlaintextConsent.matchesServerOrigin(targetURL, serverBaseURL: $0.serverURLString)
+        } ?? false
+        let hasCustomURL = !(store?.cameraCustomStreamURL(for: deviceId) ?? "").isEmpty
+        if isHADevice, !hasCustomURL, !matchesHAOrigin {
+            return nil
         }
         if req.value(forHTTPHeaderField: "Authorization") == nil,
-           let store, isHAEndpoint,
+           let store, isHADevice, matchesHAOrigin,
            targetURL.query?.contains("token=") != true,
            HAPlaintextConsent.allowsToken(to: targetURL.absoluteString, defaults: store.userDefaults) {
             let token = store.loadHAToken().trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1512,12 +1560,10 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
                 req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
             }
         }
-        if isHAEndpoint {
-            do {
-                try await HAPlaintextConsent.validateConnectionAddress(targetURL)
-            } catch {
-                return nil
-            }
+        do {
+            _ = try await validatePlaybackURL(targetURL, for: deviceId.isEmpty ? nil : deviceId)
+        } catch {
+            return nil
         }
         guard let (data, resp) = try? await snapshotSession.data(for: req),
               let http = resp as? HTTPURLResponse,
@@ -1638,6 +1684,26 @@ private final class MJPEGStreamDelegate: NSObject, URLSessionDataDelegate, @unch
 
     func urlSession(
         _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest,
+        completionHandler: @escaping (URLRequest?) -> Void
+    ) {
+        let originalURL = task.originalRequest?.url
+        let responseURL = response.url
+        nonisolated(unsafe) let complete = completionHandler
+        Task {
+            let allowed = await HARedirectPolicy.allowedRedirectRequest(
+                originalURL: originalURL,
+                responseURL: responseURL,
+                newRequest: request
+            )
+            complete(allowed)
+        }
+    }
+
+    func urlSession(
+        _ session: URLSession,
         dataTask: URLSessionDataTask,
         didReceive response: URLResponse,
         completionHandler: @escaping (URLSession.ResponseDisposition) -> Void
@@ -1682,6 +1748,7 @@ private final class MJPEGStreamDelegate: NSObject, URLSessionDataDelegate, @unch
 struct CameraHLSPlayerView: NSViewRepresentable {
     let url: URL
     let isMuted: Bool
+    var allowsLoopback: Bool = false
     var onAudioAvailabilityChanged: (@MainActor (Bool?) -> Void)? = nil
 
     func makeCoordinator() -> Coordinator {
@@ -1693,11 +1760,14 @@ struct CameraHLSPlayerView: NSViewRepresentable {
         view.controlsStyle = .inline
         view.allowsPictureInPicturePlayback = true
         view.videoGravity = .resizeAspect
+        context.coordinator.currentURL = url
+        guard HAPlaintextConsent.allowsImmediatePlaybackURL(url, allowsLoopback: allowsLoopback) else {
+            return view
+        }
         let item = AVPlayerItem(url: url)
         let player = AVPlayer(playerItem: item)
         player.isMuted = isMuted
         view.player = player
-        context.coordinator.currentURL = url
         context.coordinator.observe(item: item, onAudioAvailabilityChanged: onAudioAvailabilityChanged)
         player.play()
         return view
@@ -1707,11 +1777,16 @@ struct CameraHLSPlayerView: NSViewRepresentable {
         nsView.player?.isMuted = isMuted
         guard context.coordinator.currentURL != url else { return }
         context.coordinator.currentURL = url
+        context.coordinator.clearObservations()
+        nsView.player?.pause()
+        guard HAPlaintextConsent.allowsImmediatePlaybackURL(url, allowsLoopback: allowsLoopback) else {
+            nsView.player = nil
+            return
+        }
         let item = AVPlayerItem(url: url)
         let player = AVPlayer(playerItem: item)
         player.isMuted = isMuted
         context.coordinator.observe(item: item, onAudioAvailabilityChanged: onAudioAvailabilityChanged)
-        nsView.player?.pause()
         nsView.player = player
         player.play()
     }
@@ -2465,7 +2540,11 @@ struct CameraLivePanelView: View {
             switch source {
             case .hls(let url):
                 rotatedMedia {
-                    CameraHLSPlayerView(url: url, isMuted: controller.isMuted) { available in
+                    CameraHLSPlayerView(
+                        url: url,
+                        isMuted: controller.isMuted,
+                        allowsLoopback: controller.streamAllowsLoopback
+                    ) { available in
                         controller.updateActiveStreamAudioAvailable(available)
                     }
                 }

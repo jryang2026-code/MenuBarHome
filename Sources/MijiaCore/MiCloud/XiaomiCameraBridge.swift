@@ -1173,6 +1173,22 @@ public actor XiaomiCameraBridge: XiaomiCameraBridging {
         return comps.url
     }
 
+    public func isManagedStreamURL(_ url: URL) -> Bool {
+        guard let owner = activeOwner,
+              Self.isAcceptableGo2RTCListen(owner.session.apiListen),
+              let port = UInt16(owner.session.apiListen.dropFirst("127.0.0.1:".count)),
+              let comps = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              comps.scheme?.lowercased() == "http",
+              comps.host == "127.0.0.1",
+              comps.port == Int(port) else {
+            return false
+        }
+        if comps.user != nil || comps.password != nil {
+            return comps.user == owner.session.username && comps.password == owner.session.password
+        }
+        return true
+    }
+
     public static func authorizedURLRequest(for url: URL, method: String = "GET") -> URLRequest {
         guard var comps = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
             var req = URLRequest(url: url)

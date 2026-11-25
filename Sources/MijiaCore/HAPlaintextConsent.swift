@@ -1,3 +1,4 @@
+import Dispatch
 import Foundation
 #if canImport(Darwin)
 import Darwin
@@ -11,7 +12,8 @@ import Glibc
 /// once; the agreement is keyed by origin, so a changed address asks again.
 public enum HAPlaintextConsent {
     static let defaultsKey = "ha_plaintext_consent_v1"
-    private static let addressLookupTimeout: Duration = .milliseconds(500)
+    static let addressLookupTimeout: Duration = .milliseconds(2500)
+    private static let sharedLookup = BoundedHostLookup(resolve: lookup)
 
     /// True when sending the token to `baseURL` would cross the internet unencrypted. An address that
     /// does not parse counts as needing consent, so an odd URL fails closed.
@@ -31,65 +33,49 @@ public enum HAPlaintextConsent {
     /// Checks the current DNS answers before starting an HA request. URLSession can resolve
     /// the name again when it connects, leaving a window for DNS to change after this check.
     public static func validateConnectionAddress(_ url: URL) async throws {
-        try await resolveWithTimeout {
-            try validateConnectionAddress(url, resolve: lookup)
+        try await validateConnectionAddress(url, resolver: sharedLookup)
+    }
+
+    static func validateConnectionAddress(_ url: URL, resolver: BoundedHostLookup) async throws {
+        try Task.checkCancellation()
+        switch try parseValidationTarget(url) {
+        case .literal:
+            return
+        case .hostname(let host, let requiresLAN):
+            let answers = try await resolver.lookup(host)
+            try validateResolvedAnswers(answers, requiresLAN: requiresLAN)
         }
     }
 
     /// Pins the numeric address passed to go2rtc, so the helper never resolves the name again.
     static func resolveCameraAddress(_ url: URL, allowPublic: Bool) async throws -> String {
-        try await resolveWithTimeout {
-            guard let host = url.host(percentEncoded: false)?.trimmingCharacters(in: CharacterSet(charactersIn: "[]")) else {
-                throw URLError(.badURL)
-            }
-            if let literal = EndpointAddressClass(numericAddress: host),
-               literal == .lan || (allowPublic && literal == .publicNetwork) {
-                return host
-            }
-            let addresses = try lookup(host)
-            guard let selected = addresses.first, addresses.allSatisfy({ address in
-                guard let kind = EndpointAddressClass(numericAddress: address) else { return false }
-                return kind == .lan || (allowPublic && kind == .publicNetwork)
-            }) else {
+        try Task.checkCancellation()
+        guard let host = url.host(percentEncoded: false)?.trimmingCharacters(in: CharacterSet(charactersIn: "[]")),
+              !host.isEmpty else {
+            throw URLError(.badURL)
+        }
+        if let literal = EndpointAddressClass(numericAddress: host) {
+            guard literal == .lan || (allowPublic && literal == .publicNetwork) else {
                 throw HAEndpointResolutionError.prohibitedAddress
             }
-            return selected
+            return host
         }
+        let addresses = try await sharedLookup.lookup(host)
+        guard let selected = addresses.first, addresses.allSatisfy({ address in
+            guard let kind = EndpointAddressClass(numericAddress: address) else { return false }
+            return kind == .lan || (allowPublic && kind == .publicNetwork)
+        }) else {
+            throw HAEndpointResolutionError.prohibitedAddress
+        }
+        return selected
     }
 
-    private static func resolveWithTimeout<Value: Sendable>(
-        _ lookup: @escaping @Sendable () throws -> Value
-    ) async throws -> Value {
-        try Task.checkCancellation()
-        let (resolved, completion) = AsyncThrowingStream<Value, Error>.makeStream()
-        let timeoutTask = Task {
-            do {
-                try await Task.sleep(for: addressLookupTimeout)
-                completion.finish(throwing: URLError(.timedOut))
-            } catch {
-            }
-        }
-        defer { timeoutTask.cancel() }
-        DispatchQueue.global(qos: .userInitiated).async {
-            do {
-                completion.yield(try lookup())
-                completion.finish()
-            } catch {
-                completion.finish(throwing: error)
-            }
-        }
-        var result = resolved.makeAsyncIterator()
-        let value = try await withTaskCancellationHandler {
-            try await result.next()
-        } onCancel: {
-            completion.finish(throwing: CancellationError())
-        }
-        try Task.checkCancellation()
-        guard let value else { throw URLError(.cannotFindHost) }
-        return value
+    private enum ValidationTarget {
+        case literal
+        case hostname(host: String, requiresLAN: Bool)
     }
 
-    static func validateConnectionAddress(_ url: URL, resolve: (String) throws -> [String]) throws {
+    private static func parseValidationTarget(_ url: URL) throws -> ValidationTarget {
         guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false),
               let scheme = components.scheme?.lowercased(),
               ["http", "https", "ws", "wss"].contains(scheme),
@@ -104,9 +90,12 @@ public enum HAPlaintextConsent {
         let literal = EndpointAddressClass(numericAddress: normalizedHost)
         guard literal != .prohibited else { throw HAEndpointResolutionError.prohibitedAddress }
         guard literal != nil || endpoint != nil else { throw URLError(.badURL) }
-        if literal != nil { return }
-        let requiresLAN = plaintext && (literal.map { $0 == .lan } ?? (endpoint?.isLocalNetwork == true))
-        let answers = try resolve(host)
+        if literal != nil { return .literal }
+        let requiresLAN = plaintext && (endpoint?.isLocalNetwork == true)
+        return .hostname(host: host, requiresLAN: requiresLAN)
+    }
+
+    private static func validateResolvedAnswers(_ answers: [String], requiresLAN: Bool) throws {
         guard !answers.isEmpty else { throw URLError(.cannotFindHost) }
         for answer in answers {
             guard let addressClass = EndpointAddressClass(numericAddress: answer),
@@ -116,6 +105,16 @@ public enum HAPlaintextConsent {
             if requiresLAN && addressClass == .publicNetwork {
                 throw HAEndpointResolutionError.publicAddressForLocalPlaintext
             }
+        }
+    }
+
+    static func validateConnectionAddress(_ url: URL, resolve: (String) throws -> [String]) throws {
+        switch try parseValidationTarget(url) {
+        case .literal:
+            return
+        case .hostname(let host, let requiresLAN):
+            let answers = try resolve(host)
+            try validateResolvedAnswers(answers, requiresLAN: requiresLAN)
         }
     }
 
@@ -160,12 +159,58 @@ public enum HAPlaintextConsent {
         return targetOrigin == serverOrigin
     }
 
-    private static func normalizedOrigin(from components: URLComponents) -> (scheme: String, host: String, port: Int)? {
+    public static func hasSameOrigin(_ lhs: URL, as rhs: URL, allowWebSocketSchemes: Bool = false) -> Bool {
+        guard let lhsComponents = URLComponents(url: lhs, resolvingAgainstBaseURL: true),
+              let rhsComponents = URLComponents(url: rhs, resolvingAgainstBaseURL: true),
+              let lhsOrigin = normalizedOrigin(from: lhsComponents, allowWebSocketSchemes: allowWebSocketSchemes),
+              let rhsOrigin = normalizedOrigin(from: rhsComponents, allowWebSocketSchemes: allowWebSocketSchemes) else {
+            return false
+        }
+        return lhsOrigin == rhsOrigin
+    }
+
+    /// Returns `true` for a local go2rtc bridge URL owned by `XiaomiCameraBridge` or an explicit
+    /// loopback custom camera URL configured by the user.
+    public static func isAllowedLoopbackStreamURL(_ url: URL, customStreamURL: String?) async -> Bool {
+        if await XiaomiCameraBridge.shared.isManagedStreamURL(url) { return true }
+        guard let customStreamURL, let customURL = URL(string: customStreamURL),
+              hasSameOrigin(url, as: customURL),
+              AssistantEndpoint(customStreamURL)?.isLoopback == true else { return false }
+        return true
+    }
+
+    /// Synchronous literal-host check for views (such as `AVPlayer`) that cannot await DNS before mounting.
+    public static func allowsImmediatePlaybackURL(_ url: URL, allowsLoopback: Bool = false) -> Bool {
+        guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return false }
+        if allowsLoopback { components.user = nil; components.password = nil }
+        guard let origin = normalizedOrigin(from: components) else { return false }
+        let endpoint = components.string.flatMap(AssistantEndpoint.init)
+        let normalizedHost = endpoint?.host ?? origin.host
+        if let literal = EndpointAddressClass(numericAddress: normalizedHost) {
+            return literal != .prohibited || (allowsLoopback && endpoint?.isLoopback == true)
+        }
+        return endpoint != nil
+    }
+
+    private static func normalizedOrigin(
+        from components: URLComponents,
+        allowWebSocketSchemes: Bool = false
+    ) -> (scheme: String, host: String, port: Int)? {
         guard components.user == nil,
               components.password == nil,
-              let scheme = components.scheme?.lowercased(),
-              scheme == "http" || scheme == "https",
+              let rawScheme = components.scheme?.lowercased(),
               var host = components.host?.lowercased() else {
+            return nil
+        }
+        let scheme: String
+        switch rawScheme {
+        case "http", "https":
+            scheme = rawScheme
+        case "ws" where allowWebSocketSchemes:
+            scheme = "http"
+        case "wss" where allowWebSocketSchemes:
+            scheme = "https"
+        default:
             return nil
         }
         if host.hasPrefix("["), host.hasSuffix("]") {
@@ -234,11 +279,11 @@ public enum HAPlaintextConsent {
     }
 }
 
-enum HAEndpointResolutionError: LocalizedError {
+public enum HAEndpointResolutionError: LocalizedError, Sendable {
     case prohibitedAddress
     case publicAddressForLocalPlaintext
 
-    var errorDescription: String? {
+    public var errorDescription: String? {
         switch self {
         case .prohibitedAddress:
             L10n.tr("Home Assistant 地址解析到了禁止访问的 IP", "The Home Assistant address resolved to a prohibited IP.")
@@ -264,6 +309,9 @@ enum EndpointAddressClass: Equatable {
             switch bytes {
             case let bytes where bytes.prefix(12).elementsEqual([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 255, 255]):
                 self.init(ipv4: Array(bytes.suffix(4)))
+            case let bytes where bytes.prefix(12).elementsEqual([0x00, 0x64, 0xff, 0x9b, 0, 0, 0, 0, 0, 0, 0, 0]):
+                // RFC 6052 NAT64 well-known prefix (64:ff9b::/96): classify the embedded IPv4 target.
+                self.init(ipv4: Array(bytes.suffix(4)))
             case let bytes where bytes.prefix(12).allSatisfy({ $0 == 0 }):
                 self = .prohibited
             default:
@@ -279,12 +327,177 @@ enum EndpointAddressClass: Equatable {
     }
 
     private init(ipv4 bytes: [UInt8]) {
+        // Cloud instance metadata service (IMDS) must never be treated as LAN.
+        if bytes == [169, 254, 169, 254] {
+            self = .prohibited
+            return
+        }
         switch (bytes[0], bytes[1]) {
         case (0, _), (127, _), (224...255, _): self = .prohibited
         // Shared address space (100.64/10) includes Tailscale endpoints.
         case (10, _), (172, 16...31), (192, 168), (169, 254), (100, 64...127): self = .lan
         default: self = .publicNetwork
         }
+    }
+}
+
+/// Bounds concurrent blocking `getaddrinfo` lookups, deduplicates in-flight queries per host,
+/// and caches positive answers briefly so polling loops against unreachable hosts cannot exhaust GCD threads.
+final class BoundedHostLookup: @unchecked Sendable {
+    private final class Waiter: @unchecked Sendable {
+        enum State { case pending, waiting(CheckedContinuation<[String], Error>), completed(Result<[String], Error>), consumed }
+        let id = UUID()
+        var state: State = .pending
+    }
+    private struct InFlightEntry { let host: String; var started: Bool; var waiters: [UUID: Waiter] }
+
+    private let lock = NSLock()
+    private let workerQueue = DispatchQueue(label: "com.menubarhome.ha-dns-lookup", qos: .userInitiated, attributes: .concurrent)
+    private let maxConcurrentLookups: Int
+    private let timeout: Duration
+    private let positiveCacheTTL: Duration
+    private let maxCacheEntries: Int
+    private let now: @Sendable () -> ContinuousClock.Instant
+    private let sleep: @Sendable (Duration) async throws -> Void
+    private let resolve: @Sendable (String) throws -> [String]
+    private var activeCount = 0
+    private var inFlight: [String: InFlightEntry] = [:]
+    private var pendingKeys: [String] = []
+    private var positiveCache: [String: (addresses: [String], expiresAt: ContinuousClock.Instant)] = [:]
+
+    init(
+        maxConcurrentLookups: Int = 4,
+        timeout: Duration = HAPlaintextConsent.addressLookupTimeout,
+        positiveCacheTTL: Duration = .seconds(5),
+        maxCacheEntries: Int = 64,
+        now: @escaping @Sendable () -> ContinuousClock.Instant = { .now },
+        sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
+        resolve: @escaping @Sendable (String) throws -> [String]
+    ) {
+        self.maxConcurrentLookups = max(1, maxConcurrentLookups)
+        self.timeout = timeout
+        self.positiveCacheTTL = positiveCacheTTL
+        self.maxCacheEntries = max(1, maxCacheEntries)
+        self.now = now; self.sleep = sleep; self.resolve = resolve
+    }
+
+    func lookup(_ host: String) async throws -> [String] {
+        try Task.checkCancellation()
+        let key = host.lowercased().replacing(/\.+$/, with: "")
+        let waiter = Waiter()
+        let (cached, launchJob) = beginLookup(key: key, host: host, waiter: waiter)
+        if let cached { return cached }
+        if launchJob { dispatchLookup(key: key, host: host) }
+
+        let timeoutTask = Task { [weak self, sleep, timeout] in
+            if (try? await sleep(timeout)) != nil {
+                self?.finishWaiter(waiter, key: key, result: .failure(URLError(.timedOut)))
+            }
+        }
+        defer { timeoutTask.cancel() }
+
+        let addresses = try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { self.installContinuation($0, on: waiter) }
+        } onCancel: {
+            self.finishWaiter(waiter, key: key, result: .failure(CancellationError()))
+        }
+        try Task.checkCancellation()
+        return addresses
+    }
+
+    private func beginLookup(key: String, host: String, waiter: Waiter) -> ([String]?, Bool) {
+        lock.lock(); defer { lock.unlock() }
+        let currentTime = now()
+        if let cached = positiveCache[key] {
+            if cached.expiresAt > currentTime { return (cached.addresses, false) }
+            positiveCache.removeValue(forKey: key)
+        }
+        if var existing = inFlight[key] {
+            existing.waiters[waiter.id] = waiter; inFlight[key] = existing
+            return (nil, false)
+        }
+        let canStart = activeCount < maxConcurrentLookups
+        if canStart { activeCount += 1 } else { pendingKeys.append(key) }
+        inFlight[key] = InFlightEntry(host: host, started: canStart, waiters: [waiter.id: waiter])
+        return (nil, canStart)
+    }
+
+    private func installContinuation(_ continuation: CheckedContinuation<[String], Error>, on waiter: Waiter) {
+        let immediate: Result<[String], Error>? = {
+            lock.lock(); defer { lock.unlock() }
+            switch waiter.state {
+            case .pending: waiter.state = .waiting(continuation); return nil
+            case .completed(let result): waiter.state = .consumed; return result
+            case .waiting, .consumed: return nil
+            }
+        }()
+        if let immediate { continuation.resume(with: immediate) }
+    }
+
+    private func finishWaiter(_ waiter: Waiter, key: String, result: Result<[String], Error>) {
+        let cont: CheckedContinuation<[String], Error>? = {
+            lock.lock(); defer { lock.unlock() }
+            let active: CheckedContinuation<[String], Error>?
+            switch waiter.state {
+            case .pending: waiter.state = .completed(result); active = nil
+            case .waiting(let existing): waiter.state = .consumed; active = existing
+            case .completed, .consumed: return nil
+            }
+            if var entry = inFlight[key] {
+                entry.waiters.removeValue(forKey: waiter.id)
+                if !entry.started && entry.waiters.isEmpty {
+                    inFlight.removeValue(forKey: key); pendingKeys.removeAll { $0 == key }
+                } else { inFlight[key] = entry }
+            }
+            return active
+        }()
+        cont?.resume(with: result)
+    }
+
+    private func dispatchLookup(key: String, host: String) {
+        let resolve = self.resolve
+        workerQueue.async { [weak self] in
+            self?.completeLookup(key: key, result: Result { try resolve(host) })
+        }
+    }
+
+    private func completeLookup(key: String, result: Result<[String], Error>) {
+        let (continuations, nextJobs): ([CheckedContinuation<[String], Error>], [(String, String)]) = {
+            lock.lock(); defer { lock.unlock() }
+            activeCount = max(0, activeCount - 1)
+            if case .success(let addresses) = result, !addresses.isEmpty, positiveCacheTTL > .zero {
+                let currentTime = now()
+                positiveCache[key] = (addresses, currentTime + positiveCacheTTL)
+                if positiveCache.count > maxCacheEntries {
+                    positiveCache = positiveCache.filter { $0.value.expiresAt > currentTime }
+                    while positiveCache.count > maxCacheEntries,
+                          let oldest = positiveCache.min(by: { $0.value.expiresAt < $1.value.expiresAt })?.key {
+                        positiveCache.removeValue(forKey: oldest)
+                    }
+                }
+            }
+            var waiting: [CheckedContinuation<[String], Error>] = []
+            if let entry = inFlight.removeValue(forKey: key) {
+                for waiter in entry.waiters.values {
+                    switch waiter.state {
+                    case .pending: waiter.state = .completed(result)
+                    case .waiting(let cont): waiter.state = .consumed; waiting.append(cont)
+                    case .completed, .consumed: break
+                    }
+                }
+            }
+            var launched: [(String, String)] = []
+            while activeCount < maxConcurrentLookups, !pendingKeys.isEmpty {
+                let nextKey = pendingKeys.removeFirst()
+                guard var entry = inFlight[nextKey], !entry.started else { continue }
+                if entry.waiters.isEmpty { inFlight.removeValue(forKey: nextKey); continue }
+                entry.started = true; inFlight[nextKey] = entry; activeCount += 1
+                launched.append((nextKey, entry.host))
+            }
+            return (waiting, launched)
+        }()
+        for cont in continuations { cont.resume(with: result) }
+        for (nextKey, nextHost) in nextJobs { dispatchLookup(key: nextKey, host: nextHost) }
     }
 }
 

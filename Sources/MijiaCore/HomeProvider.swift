@@ -373,7 +373,7 @@ public actor HAWebSocketProvider: HomeProvider {
         config.connectionProxyDictionary = [:]
         config.timeoutIntervalForRequest = 120
         config.waitsForConnectivity = false
-        return URLSession(configuration: config)
+        return URLSession(configuration: config, delegate: HARedirectBlockingDelegate.shared, delegateQueue: nil)
     }
 
     private func ensureSession() -> URLSession? {
@@ -902,7 +902,7 @@ public actor HAWebSocketProvider: HomeProvider {
                     let policy = typePrunePolicyLoader()
                     let shouldSynthesize: Bool
                     if msg["id"]?.intValue == Self.compressedSubscriptionID, legacyInitialStatesID == nil {
-                        shouldSynthesize = try snapshot.ingestCompressedStates(msg["event"], typePrunePolicy: policy)
+                        shouldSynthesize = try snapshot.ingestCompressedStates(msg["event"], typePrunePolicy: policy, capturedEpoch: .now)
                     } else if let legacySubscriptionID, msg["id"]?.intValue == legacySubscriptionID {
                         shouldSynthesize = snapshot.ingestStateChangedEvent(msg, typePrunePolicy: policy, capturedEpoch: .now)
                     } else {
@@ -1166,6 +1166,7 @@ public actor HAWebSocketProvider: HomeProvider {
             timeoutTask.cancel()
             if let urlPath, !urlPath.isEmpty,
                let hlsURL = Self.resolveStreamURL(pathOrURL: urlPath, baseURLString: baseURLString) {
+                try await HAPlaintextConsent.validateConnectionAddress(hlsURL)
                 return .hls(hlsURL)
             }
         }
@@ -1174,9 +1175,11 @@ public actor HAWebSocketProvider: HomeProvider {
             // integration or HLS support, so prefer real motion over ~1 fps snapshot polling.
             if let mjpegPath = Self.mjpegProxyPath(fromSnapshotPath: snapshotPath),
                let mjpegURL = Self.resolveStreamURL(pathOrURL: mjpegPath, baseURLString: baseURLString) {
+                try await HAPlaintextConsent.validateConnectionAddress(mjpegURL)
                 return .mjpeg(mjpegURL)
             }
             if let snapURL = Self.resolveStreamURL(pathOrURL: snapshotPath, baseURLString: baseURLString) {
+                try await HAPlaintextConsent.validateConnectionAddress(snapURL)
                 return .snapshot(snapURL)
             }
         }
@@ -1210,13 +1213,21 @@ public actor HAWebSocketProvider: HomeProvider {
 
     public static func resolveStreamURL(pathOrURL: String, baseURLString: String) -> URL? {
         let trimmed = pathOrURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return nil }
-        if trimmed.lowercased().hasPrefix("http://") || trimmed.lowercased().hasPrefix("https://") {
-            return URL(string: trimmed)
+        guard !trimmed.isEmpty, !trimmed.hasPrefix("//") else { return nil }
+        let candidate: URL?
+        if let parsed = URL(string: trimmed), let scheme = parsed.scheme?.lowercased() {
+            guard scheme == "http" || scheme == "https" else { return nil }
+            candidate = parsed
+        } else {
+            let base = normalizeBaseURL(baseURLString)
+            let slash = trimmed.hasPrefix("/") ? "" : "/"
+            candidate = URL(string: "\(base)\(slash)\(trimmed)")
         }
-        let base = normalizeBaseURL(baseURLString)
-        let slash = trimmed.hasPrefix("/") ? "" : "/"
-        return URL(string: "\(base)\(slash)\(trimmed)")
+        guard let resolved = candidate,
+              HAPlaintextConsent.matchesServerOrigin(resolved, serverBaseURL: baseURLString) else {
+            return nil
+        }
+        return resolved
     }
 
     public static func mapCommandToService(_ command: DeviceCommand) -> (domain: String, service: String, payload: [String: Any]) {
