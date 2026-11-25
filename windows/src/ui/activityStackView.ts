@@ -71,6 +71,7 @@ import { proactiveSignature, renderProactiveInlinePill } from "./proactive.js";
 import { cancelScheduledCommands } from "./scheduledCommands.js";
 import {
   isWorkstationLocked,
+  isWorkstationLockBlockingControl,
   readNativeFocusModeStatus,
   readNativeMediaCaptureStatus,
   syncNativeSystemEventWatchers,
@@ -87,11 +88,24 @@ import { computeUndoAvailability, undoTrackerFor } from "./undoTracker.js";
 
 export const MAX_RECENT_SAFETY_ALERTS = 10;
 export const MAX_RECENT_AUTOMATION_RUNS = 10;
+const MAX_PENDING_NOTIFICATION_ACTIONS = 32;
+
+export interface DesktopNotificationAction {
+  readonly label: string;
+  readonly arguments: string;
+}
+
+export interface PendingNotificationActionRecord {
+  readonly alert: SafetyAlert;
+  readonly scope: string;
+  readonly createdMs: number;
+}
 
 export interface DesktopNotificationRecord {
   readonly id: string;
   readonly title: string;
   readonly body: string;
+  readonly actions?: readonly DesktopNotificationAction[];
   readonly channel: "tauri" | "web" | "panel-only";
   readonly timestampMs: number;
 }
@@ -132,6 +146,7 @@ export interface HostActivityCenter {
   weeklyReportCard: WeeklyReportNoticeCard | null;
   readonly dismissedActivityIds: Set<string>;
   readonly dispatchedNotifications: DesktopNotificationRecord[];
+  readonly pendingNotificationActions: Map<string, PendingNotificationActionRecord>;
   readonly safetyMonitor: SafetyMonitor;
   readonly offlineHistory: OfflineHistory;
   readonly automationEngine: AutomationEngine;
@@ -357,6 +372,7 @@ function createHostActivityCenter(
     weeklyReportCard: null,
     dismissedActivityIds: new Set<string>(),
     dispatchedNotifications: [],
+    pendingNotificationActions: new Map<string, PendingNotificationActionRecord>(),
     safetyMonitor: new SafetyMonitor(storage, scopeKey),
     offlineHistory: new OfflineHistory(storage),
     automationEngine: new AutomationEngine(storage),
@@ -437,6 +453,7 @@ function clearCenterActivities(center: HostActivityCenter): void {
   center.recentAutomationRuns = [];
   center.weeklyReportCard = null;
   center.dismissedActivityIds.clear();
+  center.pendingNotificationActions.clear();
   center.doorbellCoordinator.clearAll();
   center.doorbellDetector.reset();
   center.safetyMonitor.resetSessionState(center.scopeKey);
@@ -565,6 +582,31 @@ export function pruneOrphanedDeviceActivities(
   return changed;
 }
 
+function generateNotificationActionToken(): string {
+  const bytes = new Uint8Array(16);
+  if (typeof globalThis.crypto?.getRandomValues === "function") {
+    globalThis.crypto.getRandomValues(bytes);
+    return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+  }
+  if (typeof globalThis.crypto?.randomUUID === "function") {
+    return globalThis.crypto.randomUUID().replace(/-/g, "");
+  }
+  return `${Date.now().toString(36)}${Math.random().toString(36).slice(2).padEnd(16, "0")}`.slice(0, 32);
+}
+
+function rememberPendingNotificationAction(
+  center: HostActivityCenter,
+  token: string,
+  entry: PendingNotificationActionRecord,
+): void {
+  center.pendingNotificationActions.set(token, entry);
+  while (center.pendingNotificationActions.size > MAX_PENDING_NOTIFICATION_ACTIONS) {
+    const oldestKey = center.pendingNotificationActions.keys().next().value;
+    if (!oldestKey) break;
+    center.pendingNotificationActions.delete(oldestKey);
+  }
+}
+
 export async function dispatchDesktopNotification(
   host: MenuMijiaWindowsApp,
   payload: {
@@ -573,11 +615,15 @@ export async function dispatchDesktopNotification(
     readonly body: string;
     readonly kind?: "doorbell" | "safety" | "leak" | "smoke" | "gas";
     readonly deviceId?: string;
+    readonly actions?: readonly DesktopNotificationAction[];
   },
   nowMs = Date.now(),
 ): Promise<DesktopNotificationRecord> {
   const center = getHostActivityCenter(host);
   let channel: DesktopNotificationRecord["channel"] = "panel-only";
+  const boundedActions = payload.actions
+    ?.filter((a) => a.label.trim().length > 0 && a.arguments.startsWith("menumijia://notification/"))
+    .slice(0, 2);
 
   try {
     const invoke = typeof window !== "undefined" ? window.__TAURI_INTERNALS__?.invoke : undefined;
@@ -588,6 +634,7 @@ export async function dispatchDesktopNotification(
           body: payload.body,
           kind: payload.kind,
           deviceId: payload.deviceId,
+          ...(boundedActions && boundedActions.length > 0 ? { actions: boundedActions } : {}),
         });
         channel = "tauri";
       } catch {
@@ -629,6 +676,7 @@ export async function dispatchDesktopNotification(
     id: payload.id,
     title: payload.title,
     body: payload.body,
+    ...(boundedActions && boundedActions.length > 0 ? { actions: boundedActions } : {}),
     channel,
     timestampMs: nowMs,
   };
@@ -647,6 +695,7 @@ export function recordSafetyAlerts(
   if (alerts.length === 0) return false;
   const center = getHostActivityCenter(host);
   const scope = center.scopeKey;
+  const pref = host.settings.interfaceLanguage;
 
   for (const alert of alerts) {
     center.dismissedActivityIds.delete(`safety:${alert.id}`);
@@ -659,20 +708,84 @@ export function recordSafetyAlerts(
     ].slice(0, MAX_RECENT_SAFETY_ALERTS);
 
     if (alert.priority === "high") {
+      const toastKind = alert.sensorKind && sensorAlertIsHazard(alert.sensorKind) ? alert.sensorKind : "safety";
+      const actions: DesktopNotificationAction[] = [];
+      if (alert.turnOffCommand) {
+        const token = generateNotificationActionToken();
+        rememberPendingNotificationAction(center, token, { alert, scope, createdMs: nowMs });
+        actions.push({
+          label: tr3("立即关闭", "立即關閉", "Turn Off Now", undefined, pref),
+          arguments: `menumijia://notification/action/${token}`,
+        });
+      }
+      if (alert.deviceId) {
+        actions.push({
+          label: tr3("查看", "查看", "View", undefined, pref),
+          arguments: `menumijia://notification/${toastKind}/${alert.deviceId}`,
+        });
+      }
       void dispatchDesktopNotification(
         host,
         {
           id: alert.id,
           title: alert.title,
           body: alert.body,
-          kind: alert.sensorKind && sensorAlertIsHazard(alert.sensorKind) ? alert.sensorKind : "safety",
+          kind: toastKind,
           deviceId: alert.deviceId,
+          actions,
         },
         nowMs,
       );
     }
   }
   return true;
+}
+
+export async function executeNotificationActionToken(
+  host: MenuMijiaWindowsApp,
+  token: string,
+): Promise<"executed" | "blocked" | "stale"> {
+  if (await rejectIfControlBlockedWhileLocked(host)) {
+    return "blocked";
+  }
+  const center = getHostActivityCenter(host);
+  const pending = center.pendingNotificationActions.get(token);
+  const currentScope = computeActivityScopeKey(host);
+  const pref = host.settings.interfaceLanguage;
+  if (!pending || pending.scope !== currentScope || !pending.alert.turnOffCommand) {
+    center.pendingNotificationActions.delete(token);
+    host.replyBanner = {
+      text: tr3(
+        "该提醒已不适用于当前家居，未关闭设备",
+        "該提醒已不適用於目前家居，未關閉設備",
+        "This alert no longer applies to the current home; no device was turned off",
+        undefined,
+        pref,
+      ),
+      source: tr3("安全守护", "安全守護", "Safety Guard", undefined, pref),
+      isError: true,
+    };
+    host.render();
+    return "stale";
+  }
+
+  // Ensure the alert record is present for `executeSafetyTurnOffAction` even if evicted from the visible 10-card slice.
+  if (!center.recentSafetyAlerts.some((r) => r.alert.id === pending.alert.id)) {
+    center.recentSafetyAlerts = [
+      { alert: pending.alert, scope: pending.scope, dateMs: pending.createdMs },
+      ...center.recentSafetyAlerts,
+    ].slice(0, MAX_RECENT_SAFETY_ALERTS);
+  }
+  const ok = await executeSafetyTurnOffAction(host, pending.alert.id);
+  if (ok) {
+    center.pendingNotificationActions.delete(token);
+    return "executed";
+  }
+  if (await isWorkstationLockBlockingControl(host)) {
+    return "blocked";
+  }
+  center.pendingNotificationActions.delete(token);
+  return "stale";
 }
 
 function buildReportEnergyAndClimateInputs(
@@ -1505,6 +1618,12 @@ export async function ingestHostHASnapshotForDoorbell(
           undefined,
           host.settings.interfaceLanguage,
         ),
+        actions: [
+          {
+            label: tr3("查看画面", "查看畫面", "View Live", undefined, host.settings.interfaceLanguage),
+            arguments: `menumijia://notification/doorbell/${ring.deviceId}`,
+          },
+        ],
       },
       nowMs,
     );

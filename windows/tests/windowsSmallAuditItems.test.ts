@@ -206,8 +206,20 @@ describe("Windows notification navigation", () => {
     assert.deepEqual(
       calls.filter(({ name }) => name === "send_desktop_notification").map(({ args }) => args),
       [
-        { deviceId, kind: "smoke", title: alert.title, body: alert.body },
-        { deviceId, kind: "safety", title: alert.title, body: alert.body },
+        {
+          deviceId,
+          kind: "smoke",
+          title: alert.title,
+          body: alert.body,
+          actions: [{ label: "View", arguments: `menumijia://notification/smoke/${deviceId}` }],
+        },
+        {
+          deviceId,
+          kind: "safety",
+          title: alert.title,
+          body: alert.body,
+          actions: [{ label: "View", arguments: `menumijia://notification/safety/${deviceId}` }],
+        },
       ],
     );
     const revealCalls = () => calls.filter(({ name }) => name === "show_panel_for_url").length;
