@@ -1381,6 +1381,14 @@ export class MenuMijiaWindowsApp {
       const beginHold = () => {
         if (this.allOffHoldTimer !== null) return;
         this.allOffHoldConsumed = false;
+        // A re-press while the fill is still draining restarts it from empty, so the sweep
+        // never finishes before the 0.6 s timer (a reversed transition would run shorter).
+        const fill = allOff.querySelector<HTMLElement>(".cc-hold-fill");
+        if (fill) {
+          fill.style.transition = "none";
+          void fill.offsetWidth;
+          fill.style.removeProperty("transition");
+        }
         allOff.classList.add("is-holding");
         this.allOffHoldTimer = window.setTimeout(() => {
           this.allOffHoldTimer = null;

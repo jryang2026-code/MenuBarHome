@@ -156,12 +156,15 @@ public struct TileSurface: Equatable, Sendable {
 // MARK: - Motion Helpers
 
 struct BreathingDot: View {
+    @Environment(\.effectiveReduceMotion) private var reduceMotion
     let color: Color
 
     var body: some View {
+        // Online → syncing → offline fades between hues rather than blinking to a new dot.
         Circle()
             .fill(color)
             .frame(width: 7, height: 7)
+            .animation(AppleMotion.resolve(.hoverFade, reduceMotion: reduceMotion), value: color)
     }
 }
 
@@ -294,16 +297,20 @@ struct HoldToConfirmButton: View {
         .padding(.horizontal, 11)
         .frame(height: 30)
         .overlay {
-            GeometryReader { geo in
-                Rectangle()
-                    .fill(Color.accentColor.opacity(0.28))
-                    .frame(width: holding ? geo.size.width : 0)
-            }
-            .clipShape(capsule)
+            // Scaling (not resizing) the fill keeps the 0.6 s sweep on the compositor.
+            Rectangle()
+                .fill(Color.accentColor.opacity(0.28))
+                .scaleEffect(x: holding ? 1 : 0, y: 1, anchor: .leading)
+                .clipShape(capsule)
             .allowsHitTesting(false)
         }
         .modifier(ChipSurface(shape: capsule, tint: nil, interactive: true, clear: false))
-        .scaleEffect(holding && !reduceMotion ? 0.95 : 1)
+        // The press dip answers at once; only the fill runs at hold speed.
+        .animation(AppleMotion.resolve(.pressFeedback, reduceMotion: reduceMotion)) {
+            $0.scaleEffect(holding && !reduceMotion ? 0.96 : 1)
+        }
+        // The fill is the hold's progress readout, so it keeps its linear sweep under Reduce Motion.
+        .transaction { if reduceMotion { $0.disablesAnimations = false } }
         .contentShape(capsule)
         .onTapGesture {
             guard !PanelTransientUIState.shared.shouldSuppressTap() else { return }

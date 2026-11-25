@@ -4,6 +4,11 @@ import SwiftUI
 
 struct PanelControlGestureAttempt {
     static let holdDuration: Duration = .milliseconds(650)
+    /// The ring's linear sweep runs exactly as long as the hold it measures.
+    static var holdSeconds: Double {
+        let parts = holdDuration.components
+        return Double(parts.seconds) + Double(parts.attoseconds) / 1e18
+    }
     static let slideThreshold: CGFloat = 0.92
 
     let startedAt: ContinuousClock.Instant
@@ -101,6 +106,7 @@ private struct PanelControlGesture: ViewModifier {
 private struct PanelControlPointerSurface: View {
     @Environment(\.isEnabled) private var isEnabled
     @Environment(\.isEditingLayout) private var isEditingLayout
+    @Environment(\.effectiveReduceMotion) private var reduceMotion
     @State private var attempt: PanelControlGestureAttempt?
     @State private var confirmation: PanelControlConfirmation?
     @State private var holdTask: Task<Void, Never>?
@@ -170,6 +176,8 @@ private struct PanelControlPointerSurface: View {
             if editing { cancel() }
         }
         .onDisappear { reset() }
+        // The ring's sweep is the hold's progress readout, so it keeps running under Reduce Motion.
+        .transaction { if reduceMotion { $0.disablesAnimations = false } }
     }
 
     private func track(width: CGFloat) -> some View {
@@ -223,7 +231,7 @@ private struct PanelControlPointerSurface: View {
         guard confirmation != nil else { return }
         session = PanelTransientUIState.shared.beginDeviceControlGesture(onCancel: cancel)
         guard level == .hold else { return }
-        withAnimation(.linear(duration: 0.65)) { ringProgress = 1 }
+        withAnimation(.linear(duration: PanelControlGestureAttempt.holdSeconds)) { ringProgress = 1 }
         holdTask = Task { @MainActor in
             try? await ContinuousClock().sleep(until: now + PanelControlGestureAttempt.holdDuration)
             guard !Task.isCancelled, NSEvent.pressedMouseButtons & 1 != 0,
@@ -252,11 +260,14 @@ private struct PanelControlPointerSurface: View {
         PanelTransientUIState.shared.endDeviceControlGesture(session)
         session = nil
         attempt?.cancel()
-        confirmation = nil
         holdTask?.cancel()
         holdTask = nil
-        ringProgress = 0
-        slideProgress = 0
+        // A released slide springs back to the start and the ring fades out, instead of vanishing.
+        withAnimation(AppleMotion.resolve(.control, reduceMotion: reduceMotion)) {
+            confirmation = nil
+            ringProgress = 0
+            slideProgress = 0
+        }
     }
 
     private func reset() {

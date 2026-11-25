@@ -173,9 +173,9 @@ public enum AppleMotion {
         case surface
         /// Critically damped drag-and-drop tile reorder (500 ms response, damping 1.0).
         case reorder
-        /// Gentle gauge / humidity arc sweep (550 ms response).
+        /// Gauge / humidity arc sweep (400 ms response, critically damped: readings never wobble).
         case gauge
-        /// Glass hover highlight opacity fade (300 ms ease-in-out).
+        /// Glass hover highlight opacity fade (160 ms ease-out: sweeping the grid leaves no trail).
         case hoverFade
         /// Linear hold-to-confirm progress fill (600 ms).
         case holdProgress
@@ -222,9 +222,9 @@ public enum AppleMotion {
         case .reorder:
             return .spring(response: 0.50, dampingFraction: 1.0)
         case .gauge:
-            return .spring(response: 0.55, dampingFraction: 0.80)
+            return .spring(response: 0.40, dampingFraction: 1.0)
         case .hoverFade:
-            return .easeInOut(duration: 0.30)
+            return .easeOut(duration: 0.16)
         case .holdProgress:
             return .linear(duration: 0.60)
         }
@@ -1422,6 +1422,7 @@ struct GlassSegmentedControl<Value: Hashable>: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.effectiveReduceTransparency) private var reduceTransparency
     @Environment(\.effectiveReduceMotion) private var reduceMotion
+    @Namespace private var lens
 
     var body: some View {
         Group {
@@ -1454,7 +1455,7 @@ struct GlassSegmentedControl<Value: Hashable>: View {
                 let isSelected = selection == segment.value
                 Button {
                     guard !isSelected else { return }
-                    withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) { selection = segment.value }
+                    withAnimation(AppleMotion.resolve(.control, reduceMotion: reduceMotion)) { selection = segment.value }
                 } label: {
                     Text(segment.title)
                         .font(.system(
@@ -1468,9 +1469,11 @@ struct GlassSegmentedControl<Value: Hashable>: View {
                         .frame(maxWidth: .infinity)
                         .background {
                             if isSelected {
+                                // One lens slides between segments, so the eye follows where the choice went.
                                 Capsule(style: .continuous)
                                     .fill(.white)
                                     .shadow(color: .black.opacity(0.12), radius: 2, y: 1)
+                                    .matchedGeometryEffect(id: "lens", in: lens)
                             }
                         }
                         .contentShape(Capsule(style: .continuous))

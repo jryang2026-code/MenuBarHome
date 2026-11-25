@@ -23,6 +23,7 @@ private struct RoomAutoGroupCapsuleView: View {
     let store: HomeStore
     let theme: PanelTheme
 
+    @Environment(\.effectiveReduceMotion) private var reduceMotion
     @State private var isShowingBrightness = false
     @State private var draftBrightness: Double = 80
 
@@ -112,5 +113,7 @@ private struct RoomAutoGroupCapsuleView: View {
             }
         }
         .overlay(shape.strokeBorder(group.isAnyOn ? accentColor.opacity(0.42) : Color.primary.opacity(0.10), lineWidth: DesignTokens.hairline))
+        // On ↔ off eases the tint in and out, like a device tile's toggle.
+        .animation(AppleMotion.resolve(.control, reduceMotion: reduceMotion), value: group.isAnyOn)
     }
 }

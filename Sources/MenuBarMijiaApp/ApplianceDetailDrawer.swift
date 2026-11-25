@@ -5,6 +5,7 @@ import SwiftUI
 /// Target temperature, mode, status, fault, remaining time and start/pause for the shared
 /// appliance card. Every row renders only when the spec published that control (#300).
 struct ApplianceDetailDrawer: View {
+    @Environment(\.effectiveReduceMotion) private var reduceMotion
     let device: SmartDevice
     let spec: ApplianceSpec
     let store: HomeStore
@@ -193,6 +194,9 @@ struct ApplianceDetailDrawer: View {
                 Text(L10n.temperature(target))
                     .font(.system(size: DesignTokens.TypeSize.reading, weight: .bold, design: .rounded))
                     .monospacedDigit()
+                    // Each ± step rolls the digits, as the climate card's target does.
+                    .contentTransition(.numericText(value: target))
+                    .animation(AppleMotion.resolve(.control, reduceMotion: reduceMotion), value: target)
                 if let current = spec.currentTemperature {
                     Text(L10n.format("当前 %@", "Now %@", L10n.temperature(current, fractionDigits: 1)))
                         .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
