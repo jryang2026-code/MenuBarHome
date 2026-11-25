@@ -1,6 +1,7 @@
 import { assistantEndpointIdentity, inferAssistantPreset, resolveHabitSharing, type HabitEntry } from "../core/assistant.js";
 import { AutomationRuleStore } from "../core/automationEngine.js";
 import { normalizeCameraStreamQualityMap } from "../core/cameraQuality.js";
+import { normalizeGenericCameraHost, sanitizeGenericCamerasList } from "../core/genericCameras.js";
 import {
   CANONICAL_DEVICE_REGISTRY_STORAGE_KEY,
   DUAL_SOURCE_ENABLED_STORAGE_KEY,
@@ -417,6 +418,10 @@ export function loadSettings(): LoadedSettings {
               )
             : {},
         cameraStreamQualities: normalizeCameraStreamQualityMap(parsed.cameraStreamQualities),
+        genericCameras: sanitizeGenericCamerasList(parsed.genericCameras),
+        genericCameraConsentHosts: Array.isArray(parsed.genericCameraConsentHosts)
+          ? [...new Set(parsed.genericCameraConsentHosts.filter((h): h is string => typeof h === "string" && h.trim() !== "").map(normalizeGenericCameraHost))]
+          : [],
         layout: { ...emptyLayoutPrefs(), ...(parsed.layout ?? {}) },
         selectedHomeId: parsed.selectedHomeId ?? null,
         ...(typeof parsed.customHomeTitle === "string"
@@ -508,6 +513,8 @@ function buildDefaultSettings(): PersistedSettings {
     allowDirectURLControl: false,
     cameraStreamURLs: {},
     cameraStreamQualities: {},
+    genericCameras: [],
+    genericCameraConsentHosts: [],
   };
 }
 

@@ -28,6 +28,16 @@ pub(crate) fn allowed_credential_name(name: &str) -> Result<&str, String> {
             return Ok(name);
         }
     }
+    if let Some(suffix) = name.strip_prefix("generic-camera:") {
+        if !suffix.is_empty()
+            && suffix.len() <= 64
+            && suffix
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        {
+            return Ok(name);
+        }
+    }
     Err(format!("不允许的凭据名称：{name}"))
 }
 
@@ -196,5 +206,17 @@ mod tests {
         assert!(allowed_credential_name("mi_session_").is_err());
         assert!(allowed_credential_name("mi_session_a/b").is_err());
         assert!(allowed_credential_name(&format!("mi_session_{}", "a".repeat(65))).is_err());
+    }
+
+    #[test]
+    fn allows_constrained_generic_camera_credential_targets() {
+        let uuid = "11111111-1111-4111-8111-111111111111";
+        let target = format!("generic-camera:{uuid}");
+        assert_eq!(allowed_credential_name(&target).ok(), Some(target.as_str()));
+        assert!(allowed_credential_name("generic-camera:").is_err());
+        assert!(allowed_credential_name("generic-camera:../other").is_err());
+        assert!(allowed_credential_name("generic-camera:a:b").is_err());
+        assert!(allowed_credential_name("generic-camera:a b").is_err());
+        assert!(allowed_credential_name(&format!("generic-camera:{}", "a".repeat(65))).is_err());
     }
 }

@@ -7,6 +7,7 @@ import {
   type MiAccountSessionState,
 } from "../core/emptyPanelDiagnosis.js";
 import { normalizeDeviceCategorySelection } from "../core/deviceTypeSelection.js";
+import { genericCameraToSmartDevice } from "../core/genericCameras.js";
 import { isEventAutomationEnabled } from "../core/freshInstallDefaults.js";
 import { type HAInvoke } from "../core/homeAssistant.js";
 import { DualSourceCoordinator } from "../core/dualSourceProvider.js";
@@ -1174,10 +1175,26 @@ export class MenuMijiaWindowsApp {
     this.render();
   }
 
+  private get allDevicesIncludingGenericCameras(): SmartDevice[] {
+    const generic = this.settings.genericCameras ?? [];
+    if (generic.length === 0 || !this.cameraLive.cameraCategoryEnabled) return this.devices;
+    const seen = new Set(this.devices.map((d) => d.id));
+    const merged = [...this.devices];
+    for (const cam of generic) {
+      const synth = genericCameraToSmartDevice(cam, tr3("通用摄像机", "通用攝影機", "Generic Cameras"));
+      if (!seen.has(synth.id)) {
+        seen.add(synth.id);
+        merged.push(synth);
+      }
+    }
+    return merged;
+  }
+
   private get filteredDevices(): SmartDevice[] {
+    const source = this.allDevicesIncludingGenericCameras;
     const query = normalizeSearch(this.panelSearch.query);
-    if (!query) return filterByListCut(this.devices, this.listCut, this.settings.hideOfflineDevices, { layout: this.layout });
-    const candidates = filterByListCut(this.devices, { kind: "all" }, this.settings.hideOfflineDevices, { layout: this.layout });
+    if (!query) return filterByListCut(source, this.listCut, this.settings.hideOfflineDevices, { layout: this.layout });
+    const candidates = filterByListCut(source, { kind: "all" }, this.settings.hideOfflineDevices, { layout: this.layout });
     const byId = new Map(candidates.map((device) => [device.id, device]));
     return this.panelSearchIndex.matches(query, candidates, this.layout.aliases).flatMap((entry) => {
       const device = byId.get(entry.deviceId);

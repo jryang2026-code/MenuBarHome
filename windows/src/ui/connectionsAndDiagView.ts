@@ -1,5 +1,9 @@
 import { AutomationRuleStore } from "../core/automationEngine.js";
 import type { CapabilityDeactivationVerdict } from "../core/capabilityReferenceVerdict.js";
+import {
+  bindGenericCameraSettingsEvents,
+  renderGenericCamerasSettingsBlock,
+} from "./genericCameraSettingsView.js";
 import { currentLanguage, resolveLanguage, t, tr3 as coreTr3, type AppLanguage, type LanguagePreference } from "../core/i18n.js";
 import {
   MI_ACCOUNT_CAPABILITY_STORAGE_KEY,
@@ -3113,6 +3117,7 @@ export function renderConnectionsAndDiagSection(
             <p class="cc-field-hint" style="margin-top:4px;">${esc(dualHint)}</p>
           </div>
           ${includeDashboardTitle ? renderCustomHomeTitleField(ctx) : ""}
+          ${renderGenericCamerasSettingsBlock(ctx.settings, host ?? null, esc)}
         </div>
       </details>
 
@@ -3371,6 +3376,7 @@ export function bindConnectionsAndDiagEvents(host: ConnectionsAndDiagHost): void
     bindElementListener(host.root.querySelector<HTMLButtonElement>(sel), "click", () => fn());
 
   bindHaDisconnectRowScope(host, host.root);
+  bindGenericCameraSettingsEvents(host);
 
   host.root.querySelectorAll<HTMLInputElement>("[data-mi-account-enabled]").forEach((box) => {
     box.checked = box.hasAttribute("checked");

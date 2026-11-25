@@ -71,6 +71,201 @@ pub(crate) fn is_private_lan_ipv4(host: &str) -> bool {
         .is_ok_and(|ip| ip.is_private())
 }
 
+pub(crate) fn is_private_or_local_camera_host(raw_host: &str) -> bool {
+    let trimmed = raw_host
+        .trim()
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .to_ascii_lowercase();
+    if trimmed.is_empty()
+        || trimmed.chars().any(|c| c.is_control() || c.is_whitespace() || matches!(c, '/' | '@' | '?' | '#'))
+    {
+        return false;
+    }
+    if trimmed == "localhost"
+        || trimmed == "::1"
+        || trimmed.ends_with(".local")
+        || trimmed.ends_with(".lan")
+        || trimmed.ends_with(".home.arpa")
+        || trimmed.ends_with(".internal")
+    {
+        return true;
+    }
+    if let Ok(ip) = trimmed.parse::<std::net::Ipv4Addr>() {
+        let [a, b, ..] = ip.octets();
+        return ip.is_private()
+            || ip.is_loopback()
+            || ip.is_link_local()
+            || (a == 100 && (64..=127).contains(&b));
+    }
+    if let Ok(ip) = trimmed.parse::<std::net::Ipv6Addr>() {
+        let seg0 = ip.segments()[0];
+        return ip.is_loopback() || (seg0 & 0xfe00) == 0xfc00 || (seg0 & 0xffc0) == 0xfe80;
+    }
+    false
+}
+
+pub(crate) fn generic_camera_stream_names(camera_id: &str, profile: &str) -> (String, String) {
+    let clean_id = sanitize_camera_did(camera_id);
+    let suffix = if profile == "sub" { "sub" } else { "main" };
+    (
+        format!("cam_generic_raw_{clean_id}_{suffix}"),
+        format!("cam_generic_mjpeg_{clean_id}_{suffix}"),
+    )
+}
+
+pub(crate) fn all_generic_camera_stream_names(camera_id: &str) -> Vec<String> {
+    let (raw_main, mjpeg_main) = generic_camera_stream_names(camera_id, "main");
+    let (raw_sub, mjpeg_sub) = generic_camera_stream_names(camera_id, "sub");
+    vec![raw_main, mjpeg_main, raw_sub, mjpeg_sub]
+}
+
+fn format_camera_host(host: &str) -> String {
+    let trimmed = host.trim().trim_start_matches('[').trim_end_matches(']');
+    if trimmed.contains(':') {
+        format!("[{trimmed}]")
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn format_camera_userinfo(username: &str, password: &str) -> String {
+    if username.is_empty() && password.is_empty() {
+        String::new()
+    } else if password.is_empty() {
+        format!("{}@", urlencoding_simple(username))
+    } else {
+        format!(
+            "{}:{}@",
+            urlencoding_simple(username),
+            urlencoding_simple(password)
+        )
+    }
+}
+
+/// Builds a read-only go2rtc source string for a generic camera (RTSP / ONVIF / ISAPI / Dahua / Tapo).
+/// Mirrors `windows/src/core/genericCameras.ts:buildGenericCameraSourceUrl` and
+/// `Tests/Fixtures/generic_camera_sources_golden.json`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn build_generic_camera_source_url(
+    kind: &str,
+    host: &str,
+    port: Option<u16>,
+    path: Option<&str>,
+    channel: Option<u32>,
+    profile: &str,
+    custom_source: Option<&str>,
+    username: &str,
+    password: &str,
+) -> Result<String, String> {
+    let trimmed_host = host.trim();
+    if trimmed_host.is_empty()
+        || trimmed_host
+            .chars()
+            .any(|c| c.is_control() || c.is_whitespace() || matches!(c, '/' | '@' | '?' | '#'))
+    {
+        return Err("无效的摄像机主机地址".to_string());
+    }
+    if let Some(custom) = custom_source.map(str::trim).filter(|s| !s.is_empty()) {
+        if custom.chars().any(|c| c.is_control() || c.is_whitespace()) {
+            return Err("自定义流地址不能包含空白或控制字符".to_string());
+        }
+        let lower = custom.to_ascii_lowercase();
+        if !(lower.starts_with("rtsp://")
+            || lower.starts_with("rtsps://")
+            || lower.starts_with("onvif://")
+            || lower.starts_with("tapo://"))
+        {
+            return Err("自定义流地址仅支持 rtsp/rtsps/onvif/tapo 协议".to_string());
+        }
+        let encoded_user = urlencoding_simple(username);
+        let encoded_pass = urlencoding_simple(password);
+        let rendered = custom
+            .replace("{user}", &encoded_user)
+            .replace("{pass}", &encoded_pass);
+        return Ok(rendered);
+    }
+
+    let formatted_host = format_camera_host(trimmed_host);
+    let userinfo = format_camera_userinfo(username, password);
+    let ch = channel.unwrap_or(1).clamp(1, 256);
+    let is_sub = profile == "sub";
+
+    match kind {
+        "rtsp" => {
+            let p = port.unwrap_or(554);
+            let clean_path = path.unwrap_or("").trim().trim_start_matches('/');
+            if clean_path.chars().any(|c| c.is_control() || c.is_whitespace() || c == '#') {
+                return Err("RTSP 路径包含非法字符".to_string());
+            }
+            let suffix = if clean_path.is_empty() {
+                String::new()
+            } else {
+                format!("/{clean_path}")
+            };
+            Ok(format!("rtsp://{userinfo}{formatted_host}:{p}{suffix}#backchannel=0"))
+        }
+        "onvif" => {
+            let p = port.unwrap_or(80);
+            if is_sub {
+                Ok(format!("onvif://{userinfo}{formatted_host}:{p}?subtype=1"))
+            } else {
+                Ok(format!("onvif://{userinfo}{formatted_host}:{p}"))
+            }
+        }
+        "isapi" => {
+            let p = port.unwrap_or(554);
+            let stream_suffix = if is_sub { "02" } else { "01" };
+            Ok(format!(
+                "rtsp://{userinfo}{formatted_host}:{p}/Streaming/Channels/{ch}{stream_suffix}#backchannel=0"
+            ))
+        }
+        "dahua" => {
+            let p = port.unwrap_or(554);
+            let subtype = if is_sub { 1 } else { 0 };
+            Ok(format!(
+                "rtsp://{userinfo}{formatted_host}:{p}/cam/realmonitor?channel={ch}&subtype={subtype}#backchannel=0"
+            ))
+        }
+        "tapo" => {
+            let pass_part = if password.is_empty() {
+                String::new()
+            } else {
+                format!("{}@", urlencoding_simple(password))
+            };
+            let port_part = port.map(|p| format!(":{p}")).unwrap_or_default();
+            if is_sub {
+                Ok(format!("tapo://{pass_part}{formatted_host}{port_part}?subtype=sd"))
+            } else {
+                Ok(format!("tapo://{pass_part}{formatted_host}{port_part}"))
+            }
+        }
+        other => Err(format!("不支持的通用摄像机协议：{other}")),
+    }
+}
+
+/// Strips embedded `user:pass@` or `pass@` credentials from camera URLs before logging or error display.
+pub(crate) fn redact_camera_credentials(input: &str) -> String {
+    let mut result = input.to_string();
+    for scheme in ["rtsp://", "rtsps://", "onvif://", "tapo://", "http://", "https://"] {
+        let mut search_from = 0;
+        while let Some(rel_idx) = result[search_from..].find(scheme) {
+            let start = search_from + rel_idx + scheme.len();
+            let tail = &result[start..];
+            let end_authority = tail
+                .find(|c: char| matches!(c, '/' | '?' | '#' | ' ' | '\t' | '\n' | '\r'))
+                .unwrap_or(tail.len());
+            if let Some(at_pos) = tail[..end_authority].rfind('@') {
+                result.replace_range(start..start + at_pos + 1, "***@");
+                search_from = start + 4;
+            } else {
+                search_from = start + end_authority;
+            }
+        }
+    }
+    result
+}
+
 pub(crate) fn parse_camera_lan_ip(local_ip: &str) -> Result<std::net::Ipv4Addr, String> {
     let cam_ip: std::net::Ipv4Addr = local_ip
         .trim()
@@ -508,5 +703,68 @@ mod tests {
             t_idle
         ));
         assert!(cs2_relay_accepts_client_packet(&lan_search, client_b, bound, t_idle));
+    }
+
+    #[test]
+    fn generic_camera_source_urls_match_contract_and_encode_special_chars() {
+        assert_eq!(
+            build_generic_camera_source_url(
+                "rtsp",
+                "cam-garage.local",
+                Some(8554),
+                Some("live/ch0"),
+                None,
+                "main",
+                None,
+                "admin@home",
+                "p@ss:w/ord#1?% &+!",
+            )
+            .expect("rtsp url"),
+            "rtsp://admin%40home:p%40ss%3Aw%2Ford%231%3F%25%20%26%2B%21@cam-garage.local:8554/live/ch0#backchannel=0"
+        );
+        assert_eq!(
+            build_generic_camera_source_url("onvif", "192.168.1.60", None, None, None, "sub", None, "u", "p")
+                .expect("onvif sub"),
+            "onvif://u:p@192.168.1.60:80?subtype=1"
+        );
+        assert_eq!(
+            build_generic_camera_source_url("isapi", "192.168.1.70", None, None, Some(3), "sub", None, "admin", "hik#1")
+                .expect("isapi sub"),
+            "rtsp://admin:hik%231@192.168.1.70:554/Streaming/Channels/302#backchannel=0"
+        );
+        assert_eq!(
+            build_generic_camera_source_url("dahua", "192.168.1.80", None, None, Some(2), "main", None, "nvr", "a/b")
+                .expect("dahua main"),
+            "rtsp://nvr:a%2Fb@192.168.1.80:554/cam/realmonitor?channel=2&subtype=0#backchannel=0"
+        );
+        assert_eq!(
+            build_generic_camera_source_url("tapo", "192.168.1.90", None, None, None, "main", None, "ignored", "tp@ss#1")
+                .expect("tapo main"),
+            "tapo://tp%40ss%231@192.168.1.90"
+        );
+        assert_eq!(
+            build_generic_camera_source_url("tapo", "192.168.1.90", None, None, None, "sub", None, "ignored", "tp@ss#1")
+                .expect("tapo sub"),
+            "tapo://tp%40ss%231@192.168.1.90?subtype=sd"
+        );
+    }
+
+    #[test]
+    fn generic_camera_host_policy_and_credential_redaction() {
+        assert!(is_private_or_local_camera_host("192.168.1.50"));
+        assert!(is_private_or_local_camera_host("cam-front.local"));
+        let class_a = std::net::Ipv4Addr::new(5 * 2, 0, 0, 12).to_string();
+        assert!(is_private_or_local_camera_host(&class_a));
+        assert!(!is_private_or_local_camera_host("8.8.8.8"));
+        assert!(!is_private_or_local_camera_host("camera.example.com"));
+
+        assert_eq!(
+            redact_camera_credentials("failed rtsp://admin:s3cr3t@192.168.1.50:554/stream1"),
+            "failed rtsp://***@192.168.1.50:554/stream1"
+        );
+        assert_eq!(
+            redact_camera_credentials("tapo://my%23pass@192.168.1.90?subtype=sd"),
+            "tapo://***@192.168.1.90?subtype=sd"
+        );
     }
 }

@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/jryang2026-code/MenuBarHome/Shared/genericCameraSources.schema.json",
+  "title": "GenericCameraSources",
+  "description": "Read-only generic camera configuration list (RTSP / ONVIF / Hikvision ISAPI / Dahua / Tapo). Credentials are NEVER stored in this JSON; they live in the OS keychain / Windows Credential Manager under target generic-camera:<id>.",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["id", "name", "kind", "host"],
+    "properties": {
+      "id": {
+        "type": "string",
+        "format": "uuid",
+        "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+        "description": "Stable UUID identifying the camera and its OS credential target generic-camera:<id>."
+      },
+      "name": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 120
+      },
+      "kind": {
+        "type": "string",
+        "enum": ["rtsp", "onvif", "isapi", "dahua", "tapo"]
+      },
+      "host": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 255,
+        "description": "Private LAN IP or .local hostname (non-local hosts require explicit user confirmation)."
+      },
+      "port": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 65535
+      },
+      "path": {
+        "type": "string",
+        "maxLength": 512,
+        "description": "RTSP stream path (used only when kind is rtsp)."
+      },
+      "channel": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 256,
+        "default": 1,
+        "description": "1-based camera channel for ISAPI / Dahua NVR or multi-channel cameras."
+      },
+      "mainStream": {
+        "type": "string",
+        "maxLength": 1024,
+        "description": "Optional explicit main-stream go2rtc source template (may use {user} and {pass} placeholders, never raw secrets)."
+      },
+      "subStream": {
+        "type": "string",
+        "maxLength": 1024,
+        "description": "Optional explicit sub-stream go2rtc source template (may use {user} and {pass} placeholders, never raw secrets)."
+      }
+    }
+  }
+}

@@ -39,3 +39,8 @@
 1. **应用内「复制诊断」**：先看 `online`、`connectionMode`、`hasCustomURL` 与原始错误区分云端掉线、密钥协商、组件下载（`download_go2rtc_win64` 45s/120s 网络截断）与桥接转码；对外答复修复状态前用 `git tag --contains <commit>` 核实是否已进发版 tag。
 2. **绕过 App 独立基线**（`.scratch/camera-diag/diag.ts`）：读凭据管理器 `mi_session.com.jryang.menubarmijia` 直跑协商 + UDP 中继 + go2rtc，数 `/api/stream.mjpeg` 12 秒内 `0xFFD9` 帧数（读取循环只丢弃计数，不做正则拼接）。健康值：326–412 帧/12s，首帧 <3s。
 3. **App 内 WebView2 验证**（`cdp-drive.mjs`）：以 `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=19222`（先 `netstat` 避开被 `svchost` 占用的 9223）启动安装版 exe，每 400ms 比对 `Page.captureScreenshot` PNG 哈希并核对连续 `open → close → open` 三次均出画。
+
+## 5. 通用摄像机只读接入与凭据/配置安全（RTSP / ONVIF / ISAPI / 大华 / Tapo）
+
+- **契约与凭据隔离**：配置遵循 `Shared/genericCameraSources.schema.json`（与 `Tests/Fixtures/generic_camera_sources_golden.json` 黄金用例对齐），配置 JSON 绝不保存账号密码；凭据仅通过 `secure_store_*` 写入 Windows 凭据管理器，目标名为 `generic-camera:<id>`。
+- **运行时注册与落盘清理**：`bridge_generic_camera_stream` 由 Rust 直接读取 `generic-camera:<id>` 并在内存中 URL 编码拼装源地址，通过受保护的回环 HTTP API（`PUT /api/streams`）注册 codec-copy 原始流与 MJPEG 桥接流，绝不把凭据写入前端存储或日志。若 `go2rtc` 在运行时将 `streams:` 段落回写到 `go2rtc.yaml`，该文件始终由 `write_secret_file` + `restrict_secret_file`（`icacls /inheritance:r /grant:r "<user>:(F)"`）限定为当前用户独占访问，并在 `stop_generic_camera_bridge`、应用退出（`shutdown_camera_resources`）及下次启动（`scrub_stale_camera_config_on_startup`）时立即清理 `streams:` 段落。
