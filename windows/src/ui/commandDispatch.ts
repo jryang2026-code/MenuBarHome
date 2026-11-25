@@ -1,11 +1,17 @@
 import { MiIOUnconfirmedWriteError } from "../core/miCloud/localMiIO.js";
+import { MiCloudChannelWriteBatcher } from "../core/miCloud/channelWriteBatcher.js";
+import { parseMiotAddress } from "../core/miCloud/spec.js";
 import { getCachedXiaomiTopology, miSessionFingerprint } from "../core/pollingPolicy.js";
 import { miSceneAccount } from "../core/miCloud/scenes.js";
 import { requestMiSceneConfirmation } from "./sceneConfirmation.js";
 import { isWorkstationLockBlockingControl } from "./transport.js";
 import type { MenuMijiaWindowsApp } from "./app.js";
 import type { UndoAction } from "./appTypes.js";
-import type { HabitRecordingReceipt } from "../core/assistant.js";
+import {
+  ManualControlPolicy,
+  isLocalNetworkURL,
+  type HabitRecordingReceipt,
+} from "../core/assistant.js";
 import { t, tr3 } from "../core/i18n.js";
 import {
   classifyControlFailure,
@@ -57,6 +63,7 @@ import {
 import { facetTitle, facetValue } from "../core/miotFacetText.js";
 import type {
   DeviceCommand,
+  DeviceIntent,
   DeviceKind,
   FacetControl,
   HomeScene,
@@ -83,13 +90,261 @@ import {
   type DeviceWriteClaim,
   type OptimisticLockSnapshot,
 } from "../core/optimisticLock.js";
-import { localizeEffect } from "./panelPrefs.js";
+import { localizeEffect, withAliases } from "./panelPrefs.js";
 
 export const MIOT_PROPERTY_UNSUPPORTED_CODE = -704002000;
 
 export const ECHO_READ_BACK_DELAY_MS = 2_200;
 
+export const SLIDER_LAN_MIN_INTERVAL_MS = 100;
+export const SLIDER_HIGH_RISK_DEBOUNCE_MS = 180;
+
 const UNDO_EXPIRY_MS = 10 * 60 * 1000;
+
+export interface SliderWriteRequest {
+  readonly slotKey: string;
+  readonly device: SmartDevice;
+  readonly command: DeviceCommand;
+  readonly summary: string;
+  readonly intent?: DeviceIntent;
+  readonly isLiveInput?: boolean;
+  readonly isHighRisk?: boolean;
+  readonly debounceHighRisk?: boolean;
+  readonly execute?: () => Promise<void>;
+  readonly onFailure?: () => void;
+}
+
+interface SliderMailboxTiming {
+  now: () => number;
+  sleep: (ms: number) => Promise<void>;
+  lanIntervalMs: number;
+  highRiskDebounceMs: number;
+}
+
+interface SliderMailboxSlot {
+  inFlight: boolean;
+  pending: SliderWriteRequest | null;
+  debounceToken: number;
+  debounceTimer: { cancel(): void } | null;
+  drainPromise: Promise<void> | null;
+  startedCount: number;
+}
+
+interface SliderMailboxHostState {
+  sourceRevision: number;
+  homeRevision: number;
+  readonly slots: Map<string, SliderMailboxSlot>;
+  timing: SliderMailboxTiming;
+}
+
+interface HostChannelBatcherState {
+  sourceRevision: number;
+  homeRevision: number;
+  batcher: MiCloudChannelWriteBatcher;
+  custom: boolean;
+}
+
+const sliderMailboxByHost = new WeakMap<object, SliderMailboxHostState>();
+const channelBatcherByHost = new WeakMap<object, HostChannelBatcherState>();
+
+const defaultMailboxSleep = (ms: number): Promise<void> =>
+  new Promise((resolve) => {
+    const timer = globalThis.setTimeout(resolve, ms);
+    (timer as { unref?: () => void } | null)?.unref?.();
+  });
+
+function clearSliderMailboxSlots(state: SliderMailboxHostState): void {
+  for (const slot of state.slots.values()) {
+    slot.pending = null;
+    slot.debounceToken += 1;
+    slot.debounceTimer?.cancel();
+    slot.debounceTimer = null;
+  }
+  state.slots.clear();
+}
+
+function ensureSliderMailboxState(host: MenuMijiaWindowsApp): SliderMailboxHostState {
+  let state = sliderMailboxByHost.get(host);
+  if (!state) {
+    state = {
+      sourceRevision: host.sourceRevision,
+      homeRevision: host.homeRevision,
+      slots: new Map(),
+      timing: { now: () => Date.now(), sleep: defaultMailboxSleep, lanIntervalMs: SLIDER_LAN_MIN_INTERVAL_MS, highRiskDebounceMs: SLIDER_HIGH_RISK_DEBOUNCE_MS },
+    };
+    sliderMailboxByHost.set(host, state);
+    return state;
+  }
+  if (state.sourceRevision !== host.sourceRevision || state.homeRevision !== host.homeRevision) {
+    clearSliderMailboxSlots(state);
+    state.sourceRevision = host.sourceRevision;
+    state.homeRevision = host.homeRevision;
+  }
+  return state;
+}
+
+export function setSliderMailboxTimingForTesting(host: MenuMijiaWindowsApp, overrides: Partial<SliderMailboxTiming>): void {
+  const state = ensureSliderMailboxState(host);
+  state.timing = { ...state.timing, ...overrides };
+}
+
+export function getSliderMailboxStatsForTesting(host: MenuMijiaWindowsApp, slotKey: string) {
+  const slot = ensureSliderMailboxState(host).slots.get(slotKey);
+  return { inFlight: slot?.inFlight ?? false, hasPending: slot?.pending != null, startedCount: slot?.startedCount ?? 0 };
+}
+
+export async function waitForSliderMailboxIdle(host: MenuMijiaWindowsApp, slotKey?: string): Promise<void> {
+  const state = ensureSliderMailboxState(host);
+  while (true) {
+    const promises = slotKey !== undefined
+      ? [state.slots.get(slotKey)?.drainPromise].filter((p): p is Promise<void> => Boolean(p))
+      : [...state.slots.values()].map((s) => s.drainPromise).filter((p): p is Promise<void> => Boolean(p));
+    if (promises.length === 0) return;
+    await Promise.allSettled(promises);
+  }
+}
+
+export function getChannelWriteBatcher(host: MenuMijiaWindowsApp): MiCloudChannelWriteBatcher {
+  let entry = channelBatcherByHost.get(host);
+  if (!entry) {
+    entry = { sourceRevision: host.sourceRevision, homeRevision: host.homeRevision, batcher: new MiCloudChannelWriteBatcher(), custom: false };
+    channelBatcherByHost.set(host, entry);
+    return entry.batcher;
+  }
+  if (entry.sourceRevision !== host.sourceRevision || entry.homeRevision !== host.homeRevision) {
+    entry.batcher.cancelAll();
+    if (!entry.custom) entry.batcher = new MiCloudChannelWriteBatcher();
+    entry.sourceRevision = host.sourceRevision;
+    entry.homeRevision = host.homeRevision;
+  }
+  return entry.batcher;
+}
+
+export function setChannelWriteBatcherForTesting(host: MenuMijiaWindowsApp, batcher: MiCloudChannelWriteBatcher): void {
+  channelBatcherByHost.set(host, { sourceRevision: host.sourceRevision, homeRevision: host.homeRevision, batcher, custom: true });
+}
+
+export function cancelPendingControlWrites(host: MenuMijiaWindowsApp): void {
+  const mailbox = sliderMailboxByHost.get(host);
+  if (mailbox) {
+    clearSliderMailboxSlots(mailbox);
+    mailbox.sourceRevision = host.sourceRevision;
+    mailbox.homeRevision = host.homeRevision;
+  }
+  const batcherEntry = channelBatcherByHost.get(host);
+  if (batcherEntry) {
+    batcherEntry.batcher.cancelAll();
+    batcherEntry.sourceRevision = host.sourceRevision;
+    batcherEntry.homeRevision = host.homeRevision;
+  }
+}
+
+export function sliderIsHighRisk(host: MenuMijiaWindowsApp, device: SmartDevice): boolean {
+  const aliased = withAliases(host.layout, [device]);
+  return (
+    ManualControlPolicy.requiresConfirmation({ targetId: device.id, operation: { kind: "power", isOn: true } }, aliased) ||
+    ManualControlPolicy.requiresConfirmation({ targetId: device.id, operation: { kind: "power", isOn: false } }, aliased)
+  );
+}
+
+export function sliderUsesLAN(host: MenuMijiaWindowsApp, command: DeviceCommand, device?: SmartDevice): boolean {
+  const mode = effectiveCommandBackend(host, command);
+  if (mode === "demo") return false;
+  if (mode === "homeAssistant") return isLocalNetworkURL(host.settings.haBaseURL ?? "");
+  const parsed = parseMiotAddress(command.entityId);
+  if (!parsed) return false;
+  const multiState = getHostMiAccountsState(host);
+  const enabledAccounts = resolveEnabledMiAccountsForHost(host, host.miAccountsOverride ?? multiState?.accounts ?? []);
+  if (hasMultipleMiAccountsForHost(host) && enabledAccounts.length > 0) {
+    const ownerId = multiState?.merged?.deviceOwners[parsed.did]?.[0] ?? device?.accountId ?? null;
+    const owner = ownerId ? enabledAccounts.find((a) => a.id === ownerId) : enabledAccounts[0];
+    if (owner) return xiaomiClientForHost(host, owner.session).hasLANRoute(parsed.did);
+  }
+  const session = host.settings.miSession ?? enabledAccounts[0]?.session ?? null;
+  return Boolean(session && isHostMiSessionEnabled(host, session) && xiaomiClientForHost(host, session).hasLANRoute(parsed.did));
+}
+
+function startSliderDrain(
+  host: MenuMijiaWindowsApp,
+  state: SliderMailboxHostState,
+  slotKey: string,
+  slot: SliderMailboxSlot,
+  isLan: boolean,
+): Promise<void> {
+  slot.inFlight = true;
+  const capturedSource = state.sourceRevision;
+  const capturedHome = state.homeRevision;
+  const isCurrent = () => host.sourceRevision === capturedSource && host.homeRevision === capturedHome;
+  const run = (async () => {
+    try {
+      while (slot.pending !== null) {
+        if (!isCurrent()) { slot.pending = null; break; }
+        const current = slot.pending;
+        slot.pending = null;
+        const startMs = state.timing.now();
+        slot.startedCount += 1;
+        const seqBefore = peekDeviceWriteSeq(host, current.device.id);
+        const prevBanner = host.replyBanner;
+        try {
+          await (current.execute
+            ? current.execute()
+            : host.executeSingleCommand(current.device, current.command, current.summary, current.intent));
+          const failed =
+            (host.replyBanner !== prevBanner && host.replyBanner?.isError === true) ||
+            (!current.execute && peekDeviceWriteSeq(host, current.device.id) === seqBefore);
+          if (failed) current.onFailure?.();
+        } catch {
+          current.onFailure?.();
+        }
+        if (!isCurrent()) { slot.pending = null; break; }
+        if (isLan) {
+          const remaining = state.timing.lanIntervalMs - Math.max(0, state.timing.now() - startMs);
+          if (remaining > 0) await state.timing.sleep(remaining);
+        }
+      }
+    } finally {
+      slot.inFlight = false;
+      slot.drainPromise = null;
+      if (slot.pending !== null && isCurrent()) void startSliderDrain(host, state, slotKey, slot, isLan);
+      else if (slot.pending === null && slot.debounceTimer === null) state.slots.delete(slotKey);
+    }
+  })();
+  slot.drainPromise = run;
+  return run;
+}
+
+/** Single-slot mailbox per slider field (#506): LAN leading+100ms, cloud single-flight, high-risk no leading edge. */
+export function submitSliderWrite(host: MenuMijiaWindowsApp, request: SliderWriteRequest): Promise<void> {
+  const state = ensureSliderMailboxState(host);
+  const hazardous = request.isHighRisk ?? sliderIsHighRisk(host, request.device);
+  const lan = !hazardous && sliderUsesLAN(host, request.command, request.device);
+  if (hazardous && request.isLiveInput && !request.debounceHighRisk) return Promise.resolve();
+
+  let slot = state.slots.get(request.slotKey);
+  if (!slot) {
+    slot = { inFlight: false, pending: null, debounceToken: 0, debounceTimer: null, drainPromise: null, startedCount: 0 };
+    state.slots.set(request.slotKey, slot);
+  }
+  slot.pending = request;
+
+  if (hazardous && request.debounceHighRisk) {
+    slot.debounceTimer?.cancel();
+    const token = ++slot.debounceToken;
+    const { sourceRevision: capturedSource, homeRevision: capturedHome } = state;
+    let cancelled = false;
+    slot.debounceTimer = { cancel: () => { cancelled = true; } };
+    const waitAndDrain = (async () => {
+      await state.timing.sleep(state.timing.highRiskDebounceMs);
+      if (cancelled || slot.debounceToken !== token || host.sourceRevision !== capturedSource || host.homeRevision !== capturedHome) return;
+      slot.debounceTimer = null;
+      if (!slot.inFlight && slot.pending !== null) await startSliderDrain(host, state, request.slotKey, slot, false);
+    })();
+    slot.drainPromise = waitAndDrain;
+    return waitAndDrain;
+  }
+
+  return slot.inFlight ? (slot.drainPromise ?? Promise.resolve()) : startSliderDrain(host, state, request.slotKey, slot, lan);
+}
 
 const customApplyCommandByHost = new WeakMap<
   object,
@@ -1228,6 +1483,12 @@ async function dispatchCloudCommand(
 ): Promise<boolean | null> {
   const sourceRevision = host.sourceRevision;
   const homeRevision = host.homeRevision;
+  const isMiotChannelSwitch =
+    !readBackPower && command.kind === "setSwitch" && parseMiotAddress(command.entityId) !== null;
+  const wasLocked =
+    isMiotChannelSwitch && host.settings?.blockControlWhileLocked
+      ? await isWorkstationLockBlockingControl(host)
+      : false;
   const provider = homeProviderFor(host);
   const beforeSend = () => {
     if (sourceRevision !== host.sourceRevision || homeRevision !== host.homeRevision) {
@@ -1252,11 +1513,31 @@ async function dispatchCloudCommand(
       }
     }
   };
+  const stillAllowed = isMiotChannelSwitch
+    ? async (): Promise<boolean> => {
+        if (sourceRevision !== host.sourceRevision || homeRevision !== host.homeRevision) {
+          return false;
+        }
+        if (!wasLocked && (await isWorkstationLockBlockingControl(host))) {
+          return false;
+        }
+        if (host.miSessionExpired && effectiveCommandBackend(host, command) === "xiaomiCloud") {
+          return false;
+        }
+        try {
+          beforeSend();
+          return true;
+        } catch {
+          return false;
+        }
+      }
+    : undefined;
   try {
     return await provider.execute(command, {
       readBackPower,
       userInitiated,
       beforeSend,
+      stillAllowed,
       beforeFallback: async () => {
         if (await isWorkstationLockBlockingControl(host)) {
           throw new DOMException("Control blocked while workstation is locked", "AbortError");
@@ -1301,6 +1582,7 @@ function buildXiaomiHomeProvider(host: MenuMijiaWindowsApp): HomeCommandProvider
   const multiState = getHostMiAccountsState(host);
   const accounts = host.miAccountsOverride ?? multiState?.accounts ?? [];
   const enabledAccounts = resolveEnabledMiAccountsForHost(host, accounts);
+  const channelBatcher = getChannelWriteBatcher(host);
   if (hasMultipleMiAccountsForHost(host) && accounts.length > 0) {
     return new MultiAccountMiCloudProvider({
       accounts: enabledAccounts,
@@ -1312,6 +1594,7 @@ function buildXiaomiHomeProvider(host: MenuMijiaWindowsApp): HomeCommandProvider
       sceneForEntity: sceneForEntityInSelectedHome,
       transport: host.transport,
       clientForSession: (session) => xiaomiClientForHost(host, session),
+      channelBatcher,
     });
   }
   const session = host.settings.miSession ?? accounts[0]?.session ?? null;
@@ -1332,6 +1615,8 @@ function buildXiaomiHomeProvider(host: MenuMijiaWindowsApp): HomeCommandProvider
     deviceForEntity,
     sceneForEntity: (entityId) => miSceneAccount(entityId) === miAccountId(session)
       ? sceneForEntityInSelectedHome(entityId) : undefined,
+    channelBatcher,
+    accountKey: miAccountId(session),
   });
 }
 

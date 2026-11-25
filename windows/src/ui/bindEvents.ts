@@ -27,7 +27,12 @@ import { finishMiSceneConfirmation } from "./sceneConfirmation.js";
 import { invokeTauriVoid } from "./transport.js";
 import { facetActionArguments, feedingConfirmationBannerText } from "../core/miCloud/feedAction.js";
 import { bindDetailDrawerEvents, coverMotorRequiresConfirmation, ensureDrawerLifecycleListeners } from "./detailDrawers.js";
-import { bindLiquidGlassSliders } from "./liquidGlassSlider.js";
+import {
+  bindLiquidGlassSliders,
+  clearSliderLiveValue,
+  consumeSliderLiveValue,
+  markSliderLiveValue,
+} from "./liquidGlassSlider.js";
 import { syncSlidingTabIndicators } from "./reconciler.js";
 import { facetWriteEnabled, selectedPortionForControl } from "./facetViews.js";
 import { facetTitle, facetValue } from "../core/miotFacetText.js";
@@ -51,7 +56,12 @@ import {
 } from "./speechGuard.js";
 import { buildHostCapabilityContext, isDualSourceEnabled } from "./cloudRefresh.js";
 import { evaluateDeviceEntityWriteGate, evaluateIntentsWriteGate } from "../core/miAccountControl.js";
-import { getUnsupportedLightEffects } from "./commandDispatch.js";
+import {
+  getUnsupportedLightEffects,
+  sliderIsHighRisk,
+  sliderUsesLAN,
+  submitSliderWrite,
+} from "./commandDispatch.js";
 import {
   positionRoomBrowseMenu,
   resetPanelSplitTransientState,
@@ -60,6 +70,29 @@ import {
 import { applyCustomGlobalHotkeys, hasAnyConnectedOrSelectedDataSource } from "./appLifecycle.js";
 import { encodeHotkeyTargetKey, normalizeCustomHotkeyBindings } from "./hotkeyBindings.js";
 import { leaveDemoHome } from "./onboardingGuide.js";
+
+function dispatchLiveLanSlider(
+  host: MenuMijiaWindowsApp,
+  slider: HTMLInputElement,
+  value: number,
+  slotKey: string,
+  dev: SmartDevice,
+  command: DeviceCommand,
+  summary: string,
+  intent?: DeviceIntent,
+): void {
+  if (sliderIsHighRisk(host, dev) || !sliderUsesLAN(host, command, dev)) return;
+  markSliderLiveValue(slider, value);
+  void submitSliderWrite(host, {
+    slotKey,
+    device: dev,
+    command,
+    summary,
+    intent,
+    isLiveInput: true,
+    onFailure: () => clearSliderLiveValue(slider),
+  });
+}
 
 function confirmHighRiskForHost(
   host: MenuMijiaWindowsApp,
@@ -1534,34 +1567,62 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
     });
 
     host.root.querySelectorAll<HTMLInputElement>("[data-brightness]").forEach((slider) => {
-      slider.addEventListener("change", () => {
+      const readBrightness = () => {
         const id = slider.dataset.brightness;
-        if (!id) return;
+        if (!id) return null;
         const dev = host.devices.find((d) => d.id === id);
-        if (!dev || dev.kind.kind !== "light") return;
+        if (!dev || dev.kind.kind !== "light") return null;
         const percent = Number(slider.value);
-        void host.executeSingleCommand(
-          dev,
-          { kind: "setLightBrightness", entityId: dev.kind.entityId, percent },
-          t("已将{name}亮度设为 {percent}%", { name: dev.name, percent: percent }),
-          { targetId: dev.id, operation: { kind: "brightness", percent } },
-        );
+        const command: DeviceCommand = { kind: "setLightBrightness", entityId: dev.kind.entityId, percent };
+        const summary = t("已将{name}亮度设为 {percent}%", { name: dev.name, percent });
+        const intent: DeviceIntent = { targetId: dev.id, operation: { kind: "brightness", percent } };
+        return { dev, percent, command, summary, intent };
+      };
+      slider.addEventListener("input", () => {
+        const next = readBrightness();
+        if (!next) return;
+        dispatchLiveLanSlider(host, slider, next.percent, `${next.dev.id}.brightness`, next.dev, next.command, next.summary, next.intent);
+      });
+      slider.addEventListener("change", () => {
+        const next = readBrightness();
+        if (!next || consumeSliderLiveValue(slider, next.percent)) return;
+        void submitSliderWrite(host, {
+          slotKey: `${next.dev.id}.brightness`,
+          device: next.dev,
+          command: next.command,
+          summary: next.summary,
+          intent: next.intent,
+        });
       });
     });
 
     host.root.querySelectorAll<HTMLInputElement>("[data-colortemp]").forEach((slider) => {
-      slider.addEventListener("change", () => {
+      const readColorTemp = () => {
         const id = slider.dataset.colortemp;
-        if (!id) return;
+        if (!id) return null;
         const dev = host.devices.find((d) => d.id === id);
-        if (!dev || dev.kind.kind !== "light") return;
+        if (!dev || dev.kind.kind !== "light") return null;
         const kelvin = Number(slider.value);
-        void host.executeSingleCommand(
-          dev,
-          { kind: "setLightColorTemp", entityId: dev.kind.entityId, kelvin },
-          t("已将{name}色温设为 {kelvin}K", { name: dev.name, kelvin: kelvin }),
-          { targetId: dev.id, operation: { kind: "colorTemperature", kelvin } },
-        );
+        const command: DeviceCommand = { kind: "setLightColorTemp", entityId: dev.kind.entityId, kelvin };
+        const summary = t("已将{name}色温设为 {kelvin}K", { name: dev.name, kelvin });
+        const intent: DeviceIntent = { targetId: dev.id, operation: { kind: "colorTemperature", kelvin } };
+        return { dev, kelvin, command, summary, intent };
+      };
+      slider.addEventListener("input", () => {
+        const next = readColorTemp();
+        if (!next) return;
+        dispatchLiveLanSlider(host, slider, next.kelvin, `${next.dev.id}.colortemp`, next.dev, next.command, next.summary, next.intent);
+      });
+      slider.addEventListener("change", () => {
+        const next = readColorTemp();
+        if (!next || consumeSliderLiveValue(slider, next.kelvin)) return;
+        void submitSliderWrite(host, {
+          slotKey: `${next.dev.id}.colortemp`,
+          device: next.dev,
+          command: next.command,
+          summary: next.summary,
+          intent: next.intent,
+        });
       });
     });
 
@@ -1585,7 +1646,13 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
         ) {
           return;
         }
-        void host.executeSingleCommand(dev, command, summary, intent);
+        void submitSliderWrite(host, {
+          slotKey: `${dev.id}.actemp`,
+          device: dev,
+          command,
+          summary,
+          intent,
+        });
       });
     });
 
@@ -1628,17 +1695,30 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
     });
 
     host.root.querySelectorAll<HTMLInputElement>("[data-fanpercent]").forEach((slider) => {
-      slider.addEventListener("change", () => {
+      const readFanPercent = () => {
         const id = slider.dataset.fanpercent;
-        if (!id) return;
+        if (!id) return null;
         const dev = host.devices.find((d) => d.id === id);
-        if (!dev || dev.kind.kind !== "fan") return;
+        if (!dev || dev.kind.kind !== "fan") return null;
         const percent = Math.max(1, Math.min(100, Math.round(Number(slider.value))));
-        void host.executeSingleCommand(
-          dev,
-          { kind: "setFanPercentage", entityId: dev.kind.entityId, percent },
-          t("已将{name}风速设为 {speed}", { name: dev.name, speed: `${percent}%` }),
-        );
+        const command: DeviceCommand = { kind: "setFanPercentage", entityId: dev.kind.entityId, percent };
+        const summary = t("已将{name}风速设为 {speed}", { name: dev.name, speed: `${percent}%` });
+        return { dev, percent, command, summary };
+      };
+      slider.addEventListener("input", () => {
+        const next = readFanPercent();
+        if (!next) return;
+        dispatchLiveLanSlider(host, slider, next.percent, `${next.dev.id}.fanpercent`, next.dev, next.command, next.summary);
+      });
+      slider.addEventListener("change", () => {
+        const next = readFanPercent();
+        if (!next || consumeSliderLiveValue(slider, next.percent)) return;
+        void submitSliderWrite(host, {
+          slotKey: `${next.dev.id}.fanpercent`,
+          device: next.dev,
+          command: next.command,
+          summary: next.summary,
+        });
       });
     });
 
@@ -1667,15 +1747,28 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
     });
 
     host.root.querySelectorAll<HTMLInputElement>("[data-volume]").forEach((slider) => {
-      slider.addEventListener("change", () => {
+      const readVolume = () => {
         const dev = host.devices.find((d) => d.id === slider.dataset.volume);
-        if (!dev || (dev.kind.kind !== "speaker" && dev.kind.kind !== "tv") || !dev.kind.volumeWritable) return;
+        if (!dev || (dev.kind.kind !== "speaker" && dev.kind.kind !== "tv") || !dev.kind.volumeWritable) return null;
         const percent = Math.max(0, Math.min(100, Math.round(Number(slider.value))));
-        void host.executeSingleCommand(
-          dev,
-          { kind: "mediaSetVolume", entityId: dev.kind.mediaEntityId, level: percent / 100 },
-          t("已将{name}音量设为 {percent}%", { name: dev.name, percent }),
-        );
+        const command: DeviceCommand = { kind: "mediaSetVolume", entityId: dev.kind.mediaEntityId, level: percent / 100 };
+        const summary = t("已将{name}音量设为 {percent}%", { name: dev.name, percent });
+        return { dev, percent, command, summary };
+      };
+      slider.addEventListener("input", () => {
+        const next = readVolume();
+        if (!next) return;
+        dispatchLiveLanSlider(host, slider, next.percent, `${next.dev.id}.volume`, next.dev, next.command, next.summary);
+      });
+      slider.addEventListener("change", () => {
+        const next = readVolume();
+        if (!next || consumeSliderLiveValue(slider, next.percent)) return;
+        void submitSliderWrite(host, {
+          slotKey: `${next.dev.id}.volume`,
+          device: next.dev,
+          command: next.command,
+          summary: next.summary,
+        });
       });
     });
 
@@ -2098,33 +2191,60 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
     });
 
     deck.querySelectorAll<HTMLInputElement>("[data-deck-brightness]").forEach((slider) => {
-      slider.addEventListener("change", () => {
+      const readDeckBrightness = () => {
         const id = slider.dataset.deckBrightness;
-        if (!id) return;
+        if (!id) return null;
         const dev = host.devices.find((d) => d.id === id);
-        if (!dev || dev.kind.kind !== "light" || dev.kind.brightnessWritable === false) return;
+        if (!dev || dev.kind.kind !== "light" || dev.kind.brightnessWritable === false) return null;
         const percent = Math.max(1, Math.min(100, Math.round(Number(slider.value))));
-        void host.executeSingleCommand(
-          dev,
-          { kind: "setLightBrightness", entityId: dev.kind.entityId, percent },
-          t("已将{name}亮度设为 {percent}%", { name: dev.name, percent }),
-          { targetId: dev.id, operation: { kind: "brightness", percent } },
-        );
+        const command: DeviceCommand = { kind: "setLightBrightness", entityId: dev.kind.entityId, percent };
+        const summary = t("已将{name}亮度设为 {percent}%", { name: dev.name, percent });
+        const intent: DeviceIntent = { targetId: dev.id, operation: { kind: "brightness", percent } };
+        return { dev, percent, command, summary, intent };
+      };
+      slider.addEventListener("input", () => {
+        const next = readDeckBrightness();
+        if (!next) return;
+        dispatchLiveLanSlider(host, slider, next.percent, `${next.dev.id}.brightness`, next.dev, next.command, next.summary, next.intent);
+      });
+      slider.addEventListener("change", () => {
+        const next = readDeckBrightness();
+        if (!next || consumeSliderLiveValue(slider, next.percent)) return;
+        void submitSliderWrite(host, {
+          slotKey: `${next.dev.id}.brightness`,
+          device: next.dev,
+          command: next.command,
+          summary: next.summary,
+          intent: next.intent,
+        });
       });
     });
 
     deck.querySelectorAll<HTMLInputElement>("[data-deck-volume]").forEach((slider) => {
-      slider.addEventListener("change", () => {
+      const readDeckVolume = () => {
         const id = slider.dataset.deckVolume;
-        if (!id) return;
+        if (!id) return null;
         const dev = host.devices.find((d) => d.id === id);
-        if (!dev || dev.kind.kind !== "speaker" || !dev.kind.volumeWritable) return;
+        if (!dev || dev.kind.kind !== "speaker" || !dev.kind.volumeWritable) return null;
         const percent = Math.max(0, Math.min(100, Math.round(Number(slider.value))));
-        void host.executeSingleCommand(
-          dev,
-          { kind: "mediaSetVolume", entityId: dev.kind.mediaEntityId, level: percent / 100 },
-          t("已将{name}音量设为 {percent}%", { name: dev.name, percent }),
-        );
+        const command: DeviceCommand = { kind: "mediaSetVolume", entityId: dev.kind.mediaEntityId, level: percent / 100 };
+        const summary = t("已将{name}音量设为 {percent}%", { name: dev.name, percent });
+        return { dev, percent, command, summary };
+      };
+      slider.addEventListener("input", () => {
+        const next = readDeckVolume();
+        if (!next) return;
+        dispatchLiveLanSlider(host, slider, next.percent, `${next.dev.id}.volume`, next.dev, next.command, next.summary);
+      });
+      slider.addEventListener("change", () => {
+        const next = readDeckVolume();
+        if (!next || consumeSliderLiveValue(slider, next.percent)) return;
+        void submitSliderWrite(host, {
+          slotKey: `${next.dev.id}.volume`,
+          device: next.dev,
+          command: next.command,
+          summary: next.summary,
+        });
       });
     });
 
