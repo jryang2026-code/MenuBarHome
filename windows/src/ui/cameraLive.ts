@@ -1521,7 +1521,7 @@ export class CameraLiveController {
           path: config.path ?? null,
           channel: config.channel ?? 1,
           profile,
-          customSource: (profile === "sub" ? config.subStream : config.mainStream) ?? null,
+          customSource: (profile === "sub" ? config.subStream ?? (config.kind === "rtsp" ? config.mainStream : undefined) : config.mainStream) ?? null,
           allowNonLocal,
         },
         token,

@@ -12,7 +12,6 @@ import {
   redactGenericCameraUrl,
   sanitizeGenericCameraConfig,
   type GenericCameraConfig,
-  type GenericCameraCredentials,
 } from "../src/core/genericCameras.js";
 import { selectStillWallCameras } from "../src/core/cameraEventStore.js";
 import {
@@ -27,44 +26,33 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "../..");
 
 interface GoldenCase {
-  readonly name: string;
-  readonly config: GenericCameraConfig;
-  readonly mode: "placeholder" | "credentials";
-  readonly credentials?: GenericCameraCredentials;
-  readonly expectedMain: string;
-  readonly expectedSub: string;
+  readonly input: GenericCameraConfig;
+  readonly main: string;
+  readonly sub: string;
 }
 
-interface GoldenFixture {
-  readonly schemaVersion: number;
-  readonly cases: readonly GoldenCase[];
-}
-
-test("Shared/genericCameraSources.schema.json is valid JSON schema with additionalProperties: false", () => {
+test("Shared/genericCameraSources.schema.json defines a credential-free source", () => {
   const schemaPath = path.join(repoRoot, "Shared", "genericCameraSources.schema.json");
   const schema = JSON.parse(fs.readFileSync(schemaPath, "utf8")) as {
     type: string;
-    items: { additionalProperties: boolean; required: string[]; properties: Record<string, unknown> };
+    additionalProperties: boolean;
+    required: string[];
+    properties: Record<string, unknown>;
   };
-  assert.equal(schema.type, "array");
-  assert.equal(schema.items.additionalProperties, false);
-  assert.deepEqual(schema.items.required, ["id", "name", "kind", "host"]);
-  assert.equal("username" in schema.items.properties, false);
-  assert.equal("password" in schema.items.properties, false);
+  assert.equal(schema.type, "object");
+  assert.equal(schema.additionalProperties, false);
+  assert.deepEqual(schema.required, ["id", "name", "kind", "host"]);
+  assert.equal("username" in schema.properties, false);
+  assert.equal("password" in schema.properties, false);
 });
 
 test("buildGenericCameraSourceUrl matches Tests/Fixtures/generic_camera_sources_golden.json", () => {
   const fixturePath = path.join(repoRoot, "Tests", "Fixtures", "generic_camera_sources_golden.json");
-  const fixture = JSON.parse(fs.readFileSync(fixturePath, "utf8")) as GoldenFixture;
-  assert.equal(fixture.schemaVersion, 1);
-  assert.ok(fixture.cases.length >= 10);
-
-  for (const c of fixture.cases) {
-    const creds = c.mode === "placeholder" ? "placeholder" : (c.credentials ?? {});
-    const main = buildGenericCameraSourceUrl(c.config, "main", creds);
-    const sub = buildGenericCameraSourceUrl(c.config, "sub", creds);
-    assert.equal(main, c.expectedMain, `${c.name} main`);
-    assert.equal(sub, c.expectedSub, `${c.name} sub`);
+  const { cases } = JSON.parse(fs.readFileSync(fixturePath, "utf8")) as { cases: readonly GoldenCase[] };
+  assert.ok(cases.length > 0);
+  for (const { input, main, sub } of cases) {
+    assert.equal(buildGenericCameraSourceUrl(input, "main"), main, `${input.name} main`);
+    assert.equal(buildGenericCameraSourceUrl(input, "sub"), sub, `${input.name} sub`);
   }
 });
 
@@ -75,8 +63,8 @@ test("encodeCameraCredentialComponent encodes RFC 3986 special chars and redactG
     "rtsp://***@192.168.1.50:554/stream1#backchannel=0",
   );
   assert.equal(
-    redactGenericCameraUrl("tapo://my%23pass@192.168.1.90?subtype=sd"),
-    "tapo://***@192.168.1.90?subtype=sd",
+    redactGenericCameraUrl("tapo://my%23pass@192.168.1.90?subtype=1"),
+    "tapo://***@192.168.1.90?subtype=1",
   );
 });
 

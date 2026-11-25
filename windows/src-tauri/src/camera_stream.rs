@@ -105,35 +105,60 @@ pub(crate) fn is_private_or_local_camera_host(raw_host: &str) -> bool {
     false
 }
 
-pub(crate) fn generic_camera_stream_names(camera_id: &str, profile: &str) -> (String, String) {
-    let clean_id = sanitize_camera_did(camera_id);
-    let suffix = if profile == "sub" { "sub" } else { "main" };
-    (
-        format!("cam_generic_raw_{clean_id}_{suffix}"),
-        format!("cam_generic_mjpeg_{clean_id}_{suffix}"),
-    )
-}
-
-pub(crate) fn all_generic_camera_stream_names(camera_id: &str) -> Vec<String> {
-    let (raw_main, mjpeg_main) = generic_camera_stream_names(camera_id, "main");
-    let (raw_sub, mjpeg_sub) = generic_camera_stream_names(camera_id, "sub");
-    vec![raw_main, mjpeg_main, raw_sub, mjpeg_sub]
-}
-
-fn format_camera_host(host: &str) -> String {
-    let trimmed = host.trim().trim_start_matches('[').trim_end_matches(']');
-    if trimmed.contains(':') {
-        format!("[{trimmed}]")
-    } else {
-        trimmed.to_string()
+pub(crate) fn generic_camera_stream_id(camera_id: &str) -> Result<String, String> {
+    let bytes = camera_id.as_bytes();
+    if bytes.len() != 36
+        || !bytes.iter().enumerate().all(|(index, byte)| {
+            if matches!(index, 8 | 13 | 18 | 23) {
+                *byte == b'-'
+            } else {
+                byte.is_ascii_hexdigit()
+            }
+        })
+    {
+        return Err("无效的摄像机 ID".to_string());
     }
+    Ok(camera_id.replace('-', "").to_ascii_lowercase())
+}
+
+pub(crate) fn generic_camera_mjpeg_name(stream_id: &str) -> String {
+    format!("cam_mjpeg_genericcamera{stream_id}")
+}
+
+pub(crate) fn build_generic_camera_request(
+    http: &reqwest::Client,
+    session: &super::Go2RtcSession,
+    stream_id: &str,
+    source: Option<String>,
+) -> Result<reqwest::Request, String> {
+    if stream_id.len() != 32 || !stream_id.bytes().all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f')) {
+        return Err("无效的摄像机流 ID".to_string());
+    }
+    let url = super::api_url(session, &format!("/api/menubarmijia/readonly?id={stream_id}"));
+    let builder = match source {
+        Some(mut source) => {
+            let (address, options) = source.split_once('#').unwrap_or((&source, ""));
+            let valid_address = reqwest::Url::parse(address).is_ok_and(|url| {
+                url.has_host()
+                    && matches!((url.scheme(), options), ("rtsp" | "onvif", "backchannel=0") | ("tapo", ""))
+            });
+            if !valid_address || source.chars().any(|ch| ch.is_control() || ch.is_whitespace()) {
+                return Err("无效的只读摄像机流".to_string());
+            }
+            source.push_str("#menubarmijia-readonly=1#audio=0#media=video");
+            if source.len() > 8192 {
+                return Err("摄像机流地址过长".to_string());
+            }
+            http.patch(url).body(source)
+        }
+        None => http.delete(url),
+    };
+    super::authed(builder, session).build().map_err(|_| "无法构造摄像机流请求".to_string())
 }
 
 fn format_camera_userinfo(username: &str, password: &str) -> String {
     if username.is_empty() && password.is_empty() {
         String::new()
-    } else if password.is_empty() {
-        format!("{}@", urlencoding_simple(username))
     } else {
         format!(
             "{}:{}@",
@@ -158,112 +183,65 @@ pub(crate) fn build_generic_camera_source_url(
     username: &str,
     password: &str,
 ) -> Result<String, String> {
-    let trimmed_host = host.trim();
-    if trimmed_host.is_empty()
-        || trimmed_host
-            .chars()
-            .any(|c| c.is_control() || c.is_whitespace() || matches!(c, '/' | '@' | '?' | '#'))
-    {
-        return Err("无效的摄像机主机地址".to_string());
-    }
-    if let Some(custom) = custom_source.map(str::trim).filter(|s| !s.is_empty()) {
-        if custom.chars().any(|c| c.is_control() || c.is_whitespace()) {
-            return Err("自定义流地址不能包含空白或控制字符".to_string());
-        }
-        let lower = custom.to_ascii_lowercase();
-        if !(lower.starts_with("rtsp://")
-            || lower.starts_with("rtsps://")
-            || lower.starts_with("onvif://")
-            || lower.starts_with("tapo://"))
-        {
-            return Err("自定义流地址仅支持 rtsp/rtsps/onvif/tapo 协议".to_string());
-        }
-        let encoded_user = urlencoding_simple(username);
-        let encoded_pass = urlencoding_simple(password);
-        let rendered = custom
-            .replace("{user}", &encoded_user)
-            .replace("{pass}", &encoded_pass);
-        return Ok(rendered);
-    }
-
-    let formatted_host = format_camera_host(trimmed_host);
+    let normalized_host = host.trim().trim_start_matches('[').trim_end_matches(']');
+    let formatted_host = if normalized_host.parse::<std::net::Ipv6Addr>().is_ok() {
+        format!("[{normalized_host}]")
+    } else {
+        normalized_host.to_ascii_lowercase()
+    };
     let userinfo = format_camera_userinfo(username, password);
-    let ch = channel.unwrap_or(1).clamp(1, 256);
+    let ch = channel.unwrap_or(1);
     let is_sub = profile == "sub";
+    if !(1..=999).contains(&ch) || port == Some(0) {
+        return Err("无效的摄像机端口或通道".to_string());
+    }
 
     match kind {
-        "rtsp" => {
-            let p = port.unwrap_or(554);
-            let clean_path = path.unwrap_or("").trim().trim_start_matches('/');
-            if clean_path.chars().any(|c| c.is_control() || c.is_whitespace() || c == '#') {
-                return Err("RTSP 路径包含非法字符".to_string());
-            }
-            let suffix = if clean_path.is_empty() {
-                String::new()
-            } else {
-                format!("/{clean_path}")
+        "rtsp" | "isapi" | "dahua" => {
+            let fallback = match kind {
+                "isapi" => format!("/Streaming/Channels/{ch}{}", if is_sub { "02" } else { "01" }),
+                "dahua" => format!("/cam/realmonitor?channel={ch}&subtype={}", u8::from(is_sub)),
+                _ => path.unwrap_or("/").to_string(),
             };
-            Ok(format!("rtsp://{userinfo}{formatted_host}:{p}{suffix}#backchannel=0"))
+            let suffix = custom_source.unwrap_or(&fallback);
+            if !suffix.starts_with('/') || suffix.starts_with("//")
+                || suffix.chars().any(|ch| ch.is_control() || ch.is_whitespace() || matches!(ch, '#' | '\\'))
+            {
+                return Err("无效的摄像机流路径".to_string());
+            }
+            let port = port.unwrap_or(554);
+            Ok(format!("rtsp://{userinfo}{formatted_host}:{port}{suffix}#backchannel=0"))
         }
         "onvif" => {
-            let p = port.unwrap_or(80);
-            if is_sub {
-                Ok(format!("onvif://{userinfo}{formatted_host}:{p}?subtype=1"))
-            } else {
-                Ok(format!("onvif://{userinfo}{formatted_host}:{p}"))
-            }
-        }
-        "isapi" => {
-            let p = port.unwrap_or(554);
-            let stream_suffix = if is_sub { "02" } else { "01" };
-            Ok(format!(
-                "rtsp://{userinfo}{formatted_host}:{p}/Streaming/Channels/{ch}{stream_suffix}#backchannel=0"
-            ))
-        }
-        "dahua" => {
-            let p = port.unwrap_or(554);
-            let subtype = if is_sub { 1 } else { 0 };
-            Ok(format!(
-                "rtsp://{userinfo}{formatted_host}:{p}/cam/realmonitor?channel={ch}&subtype={subtype}#backchannel=0"
-            ))
+            let subtype = match custom_source {
+                Some(value) if !value.is_empty() && value.len() <= 128
+                    && value.bytes().all(|byte| byte.is_ascii_alphanumeric() || b"._~-".contains(&byte)) => {
+                        format!("?subtype={value}")
+                    }
+                Some(_) => return Err("无效的 ONVIF 码流".to_string()),
+                None if is_sub => "?subtype=1".to_string(),
+                None => String::new(),
+            };
+            let port = port.unwrap_or(80);
+            Ok(format!("onvif://{userinfo}{formatted_host}:{port}{subtype}#backchannel=0"))
         }
         "tapo" => {
-            let pass_part = if password.is_empty() {
-                String::new()
-            } else {
-                format!("{}@", urlencoding_simple(password))
+            let subtype = custom_source.unwrap_or(if is_sub { "1" } else { "0" });
+            if password.is_empty() || !matches!(subtype, "0" | "1") {
+                return Err("请检查 Tapo 密码与码流设置".to_string());
+            }
+            let password = urlencoding_simple(password);
+            let authority = port.map_or(formatted_host.clone(), |port| format!("{formatted_host}:{port}"));
+            let suffix = match (subtype, ch) {
+                ("0", 1) => String::new(),
+                ("1", 1) => "?subtype=1".to_string(),
+                ("0", _) => format!("?channel={}", ch - 1),
+                _ => format!("?subtype=1&channel={}", ch - 1),
             };
-            let port_part = port.map(|p| format!(":{p}")).unwrap_or_default();
-            if is_sub {
-                Ok(format!("tapo://{pass_part}{formatted_host}{port_part}?subtype=sd"))
-            } else {
-                Ok(format!("tapo://{pass_part}{formatted_host}{port_part}"))
-            }
+            Ok(format!("tapo://{password}@{authority}{suffix}"))
         }
-        other => Err(format!("不支持的通用摄像机协议：{other}")),
+        _ => Err("不支持的通用摄像机协议".to_string()),
     }
-}
-
-/// Strips embedded `user:pass@` or `pass@` credentials from camera URLs before logging or error display.
-pub(crate) fn redact_camera_credentials(input: &str) -> String {
-    let mut result = input.to_string();
-    for scheme in ["rtsp://", "rtsps://", "onvif://", "tapo://", "http://", "https://"] {
-        let mut search_from = 0;
-        while let Some(rel_idx) = result[search_from..].find(scheme) {
-            let start = search_from + rel_idx + scheme.len();
-            let tail = &result[start..];
-            let end_authority = tail
-                .find(|c: char| matches!(c, '/' | '?' | '#' | ' ' | '\t' | '\n' | '\r'))
-                .unwrap_or(tail.len());
-            if let Some(at_pos) = tail[..end_authority].rfind('@') {
-                result.replace_range(start..start + at_pos + 1, "***@");
-                search_from = start + 4;
-            } else {
-                search_from = start + end_authority;
-            }
-        }
-    }
-    result
 }
 
 pub(crate) fn parse_camera_lan_ip(local_ip: &str) -> Result<std::net::Ipv4Addr, String> {
@@ -712,7 +690,7 @@ mod tests {
                 "rtsp",
                 "cam-garage.local",
                 Some(8554),
-                Some("live/ch0"),
+                Some("/live/ch0"),
                 None,
                 "main",
                 None,
@@ -725,7 +703,7 @@ mod tests {
         assert_eq!(
             build_generic_camera_source_url("onvif", "192.168.1.60", None, None, None, "sub", None, "u", "p")
                 .expect("onvif sub"),
-            "onvif://u:p@192.168.1.60:80?subtype=1"
+            "onvif://u:p@192.168.1.60:80?subtype=1#backchannel=0"
         );
         assert_eq!(
             build_generic_camera_source_url("isapi", "192.168.1.70", None, None, Some(3), "sub", None, "admin", "hik#1")
@@ -745,26 +723,52 @@ mod tests {
         assert_eq!(
             build_generic_camera_source_url("tapo", "192.168.1.90", None, None, None, "sub", None, "ignored", "tp@ss#1")
                 .expect("tapo sub"),
-            "tapo://tp%40ss%231@192.168.1.90?subtype=sd"
+            "tapo://tp%40ss%231@192.168.1.90?subtype=1"
         );
     }
 
     #[test]
-    fn generic_camera_host_policy_and_credential_redaction() {
+    fn generic_camera_host_policy() {
         assert!(is_private_or_local_camera_host("192.168.1.50"));
         assert!(is_private_or_local_camera_host("cam-front.local"));
         let class_a = std::net::Ipv4Addr::new(5 * 2, 0, 0, 12).to_string();
         assert!(is_private_or_local_camera_host(&class_a));
         assert!(!is_private_or_local_camera_host("8.8.8.8"));
         assert!(!is_private_or_local_camera_host("camera.example.com"));
+    }
 
+    #[test]
+    fn generic_camera_patch_sends_credentials_only_in_its_validated_body() {
+        let session = super::super::Go2RtcSession {
+            api_listen: "127.0.0.1:34567".to_string(),
+            rtsp_listen: "127.0.0.1:34568".to_string(),
+            username: "loopback-user".to_string(),
+            password: "loopback-password".to_string(),
+            nonce: String::new(),
+        };
+        let http = reqwest::Client::new();
+        let id = generic_camera_stream_id("00000000-0000-4000-8000-00000000000A").unwrap();
+        let source = "rtsp://camera-user:camera-password@192.168.1.50:554/stream#backchannel=0";
+        let patch = build_generic_camera_request(&http, &session, &id, Some(source.to_string())).unwrap();
+        assert_eq!(patch.method(), &reqwest::Method::PATCH);
+        assert_eq!(patch.url().as_str(), "http://127.0.0.1:34567/api/menubarmijia/readonly?id=0000000000004000800000000000000a");
+        assert!(patch.headers()[reqwest::header::AUTHORIZATION].is_sensitive());
         assert_eq!(
-            redact_camera_credentials("failed rtsp://admin:s3cr3t@192.168.1.50:554/stream1"),
-            "failed rtsp://***@192.168.1.50:554/stream1"
+            patch.body().and_then(reqwest::Body::as_bytes).unwrap(),
+            format!("{source}#menubarmijia-readonly=1#audio=0#media=video").as_bytes()
         );
-        assert_eq!(
-            redact_camera_credentials("tapo://my%23pass@192.168.1.90?subtype=sd"),
-            "tapo://***@192.168.1.90?subtype=sd"
-        );
+        let log = format!("{patch:?}");
+        for secret in ["camera-user", "camera-password", "loopback-password"] {
+            assert!(!log.contains(secret));
+        }
+
+        let delete = build_generic_camera_request(&http, &session, &id, None).unwrap();
+        assert_eq!(delete.method(), &reqwest::Method::DELETE);
+        assert_eq!(delete.url(), patch.url());
+        assert!(delete.body().is_none());
+        assert!(build_generic_camera_request(&http, &session, "bad?id=x", None).is_err());
+        assert!(build_generic_camera_request(&http, &session, &id, Some("exec:invalid".into())).is_err());
+        assert!(build_generic_camera_request(&http, &session, &id, Some(format!("{source}#backchannel=1"))).is_err());
+        assert!(build_generic_camera_request(&http, &session, &id, Some(format!("rtsp://camera.local/{}#backchannel=0", "a".repeat(8192)))).is_err());
     }
 }

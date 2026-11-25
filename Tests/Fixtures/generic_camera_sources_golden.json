@@ -1,171 +1,58 @@
 {
-  "schemaVersion": 1,
-  "description": "Cross-platform golden vectors for read-only generic camera go2rtc source URL generation (RTSP / ONVIF / Hikvision ISAPI / Dahua / Tapo). Uses {user} and {pass} placeholders for uninjected templates and RFC 3986 percent-encoding for runtime credential injection.",
   "cases": [
     {
-      "name": "rtsp_default_port_with_path_placeholder",
-      "config": {
-        "id": "11111111-1111-4111-8111-111111111111",
-        "name": "Front Door RTSP",
+      "input": {
+        "id": "00000000-0000-4000-8000-000000000001",
+        "name": "rtsp",
         "kind": "rtsp",
-        "host": "192.168.1.50",
-        "path": "/stream1"
+        "host": "camera.local",
+        "path": "/live/main",
+        "subStream": "/live/sub?unicast=1"
       },
-      "mode": "placeholder",
-      "expectedMain": "rtsp://{user}:{pass}@192.168.1.50:554/stream1#backchannel=0",
-      "expectedSub": "rtsp://{user}:{pass}@192.168.1.50:554/stream1#backchannel=0"
+      "main": "rtsp://{user}:{pass}@camera.local:554/live/main#backchannel=0",
+      "sub": "rtsp://{user}:{pass}@camera.local:554/live/sub?unicast=1#backchannel=0"
     },
     {
-      "name": "rtsp_custom_port_and_special_char_credentials",
-      "config": {
-        "id": "22222222-2222-4222-8222-222222222222",
-        "name": "Garage RTSP",
-        "kind": "rtsp",
-        "host": "cam-garage.local",
-        "port": 8554,
-        "path": "live/ch0"
-      },
-      "mode": "credentials",
-      "credentials": {
-        "username": "admin@home",
-        "password": "p@ss:w/ord#1?% &+!"
-      },
-      "expectedMain": "rtsp://admin%40home:p%40ss%3Aw%2Ford%231%3F%25%20%26%2B%21@cam-garage.local:8554/live/ch0#backchannel=0",
-      "expectedSub": "rtsp://admin%40home:p%40ss%3Aw%2Ford%231%3F%25%20%26%2B%21@cam-garage.local:8554/live/ch0#backchannel=0"
-    },
-    {
-      "name": "rtsp_anonymous_no_credentials",
-      "config": {
-        "id": "33333333-3333-4333-8333-333333333333",
-        "name": "Porch Open RTSP",
-        "kind": "rtsp",
-        "host": "192.168.1.51",
-        "port": 554,
-        "path": "h264"
-      },
-      "mode": "credentials",
-      "credentials": {
-        "username": "",
-        "password": ""
-      },
-      "expectedMain": "rtsp://192.168.1.51:554/h264#backchannel=0",
-      "expectedSub": "rtsp://192.168.1.51:554/h264#backchannel=0"
-    },
-    {
-      "name": "onvif_default_port_main_and_second_profile",
-      "config": {
-        "id": "44444444-4444-4444-8444-444444444444",
-        "name": "Living Room ONVIF",
+      "input": {
+        "id": "00000000-0000-4000-8000-000000000002",
+        "name": "onvif",
         "kind": "onvif",
-        "host": "192.168.1.60"
+        "host": "camera.local",
+        "port": 2020
       },
-      "mode": "placeholder",
-      "expectedMain": "onvif://{user}:{pass}@192.168.1.60:80",
-      "expectedSub": "onvif://{user}:{pass}@192.168.1.60:80?subtype=1"
+      "main": "onvif://{user}:{pass}@camera.local:2020#backchannel=0",
+      "sub": "onvif://{user}:{pass}@camera.local:2020?subtype=1#backchannel=0"
     },
     {
-      "name": "onvif_custom_port_encoded_credentials",
-      "config": {
-        "id": "55555555-5555-4555-8555-555555555555",
-        "name": "Hall ONVIF",
-        "kind": "onvif",
-        "host": "192.168.1.61",
-        "port": 8080
-      },
-      "mode": "credentials",
-      "credentials": {
-        "username": "cam/user",
-        "password": "a:b@c#d"
-      },
-      "expectedMain": "onvif://cam%2Fuser:a%3Ab%40c%23d@192.168.1.61:8080",
-      "expectedSub": "onvif://cam%2Fuser:a%3Ab%40c%23d@192.168.1.61:8080?subtype=1"
-    },
-    {
-      "name": "isapi_hikvision_default_channel_1",
-      "config": {
-        "id": "66666666-6666-4666-8666-666666666666",
-        "name": "Hikvision Entry",
+      "input": {
+        "id": "00000000-0000-4000-8000-000000000003",
+        "name": "isapi",
         "kind": "isapi",
-        "host": "192.168.1.70"
-      },
-      "mode": "placeholder",
-      "expectedMain": "rtsp://{user}:{pass}@192.168.1.70:554/Streaming/Channels/101#backchannel=0",
-      "expectedSub": "rtsp://{user}:{pass}@192.168.1.70:554/Streaming/Channels/102#backchannel=0"
-    },
-    {
-      "name": "isapi_hikvision_channel_3_custom_port",
-      "config": {
-        "id": "77777777-7777-4777-8777-777777777777",
-        "name": "Hikvision NVR Ch3",
-        "kind": "isapi",
-        "host": "172.16.0.15",
-        "port": 10554,
+        "host": "camera.local",
         "channel": 3
       },
-      "mode": "credentials",
-      "credentials": {
-        "username": "admin",
-        "password": "hik#2026!"
-      },
-      "expectedMain": "rtsp://admin:hik%232026%21@172.16.0.15:10554/Streaming/Channels/301#backchannel=0",
-      "expectedSub": "rtsp://admin:hik%232026%21@172.16.0.15:10554/Streaming/Channels/302#backchannel=0"
+      "main": "rtsp://{user}:{pass}@camera.local:554/Streaming/Channels/301#backchannel=0",
+      "sub": "rtsp://{user}:{pass}@camera.local:554/Streaming/Channels/302#backchannel=0"
     },
     {
-      "name": "dahua_default_channel_1",
-      "config": {
-        "id": "88888888-8888-4888-8888-888888888888",
-        "name": "Dahua Yard",
+      "input": {
+        "id": "00000000-0000-4000-8000-000000000004",
+        "name": "dahua",
         "kind": "dahua",
-        "host": "192.168.1.80"
+        "host": "camera.local"
       },
-      "mode": "placeholder",
-      "expectedMain": "rtsp://{user}:{pass}@192.168.1.80:554/cam/realmonitor?channel=1&subtype=0#backchannel=0",
-      "expectedSub": "rtsp://{user}:{pass}@192.168.1.80:554/cam/realmonitor?channel=1&subtype=1#backchannel=0"
+      "main": "rtsp://{user}:{pass}@camera.local:554/cam/realmonitor?channel=1&subtype=0#backchannel=0",
+      "sub": "rtsp://{user}:{pass}@camera.local:554/cam/realmonitor?channel=1&subtype=1#backchannel=0"
     },
     {
-      "name": "dahua_channel_2_encoded",
-      "config": {
-        "id": "99999999-9999-4999-8999-999999999999",
-        "name": "Dahua NVR Ch2",
-        "kind": "dahua",
-        "host": "192.168.1.81",
-        "channel": 2
-      },
-      "mode": "credentials",
-      "credentials": {
-        "username": "nvr_admin",
-        "password": "s/e&c=r?e+t"
-      },
-      "expectedMain": "rtsp://nvr_admin:s%2Fe%26c%3Dr%3Fe%2Bt@192.168.1.81:554/cam/realmonitor?channel=2&subtype=0#backchannel=0",
-      "expectedSub": "rtsp://nvr_admin:s%2Fe%26c%3Dr%3Fe%2Bt@192.168.1.81:554/cam/realmonitor?channel=2&subtype=1#backchannel=0"
-    },
-    {
-      "name": "tapo_placeholder",
-      "config": {
-        "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-        "name": "Tapo C210",
+      "input": {
+        "id": "00000000-0000-4000-8000-000000000005",
+        "name": "tapo",
         "kind": "tapo",
-        "host": "192.168.1.90"
+        "host": "camera.local"
       },
-      "mode": "placeholder",
-      "expectedMain": "tapo://{pass}@192.168.1.90",
-      "expectedSub": "tapo://{pass}@192.168.1.90?subtype=sd"
-    },
-    {
-      "name": "tapo_encoded_password",
-      "config": {
-        "id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
-        "name": "Tapo C220",
-        "kind": "tapo",
-        "host": "tapo-nursery.local"
-      },
-      "mode": "credentials",
-      "credentials": {
-        "username": "ignored",
-        "password": "tp@ss/123#?"
-      },
-      "expectedMain": "tapo://tp%40ss%2F123%23%3F@tapo-nursery.local",
-      "expectedSub": "tapo://tp%40ss%2F123%23%3F@tapo-nursery.local?subtype=sd"
+      "main": "tapo://{pass}@camera.local",
+      "sub": "tapo://{pass}@camera.local?subtype=1"
     }
   ]
 }

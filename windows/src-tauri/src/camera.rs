@@ -149,10 +149,84 @@ fn load_generic_camera_credentials(id: &str) -> Result<StoredGenericCameraCreds,
     }
 }
 
-/// Registers a read-only generic camera stream (codec-copy raw source + MJPEG bridge) in the
-/// supervised loopback go2rtc instance. Credentials are read directly from Windows Credential
-/// Manager (`generic-camera:<id>`) and never written to disk by the app; `go2rtc.yaml` is ACL-
-/// restricted to the current user (`restrict_secret_file`) and scrubbed on teardown & exit.
+async fn resolve_generic_camera_address(host: &str, allow_non_local: bool) -> Result<String, String> {
+    let host = host.trim();
+    let host = host
+        .strip_prefix('[')
+        .and_then(|host| host.strip_suffix(']'))
+        .unwrap_or(host)
+        .trim_end_matches('.')
+        .to_ascii_lowercase();
+    if host.parse::<std::net::IpAddr>().is_err()
+        && (host.is_empty() || !host.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-')))
+    {
+        return Err("无效的摄像机主机地址".to_string());
+    }
+    if !allow_non_local && !is_private_or_local_camera_host(&host) {
+        return Err("仅允许连接局域网私有 IP 或 .local 主机；如需连接外部地址请先在设置中确认".to_string());
+    }
+    let addresses = tokio::time::timeout(Duration::from_secs(3), tokio::net::lookup_host((host.as_str(), 0)))
+        .await
+        .map_err(|_| "解析摄像机地址超时")?
+        .map_err(|_| "无法解析摄像机地址")?;
+    // ONVIF verifies the camera's returned RTSP URI against this pinned address.
+    let addresses = crate::network::EndpointAddressPolicy::for_endpoint(&host, 0, "http")
+        .validate(addresses)
+        .map_err(|_| "摄像机地址不符合网络策略")?;
+    let address = addresses
+        .iter()
+        .find(|addr| addr.is_ipv4())
+        .unwrap_or(&addresses[0]);
+    Ok(address.ip().to_string())
+}
+
+fn generic_camera_http() -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(Duration::from_secs(3))
+        .build()
+        .map_err(|_| "无法连接本地流媒体服务".to_string())
+}
+
+async fn update_generic_camera_stream(
+    http: &reqwest::Client,
+    session: &Go2RtcSession,
+    stream_id: &str,
+    source: Option<String>,
+) -> Result<(), String> {
+    let request = build_generic_camera_request(http, session, stream_id, source)?;
+    let response = http.execute(request).await
+        .map_err(|_| "无法连接本地流媒体服务".to_string())?;
+    match response.status() {
+        reqwest::StatusCode::NO_CONTENT => Ok(()),
+        reqwest::StatusCode::NOT_FOUND => Err("当前流媒体组件不支持只读摄像机，请更新应用".to_string()),
+        _ => Err("本地流媒体服务拒绝了只读摄像机流请求".to_string()),
+    }
+}
+
+async fn register_generic_camera_stream(
+    http: &reqwest::Client,
+    session: &Go2RtcSession,
+    stream_id: &str,
+    source: String,
+) -> Result<(), String> {
+    let preparation = camera_preparation()?;
+    if preparation.is_cancelled() {
+        return Err("该设备类型已关闭".to_string());
+    }
+    let result = update_generic_camera_stream(http, session, stream_id, Some(source)).await;
+    if result.is_err() || preparation.is_cancelled() {
+        let _ = update_generic_camera_stream(http, session, stream_id, None).await;
+    }
+    if preparation.is_cancelled() {
+        return Err("该设备类型已关闭".to_string());
+    }
+    result
+}
+
+/// Registers both preview streams in the supervised helper's memory. Camera credentials
+/// go only in the authenticated loopback request body.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn bridge_generic_camera_stream(
@@ -168,14 +242,13 @@ pub(crate) async fn bridge_generic_camera_stream(
     allow_non_local: Option<bool>,
 ) -> Result<String, String> {
     let _bridge_order = CAMERA_BRIDGE_LOCK.lock().await;
-    if !allow_non_local.unwrap_or(false) && !is_private_or_local_camera_host(&host) {
-        return Err("仅允许连接局域网私有 IP 或 .local 主机；如需连接外部地址请先在设置中确认".to_string());
-    }
+    let stream_id = generic_camera_stream_id(&id)?;
+    let address = resolve_generic_camera_address(&host, allow_non_local.unwrap_or(false)).await?;
     let creds = load_generic_camera_credentials(&id)?;
     let profile_str = profile.as_deref().unwrap_or("main");
     let source_url = build_generic_camera_source_url(
         &kind,
-        &host,
+        &address,
         port,
         path.as_deref(),
         channel,
@@ -187,48 +260,28 @@ pub(crate) async fn bridge_generic_camera_stream(
 
     ensure_go2rtc_running(&app).await?;
     let session = current_go2rtc_session()?;
-    let (raw_name, mjpeg_name) = generic_camera_stream_names(&id, profile_str);
-    let stale_names = all_generic_camera_stream_names(&id);
-    let stale_refs: Vec<&str> = stale_names.iter().map(String::as_str).collect();
-    let http = reqwest::Client::builder()
-        .no_proxy()
-        .timeout(Duration::from_secs(6))
-        .build()
-        .map_err(|e| e.to_string())?;
-    stop_bridge(&http, Some(&session), &format!("generic_{}", sanitize_camera_did(&id)), &stale_refs).await;
-
-    put_stream(&http, &session, &raw_name, &source_url)
-        .await
-        .map_err(|e| format!("注册通用摄像机流失败：{}", redact_camera_credentials(&e)))?;
-    put_stream(&http, &session, &mjpeg_name, &format!("ffmpeg:{raw_name}#video=mjpeg"))
-        .await
-        .map_err(|e| format!("注册通用摄像机画面流失败：{}", redact_camera_credentials(&e)))?;
+    let mjpeg_name = generic_camera_mjpeg_name(&stream_id);
+    stop_mjpeg_streams(&[&mjpeg_name]);
+    let http = generic_camera_http()?;
+    register_generic_camera_stream(&http, &session, &stream_id, source_url).await?;
     Ok(mjpeg_name)
 }
 
 #[tauri::command]
 pub(crate) async fn stop_generic_camera_bridge(id: String) -> Result<(), String> {
     let _bridge_order = CAMERA_BRIDGE_LOCK.lock().await;
-    let names = all_generic_camera_stream_names(&id);
-    let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
-    let http = reqwest::Client::builder()
-        .no_proxy()
-        .timeout(Duration::from_secs(3))
-        .build()
-        .map_err(|e| e.to_string())?;
-    let session = current_go2rtc_session().ok();
-    stop_bridge(
-        &http,
-        session.as_ref(),
-        &format!("generic_{}", sanitize_camera_did(&id)),
-        &name_refs,
-    )
-    .await;
+    let stream_id = generic_camera_stream_id(&id)?;
+    let mjpeg_name = generic_camera_mjpeg_name(&stream_id);
+    stop_mjpeg_streams(&[&mjpeg_name]);
+    if let Ok(session) = current_go2rtc_session() {
+        let http = generic_camera_http()?;
+        let _ = update_generic_camera_stream(&http, &session, &stream_id, None).await;
+    }
+    reset_supervisor_if_unhealthy();
     Ok(())
 }
 
-/// Tests a generic camera connection using its sub-stream and returns a single Base64 JPEG preview.
-/// Immediately tears down the temporary stream and scrubs `go2rtc.yaml` afterwards.
+/// Tests the substream with a temporary in-memory registration and returns one Base64 JPEG.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn test_generic_camera_connection(
@@ -245,9 +298,7 @@ pub(crate) async fn test_generic_camera_connection(
     allow_non_local: Option<bool>,
 ) -> Result<String, String> {
     let _bridge_order = CAMERA_BRIDGE_LOCK.lock().await;
-    if !allow_non_local.unwrap_or(false) && !is_private_or_local_camera_host(&host) {
-        return Err("仅允许连接局域网私有 IP 或 .local 主机；如需连接外部地址请先在设置中确认".to_string());
-    }
+    let address = resolve_generic_camera_address(&host, allow_non_local.unwrap_or(false)).await?;
     let stored = match id.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         Some(existing_id) => load_generic_camera_credentials(existing_id).unwrap_or_default(),
         None => StoredGenericCameraCreds::default(),
@@ -262,7 +313,7 @@ pub(crate) async fn test_generic_camera_connection(
         .unwrap_or(&stored.password);
     let source_url = build_generic_camera_source_url(
         &kind,
-        &host,
+        &address,
         port,
         path.as_deref(),
         channel,
@@ -274,31 +325,22 @@ pub(crate) async fn test_generic_camera_connection(
 
     ensure_go2rtc_running(&app).await?;
     let session = current_go2rtc_session()?;
-    let raw_name = "cam_generic_test_raw";
-    let mjpeg_name = "cam_generic_test_mjpeg";
-    let http = reqwest::Client::builder()
-        .no_proxy()
-        .timeout(Duration::from_secs(6))
-        .build()
-        .map_err(|e| e.to_string())?;
-    stop_bridge(&http, Some(&session), "generic_test", &[raw_name, mjpeg_name]).await;
+    let token = random_credential_token()?;
+    let stream_id = &token[1..]; // The helper takes the 32 hex digits, without the token's prefix.
+    let mjpeg_name = generic_camera_mjpeg_name(stream_id);
+    let http = generic_camera_http()?;
+    register_generic_camera_stream(&http, &session, stream_id, source_url).await?;
 
     let result = async {
-        put_stream(&http, &session, raw_name, &source_url)
-            .await
-            .map_err(|e| format!("连接摄像机失败：{}", redact_camera_credentials(&e)))?;
-        put_stream(&http, &session, mjpeg_name, &format!("ffmpeg:{raw_name}#video=mjpeg"))
-            .await
-            .map_err(|e| format!("启动预览转码失败：{}", redact_camera_credentials(&e)))?;
         let bytes = read_mjpeg_stream_frame(
             &session,
-            mjpeg_name,
+            &mjpeg_name,
             Duration::from_secs(10),
             MJPEG_CONCEALMENT_GRACE,
             true,
         )
         .await
-        .map_err(|e| format!("未收到摄像机画面：{}", redact_camera_credentials(&e)))?;
+        .map_err(|_| "未收到摄像机画面".to_string())?;
         if bytes.len() > MAX_JPEG_FRAME_BYTES {
             return Err("摄像机预览画面过大".to_string());
         }
@@ -306,7 +348,9 @@ pub(crate) async fn test_generic_camera_connection(
     }
     .await;
 
-    stop_bridge(&http, Some(&session), "generic_test", &[raw_name, mjpeg_name]).await;
+    stop_mjpeg_streams(&[&mjpeg_name]);
+    let _ = update_generic_camera_stream(&http, &session, stream_id, None).await;
+    reset_supervisor_if_unhealthy();
     result
 }
 
@@ -936,6 +980,19 @@ pub(crate) fn ensure_component(
         .resource_dir()
         .ok()
         .and_then(|dir| bundled_component_source(&dir, name));
+    if let Some(src) = bundled.as_deref().filter(|_| name == "go2rtc.exe") {
+        let digest_path = src.with_file_name("go2rtc.exe.sha256");
+        if digest_path.exists() {
+            let digest = std::fs::read_to_string(digest_path)
+                .map_err(|_| "无法读取内置 go2rtc 校验值")?;
+            let digest = digest.trim();
+            if !component_is_usable(src, Some(digest)) {
+                return Err("内置 go2rtc 校验失败".to_string());
+            }
+            copy_bundled_component(src, &bin_dir.join(name))?;
+            return Ok(true);
+        }
+    }
     install_component(
         bundled.as_deref(),
         &bin_dir.join(name),
