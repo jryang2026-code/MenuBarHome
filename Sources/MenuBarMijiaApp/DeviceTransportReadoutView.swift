@@ -164,6 +164,10 @@ struct DeviceCardContextMenuItems: View {
 
         if let diagnostics {
             Text(Self.transportRouteTitle(diagnostics))
+            if let reachability = diagnostics.offlineLANReachability, Date() < reachability.expiresAt,
+               !store.effectiveLocalNetworkBlocks.contains(.xiaomiLAN) {
+                Text(L10n.tr("云端离线，但局域网可达", "Cloud offline, LAN reachable"))
+            }
             switch diagnostics.route {
             case .cooldown:
                 Button {
