@@ -50,13 +50,14 @@ export function ShortcutsSection({ copy, os }: ShortcutsSectionProps) {
       <dl className="mt-8 grid grid-cols-1 gap-x-10 border-t border-[#1e1a16]/[0.10] md:grid-cols-2">
         {copy.items.map((item) => {
           const keys = os === 'macos' ? item.macKeys : item.winKeys;
+          const label = os === 'windows' && item.winLabel ? item.winLabel : item.label;
           return (
             <div
               key={item.label}
               className="flex min-h-[50px] items-center justify-between gap-4 border-b border-[#1e1a16]/[0.085] py-2.5 transition-colors duration-150 hover:bg-[#eee7dc]/40"
             >
               <dt className="text-[15px] leading-[1.45] font-normal text-[#2b241d]">
-                {item.label}
+                {label}
               </dt>
               <dd className="flex shrink-0 items-center gap-1.5">
                 {keys.map((k, idx) =>

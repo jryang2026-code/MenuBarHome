@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type PointerEvent } from 'react';
+import { useRef, useState, type PointerEvent } from 'react';
 import {
   Camera,
   ChevronDown,
@@ -22,6 +22,8 @@ import {
   type CameraViewTab,
 } from '../../store/homeStore';
 import { playTactileSound } from '../../utils/tactileSound';
+import { useUkClock } from '../../hooks/useUkClock';
+import { handleTablistKeyDown } from '../../utils/tablist';
 import type { NativePopoverStrings } from './nativePopoverCopy';
 
 interface CameraLiveDrawerProps {
@@ -288,23 +290,10 @@ export function CameraLiveDrawer({ nativeCopy, reducedMotion }: CameraLiveDrawer
   const toggleLightBar = useHomeStore((s) => s.toggleLightBar);
   const showVoiceHud = useHomeStore((s) => s.showVoiceHud);
 
-  const [clock, setClock] = useState('17:42:08');
+  const clock = useUkClock();
   const [draggingPtz, setDraggingPtz] = useState(false);
   const [shutterFlash, setShutterFlash] = useState(false);
   const dragOriginRef = useRef<{ x: number; y: number; pan: number; tilt: number } | null>(null);
-
-  useEffect(() => {
-    const fmt = () =>
-      new Date().toLocaleTimeString('en-GB', {
-        hour: '2-digit',
-        minute: '2-digit',
-        second: '2-digit',
-        hour12: false,
-      });
-    setClock(fmt());
-    const id = window.setInterval(() => setClock(fmt()), 1000);
-    return () => window.clearInterval(id);
-  }, []);
 
   const handlePtzDown = (e: PointerEvent<HTMLDivElement>) => {
     if (cameraViewTab !== 'live') return;
@@ -355,6 +344,7 @@ export function CameraLiveDrawer({ nativeCopy, reducedMotion }: CameraLiveDrawer
     { id: 'wall', label: camCopy.tabs.wall, icon: Grid2x2 },
     { id: 'events', label: camCopy.tabs.events, icon: Clock },
   ];
+  const tabIds = tabs.map((tab) => tab.id);
 
   return (
     <section
@@ -426,7 +416,17 @@ export function CameraLiveDrawer({ nativeCopy, reducedMotion }: CameraLiveDrawer
 
       {/* Mode Switcher: Live View | 2x2 Wall | Events (7d) */}
       <div className="flex flex-wrap items-center justify-between gap-1.5 px-3 pt-2.5 pb-2">
-        <div className="inline-flex rounded-full bg-white/[0.07] p-0.5">
+        <div
+          role="tablist"
+          aria-label={nativeCopy.a11y.cameraModes}
+          onKeyDown={(e) =>
+            handleTablistKeyDown(e, tabIds, cameraViewTab, (id) => {
+              setCameraViewTab(id);
+              playTactileSound('tick', soundEnabled);
+            })
+          }
+          className="inline-flex rounded-full bg-white/[0.07] p-0.5"
+        >
           {tabs.map((tab) => {
             const Icon = tab.icon;
             const active = cameraViewTab === tab.id;
@@ -434,7 +434,11 @@ export function CameraLiveDrawer({ nativeCopy, reducedMotion }: CameraLiveDrawer
               <button
                 key={tab.id}
                 type="button"
-                aria-pressed={active}
+                role="tab"
+                id={`camera-drawer-tab-${tab.id}`}
+                aria-controls="camera-drawer-panel"
+                aria-selected={active}
+                tabIndex={active ? 0 : -1}
                 onClick={() => {
                   setCameraViewTab(tab.id);
                   playTactileSound('tick', soundEnabled);
@@ -463,7 +467,12 @@ export function CameraLiveDrawer({ nativeCopy, reducedMotion }: CameraLiveDrawer
       </div>
 
       {/* Main Viewport Area */}
-      <div className="px-3 pb-3">
+      <div
+        id="camera-drawer-panel"
+        role="tabpanel"
+        aria-labelledby={`camera-drawer-tab-${cameraViewTab}`}
+        className="px-3 pb-3"
+      >
         {cameraViewTab === 'live' && (
           <div className="space-y-2.5">
             {/* Interactive Drag-to-Pan/Tilt PTZ Live Feed Surface */}
@@ -591,7 +600,7 @@ export function CameraLiveDrawer({ nativeCopy, reducedMotion }: CameraLiveDrawer
               <div className="absolute right-2.5 bottom-2.5 flex items-center gap-1 rounded-full bg-black/65 p-0.5 backdrop-blur-md">
                 <button
                   type="button"
-                  aria-label="Pan left"
+                  aria-label={nativeCopy.a11y.panLeft}
                   onClick={() => {
                     nudgeCameraPtz(-12, 0);
                     playTactileSound('tick', soundEnabled);
@@ -602,7 +611,7 @@ export function CameraLiveDrawer({ nativeCopy, reducedMotion }: CameraLiveDrawer
                 </button>
                 <button
                   type="button"
-                  aria-label="Tilt up"
+                  aria-label={nativeCopy.a11y.tiltUp}
                   onClick={() => {
                     nudgeCameraPtz(0, 8);
                     playTactileSound('tick', soundEnabled);
@@ -624,7 +633,7 @@ export function CameraLiveDrawer({ nativeCopy, reducedMotion }: CameraLiveDrawer
                 </button>
                 <button
                   type="button"
-                  aria-label="Tilt down"
+                  aria-label={nativeCopy.a11y.tiltDown}
                   onClick={() => {
                     nudgeCameraPtz(0, -8);
                     playTactileSound('tick', soundEnabled);
@@ -635,7 +644,7 @@ export function CameraLiveDrawer({ nativeCopy, reducedMotion }: CameraLiveDrawer
                 </button>
                 <button
                   type="button"
-                  aria-label="Pan right"
+                  aria-label={nativeCopy.a11y.panRight}
                   onClick={() => {
                     nudgeCameraPtz(12, 0);
                     playTactileSound('tick', soundEnabled);

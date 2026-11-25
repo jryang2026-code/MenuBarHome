@@ -1,39 +1,39 @@
+import { APP_VERSION } from '../utils/appVersion';
+
 export type Locale = 'en' | 'zh';
 export type PlatformOS = 'macos' | 'windows';
+export type DetectedOS = PlatformOS | 'other';
+
+const REPO_URL = 'https://github.com/jryang2026-code/MenuBarHome';
+const RELEASE_DOWNLOAD = `${REPO_URL}/releases/download/v${APP_VERSION}`;
+const ASSET_PREFIX = `MenuBarHome-${APP_VERSION}`;
 
 export const RELEASE_URLS = {
-  repo: 'https://github.com/jryang2026-code/MenuBarHome',
-  release: 'https://github.com/jryang2026-code/MenuBarHome/releases/tag/v1.4.0',
-  macDmg:
-    'https://github.com/jryang2026-code/MenuBarHome/releases/download/v1.4.0/MenuBarHome-1.4.0.dmg',
-  macSha256:
-    'https://github.com/jryang2026-code/MenuBarHome/releases/download/v1.4.0/MenuBarHome-1.4.0.dmg.sha256',
-  macSbom:
-    'https://github.com/jryang2026-code/MenuBarHome/releases/download/v1.4.0/MenuBarHome-1.4.0-macos.spdx.json',
-  winExe:
-    'https://github.com/jryang2026-code/MenuBarHome/releases/download/v1.4.0/MenuBarHome-1.4.0-windows-x64-setup.exe',
-  winMsi:
-    'https://github.com/jryang2026-code/MenuBarHome/releases/download/v1.4.0/MenuBarHome-1.4.0-windows-x64.msi',
-  winSha256:
-    'https://github.com/jryang2026-code/MenuBarHome/releases/download/v1.4.0/MenuBarHome-1.4.0-windows-x64.sha256',
-  winSbom:
-    'https://github.com/jryang2026-code/MenuBarHome/releases/download/v1.4.0/MenuBarHome-1.4.0-windows-x64.spdx.json',
-  devicesDoc:
-    'https://github.com/jryang2026-code/MenuBarHome/blob/main/docs/DEVICES.md',
-  faqDoc: 'https://github.com/jryang2026-code/MenuBarHome/blob/main/docs/FAQ.md',
-  securityDoc:
-    'https://github.com/jryang2026-code/MenuBarHome/blob/main/SECURITY.md',
-  zhReadme:
-    'https://github.com/jryang2026-code/MenuBarHome/blob/main/README_ZH.md',
+  repo: REPO_URL,
+  release: `${REPO_URL}/releases/tag/v${APP_VERSION}`,
+  macDmg: `${RELEASE_DOWNLOAD}/${ASSET_PREFIX}.dmg`,
+  macSha256: `${RELEASE_DOWNLOAD}/${ASSET_PREFIX}.dmg.sha256`,
+  macSbom: `${RELEASE_DOWNLOAD}/${ASSET_PREFIX}-macos.spdx.json`,
+  winExe: `${RELEASE_DOWNLOAD}/${ASSET_PREFIX}-windows-x64-setup.exe`,
+  winExeSha256: `${RELEASE_DOWNLOAD}/${ASSET_PREFIX}-windows-x64-setup.exe.sha256`,
+  winMsi: `${RELEASE_DOWNLOAD}/${ASSET_PREFIX}-windows-x64.msi`,
+  winMsiSha256: `${RELEASE_DOWNLOAD}/${ASSET_PREFIX}-windows-x64.msi.sha256`,
+  winSbom: `${RELEASE_DOWNLOAD}/${ASSET_PREFIX}-windows-x64.spdx.json`,
+  devicesDoc: `${REPO_URL}/blob/main/docs/supported-devices.md`,
+  devicesDocZh: `${REPO_URL}/blob/main/docs/supported-devices.zh-CN.md`,
+  faqDoc: `${REPO_URL}/blob/main/docs/faq.md`,
+  faqDocZh: `${REPO_URL}/blob/main/docs/faq.zh-CN.md`,
+  securityDoc: `${REPO_URL}/blob/main/SECURITY.md`,
+  zhReadme: `${REPO_URL}/blob/main/README.zh-CN.md`,
 } as const;
 
 export const INSTALL_COMMANDS = {
   macos: `brew tap jryang2026-code/tap
 brew trust --cask jryang2026-code/tap/menubarhome
 brew install --cask jryang2026-code/tap/menubarhome`,
-  windows: `$url = "https://github.com/jryang2026-code/MenuBarHome/releases/download/v1.4.0/MenuBarHome-1.4.0-windows-x64-setup.exe"
-Invoke-WebRequest $url -OutFile "MenuBarHome-1.4.0-windows-x64-setup.exe"
-Get-FileHash .\\MenuBarHome-1.4.0-windows-x64-setup.exe -Algorithm SHA256`,
+  windows: `$url = "${RELEASE_URLS.winExe}"
+Invoke-WebRequest $url -OutFile "${ASSET_PREFIX}-windows-x64-setup.exe"
+Get-FileHash .\\${ASSET_PREFIX}-windows-x64-setup.exe -Algorithm SHA256`,
 } as const;
 
 export interface FeatureCopy {
@@ -42,6 +42,9 @@ export interface FeatureCopy {
   body: string;
   theme: 'sand' | 'paper';
   badge?: string;
+  /** Windows-specific wording when the macOS copy names macOS-only behaviour. */
+  winTitle?: string;
+  winBody?: string;
 }
 
 export interface CameraEventItem {
@@ -101,6 +104,8 @@ export interface StarInviteCopy {
 
 export interface ShortcutItem {
   label: string;
+  /** Windows label when the same keys do something different there. */
+  winLabel?: string;
   macKeys: string[];
   winKeys: string[];
   note?: string;
@@ -117,6 +122,7 @@ export interface SiteDictionary {
     starred: string;
     langToggle: string;
     langAria: string;
+    primaryAria: string;
   };
   stats: GitHubStatsCopy;
   starInvite: StarInviteCopy;
@@ -213,6 +219,9 @@ export interface SiteDictionary {
     winCta: string;
     winSize: string;
     winMsiLink: string;
+    msiShaLink: string;
+    platformAria: string;
+    unsupportedOsNote: string;
     terminalHeaderMac: string;
     terminalHeaderWin: string;
     copy: string;
@@ -236,6 +245,9 @@ export interface SiteDictionary {
       zhReadme: string;
     };
     copyright: string;
+    navAria: string;
+    privacyNote: string;
+    licenses: string;
   };
 }
 
@@ -287,11 +299,12 @@ export const SITE_COPY: Record<Locale, SiteDictionary> = {
       starred: 'Starred',
       langToggle: '中文',
       langAria: 'Switch language to Chinese',
+      primaryAria: 'Primary',
     },
     stats: EN_STATS,
     starInvite: EN_STAR_INVITE,
     hero: {
-      eyebrow: 'v1.4.0 · macOS & Windows',
+      eyebrow: `v${APP_VERSION} · macOS & Windows`,
       h1: 'Smart home, in the menu bar.',
       h1Prefix: 'Smart home, in the ',
       h1Accent: 'menu bar.',
@@ -304,7 +317,7 @@ export const SITE_COPY: Record<Locale, SiteDictionary> = {
       focusImacLabel: 'Focus iMac',
       exitFocusLabel: 'Back to Study',
       focusBannerHint: 'Blue iMac focused · Esc to return',
-      specLine: 'v1.4.0 · 1.2% idle CPU · MIT',
+      specLine: `v${APP_VERSION} · 1.2% idle CPU · MIT`,
       stageHint: 'Click the Blue iMac to open macOS',
       soundOn: 'Sound On',
       soundOff: 'Sound Off',
@@ -411,6 +424,7 @@ export const SITE_COPY: Record<Locale, SiteDictionary> = {
           body: 'Press ⌥M, type sftd to toggle Desk Lamp, and dim via ←/→ inside a non-activating NSPanel.',
           theme: 'sand',
           badge: '⌥M · sftd',
+          winBody: 'Press Alt+M, type sftd to toggle Desk Lamp, and dim via ←/→ from the Windows 11 tray panel.',
         },
         {
           id: 'voice',
@@ -418,6 +432,8 @@ export const SITE_COPY: Record<Locale, SiteDictionary> = {
           body: 'Hold ⌥M 0.5s for offline LocalIntentParser commands, with optional Apple Intelligence, Ollama, or DeepSeek.',
           theme: 'sand',
           badge: '0.5s · 0 API',
+          winTitle: 'Hands-free voice, zero API key',
+          winBody: 'Click the mic in the command bar for hands-free dictation parsed by the local intent parser, with optional Ollama or DeepSeek. Hold-to-talk is macOS-only.',
         },
         {
           id: 'context',
@@ -425,20 +441,24 @@ export const SITE_COPY: Record<Locale, SiteDictionary> = {
           body: 'React to displays, lid sleep, mic, camera, and meetings; a 32-frame stack restores prior lights.',
           theme: 'paper',
           badge: '23 triggers',
+          winTitle: 'Desktop triggers, LIFO restore',
+          winBody: 'React to displays, lock, power, mic, camera, and Focus; a 32-frame stack restores prior lights.',
         },
         {
           id: 'all-off',
           title: 'Guarded 0.6s Hold All Off',
-          body: 'A 0.6s hold dims lights while plugs, cameras, and valves stay protected, with 15s Undo.',
+          body: 'A 0.6s hold dims lights while plugs, cameras, and valves stay protected, with 10–15s Undo.',
           theme: 'paper',
-          badge: '0.6s · 15s Undo',
+          badge: '0.6s · 10–15s Undo',
         },
         {
           id: 'privacy',
           title: 'Native 1.2% CPU and local MCP',
-          body: 'Swift 6 (112–113 MB RAM, 0 deps) and Tauri v2 with Keychain storage, Raycast, and read-only MCP.',
+          body: 'Swift 6 (112–113 MB RAM, 0 deps) with Keychain storage, Raycast, and read-only MCP.',
           theme: 'sand',
           badge: '1.2% CPU · MCP',
+          winTitle: 'Native Tauri v2 and local MCP',
+          winBody: 'Tauri v2 with Windows Credential Manager storage, Raycast, and read-only MCP.',
         },
       ],
     },
@@ -447,21 +467,31 @@ export const SITE_COPY: Record<Locale, SiteDictionary> = {
       lead: 'Open, search by pinyin, dim lights, and run moods from the keyboard.',
       items: [
         { label: 'Toggle panel', macKeys: ['⌥', 'M'], winKeys: ['Alt', 'M'] },
-        { label: 'Hold to talk (0.5s)', macKeys: ['Hold ⌥', 'M'], winKeys: ['Hold Alt', 'M'] },
+        {
+          label: 'Hold to talk (0.5s)',
+          winLabel: 'Hands-free dictation (command bar mic)',
+          macKeys: ['Hold ⌥', 'M'],
+          winKeys: ['Click mic'],
+        },
         { label: 'Name or pinyin search', macKeys: ['s', 'f', 't', 'd'], winKeys: ['s', 'f', 't', 'd'] },
         { label: 'Toggle focused device', macKeys: ['↩'], winKeys: ['Enter'], note: 'Space' },
         { label: 'Step brightness, Kelvin, or temp', macKeys: ['←', '→'], winKeys: ['←', '→'] },
         { label: 'Scenes and Moods drawer', macKeys: ['⌘', 'K'], winKeys: ['Ctrl', 'K'] },
-        { label: 'Jump to top 9 devices', macKeys: ['1', '…', '9'], winKeys: ['1', '…', '9'] },
+        {
+          label: 'Jump to top 9 devices',
+          winLabel: 'Switch room',
+          macKeys: ['1', '…', '9'],
+          winKeys: ['1', '…', '9'],
+        },
         { label: 'Custom global hotkeys', macKeys: ['8 slots'], winKeys: ['8 slots'] },
-        { label: 'Hold All Off with 15s Undo', macKeys: ['Hold 0.6s'], winKeys: ['Hold 0.6s'] },
+        { label: 'Hold All Off with 10–15s Undo', macKeys: ['Hold 0.6s'], winKeys: ['Hold 0.6s'] },
         { label: 'CLI, Raycast, Shortcuts, and MCP', macKeys: ['mijia-mcp'], winKeys: ['mijia-mcp'] },
       ],
       ecosystemLabel: 'Companion stack',
       ecosystemItems: [
         { name: 'Raycast', detail: '3 views · 3 hotkeys · 3 AI tools' },
         { name: 'Python CLI', detail: 'scripts/mijia · Alfred & SwiftBar' },
-        { name: 'Apple Shortcuts', detail: '8 App Intents · menubarhome://' },
+        { name: 'Apple Shortcuts', detail: '7 App Intents · menubarhome://' },
         { name: 'Local MCP', detail: 'scripts/mijia-mcp --read-only' },
       ],
     },
@@ -471,10 +501,14 @@ export const SITE_COPY: Record<Locale, SiteDictionary> = {
       macTab: 'macOS 14+ Universal',
       winTab: 'Windows 11 x64',
       macCta: 'Download for macOS',
-      macSize: 'v1.4.0 .dmg · 36.7\u00A0MB · arm64 & x86_64 · Swift 6',
+      macSize: `v${APP_VERSION} .dmg · 36.7\u00A0MB · arm64 & x86_64 · Swift 6`,
       winCta: 'Download for Windows',
-      winSize: 'v1.4.0 .exe · 11.5\u00A0MB · Tauri v2 · Fluent 2 & Classic',
+      winSize: `v${APP_VERSION} .exe · 11.5\u00A0MB · Tauri v2 · Fluent 2 & Classic`,
       winMsiLink: 'Windows .msi installer (15.4\u00A0MB)',
+      msiShaLink: '.msi SHA-256',
+      platformAria: 'Target operating system',
+      unsupportedOsNote:
+        'MenuBarHome currently runs on macOS 14+ and Windows 11 only. Grab the installer on one of those computers.',
       terminalHeaderMac: 'Or install via Homebrew Cask',
       terminalHeaderWin: 'Or download and verify SHA-256 in PowerShell',
       copy: 'Copy',
@@ -491,7 +525,7 @@ export const SITE_COPY: Record<Locale, SiteDictionary> = {
       starInvite: EN_STAR_INVITE,
     },
     footer: {
-      meta: 'MenuBarHome 1.4.0 · MIT License · Unaffiliated with Xiaomi',
+      meta: `MenuBarHome ${APP_VERSION} · MIT License · Unaffiliated with Xiaomi`,
       links: {
         github: 'GitHub',
         devices: 'Supported Devices (32+)',
@@ -500,6 +534,10 @@ export const SITE_COPY: Record<Locale, SiteDictionary> = {
         zhReadme: '中文 README',
       },
       copyright: '© 2026 MenuBarHome Contributors',
+      navAria: 'Footer',
+      privacyNote:
+        'This site has no analytics or tracking. It only fetches public star and download counts from api.github.com.',
+      licenses: 'Third-party licenses',
     },
   },
   zh: {
@@ -513,11 +551,12 @@ export const SITE_COPY: Record<Locale, SiteDictionary> = {
       starred: '已点星',
       langToggle: 'EN',
       langAria: 'Switch language to English',
+      primaryAria: '主导航',
     },
     stats: ZH_STATS,
     starInvite: ZH_STAR_INVITE,
     hero: {
-      eyebrow: 'v1.4.0 · macOS 与 Windows',
+      eyebrow: `v${APP_VERSION} · macOS 与 Windows`,
       h1: '把家留在菜单栏。',
       h1Prefix: '把家留在',
       h1Accent: '菜单栏。',
@@ -530,7 +569,7 @@ export const SITE_COPY: Record<Locale, SiteDictionary> = {
       focusImacLabel: '聚焦 iMac',
       exitFocusLabel: '返回书房',
       focusBannerHint: '已聚焦蓝色 iMac · 按 Esc 返回',
-      specLine: 'v1.4.0 · 空闲 1.2% CPU · MIT',
+      specLine: `v${APP_VERSION} · 空闲 1.2% CPU · MIT`,
       stageHint: '点击蓝色 iMac 操控 macOS',
       soundOn: '音效开',
       soundOff: '音效关',
@@ -637,6 +676,7 @@ export const SITE_COPY: Record<Locale, SiteDictionary> = {
           body: '按 ⌥M 输入 sftd 直达书房台灯，方向键调光；非激活 NSPanel 不打断当前窗口。',
           theme: 'sand',
           badge: '⌥M · sftd',
+          winBody: '按 Alt+M 输入 sftd 直达书房台灯，方向键调光，全程在 Windows 11 托盘面板完成。',
         },
         {
           id: 'voice',
@@ -644,6 +684,8 @@ export const SITE_COPY: Record<Locale, SiteDictionary> = {
           body: '长按 ⌥M 0.5 秒离线执行 LocalIntentParser 指令，可选接 Apple Intelligence 或 Ollama。',
           theme: 'sand',
           badge: '0.5s · 0 API',
+          winTitle: '免手持语音，零 API Key',
+          winBody: '点击命令栏麦克风即可免手持听写，由本地意图解析执行，可选接 Ollama 或 DeepSeek；长按说话仅限 macOS。',
         },
         {
           id: 'context',
@@ -651,20 +693,24 @@ export const SITE_COPY: Record<Locale, SiteDictionary> = {
           body: '响应外接屏、合盖、摄像头与会议自动补光，32 帧 LIFO 栈在结束后还原灯光。',
           theme: 'paper',
           badge: '23 触发器',
+          winTitle: '桌面触发器，结束后还原',
+          winBody: '响应外接屏、锁屏、电源、麦克风、摄像头与专注模式，32 帧 LIFO 栈在结束后还原灯光。',
         },
         {
           id: 'all-off',
-          title: '0.6s 长按全关，15 秒撤销',
-          body: '长按 0.6 秒才触发全关，插座、摄像头与水阀默认受保护，15 秒内可一键撤销。',
+          title: '0.6s 长按全关，10–15 秒撤销',
+          body: '长按 0.6 秒才触发全关，插座、摄像头与水阀默认受保护，10–15 秒内可一键撤销。',
           theme: 'paper',
-          badge: '0.6s · 15s 撤销',
+          badge: '0.6s · 10–15s 撤销',
         },
         {
           id: 'privacy',
           title: '1.2% 轻量占用与本地 MCP',
-          body: 'Swift 6 零依赖（112–113 MB）与 Tauri v2，凭据独存钥匙串，支持 Raycast 与只读 MCP。',
+          body: 'Swift 6 零依赖（112–113 MB），凭据独存钥匙串，支持 Raycast 与只读 MCP。',
           theme: 'sand',
           badge: '1.2% CPU · MCP',
+          winTitle: 'Tauri v2 原生托盘与本地 MCP',
+          winBody: 'Tauri v2 原生托盘，凭据存入 Windows 凭据管理器，支持 Raycast 与只读 MCP。',
         },
       ],
     },
@@ -673,21 +719,31 @@ export const SITE_COPY: Record<Locale, SiteDictionary> = {
       lead: '呼出面板、拼音搜索、调光与切换氛围，全程双手不离键盘。',
       items: [
         { label: '打开或收起面板', macKeys: ['⌥', 'M'], winKeys: ['Alt', 'M'] },
-        { label: '长按说话（0.5 秒）', macKeys: ['长按 ⌥', 'M'], winKeys: ['长按 Alt', 'M'] },
+        {
+          label: '长按说话（0.5 秒）',
+          winLabel: '免手持听写（命令栏麦克风）',
+          macKeys: ['长按 ⌥', 'M'],
+          winKeys: ['点击麦克风'],
+        },
         { label: '名称或拼音首字母搜索', macKeys: ['s', 'f', 't', 'd'], winKeys: ['s', 'f', 't', 'd'] },
         { label: '切换选中设备开关', macKeys: ['↩'], winKeys: ['Enter'], note: 'Space' },
         { label: '调节亮度、色温或温度', macKeys: ['←', '→'], winKeys: ['←', '→'] },
         { label: '场景与氛围抽屉', macKeys: ['⌘', 'K'], winKeys: ['Ctrl', 'K'] },
-        { label: '直达置顶前 9 台设备', macKeys: ['1', '…', '9'], winKeys: ['1', '…', '9'] },
+        {
+          label: '直达置顶前 9 台设备',
+          winLabel: '切换房间',
+          macKeys: ['1', '…', '9'],
+          winKeys: ['1', '…', '9'],
+        },
         { label: '自定义全局热键', macKeys: ['8 组'], winKeys: ['8 组'] },
-        { label: '长按全关与 15 秒撤销', macKeys: ['长按 0.6s'], winKeys: ['长按 0.6s'] },
+        { label: '长按全关与 10–15 秒撤销', macKeys: ['长按 0.6s'], winKeys: ['长按 0.6s'] },
         { label: 'CLI、Raycast、快捷指令与 MCP', macKeys: ['mijia-mcp'], winKeys: ['mijia-mcp'] },
       ],
       ecosystemLabel: '开放生态栈',
       ecosystemItems: [
         { name: 'Raycast 扩展', detail: '3 视图 · 3 热键 · 3 AI 工具' },
         { name: 'Python CLI', detail: 'scripts/mijia · Alfred & SwiftBar' },
-        { name: 'Apple 快捷指令', detail: '8 项 App Intents · menubarhome://' },
+        { name: 'Apple 快捷指令', detail: '7 项 App Intents · menubarhome://' },
         { name: '本地 MCP 服务', detail: 'scripts/mijia-mcp --read-only' },
       ],
     },
@@ -697,10 +753,13 @@ export const SITE_COPY: Record<Locale, SiteDictionary> = {
       macTab: 'macOS 14+ 通用版',
       winTab: 'Windows 11 x64',
       macCta: '下载 macOS 安装包',
-      macSize: 'v1.4.0 .dmg · 36.7\u00A0MB · arm64 & x86_64 · Swift 6',
+      macSize: `v${APP_VERSION} .dmg · 36.7\u00A0MB · arm64 & x86_64 · Swift 6`,
       winCta: '下载 Windows 安装包',
-      winSize: 'v1.4.0 .exe · 11.5\u00A0MB · Tauri v2 · Fluent 2 与 Classic',
+      winSize: `v${APP_VERSION} .exe · 11.5\u00A0MB · Tauri v2 · Fluent 2 与 Classic`,
       winMsiLink: 'Windows .msi 企业安装包（15.4\u00A0MB）',
+      msiShaLink: '.msi SHA-256',
+      platformAria: '目标操作系统',
+      unsupportedOsNote: 'MenuBarHome 目前仅支持 macOS 14+ 与 Windows 11，请在对应电脑上下载安装。',
       terminalHeaderMac: '或通过 Homebrew Cask 安装',
       terminalHeaderWin: '或在 PowerShell 中下载并校验 SHA-256',
       copy: '复制',
@@ -717,7 +776,7 @@ export const SITE_COPY: Record<Locale, SiteDictionary> = {
       starInvite: ZH_STAR_INVITE,
     },
     footer: {
-      meta: 'MenuBarHome 1.4.0 · MIT 开源协议 · 与小米官方无隶属关系',
+      meta: `MenuBarHome ${APP_VERSION} · MIT 开源协议 · 与小米官方无隶属关系`,
       links: {
         github: 'GitHub',
         devices: '支持设备清单 (32+)',
@@ -726,6 +785,9 @@ export const SITE_COPY: Record<Locale, SiteDictionary> = {
         zhReadme: '中文说明',
       },
       copyright: '© 2026 MenuBarHome Contributors',
+      navAria: '页脚导航',
+      privacyNote: '本站无任何统计或追踪，仅从 api.github.com 读取公开的 Star 与下载数。',
+      licenses: '第三方许可',
     },
   },
 };

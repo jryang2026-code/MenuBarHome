@@ -991,8 +991,15 @@ function GoldenHourStudyContent({ onReady }: { onReady: () => void }) {
 
   const handleHover = (target: HoverTarget) => {
     useHomeStore.getState().setHoveredTarget(target);
-    document.body.style.cursor = target ? 'pointer' : 'auto';
+    document.body.style.cursor = target ? 'pointer' : '';
   };
+
+  useEffect(
+    () => () => {
+      document.body.style.cursor = '';
+    },
+    []
+  );
 
   return (
     <>

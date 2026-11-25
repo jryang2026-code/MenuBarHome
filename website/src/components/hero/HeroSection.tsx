@@ -13,6 +13,8 @@ import { ArrowDownToLine, ArrowLeft, Download, Mic, Monitor, Star, X } from 'luc
 import { kelvinToHex, useHomeStore } from '../../store/homeStore';
 import { formatStatCount, useGitHubStats } from '../../hooks/useGitHubStats';
 import { playTactileSound } from '../../utils/tactileSound';
+import { APP_VERSION } from '../../utils/appVersion';
+import { scheduleIdle } from '../../utils/idle';
 import {
   RELEASE_URLS,
   type Locale,
@@ -138,29 +140,7 @@ export function HeroSection({
       setWebglFallback(true);
       return;
     }
-    let cancelled = false;
-    const activate = () => {
-      if (!cancelled) setMount3D(true);
-    };
-    const ric = (
-      window as Window & {
-        requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number;
-        cancelIdleCallback?: (id: number) => void;
-      }
-    ).requestIdleCallback;
-
-    if (ric) {
-      const id = ric(activate, { timeout: 900 });
-      return () => {
-        cancelled = true;
-        (window as Window & { cancelIdleCallback?: (id: number) => void }).cancelIdleCallback?.(id);
-      };
-    }
-    const timer = window.setTimeout(activate, 350);
-    return () => {
-      cancelled = true;
-      window.clearTimeout(timer);
-    };
+    return scheduleIdle(() => setMount3D(true), 900, 350);
   }, [isMobile]);
 
   // Native Keyboard-First Parity (PanelKeyRouter.swift):
@@ -382,7 +362,7 @@ export function HeroSection({
             <span>MenuBarHome</span>
           </a>
 
-          <nav aria-label="Primary" className="flex items-center gap-1.5 sm:gap-4">
+          <nav aria-label={copy.nav.primaryAria} className="flex items-center gap-1.5 sm:gap-4">
             <a
               href="#features"
               className="hidden min-h-[44px] items-center text-[13px] font-medium text-[#3b332b] transition-colors duration-150 hover:text-[#1e1a16] sm:inline-flex"
@@ -471,6 +451,7 @@ export function HeroSection({
             doorbellName={copy.hero.popover.doorbellName}
             videoOnlyLabel={copy.hero.popover.videoOnly}
             pinnedLabel={copy.hero.popover.doorbellPinned}
+            a11y={NATIVE_POPOVER_COPY[locale].a11y}
           />
         </div>
       )}
@@ -548,7 +529,7 @@ export function HeroSection({
               ·
             </span>
             <span className="metric-inline hidden text-[12.5px] text-[#3b332b] sm:inline">
-              v1.4.0 · MIT
+              v{APP_VERSION} · MIT
             </span>
             <span aria-hidden="true" className="hidden text-[#71685e] sm:inline">
               ·

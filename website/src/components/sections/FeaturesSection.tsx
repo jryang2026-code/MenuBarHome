@@ -35,17 +35,22 @@ import {
 import type {
   CameraSpotlightCopy,
   Locale,
+  PlatformOS,
   SiteDictionary,
 } from '../../content/siteCopy';
 import { useHomeStore } from '../../store/homeStore';
+import { useUkClock } from '../../hooks/useUkClock';
+import { handleTablistKeyDown } from '../../utils/tablist';
 
 interface FeaturesSectionProps {
   copy: SiteDictionary['features'];
   locale: Locale;
+  os: PlatformOS;
   reducedMotion: boolean;
 }
 
 type CameraViewMode = 'live' | 'pip' | 'wall';
+const CAMERA_VIEW_MODES: readonly CameraViewMode[] = ['live', 'pip', 'wall'];
 type CameraLens = 'wide' | 'tele';
 
 interface CameraSceneFeedProps {
@@ -245,7 +250,7 @@ function LiveCameraModal({
   const [dragging, setDragging] = useState(false);
   const [porchLightOn, setPorchLightOn] = useState(true);
   const [activeEventIdx, setActiveEventIdx] = useState(0);
-  const [clock, setClock] = useState('17:42:08');
+  const clock = useUkClock();
 
   const lampOn = useHomeStore((s) => s.lampOn);
   const toggleLamp = useHomeStore((s) => s.toggleLamp);
@@ -272,19 +277,6 @@ function LiveCameraModal({
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [onClose]);
-
-  useEffect(() => {
-    const fmt = () =>
-      new Date().toLocaleTimeString('en-GB', {
-        hour: '2-digit',
-        minute: '2-digit',
-        second: '2-digit',
-        hour12: false,
-      });
-    setClock(fmt());
-    const id = window.setInterval(() => setClock(fmt()), 1000);
-    return () => window.clearInterval(id);
-  }, []);
 
   const stepPanTilt = useCallback((dp: number, dt: number) => {
     setPan((p) => Math.max(-32, Math.min(32, p + dp)));
@@ -397,6 +389,7 @@ function LiveCameraModal({
           <div
             role="tablist"
             aria-label={locale === 'zh' ? '画面模式' : 'Camera view mode'}
+            onKeyDown={(e) => handleTablistKeyDown(e, CAMERA_VIEW_MODES, viewMode, setViewMode)}
             className="order-3 inline-flex w-full justify-between overflow-x-auto rounded-full bg-[#eee7dc] p-1 shadow-[inset_0_0_0_1px_rgba(38,30,22,0.08)] md:order-2 md:w-auto md:shrink-0 md:justify-start"
           >
             {(
@@ -410,7 +403,10 @@ function LiveCameraModal({
                 key={tab.id}
                 type="button"
                 role="tab"
+                id={`camera-mode-tab-${tab.id}`}
+                aria-controls="camera-mode-panel"
                 aria-selected={viewMode === tab.id}
+                tabIndex={viewMode === tab.id ? 0 : -1}
                 onClick={() => setViewMode(tab.id)}
                 className={`btn-tactile flex-1 shrink-0 rounded-full px-3 py-1 text-[12px] font-medium whitespace-nowrap md:flex-none ${
                   viewMode === tab.id
@@ -437,7 +433,12 @@ function LiveCameraModal({
         {/* Main Studio Grid */}
         <div className="mt-4 grid grid-cols-1 gap-5 lg:grid-cols-12">
           {/* Interactive Live Feed / PiP / 2x2 Wall */}
-          <div className="lg:col-span-8">
+          <div
+            id="camera-mode-panel"
+            role="tabpanel"
+            aria-labelledby={`camera-mode-tab-${viewMode}`}
+            className="lg:col-span-8"
+          >
             {viewMode === 'wall' ? (
               <div className="grid grid-cols-2 gap-2.5 rounded-[18px] bg-[#161310] p-2.5">
                 {wallFeeds.map((feed) => (
@@ -1105,7 +1106,7 @@ function PrivacyVignette({ locale }: { locale: Locale }) {
   );
 }
 
-export function FeaturesSection({ copy, locale, reducedMotion }: FeaturesSectionProps) {
+export function FeaturesSection({ copy, locale, os, reducedMotion }: FeaturesSectionProps) {
   const [paused, setPaused] = useState(false);
   const [cameraModalOpen, setCameraModalOpen] = useState(false);
 
@@ -1260,9 +1261,11 @@ export function FeaturesSection({ copy, locale, reducedMotion }: FeaturesSection
             >
               {renderVisual(item.id)}
             </div>
-            <h3 className="editorial-h3 mt-4">{item.title}</h3>
+            <h3 className="editorial-h3 mt-4">
+              {os === 'windows' && item.winTitle ? item.winTitle : item.title}
+            </h3>
             <p className="mt-1.5 pr-2 text-[16px] leading-[1.58] text-[#4a433b] text-pretty">
-              {item.body}
+              {os === 'windows' && item.winBody ? item.winBody : item.body}
             </p>
           </article>
         ))}

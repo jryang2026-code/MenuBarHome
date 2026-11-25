@@ -1,4 +1,5 @@
 import { useEffect, useSyncExternalStore } from 'react';
+import { scheduleIdle } from '../utils/idle';
 
 const REPO_API_URL = 'https://api.github.com/repos/jryang2026-code/MenuBarHome';
 const RELEASES_API_URL = 'https://api.github.com/repos/jryang2026-code/MenuBarHome/releases?per_page=100';
@@ -17,6 +18,7 @@ interface InternalStatsState {
   baseStars: number;
   downloads: number;
   isLive: boolean;
+  isCached: boolean;
   starredLocally: boolean;
 }
 
@@ -27,8 +29,10 @@ export interface GitHubStatsSnapshot {
   baseStars: number;
   /** Total installer downloads (.dmg + .exe + .msi across releases) */
   downloads: number;
-  /** True once live GitHub API data (or fresh session cache) hydrated */
+  /** True once this page load fetched GitHub API data */
   isLive: boolean;
+  /** True when counts came from this tab's session cache (fetched earlier, < 15 min old) */
+  isCached: boolean;
   /** True once visitor clicked any Star CTA on the page */
   starredLocally: boolean;
   /** Optimistically marks starred across all mounted components */
@@ -45,6 +49,7 @@ const SERVER_STATE: InternalStatsState = {
   baseStars: GITHUB_FALLBACK_STATS.stars,
   downloads: GITHUB_FALLBACK_STATS.downloads,
   isLive: false,
+  isCached: false,
   starredLocally: false,
 };
 
@@ -63,6 +68,7 @@ function setState(partial: Partial<InternalStatsState>) {
     next.baseStars === currentState.baseStars &&
     next.downloads === currentState.downloads &&
     next.isLive === currentState.isLive &&
+    next.isCached === currentState.isCached &&
     next.starredLocally === currentState.starredLocally
   ) {
     return;
@@ -198,6 +204,7 @@ async function fetchLiveStatsOnce(): Promise<void> {
           baseStars: nextStars,
           downloads: nextDownloads,
           isLive: true,
+          isCached: false,
         });
       }
     } catch {
@@ -222,7 +229,7 @@ function initClientSync() {
     setState({
       baseStars: cached.stars,
       downloads: cached.downloads,
-      isLive: true,
+      isCached: true,
       starredLocally,
     });
     return;
@@ -233,20 +240,7 @@ function initClientSync() {
   }
 
   // Defer live API hydration briefly so critical LCP poster & fonts never contend
-  const kick = () => {
-    void fetchLiveStatsOnce();
-  };
-  const ric = (
-    window as Window & {
-      requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number;
-    }
-  ).requestIdleCallback;
-
-  if (ric) {
-    ric(kick, { timeout: 1200 });
-  } else {
-    window.setTimeout(kick, 250);
-  }
+  scheduleIdle(() => void fetchLiveStatsOnce(), 1200, 250);
 }
 
 function subscribe(listener: () => void): () => void {
@@ -280,6 +274,7 @@ export function useGitHubStats(): GitHubStatsSnapshot {
     baseStars: state.baseStars,
     downloads: state.downloads,
     isLive: state.isLive,
+    isCached: state.isCached,
     starredLocally: state.starredLocally,
     triggerLocalStar,
   };

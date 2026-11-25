@@ -117,6 +117,27 @@ export interface NativePopoverStrings {
   mobilePanelTrigger: string;
   mobileCameraTrigger: string;
   focusCompactBanner: string;
+  a11y: {
+    panel: string;
+    stopDictation: string;
+    clearSearch: string;
+    roomFilter: string;
+    toggleDevice: (name: string) => string;
+    cycleDevice: (name: string) => string;
+    decreaseAcTemp: string;
+    increaseAcTemp: string;
+    refreshDevices: string;
+    sceneGroup: string;
+    pipRegion: (name: string) => string;
+    openFullCamera: string;
+    closePip: string;
+    togglePorchLampFromPip: string;
+    panLeft: string;
+    panRight: string;
+    tiltUp: string;
+    tiltDown: string;
+    cameraModes: string;
+  };
 }
 
 export const NATIVE_POPOVER_COPY: Record<Locale, NativePopoverStrings> = {
@@ -286,6 +307,27 @@ export const NATIVE_POPOVER_COPY: Record<Locale, NativePopoverStrings> = {
     mobilePanelTrigger: 'Panel',
     mobileCameraTrigger: 'Camera',
     focusCompactBanner: 'Blue iMac macOS Focus · Esc to exit',
+    a11y: {
+      panel: 'Interactive MenuBarHome macOS control panel',
+      stopDictation: 'Stop voice dictation',
+      clearSearch: 'Clear search',
+      roomFilter: 'Room filter',
+      toggleDevice: (name) => `Toggle ${name}`,
+      cycleDevice: (name) => `Cycle ${name}`,
+      decreaseAcTemp: 'Decrease AC temperature',
+      increaseAcTemp: 'Increase AC temperature',
+      refreshDevices: 'Refresh devices',
+      sceneGroup: 'Room lighting scenes',
+      pipRegion: (name) => `${name} Picture in Picture`,
+      openFullCamera: 'Open full live PTZ camera',
+      closePip: 'Close doorbell PiP',
+      togglePorchLampFromPip: 'Toggle porch lamp from PiP',
+      panLeft: 'Pan left',
+      panRight: 'Pan right',
+      tiltUp: 'Tilt up',
+      tiltDown: 'Tilt down',
+      cameraModes: 'Camera view',
+    },
   },
   zh: {
     menuBarHome: 'MenuBarHome',
@@ -453,6 +495,27 @@ export const NATIVE_POPOVER_COPY: Record<Locale, NativePopoverStrings> = {
     mobilePanelTrigger: '控制面板',
     mobileCameraTrigger: '实时监控',
     focusCompactBanner: '正在操控蓝色 iMac · Esc 退出',
+    a11y: {
+      panel: '可交互的 MenuBarHome macOS 控制面板',
+      stopDictation: '停止语音听写',
+      clearSearch: '清空搜索',
+      roomFilter: '按房间筛选',
+      toggleDevice: (name) => `开关${name}`,
+      cycleDevice: (name) => `切换${name}开合`,
+      decreaseAcTemp: '调低空调温度',
+      increaseAcTemp: '调高空调温度',
+      refreshDevices: '刷新设备',
+      sceneGroup: '房间灯光场景',
+      pipRegion: (name) => `${name}画中画`,
+      openFullCamera: '打开完整云台实时画面',
+      closePip: '关闭门铃画中画',
+      togglePorchLampFromPip: '在画中画中开关门廊灯',
+      panLeft: '云台向左',
+      panRight: '云台向右',
+      tiltUp: '云台向上',
+      tiltDown: '云台向下',
+      cameraModes: '画面模式',
+    },
   },
 };
 
