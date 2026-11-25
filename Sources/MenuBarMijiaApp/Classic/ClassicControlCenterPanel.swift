@@ -725,6 +725,7 @@ public struct ClassicControlCenterPanel: View {
         VStack(alignment: .leading, spacing: 7) {
             if store.showQuickActionsBar {
                 quickActionsAndScenesBar
+                MoodActionsRow(store: store)
             }
             if store.proactiveSuggestionsEnabled || !store.assistantSuggestions.isEmpty {
                 AssistantSuggestionsRow(store: store)
