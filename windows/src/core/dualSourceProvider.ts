@@ -22,6 +22,7 @@ import type { CapabilityIndexedDevice, SafetySignalKind } from "./capabilityRefe
 import type { HaTypePruneOptions } from "./haTypePruning.js";
 import { defaultStorage } from "./pollingPolicy.js";
 import { classifyControlFailure } from "./controlFailure.js";
+import { CanonicalDeviceRegistry, type NativeCanonicalRegistry } from "./canonicalDeviceRegistry.js";
 
 const SOURCE_FALLBACK_GRACE_MS = 15_000;
 
@@ -42,7 +43,7 @@ function isAuthenticationFailure(error: unknown): boolean {
 }
 
 export const PINNED_DEVICE_SOURCES_STORAGE_KEY = "menumijia.windows.pinnedDeviceSources.v1";
-export const CANONICAL_DEVICE_REGISTRY_STORAGE_KEY = "menumijia.windows.canonicalDeviceIds.v1";
+export { CanonicalDeviceRegistry, CANONICAL_DEVICE_REGISTRY_STORAGE_KEY } from "./canonicalDeviceRegistry.js";
 export const ROOM_IDENTITY_REGISTRY_STORAGE_KEY = "menumijia.windows.roomIdentities.v1";
 export const DUAL_SOURCE_ENABLED_STORAGE_KEY = "menumijia.windows.dualSourceEnabled.v1";
 
@@ -219,42 +220,6 @@ export function extractHADeviceIdentities(rawSnapshot: unknown, synthesized: Syn
   }
   return out; } 
 
-export class CanonicalDeviceRegistry { public readonly assignments: Record<string, string>;
-
-  constructor(initial: Readonly<Record<string, string>> = {}) { this.assignments = { ...initial };
-  }
-
-  canonicalId(forKeys: readonly string[]): string | null { for (const key of forKeys) {
-      const id = this.assignments[key]; if (typeof id === "string" && id.length > 0) return id; } return null; } 
-  assign(canonicalId: string, toKeys: readonly string[]): void { if (!canonicalId) return;
-    for (const key of toKeys) { if (key) this.assignments[key] = canonicalId;
-    }
-  }
-
-  clone(): CanonicalDeviceRegistry { return new CanonicalDeviceRegistry(this.assignments);
-  }
-
-  static load(storage: Storage | null = defaultStorage()): CanonicalDeviceRegistry {
-    if (!storage) return new CanonicalDeviceRegistry();
-    try { const raw = storage.getItem(CANONICAL_DEVICE_REGISTRY_STORAGE_KEY);
-      if (!raw) return new CanonicalDeviceRegistry(); const parsed: unknown = JSON.parse(raw);
-      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) { return new CanonicalDeviceRegistry(); }
-      const clean: Record<string, string> = {};
-      for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
-        if (k && typeof v === "string" && v) clean[k] = v; } return new CanonicalDeviceRegistry(clean);
-    } catch { return new CanonicalDeviceRegistry();
-    }
-  }
-
-  save(storage: Storage | null = defaultStorage()): void { if (!storage) return;
-    try { if (Object.keys(this.assignments).length === 0) { storage.removeItem(CANONICAL_DEVICE_REGISTRY_STORAGE_KEY);
-      } else { storage.setItem(CANONICAL_DEVICE_REGISTRY_STORAGE_KEY, JSON.stringify(this.assignments));
-      }
-    } catch {
-    }
-  }
-}
-
 export class RoomIdentityRegistry { public readonly idsByName: Record<string, string>;
   public readonly displayNames: Record<string, string>;
 
@@ -382,6 +347,7 @@ export class DeviceSourcePinStorage { private readonly box: DeviceSourcePinBox;
 export interface DualSourceInputSnapshot { readonly home: SynthesizedHome;
   readonly pollCapturedEpoch?: number;
   readonly identity?: string | null;
+  readonly haScope?: string | null;
   readonly identities?: Readonly<Record<string, DeviceSourceIdentity>>;
   readonly lightGroupOwners?: ReadonlyMap<string, string> | Readonly<Record<string, string>>;
   readonly homes?: readonly AccountScopedHomeOption[];
@@ -445,6 +411,7 @@ interface DraftCard { readonly winner: Candidate;
 interface ResolvedCard { winner: Candidate;
   other: Candidate | null;
   readonly canonicalKeys: readonly string[];
+  readonly haIdentityKeys: readonly string[];
   readonly chosenCanonical: string | null;
   readonly hadStaleCanonicalConflict: boolean;
 }
@@ -618,6 +585,7 @@ export const DeviceDeduplicator = {
   merge(options: { readonly homeAssistant?: DualSourceInputSnapshot | null;
     readonly xiaomiCloud?: DualSourceInputSnapshot | null;
     readonly canonical?: CanonicalDeviceRegistry;
+    readonly registryNowMs?: number;
     readonly rooms?: RoomIdentityRegistry;
     readonly knownPreferenceIds?: ReadonlySet<string>;
     readonly pinnedBackends?: Readonly<Record<string, HomeBackend>>;
@@ -760,13 +728,36 @@ export const DeviceDeduplicator = {
       });
     }
 
+    const registryNow = options.registryNowMs ?? Date.now();
     const updatedCanonical = (options.canonical ?? new CanonicalDeviceRegistry()).clone();
+    updatedCanonical.purge(registryNow);
+    const haScope = haInput?.haScope;
+    const haIdentityKeys = draftCards.map((card) => {
+      const ha = card.winner.backend === "homeAssistant" ? card.winner : card.other;
+      if (!haScope || ha?.backend !== "homeAssistant" || !ha.identity) return [];
+      return ha.identity.uniqueIds.map((id) => "ha-unique:" + JSON.stringify([haScope, ha.device.kind.kind, id]));
+    });
+    const haIdentityCounts = new Map<string, number>();
+    for (const keys of haIdentityKeys) {
+      for (const key of keys) haIdentityCounts.set(key, (haIdentityCounts.get(key) ?? 0) + 1);
+    }
+    const haKeysFor = (index: number) => haIdentityKeys[index]!.filter((key) => haIdentityCounts.get(key) === 1);
+    const existingMatches = draftCards.map((draft) => updatedCanonical.canonicalId(draft.strongKeys));
+    const strongMatchFor = (draft: DraftCard, index: number): string | null => {
+      const existing = existingMatches[index] ?? null;
+      if (existing !== null) return existing;
+      const aliases = new Set(haKeysFor(index).map((key) => updatedCanonical.canonicalId([key])));
+      aliases.delete(null);
+      if (aliases.size !== 1) return null;
+      const id = aliases.values().next().value ?? null;
+      return id === draft.winner.device.id || id === draft.other?.device.id ? null : id;
+    };
     const updatedRooms = (options.rooms ?? new RoomIdentityRegistry()).clone(); 
     const cardFallbackCounts: Record<string, number> = {}; const strongClaimedCanonicals = new Set<string>();
-    for (const draft of draftCards) { for (const k of draft.fallbackKeys) {
+    for (const [index, draft] of draftCards.entries()) { for (const k of draft.fallbackKeys) {
         cardFallbackCounts[k] = (cardFallbackCounts[k] ?? 0) + 1;
       }
-      const strongMatch = updatedCanonical.canonicalId(draft.strongKeys);
+      const strongMatch = strongMatchFor(draft, index);
       if (strongMatch) strongClaimedCanonicals.add(strongMatch); } 
     const memberCardIndicesById = new Map<string, Set<number>>();
     draftCards.forEach((draft, idx) => { const addIdx = (id: string) => {
@@ -779,9 +770,9 @@ export const DeviceDeduplicator = {
         const indices = memberCardIndicesById.get(candidateId); if (!indices) return true;
         for (const otherIdx of indices) { if (otherIdx !== idx) return false;
         }
-        return true; }; const rawStrong = updatedCanonical.canonicalId(draft.strongKeys);
+        return true; }; const rawStrong = strongMatchFor(draft, idx);
       const strongMatch = rawStrong && isFreeOfForeignMember(rawStrong) ? rawStrong : null;
-      const rawFallback = rawStrong === null ? updatedCanonical.canonicalId(validFallbackKeys) : null;
+      const rawFallback = rawStrong === null ? updatedCanonical.canonicalId(validFallbackKeys, false) : null;
       const fallbackMatch = rawFallback &&
         !strongClaimedCanonicals.has(rawFallback) &&
         isFreeOfForeignMember(rawFallback)
@@ -792,10 +783,13 @@ export const DeviceDeduplicator = {
       const defaultPaired = draft.defaultPairedCanonical && isFreeOfForeignMember(draft.defaultPairedCanonical)
           ? draft.defaultPairedCanonical
           : null;
+      // A single-source HA alias must stay scoped to its instance until a pair is observed.
+      const recoveredFromScopedKey = !draft.other && existingMatches[idx] === null && rawStrong !== null;
       return {
         winner: draft.winner,
         other: draft.other,
-        canonicalKeys: [...draft.strongKeys, ...validFallbackKeys],
+        canonicalKeys: recoveredFromScopedKey ? [] : [...draft.strongKeys, ...validFallbackKeys],
+        haIdentityKeys: haKeysFor(idx),
         chosenCanonical: strongMatch ?? fallbackMatch ?? defaultPaired,
         hadStaleCanonicalConflict,
       };
@@ -847,6 +841,7 @@ export const DeviceDeduplicator = {
       } else if (card.other && !usedCanonicalIds.has(card.other.device.id)) { canonicalId = card.other.device.id;
       } else { canonicalId = `${card.winner.backend}:${card.winner.device.id}`;
       }
+      updatedCanonical.assign(canonicalId, card.haIdentityKeys);
       usedCanonicalIds.add(canonicalId);
 
       // Both sides of a pair can carry history (an HA-only period and a Mi-only period). Whichever
@@ -1000,6 +995,7 @@ export const DeviceDeduplicator = {
     const activeBackends = new Set<HomeBackend>(
       sourceSnapshots.flatMap(([backend, snapshot]) => snapshot ? [backend] : []),
     );
+    updatedCanonical.reconcile(usedCanonicalIds, registryNow);
     return {
       home: {
         devices: mergedDevices,
@@ -1102,6 +1098,10 @@ export class DualSourceCoordinator { public canonical: CanonicalDeviceRegistry;
   private readonly dropDeadlines: Partial<Record<HomeBackend, number>> = {};
   private fallbackTimer: ReturnType<typeof setTimeout> | undefined;
   private fallbackGeneration = 0;
+  private registryLoad: Promise<void> | null = null;
+  private registryRevision: number | null = null;
+  private lastSavedRegistry: string | null = null;
+  private registryWrites = Promise.resolve();
   private sourceStatuses: Record<HomeBackend, ConnectionStatus> = {
     homeAssistant: { kind: "connecting" },
     xiaomiCloud: { kind: "connecting" },
@@ -1110,6 +1110,7 @@ export class DualSourceCoordinator { public canonical: CanonicalDeviceRegistry;
   constructor(private readonly storage: Storage | null = defaultStorage(),
     private readonly options: {
       readonly onRecompute?: (merged: DeviceMergeResult) => void;
+      readonly nativeRegistry?: NativeCanonicalRegistry;
       readonly awakeTimeMs?: () => number | null | Promise<number | null>;
     } = {}) { this.canonical = CanonicalDeviceRegistry.load(storage);
     this.rooms = RoomIdentityRegistry.load(storage);
@@ -1130,8 +1131,9 @@ export class DualSourceCoordinator { public canonical: CanonicalDeviceRegistry;
   getLastMiSnapshot(): DualSourceInputSnapshot | null { return this.lastMi;
   }
 
-  reset(): void {
+  reset(markMissing = true): void {
     this.mutationEpoch += 1;
+    if (markMissing) this.markRegistryOrphaned();
     this.lastHA = null;
     this.lastMi = null;
     delete this.dropDeadlines.homeAssistant;
@@ -1154,9 +1156,9 @@ export class DualSourceCoordinator { public canonical: CanonicalDeviceRegistry;
     readonly shouldCommit?: () => boolean;
   }): Promise<DualSourceRefreshOutcome> {
     const epochAtStart = this.mutationEpoch;
-    const [haSettled, miSettled] = await Promise.allSettled([
-      options.fetchHA(),
-      options.fetchMi(),
+    const [[haSettled, miSettled]] = await Promise.all([
+      Promise.allSettled([options.fetchHA(), options.fetchMi()]),
+      this.loadRegistry(),
     ]);
 
     const now = (haSettled.status === "rejected" || miSettled.status === "rejected" ||
@@ -1250,14 +1252,7 @@ export class DualSourceCoordinator { public canonical: CanonicalDeviceRegistry;
 
     if (!this.lastHA && !this.lastMi) {
       if (haWasTurnedOff && miWasTurnedOff) {
-        const emptyMerged = DeviceDeduplicator.merge({
-          canonical: this.canonical,
-          rooms: this.rooms,
-          knownPreferenceIds: this.lastKnownPrefIds,
-          pinnedBackends: this.pinStorage.getAll(),
-          languagePreference: options.languagePreference,
-        });
-        this.lastMerged = emptyMerged;
+        const emptyMerged = this.mergeCurrent(options.languagePreference);
         return {
           merged: emptyMerged,
           sourceStatuses: { ...this.sourceStatuses },
@@ -1265,6 +1260,7 @@ export class DualSourceCoordinator { public canonical: CanonicalDeviceRegistry;
           miError: null,
         };
       }
+      this.markRegistryOrphaned();
       throw new Error(haError ?? miError ?? "Both Home Assistant and Xiaomi Cloud failed");
     }
 
@@ -1341,10 +1337,23 @@ export class DualSourceCoordinator { public canonical: CanonicalDeviceRegistry;
           : tr3("Home Assistant 已停用", "Home Assistant 已停用", "Home Assistant is turned off", undefined, languagePreference),
     };
     if (!this.lastMi) {
+      this.markRegistryOrphaned();
       this.lastMerged = null;
       return null;
     }
     return this.mergeCurrent(languagePreference);
+  }
+
+  removeXiaomiSource(): void {
+    this.mutationEpoch += 1;
+    this.lastMi = null;
+    delete this.dropDeadlines.xiaomiCloud;
+    if (this.lastHA) {
+      this.mergeCurrent();
+    } else {
+      this.markRegistryOrphaned();
+      this.lastMerged = null;
+    }
   }
 
   removeXiaomiAccount(
@@ -1550,10 +1559,56 @@ export class DualSourceCoordinator { public canonical: CanonicalDeviceRegistry;
     }
 
     if (!this.lastHA && !this.lastMi) {
+      this.markRegistryOrphaned();
       this.lastMerged = null;
       return null;
     }
     return this.mergeCurrent(languagePreference);
+  }
+
+  private loadRegistry(): Promise<void> {
+    const native = this.options.nativeRegistry;
+    if (!native) return Promise.resolve();
+    this.registryLoad ??= native.load().then(({ registry, revision }) => {
+      this.registryRevision = revision;
+      if (registry !== null) {
+        this.canonical = new CanonicalDeviceRegistry(registry.assignments, registry.orphanedAt, registry.explicitlyDeleted);
+        this.lastSavedRegistry = JSON.stringify(this.canonical.state());
+      }
+    }).catch(() => {
+      this.registryLoad = null;
+    });
+    return this.registryLoad;
+  }
+
+  private markRegistryOrphaned(): void {
+    if (this.options.nativeRegistry && this.registryRevision === null) return;
+    this.canonical.reconcile(new Set(), Date.now());
+    this.saveRegistry();
+  }
+
+  private saveRegistry(): void {
+    const native = this.options.nativeRegistry;
+    if (!native) {
+      this.canonical.save(this.storage);
+      return;
+    }
+    const revision = this.registryRevision;
+    if (revision === null) return;
+    const state = this.canonical.state();
+    const serialized = JSON.stringify(state);
+    if (serialized === this.lastSavedRegistry) return;
+    this.lastSavedRegistry = serialized;
+    this.registryWrites = this.registryWrites.then(async () => {
+      if (this.registryRevision !== revision || await native.save(state, revision)) return;
+      this.canonical = new CanonicalDeviceRegistry();
+      this.registryRevision = null;
+      this.registryLoad = null;
+      this.lastSavedRegistry = null;
+      this.reset(false);
+    }).catch(() => {
+      if (this.lastSavedRegistry === serialized) this.lastSavedRegistry = null;
+    });
   }
 
   async execute(command: DeviceCommand, executors: { readonly executeHA: (command: DeviceCommand) => Promise<void>;
@@ -1572,7 +1627,7 @@ export class DualSourceCoordinator { public canonical: CanonicalDeviceRegistry;
     });
     this.canonical = merged.canonical;
     this.rooms = merged.rooms;
-    this.canonical.save(this.storage);
+    this.saveRegistry();
     this.rooms.save(this.storage);
     this.lastMerged = merged;
     return merged; } } 

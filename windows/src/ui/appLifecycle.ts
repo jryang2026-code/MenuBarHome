@@ -1,3 +1,4 @@
+import { CANONICAL_DEVICE_REGISTRY_BACKUP_KEYS, clearNativeCanonicalRegistry } from "../core/canonicalDeviceRegistry.js";
 import { finishPanelComposition, handlePanelKey } from "./panelKeyboard.js";
 import { dismissPendingMoodPrompts } from "./moods.js";
 import { handleSettingsSheetEscape } from "./settingsEvents.js";
@@ -410,6 +411,7 @@ export async function clearHostSessionAndDualSourceState(
         localStorage.removeItem(DUAL_SOURCE_ENABLED_STORAGE_KEY);
         localStorage.removeItem(PINNED_DEVICE_SOURCES_STORAGE_KEY);
         localStorage.removeItem(CANONICAL_DEVICE_REGISTRY_STORAGE_KEY);
+        for (const key of CANONICAL_DEVICE_REGISTRY_BACKUP_KEYS) localStorage.removeItem(key);
         localStorage.removeItem(ROOM_IDENTITY_REGISTRY_STORAGE_KEY);
       }
     }
@@ -417,13 +419,17 @@ export async function clearHostSessionAndDualSourceState(
   }
   if (options.revokeAll) {
     appDiagnosticsLog.clear();
+    host.dualSourceCoordinator?.reset(false);
     host.dualSourceCoordinator = null;
+    await clearNativeCanonicalRegistry().catch(() => {});
     host.dualSourceEnabledOverride = null;
     if (host.settings) {
       host.settings.dualSourceEnabled = false;
     }
     clearHaScopeLifecycle(null);
     removeDisconnectedHaFromSelection(null);
+  } else {
+    host.dualSourceCoordinator?.removeXiaomiSource();
   }
   removeSignedOutMiAccountFromSelection(null);
   if (host.connDiagSession) {
