@@ -1201,7 +1201,11 @@ public struct DeviceCardView: View {
 
     private func cameraDrawer(_ spec: CameraSpec) -> some View {
         VStack(alignment: .leading, spacing: 9) {
-            CameraStillWall(store: store)
+            if let camera = store.genericCamera(for: device.id) {
+                GenericCameraCardPreview(store: store, camera: camera)
+            } else {
+                CameraStillWall(store: store)
+            }
             ScrollView(.horizontal, showsIndicators: false) {
                 AdaptiveGlassContainer(spacing: 6) {
                     HStack(spacing: 6) {

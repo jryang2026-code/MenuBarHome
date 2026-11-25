@@ -1322,7 +1322,7 @@ extension HomeStore {
     func syncIndexedDevices(from currentDevices: [SmartDevice]) {
         guard !currentDevices.isEmpty else { return }
         var changed = false
-        for device in currentDevices {
+        for device in currentDevices where !device.id.hasPrefix(GenericCameraSource.devicePrefix) {
             let entry = makeIndexedDevice(from: device)
             if indexedDevicesById[device.id] != entry {
                 indexedDevicesById[device.id] = entry
@@ -1731,6 +1731,7 @@ extension HomeStore {
     }
 
     func inferSource(for device: SmartDevice) -> (ConnectionCapabilityID?, String) {
+        if device.id.hasPrefix(GenericCameraSource.devicePrefix) { return (nil, "local") }
         if lgClientServes(device) || device.id == LGWebOSProtocol.deviceId { return (nil, "lan:lg-webos") }
         let haManaged = hasHASource || explicitlyDisabledConnections.contains(.homeAssistant)
         let miManaged = !miAccounts.isEmpty || hasMiSource || explicitlyDisabledConnections.contains(.xiaomiCloud)

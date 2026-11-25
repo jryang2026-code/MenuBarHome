@@ -2405,13 +2405,23 @@ extension HomeStore {
 
     public var supportsCustomCameraStreams: Bool { !(provider is DemoHomeProvider) }
 
-    public func resolveCameraStream(for deviceId: String, channel: Int = 0, audioEnabled: Bool = false) async throws -> CameraStreamSource {
+    public func resolveCameraStream(
+        for deviceId: String, channel: Int = 0, audioEnabled: Bool = false, genericStream: GenericCameraSource.Stream = .main
+    ) async throws -> CameraStreamSource {
         if let reason = capabilityWriteRejection(forDeviceId: deviceId) {
             throw CapabilityControlBlockedError(reason: reason)
         }
         guard let device = devices.first(where: { $0.id == deviceId }),
               case .camera = device.kind else {
             throw HomeProviderError.serviceCallFailed(400, L10n.tr("未找到该摄像头设备", "Camera device not found"))
+        }
+        if deviceId.hasPrefix(GenericCameraSource.devicePrefix) {
+            guard !rejectControlWhileLocked(), let camera = genericCamera(for: deviceId),
+                  let credentials = genericCameraCredentials(camera) else { throw GenericCameraError.invalidConnection }
+            return try await XiaomiCameraBridge.shared.startGenericCamera(
+                camera, credentials: credentials, stream: genericStream, audioEnabled: audioEnabled,
+                allowPublic: hasGenericCameraConsent(camera)
+            )
         }
         if supportsCustomCameraStreams,
            let custom = cameraCustomStreamURL(for: deviceId),
@@ -2449,12 +2459,20 @@ extension HomeStore {
     }
 
     public func stopCameraStream(for deviceId: String) async {
+        if deviceId.hasPrefix(GenericCameraSource.devicePrefix) {
+            await XiaomiCameraBridge.shared.stopGenericCamera(deviceID: deviceId)
+            return
+        }
         guard let device = devices.first(where: { $0.id == deviceId }) else { return }
         await stopCameraStream(device: device)
     }
 
     /// Releases a stream for a card that may already have left `devices` (a closed camera type).
     public func stopCameraStream(device: SmartDevice) async {
+        if device.id.hasPrefix(GenericCameraSource.devicePrefix) {
+            await XiaomiCameraBridge.shared.stopGenericCamera(deviceID: device.id)
+            return
+        }
         await provider.stopCameraStream(for: device)
     }
 }

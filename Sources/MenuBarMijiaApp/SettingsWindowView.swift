@@ -1774,10 +1774,13 @@ private struct ConnectionSettingsTab: View {
                                 .fixedSize(horizontal: false, vertical: true)
                             }
                             .settingsRow(anchor: .dualSourceFusion)
+
+                            Divider().overlay(Color.primary.opacity(0.06))
+                            GenericCameraSettings(store: store)
                         }
                         .padding(.top, 6)
                     } label: {
-                        Text(L10n.tr("多账号与多平台合并", "Multiple Accounts & Multi-Platform Merge"))
+                        Text(L10n.tr("多账号、多平台与通用摄像机", "Multiple Accounts, Platforms & Generic Cameras"))
                             .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
                             .foregroundStyle(DesignTokens.secondaryText)
                     }
