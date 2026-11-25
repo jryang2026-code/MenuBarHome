@@ -954,6 +954,14 @@ fn register_url_scheme() -> Result<(), String> {
     Ok(())
 }
 
+pub(crate) fn is_companion_ipc_port(port: u16) -> bool {
+    ACTIVE_IPC_OWNERSHIP
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
+        .as_ref()
+        .is_some_and(|(active_port, _)| *active_port == port)
+}
+
 pub(crate) fn start_companion_runtime(app: AppHandle) {
     if !cfg!(test) && !cfg!(debug_assertions) {
         let _ = register_url_scheme();

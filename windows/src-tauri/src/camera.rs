@@ -5,6 +5,12 @@ use tokio_util::sync::CancellationToken;
 pub(crate) mod camera_stream;
 pub(crate) use camera_stream::*;
 
+#[path = "camera_hls.rs"]
+mod camera_hls;
+
+static HLS_RELAYS: LazyLock<std::sync::Mutex<HashMap<String, camera_hls::HlsRelay>>> =
+    LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
+
 #[tauri::command]
 pub(crate) async fn start_xiaomi_camera_bridge(
     app: AppHandle,
@@ -99,6 +105,8 @@ pub(crate) async fn bridge_hls_camera_stream(
         .timeout(Duration::from_secs(6))
         .build()
         .map_err(|e| e.to_string())?;
+    let path_lower = parsed.path().to_ascii_lowercase();
+    let (relay, local_url) = camera_hls::start_relay(parsed).await?;
     stop_mjpeg_streams(&[&mjpeg_name]);
     let _ = authed(
         http.delete(api_url(
@@ -109,19 +117,21 @@ pub(crate) async fn bridge_hls_camera_stream(
     )
     .send()
     .await;
-    let path_lower = parsed.path().to_ascii_lowercase();
     let stream_src = if path_lower.contains("/api/camera_proxy")
         || path_lower.ends_with(".mjpeg")
         || path_lower.ends_with(".mjpg")
         || path_lower.ends_with("/stream.mjpeg")
     {
-        parsed.as_str().to_string()
+        local_url
     } else {
-        format!("ffmpeg:{}#video=mjpeg", parsed.as_str())
+        // Keep the loopback URL and its query away from inherited HTTP proxies.
+        let input = "-fflags nobuffer -flags low_delay -http_proxy none -protocol_whitelist http,tcp,crypto -i {input}";
+        format!("ffmpeg:{local_url}#video=mjpeg#input={input}")
     };
     put_stream(&http, &session, &mjpeg_name, &stream_src)
         .await
         .map_err(|e| format!("注册 HLS 转码流失败：{e}"))?;
+    HLS_RELAYS.lock().map_err(|_| "HLS 转发状态不可用")?.insert(mjpeg_name.clone(), relay);
     Ok(mjpeg_name)
 }
 
@@ -171,6 +181,7 @@ async fn resolve_generic_camera_address(host: &str, allow_non_local: bool) -> Re
         .map_err(|_| "无法解析摄像机地址")?;
     // ONVIF verifies the camera's returned RTSP URI against this pinned address.
     let addresses = crate::network::EndpointAddressPolicy::for_endpoint(&host, 0, "http")
+        .without_loopback()
         .validate(addresses)
         .map_err(|_| "摄像机地址不符合网络策略")?;
     let address = addresses
@@ -1114,6 +1125,19 @@ pub(crate) fn running_child_pid() -> Option<u32> {
             None
         }
     }
+}
+
+pub(crate) fn is_camera_helper_port(port: u16) -> bool {
+    if HLS_RELAYS.lock().unwrap_or_else(|err| err.into_inner()).values().any(|relay| relay.port == port) {
+        return true;
+    }
+    let owner = GO2RTC_SESSION.lock().unwrap_or_else(|err| err.into_inner());
+    owner.as_ref().is_some_and(|record| {
+        [&record.session.api_listen, &record.session.rtsp_listen]
+            .iter()
+            .filter_map(|listen| listen.parse::<std::net::SocketAddr>().ok())
+            .any(|addr| addr.port() == port)
+    })
 }
 
 pub(crate) fn current_go2rtc_session() -> Result<Go2RtcSession, String> {
@@ -2227,6 +2251,11 @@ static CAMERA_MJPEG_STREAMS: LazyLock<std::sync::Mutex<HashMap<String, std::sync
     LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
 
 pub(crate) fn stop_mjpeg_streams(names: &[&str]) {
+    if let Ok(mut relays) = HLS_RELAYS.lock() {
+        for name in names {
+            relays.remove(*name);
+        }
+    }
     if let Ok(mut streams) = CAMERA_MJPEG_STREAMS.lock() {
         for name in names {
             if let Some(reader) = streams.remove(*name) {
@@ -2237,6 +2266,9 @@ pub(crate) fn stop_mjpeg_streams(names: &[&str]) {
 }
 
 pub(crate) fn stop_all_mjpeg_streams() -> Vec<tauri::async_runtime::JoinHandle<()>> {
+    if let Ok(mut relays) = HLS_RELAYS.lock() {
+        relays.clear();
+    }
     CAMERA_MJPEG_STREAMS.lock().map(|mut streams| {
         streams.drain().filter_map(|(_, reader)| reader.shutdown()).collect()
     }).unwrap_or_default()
@@ -2820,6 +2852,27 @@ pub(crate) fn spawn_cs2_udp_relay(
 #[cfg(test)]
 mod runtime_tests {
     use super::*;
+
+    #[test]
+    fn explicit_loopback_cannot_target_owned_go2rtc_ports() {
+        let session = make_ephemeral_go2rtc_session().unwrap();
+        let endpoints = [session.api_listen.clone(), session.rtsp_listen.clone()];
+        store_go2rtc_session(Go2RtcOwnerRecord {
+            pid: 0,
+            session,
+            exe_path: None,
+            creation_time: None,
+        });
+        let results = endpoints.map(|endpoint| {
+            let address: std::net::SocketAddr = endpoint.parse().unwrap();
+            crate::network::EndpointAddressPolicy::for_endpoint("localhost", address.port(), "http")
+                .validate([address])
+        });
+        *GO2RTC_SESSION.lock().unwrap() = None;
+        for result in results {
+            assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::PermissionDenied);
+        }
+    }
 
     #[test]
     fn dropping_relay_releases_the_port_before_returning() {

@@ -954,6 +954,28 @@ mod tests {
     use std::net::TcpStream;
     use tungstenite::WebSocket;
     #[test]
+    fn authenticates_to_an_explicit_loopback_websocket() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+            let mut socket = tungstenite::accept(stream).unwrap();
+            send_fixture(&mut socket, "auth_required");
+            let message = socket.read().unwrap();
+            let auth: Value = serde_json::from_str(message.to_text().unwrap()).unwrap();
+            assert_eq!(auth, json!({"type": "auth", "access_token": "fixture-token"}));
+            send_fixture(&mut socket, "auth_ok");
+        });
+        let result = tauri::async_runtime::block_on(authenticated(
+            &format!("ws://{addr}/api/websocket"),
+            "fixture-token",
+        ));
+        assert!(result.is_ok());
+        server.join().unwrap();
+    }
+
+    #[test]
     fn short_backoff_uses_the_normal_wait_even_for_user_requests() {
         for user_initiated in [false, true] {
             assert_eq!(
@@ -1354,7 +1376,6 @@ mod tests {
     fn cancellation_wakes_upgrade_and_websocket_read_and_joins_worker() {
         for complete_upgrade in [false, true] {
             let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-            let _fixture = crate::network::allow_loopback_fixture(&listener);
             let base = format!("http://{}", listener.local_addr().unwrap());
             let (waiting, ready) = tokio::sync::oneshot::channel();
             let peer = std::thread::spawn(move || {
@@ -1416,7 +1437,6 @@ mod tests {
         let _guard = crate::ORIGIN_TEST_LOCK.lock().unwrap();
         for send_headers in [false, true] {
             let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-            let _fixture = crate::network::allow_loopback_fixture(&listener);
             let base = format!("http://{}", listener.local_addr().unwrap());
             let origin = crate::normalize_extra_origin(&base).unwrap();
             crate::EXTRA_ALLOWED_ORIGINS.write().unwrap().insert(origin.clone());
@@ -1495,7 +1515,6 @@ mod tests {
         const TOKEN: &str = "fixture-token";
         const ROTATED: &str = "rotated-fixture-token";
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let _fixture = crate::network::allow_loopback_fixture(&listener);
         let address = listener.local_addr().unwrap();
         let base = format!("http://{address}");
         let url = format!("ws://{address}/api/websocket");
@@ -1581,7 +1600,6 @@ mod tests {
     fn network_change_drops_idle_websocket_immediately_and_reestablishes_on_next_request() {
         const TOKEN: &str = "fixture-token";
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let _fixture = crate::network::allow_loopback_fixture(&listener);
         let address = listener.local_addr().unwrap();
         let base = format!("http://{address}");
         let url = format!("ws://{address}/api/websocket");
@@ -1640,7 +1658,6 @@ mod tests {
     fn ping_pong_liveness_drops_dead_socket_when_pong_times_out() {
         const TOKEN: &str = "fixture-token";
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let _fixture = crate::network::allow_loopback_fixture(&listener);
         let address = listener.local_addr().unwrap();
         let url = format!("ws://{address}/api/websocket");
         let (closed_tx, closed_rx) = tokio::sync::oneshot::channel();
