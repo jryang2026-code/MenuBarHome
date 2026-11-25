@@ -17,7 +17,7 @@ import { SF_ICONS } from "./appConstants.js";
 import type { PendingHighRiskConfirmation } from "./appTypes.js";
 import { resolveTilePresentation, type PanelTheme } from "./panelTheme.js";
 import { renderLiquidGlassSlider } from "./liquidGlassSlider.js";
-import { hasPlottableSensorMetrics, renderSensorHistorySection, type SensorHistoryUiState } from "./sensorHistoryView.js";
+import { hasPlottableSensorMetrics, renderSensorHistorySection, renderSensorHoverSparklineLayer, type SensorHistoryUiState } from "./sensorHistoryView.js";
 import {
   deviceAdjustAriaLabel,
   deviceAdjustTooltip,
@@ -71,6 +71,9 @@ export {
       : "";
     const sensorRole = canExpand ? "button" : "group";
     const caret = canExpand ? `<i class="cc-mini-caret ${effectiveExpanded ? "is-open" : ""}" aria-hidden="true">${SF_ICONS.chevronDown}</i>` : "";
+    const sparklineLayer = !effectiveExpanded && dev.isOnline && !valuesAreStale
+      ? renderSensorHoverSparklineLayer(dev, facets, escapeHtml, compact)
+      : "";
     if (compact && !effectiveExpanded) {
       return `
         <div class="cc-tile cc-sensor is-compact is-action-${canExpand ? "adjustOnly" : "readOnly"} ${dev.isOnline ? "" : "is-offline"} ${motion}" data-action-layout="${canExpand ? "adjustOnly" : "readOnly"}" ${sensorAttr} ${attrs} role="${sensorRole}" aria-label="${escapeHtml(sensorAria)}">
@@ -85,6 +88,7 @@ export {
             ${hum !== null ? `<span class="cc-sensor-hum"><span class="cc-icon-inline" aria-hidden="true">${SF_ICONS.dropFill}</span> ${hum}%</span>` : ""}
           </div>
           <div class="cc-hum-bar"><span style="width:${hum ?? 0}%"></span></div>
+          ${sparklineLayer}
         </div>`;
     }
     const ring = hum !== null
@@ -108,6 +112,7 @@ export {
           </div>
           ${ring}
         </div>
+        ${sparklineLayer}
         ${effectiveExpanded && canExpand ? `<div class="cc-expander-grid"><div class="cc-expander-clip">${renderSensorHistorySection(dev, facets, escapeHtml, sensorHistoryUi)}</div></div>` : ""}
       </div>`;
   }
@@ -1684,6 +1689,7 @@ export function renderDeviceTile(dev: SmartDevice, state: DeviceTileViewState): 
           ${classicChevronHtml}
         </div>
         ${inlineSlider}
+        ${canPlotSensor && !isExpanded && dev.isOnline && staleClass === "" ? renderSensorHoverSparklineLayer(dev, facets, escape, isCapsule) : ""}
         ${
           isExpanded && hasDrawer
             ? renderDeviceDrawer(dev, escape, facets, state.allowAdvancedFacetWrites, state.pendingHighRisk, state.unsupportedLightEffects, state.speakerDrawerState, state.energyScope, state.cameraStillWall)
