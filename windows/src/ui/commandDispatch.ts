@@ -70,6 +70,7 @@ import type {
   SmartDevice,
 } from "../core/models.js";
 import { applyCommandToDevices } from "../core/commandEffects.js";
+import { GROUP_COVER_IGNORE_WINDOW_MS } from "../core/roomAutoGroup.js";
 import {
   applyHAExtendedCommandEffect,
   claimDeviceWrite,
@@ -346,6 +347,10 @@ export function submitSliderWrite(host: MenuMijiaWindowsApp, request: SliderWrit
   return slot.inFlight ? (slot.drainPromise ?? Promise.resolve()) : startSliderDrain(host, state, request.slotKey, slot, lan);
 }
 
+interface ApplyCommandOptions {
+  readonly roomGroupCover?: boolean;
+}
+
 const customApplyCommandByHost = new WeakMap<
   object,
   (command: DeviceCommand, readBackPower?: boolean) => Promise<boolean>
@@ -360,10 +365,15 @@ export function setCustomApplyCommand(
 
 export function getHostApplyCommand(
   host: MenuMijiaWindowsApp,
-): (command: DeviceCommand, readBackPower?: boolean, userInitiated?: boolean) => Promise<boolean> {
+): (
+  command: DeviceCommand,
+  readBackPower?: boolean,
+  userInitiated?: boolean,
+  options?: ApplyCommandOptions,
+) => Promise<boolean> {
   const custom = customApplyCommandByHost.get(host);
   if (!custom) {
-    return (command, readBackPower, userInitiated) => applyCommand(host, command, readBackPower, userInitiated);
+    return (command, readBackPower, userInitiated, options) => applyCommand(host, command, readBackPower, userInitiated, options);
   }
   return (command: DeviceCommand, readBackPower = false) => {
     const targetDeviceId = deviceOwningEntityId(
@@ -1047,7 +1057,7 @@ function restoreKindInPlace(target: SmartDevice, source: SmartDevice): void {
   }
 }
 
-function effectiveCommandBackend(
+export function effectiveCommandBackend(
   host: MenuMijiaWindowsApp,
   command: DeviceCommand,
 ): "demo" | "xiaomiCloud" | "homeAssistant" {
@@ -1061,6 +1071,7 @@ function effectiveCommandBackend(
 function beginCoverOptimisticWrite(
   host: MenuMijiaWindowsApp,
   command: DeviceCommand,
+  roomGroupCover: boolean,
 ): CoverOptimisticWrite | null {
   const device = coverDeviceForCommand(host, command);
   if (!device) return null;
@@ -1076,7 +1087,8 @@ function beginCoverOptimisticWrite(
     facets,
   );
   host.sourceEpoch.advance("localWrite");
-  lockOptimistic(host, device.id, COVER_OPTIMISTIC_LOCK_DURATION_MS, {
+  lockOptimistic(host, device.id, roomGroupCover ? GROUP_COVER_IGNORE_WINDOW_MS : COVER_OPTIMISTIC_LOCK_DURATION_MS, {
+    ignoreCoverMovement: roomGroupCover || undefined,
     writeEpoch: host.sourceEpoch.capture().pollCapturedEpoch,
     coverOriginPosition: originPosition,
     baselineDevice: priorDevice,
@@ -1122,6 +1134,7 @@ export async function applyCommand(
   command: DeviceCommand,
   readBackPower = false,
   userInitiated = true,
+  options?: ApplyCommandOptions,
 ): Promise<boolean> {
   const sourceRevision = host.sourceRevision;
   const homeRevision = host.homeRevision;
@@ -1194,7 +1207,8 @@ export async function applyCommand(
     return false;
   }
   const claim = targetDeviceId !== null ? claimDeviceWrite(host, targetDeviceId) : null;
-  const coverWrite = beginCoverOptimisticWrite(host, command);
+  const roomGroupCover = options?.roomGroupCover === true;
+  const coverWrite = beginCoverOptimisticWrite(host, command, roomGroupCover);
   const effectiveMode = effectiveCommandBackend(host, command);
 
   try {
@@ -1359,13 +1373,17 @@ export async function applyCommand(
     const after = JSON.stringify([dev.kind, facets[dev.id] ?? null]);
     if (prior && after !== prior.snapshot) {
       modifiedIds.add(dev.id);
+      const isGroupCover = roomGroupCover && coverWrite?.deviceId === dev.id;
+      const duration = isGroupCover ? GROUP_COVER_IGNORE_WINDOW_MS
+        : dev.kind.kind === "cover" ? COVER_OPTIMISTIC_LOCK_DURATION_MS : OPTIMISTIC_LOCK_DURATION_MS;
       lockOptimistic(
         host,
         dev.id,
-        dev.kind.kind === "cover" ? COVER_OPTIMISTIC_LOCK_DURATION_MS : OPTIMISTIC_LOCK_DURATION_MS,
+        duration,
         {
           writeEpoch,
           coverOriginPosition: prior.coverOrigin,
+          ignoreCoverMovement: isGroupCover || undefined,
           baselineDevice: prior.baselineDevice,
           baselineFacets: prior.baselineFacets,
         },

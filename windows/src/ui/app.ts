@@ -1761,7 +1761,7 @@ export class MenuMijiaWindowsApp {
     this.render();
   }
 
-  public get applyCommand(): (command: DeviceCommand, readBackPower?: boolean, userInitiated?: boolean) => Promise<boolean> {
+  public get applyCommand(): ReturnType<typeof getHostApplyCommand> {
     return getHostApplyCommand(this);
   }
 

@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
+import { describe, it, type TestContext } from "node:test";
 import { buildDiffPreview, requiresDiffPreview } from "../src/core/assistantDiffPreview.js";
 import { setLanguage } from "../src/core/i18n.js";
+import { makeMiAccount } from "../src/core/miAccountsStore.js";
 import type { DeviceCommand, DeviceIntent, SmartDevice } from "../src/core/models.js";
 import { lockOptimistic, mergeHomeSnapshotRespectingLocks } from "../src/core/optimisticLock.js";
 import {
@@ -9,7 +10,9 @@ import {
   circularHueMean,
   GROUP_COVER_IGNORE_WINDOW_MS,
 } from "../src/core/roomAutoGroup.js";
-import { cancelPendingDiffPreview, confirmPendingDiffPreview, executeRoomGroupAction } from "../src/ui/roomGroupActions.js";
+import { MenuMijiaWindowsApp } from "../src/ui/app.js";
+import { cancelPendingDiffPreview, confirmPendingDiffPreview, executeRoomGroupAction, visibleRoomAutoGroups } from "../src/ui/roomGroupActions.js";
+import { closeTestWindow, element, mountTestWindow } from "./uiHarness.js";
 
 function light(id: string, name: string, isOn: boolean, brightness: number, hueDegrees?: number, roomId = "living"): SmartDevice {
   return {
@@ -53,7 +56,12 @@ function plug(id: string, name: string, isOn: boolean, roomId = "living"): Smart
   };
 }
 
-function cover(id: string, positionPercent: number, motion: "stopped" | "opening" | "closing" = "stopped"): SmartDevice {
+function cover(
+  id: string,
+  positionPercent: number,
+  motion: "stopped" | "opening" | "closing" = "stopped",
+  subtype: "curtain" | "garage-door" = "curtain",
+): SmartDevice {
   return {
     id,
     name: id,
@@ -64,7 +72,7 @@ function cover(id: string, positionPercent: number, motion: "stopped" | "opening
     kind: {
       kind: "cover",
       entityId: `cover.${id}`,
-      subtype: "curtain",
+      subtype,
       positionPercent,
       positionWritable: true,
       openDescription: "open",
@@ -193,5 +201,104 @@ describe("Room group write gates & inline diff preview thresholds", () => {
     assert.ok(fakeHost.pendingRoomGroupConfirm !== null);
     assert.equal(fakeHost.pendingRoomGroupConfirm.riskyNames.length, 2);
     assert.equal(sent.length, 2);
+  });
+});
+
+describe("Room cover group execution", () => {
+  function setup(test: TestContext, devices: SmartDevice[]) {
+    const dom = mountTestWindow();
+    const app = new MenuMijiaWindowsApp(element<HTMLElement>("#app"));
+    test.after(async () => {
+      app.dispose();
+      await closeTestWindow(dom);
+    });
+    app.settings.connectionMode = "demo";
+    app.settings.interfaceLanguage = "zh-Hans";
+    app.settings.blockControlWhileLocked = false;
+    app.devices = devices;
+    app.selectRoom("living", "客厅");
+    const group = visibleRoomAutoGroups(app)[0];
+    assert.ok(group);
+    return { app, dom, group };
+  }
+
+  it("omits disabled covers from room groups and rejects a previously built capsule", async (test) => {
+    const devices = [cover("c1", 0), cover("c2", 0)];
+    const { app, group } = setup(test, devices);
+    assert.equal(app.setEnabledDeviceCategories(["light", "plug"]), true);
+    // Keep the previous rows to model the gap before the refreshed snapshot arrives.
+    app.devices = devices;
+    assert.deepEqual(visibleRoomAutoGroups(app), []);
+    const sent: DeviceCommand[] = [];
+    app.applyCommand = async (command) => { sent.push(command); return true; };
+
+    assert.equal(await executeRoomGroupAction(app, group, { kind: "toggle" }), false);
+    assert.deepEqual(sent, []);
+    assert.equal(app.lastUndoAction, null);
+  });
+
+  it("blocks Xiaomi cover writes when the Mi session has expired", async (test) => {
+    const { app } = setup(test, [cover("c1", 0), cover("c2", 0)]);
+    const session = { userId: "42", region: "cn", serviceToken: "t", ssecurity: "s", cUserId: "", passToken: "" };
+    const account = makeMiAccount(session);
+    app.settings.connectionMode = "xiaomiCloud";
+    app.settings.miSession = session;
+    app.miAccountsOverride = [account];
+    app.devices = app.devices.map((device) => ({ ...device, sourceBackend: "xiaomiCloud", accountId: account.id }));
+    const group = visibleRoomAutoGroups(app)[0];
+    assert.ok(group);
+
+    const sent: DeviceCommand[] = [];
+    app.applyCommand = async (command) => { sent.push(command); return true; };
+    app.miSessionExpired = true;
+
+    assert.equal(await executeRoomGroupAction(app, group, { kind: "toggle" }), false);
+    assert.deepEqual(sent, []);
+    assert.match(app.replyBanner?.text ?? "", /米家登录已过期/);
+    assert.equal(app.lastUndoAction, null);
+  });
+
+  it("rechecks workstation lock after confirmation before issuing the first cover write", async (test) => {
+    const devices = [cover("garage1", 0, "stopped", "garage-door"), cover("garage2", 0, "stopped", "garage-door")];
+    const { app, dom, group } = setup(test, devices);
+    app.settings.blockControlWhileLocked = true;
+    let lockAfterCheck = false;
+    let locked = false;
+    Object.defineProperty(dom, "__TAURI_INTERNALS__", {
+      value: {
+        invoke: async (command: string) => {
+          if (command !== "is_workstation_locked") return undefined;
+          const sampled = locked;
+          if (lockAfterCheck) locked = true;
+          return sampled;
+        },
+      },
+    });
+    const sent: DeviceCommand[] = [];
+    app.applyCommand = async (command) => { sent.push(command); return true; };
+
+    assert.equal(await executeRoomGroupAction(app, group, { kind: "toggle" }), false);
+    assert.ok(app.pendingRoomGroupConfirm);
+    lockAfterCheck = true;
+    assert.equal(await executeRoomGroupAction(app, group, { kind: "toggle" }, true), false);
+    assert.deepEqual(sent, []);
+    assert.equal(app.pendingRoomGroupConfirm, null);
+    assert.match(app.replyBanner?.text ?? "", /屏幕已锁定/);
+  });
+
+  it("holds a successful cover write through intermediate reports and saves its previous position for undo", async (test) => {
+    const { app, group } = setup(test, [cover("c1", 80), cover("c2", 60)]);
+    assert.equal(await executeRoomGroupAction(app, group, { kind: "toggle" }), true);
+    assert.deepEqual(app.lastUndoAction?.steps, [
+      { deviceId: "c1", commands: [{ kind: "setNumberValue", entityId: "cover.c1", value: 80 }] },
+      { deviceId: "c2", commands: [{ kind: "setNumberValue", entityId: "cover.c2", value: 60 }] },
+    ]);
+    const mid = mergeHomeSnapshotRespectingLocks(
+      app,
+      [cover("c1", 40, "closing"), cover("c2", 30, "closing")],
+      undefined,
+      Date.now() + 30_000,
+    ).devices;
+    assert.deepEqual(mid.map((device) => device.kind.kind === "cover" && device.kind.positionPercent), [0, 0]);
   });
 });

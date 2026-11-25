@@ -274,6 +274,7 @@ export function snapshotOptimisticLock(
   return {
     expiresAtMs: entry.expiresAtMs,
     coverOriginPosition: entry.coverOriginPosition,
+    ...(entry.ignoreCoverMovement ? { ignoreCoverMovement: true } : {}),
     dirtyFields: [...entry.dirtyFields],
     dirtyFacetIds: [...entry.dirtyFacetIds],
   };
@@ -297,6 +298,7 @@ export function restoreOptimisticLock(
     expiresAtMs: snapshot.expiresAtMs,
     revision: state.revisions.get(deviceId) ?? 0,
     coverOriginPosition: snapshot.coverOriginPosition,
+    ignoreCoverMovement: snapshot.ignoreCoverMovement,
     dirtyFields: new Set(snapshot.dirtyFields),
     dirtyFacetIds: new Set(snapshot.dirtyFacetIds),
   });

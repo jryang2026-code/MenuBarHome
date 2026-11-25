@@ -1,11 +1,12 @@
 import { ManualControlPolicy } from "../core/assistant.js";
-import { t } from "../core/i18n.js";
+import { t, tr3 } from "../core/i18n.js";
 import { evaluateDeviceEntityWriteGate, evaluateIntentsWriteGate } from "../core/miAccountControl.js";
 import type { DeviceCommand, DeviceIntent, SmartDevice } from "../core/models.js";
-import { lockOptimistic } from "../core/optimisticLock.js";
-import { buildRoomAutoGroups, GROUP_COVER_IGNORE_WINDOW_MS, type RoomAutoGroup } from "../core/roomAutoGroup.js";
+import { buildRoomAutoGroups, type RoomAutoGroup } from "../core/roomAutoGroup.js";
 import type { MenuMijiaWindowsApp } from "./app.js";
+import type { UndoStep } from "./appTypes.js";
 import { buildHostCapabilityContext, isDualSourceEnabled } from "./cloudRefresh.js";
+import { effectiveCommandBackend } from "./commandDispatch.js";
 import { withAliases } from "./panelPrefs.js";
 import { isWorkstationLockBlockingControl } from "./transport.js";
 
@@ -16,23 +17,28 @@ export interface PendingRoomGroupConfirm {
   readonly sourceRevision: number;
 }
 
+function roomGroupWriteGate(
+  host: MenuMijiaWindowsApp,
+  device: SmartDevice,
+  context = buildHostCapabilityContext(host),
+): string | null {
+  return evaluateDeviceEntityWriteGate({
+    targetKind: "device",
+    targetIdOrEntityId: device.id,
+    resolvedActiveDeviceId: device.id,
+    context,
+    languagePreference: host.settings.interfaceLanguage,
+  });
+}
+
 export function visibleRoomAutoGroups(host: MenuMijiaWindowsApp): RoomAutoGroup[] {
-  if (host.listCut.kind !== "room" || host.isEditingLayout || host.panelSearch.query.trim()) return [];
-  const aliased = withAliases(host.layout, host.devices);
-  const checkGate = host.settings.connectionMode !== "demo" || isDualSourceEnabled(host);
-  const ctx = checkGate ? buildHostCapabilityContext(host) : null;
-  const eligible = checkGate && ctx
-    ? aliased.filter((d) =>
-        evaluateDeviceEntityWriteGate({
-          targetKind: "device",
-          targetIdOrEntityId: d.id,
-          resolvedActiveDeviceId: d.id,
-          context: ctx,
-          languagePreference: host.settings.interfaceLanguage,
-        }) === null,
-      )
-    : aliased;
-  return buildRoomAutoGroups(host.listCut.roomId, host.listCut.roomName, eligible);
+  const cut = host.listCut;
+  if (cut.kind !== "room" || host.isEditingLayout || host.panelSearch.query.trim()) return [];
+  const context = buildHostCapabilityContext(host);
+  const eligible = withAliases(host.layout, host.devices).filter((device) =>
+    device.roomId === cut.roomId && roomGroupWriteGate(host, device, context) === null,
+  );
+  return buildRoomAutoGroups(cut.roomId, cut.roomName, eligible);
 }
 
 export function renderRoomAutoGroupBar(host: MenuMijiaWindowsApp): string {
@@ -131,15 +137,24 @@ export async function executeRoomGroupAction(
   action: { readonly kind: "toggle" } | { readonly kind: "brightness"; readonly percent: number },
   confirmedHighRisk = false,
 ): Promise<boolean> {
-  if (await isWorkstationLockBlockingControl(host)) {
-    host.replyBanner = { text: t("屏幕已锁定，已阻止控制操作"), source: t("控制失败"), isError: true };
+  const sourceRevision = host.sourceRevision;
+  const homeRevision = host.homeRevision;
+  const contextChanged = () => sourceRevision !== host.sourceRevision || homeRevision !== host.homeRevision;
+  const lockedMessage = t("屏幕已锁定，已阻止控制操作");
+  const staleMessage = t("设备列表已更新，请重新执行");
+  const fail = (text: string) => {
+    host.replyBanner = { text, source: t("控制失败"), isError: true };
     host.render();
     return false;
-  }
+  };
+
+  host.pendingRoomGroupConfirm = null;
+  if (await isWorkstationLockBlockingControl(host)) return fail(lockedMessage);
+  if (contextChanged()) return false;
   const aliased = withAliases(host.layout, host.devices);
   const byId = new Map<string, SmartDevice>(aliased.map((d) => [d.id, d]));
   const members = group.deviceIds.map((id) => byId.get(id)).filter((d): d is SmartDevice => Boolean(d?.isOnline));
-  if (members.length === 0) return false;
+  if (members.length === 0) return fail(staleMessage);
 
   const targetOn = action.kind === "toggle" ? !group.isAnyOn : true;
   const clampedBrightness = action.kind === "brightness" ? Math.max(1, Math.min(100, Math.round(action.percent))) : null;
@@ -156,32 +171,20 @@ export async function executeRoomGroupAction(
     }
   }
 
-  if (host.settings.connectionMode !== "demo" || isDualSourceEnabled(host)) {
-    if (intents.length > 0) {
-      const gateMsg = evaluateIntentsWriteGate({
-        intents,
-        context: buildHostCapabilityContext(host),
-        languagePreference: host.settings.interfaceLanguage,
-      });
-      if (gateMsg !== null) {
-        host.replyBanner = { text: gateMsg, source: t("控制失败"), isError: true };
-        host.render();
-        return false;
-      }
-    }
+  if (intents.length > 0 && (host.settings.connectionMode !== "demo" || isDualSourceEnabled(host))) {
+    const gateMsg = evaluateIntentsWriteGate({
+      intents,
+      context: buildHostCapabilityContext(host),
+      languagePreference: host.settings.interfaceLanguage,
+    });
+    if (gateMsg !== null) return fail(gateMsg);
+  }
+
+  if (coverTargets.length > 0) {
+    const context = buildHostCapabilityContext(host);
     for (const cover of coverTargets) {
-      const gateMsg = evaluateDeviceEntityWriteGate({
-        targetKind: "device",
-        targetIdOrEntityId: cover.id,
-        resolvedActiveDeviceId: cover.id,
-        context: buildHostCapabilityContext(host),
-        languagePreference: host.settings.interfaceLanguage,
-      });
-      if (gateMsg !== null) {
-        host.replyBanner = { text: gateMsg, source: t("控制失败"), isError: true };
-        host.render();
-        return false;
-      }
+      const gateMsg = roomGroupWriteGate(host, cover, context);
+      if (gateMsg !== null) return fail(gateMsg);
     }
   }
 
@@ -203,7 +206,6 @@ export async function executeRoomGroupAction(
     host.render();
     return false;
   }
-  host.pendingRoomGroupConfirm = null;
 
   const title = action.kind === "brightness" && clampedBrightness !== null
     ? `${group.label} ${clampedBrightness}%`
@@ -211,33 +213,56 @@ export async function executeRoomGroupAction(
 
   if (coverTargets.length > 0) {
     const targetPos = targetOn ? 100 : 0;
-    const undoSteps: { deviceId: string; commands: DeviceCommand[] }[] = [];
+    const undoSteps: UndoStep[] = [];
+    let failure: string | null = null;
     for (const cover of coverTargets) {
       if (cover.kind.kind !== "cover") continue;
-      const prevPos = cover.kind.positionPercent;
-      const cmd: DeviceCommand | null = cover.kind.positionWritable
-        ? { kind: "setNumberValue", entityId: cover.kind.entityId, value: targetPos }
-        : (targetOn ? cover.kind.openDescription : cover.kind.closeDescription)
-          ? { kind: "setSelectOption", entityId: cover.kind.entityId, option: (targetOn ? cover.kind.openDescription : cover.kind.closeDescription)! }
-          : null;
-      if (!cmd) continue;
-      const liveDev = host.devices.find((d) => d.id === cover.id);
-      if (liveDev && liveDev.kind.kind === "cover") {
-        liveDev.kind.positionPercent = targetPos;
-        liveDev.kind.motion = targetOn ? "opening" : "closing";
+      const locked = await isWorkstationLockBlockingControl(host);
+      if (contextChanged()) return false;
+      if (locked) {
+        failure = lockedMessage;
+        break;
       }
-      lockOptimistic(host, cover.id, GROUP_COVER_IGNORE_WINDOW_MS, {
-        coverOriginPosition: prevPos,
-        ignoreCoverMovement: true,
-      });
-      await host.applyCommand(cmd);
-      if (cover.kind.positionWritable && prevPos !== null) {
-        undoSteps.push({ deviceId: cover.id, commands: [{ kind: "setNumberValue", entityId: cover.kind.entityId, value: prevPos }] });
+      const live = host.devices.find((device) => device.id === cover.id);
+      if (!live?.isOnline || live.roomId !== group.roomId || live.kind.kind !== "cover" ||
+          live.kind.entityId !== cover.kind.entityId || live.kind.subtype !== cover.kind.subtype) {
+        failure = staleMessage;
+        continue;
+      }
+      const gateMsg = roomGroupWriteGate(host, live);
+      if (gateMsg !== null) {
+        failure = gateMsg;
+        continue;
+      }
+      const { positionPercent, positionWritable, entityId, openDescription, closeDescription } = live.kind;
+      const option = targetOn ? openDescription : closeDescription;
+      const command: DeviceCommand | null = positionWritable
+        ? { kind: "setNumberValue", entityId, value: targetPos }
+        : option ? { kind: "setSelectOption", entityId, option } : null;
+      if (!command) {
+        failure = staleMessage;
+        continue;
+      }
+      if (host.miSessionExpired && effectiveCommandBackend(host, command) === "xiaomiCloud") {
+        failure = tr3("米家登录已过期，请先重新扫码登录", "米家登入已過期，請先重新掃碼登入", "Xiaomi Home session expired. Please sign in again.", undefined, host.settings.interfaceLanguage);
+        continue;
+      }
+      const previousBanner = host.replyBanner;
+      const ok = await host.applyCommand(command, false, true, { roomGroupCover: true });
+      if (contextChanged()) return false;
+      if (!ok) {
+        failure = host.replyBanner !== previousBanner && host.replyBanner?.isError
+          ? host.replyBanner.text : t("设备未响应");
+        continue;
+      }
+      if (positionWritable && positionPercent !== null) {
+        undoSteps.push({ deviceId: live.id, commands: [{ kind: "setNumberValue", entityId, value: positionPercent }] });
       }
     }
     if (undoSteps.length > 0) {
       host.lastUndoAction = { summary: title, steps: undoSteps, expiresAtMs: Date.now() + 10_000 };
     }
+    if (failure !== null) return fail(failure);
     host.replyBanner = { text: title, source: t("房间群控") };
     host.render();
     return true;
