@@ -516,11 +516,10 @@ function clearRevokedCredentialInputs(root: HTMLElement): void {
  * falls back to the app default preset. Other providers' key slots and bindings stay.
  */
 export async function removeActiveAssistantProvider(host: SettingsEventsHost): Promise<void> {
-  // Removal targets what the form currently shows: the active preset pill, which the pill
-  // clicks and the URL input keep in sync. The URL draft alone is ambiguous — an empty
+  // Removal targets what the form currently shows: the provider picker, which its own
+  // changes and the URL input keep in sync. The URL draft alone is ambiguous — an empty
   // custom draft must mean "remove Custom", not fall back to the saved provider.
-  const activePill = host.root.querySelector<HTMLElement>("[data-ai-preset].is-active");
-  const selectedPresetId = activePill?.dataset.aiPreset;
+  const selectedPresetId = host.root.querySelector<HTMLSelectElement>("#settings-ai-provider")?.value || undefined;
   const baseEl = host.root.querySelector<HTMLInputElement>("#settings-base-url");
   const draftBase = (baseEl?.value ?? "").trim();
   const presetId =
@@ -855,9 +854,8 @@ function commitSettingsSave(host: SettingsEventsHost): void {
     });
   }
 
-  const isCustomPillActive = Boolean(
-    host.root.querySelector<HTMLElement>('[data-ai-preset="custom"].is-active'),
-  );
+  const isCustomPillActive =
+    host.root.querySelector<HTMLSelectElement>("#settings-ai-provider")?.value === "custom";
   const rawBaseTrimmed = baseEl ? baseEl.value.trim() : host.settings.assistantBaseURL.trim();
   const skipBlankCustomSave = isCustomPillActive && rawBaseTrimmed === "";
 
@@ -1545,42 +1543,41 @@ export function bindSettingsEvents(host: SettingsEventsHost): void {
     host.render();
   });
 
-  host.root.querySelectorAll<HTMLElement>("[data-ai-preset]").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const presetId = btn.dataset.aiPreset;
-      const preset = ASSISTANT_PROVIDER_PRESETS.find((p) => p.id === presetId);
-      if (!preset) return;
-      const baseEl = host.root.querySelector<HTMLInputElement>("#settings-base-url");
-      const modelEl = host.root.querySelector<HTMLInputElement>("#settings-model");
-      const apiKeyEl = host.root.querySelector<HTMLInputElement>("#settings-api-key");
-      const prevPreset = inferAssistantPreset(baseEl?.value ?? host.settings.assistantBaseURL);
+  const providerSelect = host.root.querySelector<HTMLSelectElement>("#settings-ai-provider");
+  providerSelect?.addEventListener("change", () => {
+    const presetId = providerSelect.value;
+    const preset = ASSISTANT_PROVIDER_PRESETS.find((p) => p.id === presetId);
+    if (!preset) return;
+    const baseEl = host.root.querySelector<HTMLInputElement>("#settings-base-url");
+    const modelEl = host.root.querySelector<HTMLInputElement>("#settings-model");
+    const apiKeyEl = host.root.querySelector<HTMLInputElement>("#settings-api-key");
+    const prevPreset = inferAssistantPreset(baseEl?.value ?? host.settings.assistantBaseURL);
 
-      if (preset.id === "custom") {
-        if (baseEl) baseEl.value = "";
-        if (
-          modelEl &&
-          (modelEl.value === prevPreset.defaultModel || ModelIntentResolver.isSystemOneModel(modelEl.value))
-        ) {
-          modelEl.value = "gpt-4o-mini";
-        }
-        if (apiKeyEl) {
-          apiKeyEl.placeholder = preset.keyPlaceholder;
-          apiKeyEl.value = "";
-        }
-      } else {
-        if (baseEl) baseEl.value = preset.defaultBaseURL;
-        if (modelEl) modelEl.value = preset.defaultModel;
-        if (apiKeyEl) {
-          apiKeyEl.placeholder = preset.keyPlaceholder;
-          host.syncKeyFieldWithEndpoint(apiKeyEl, preset.defaultBaseURL);
-        }
+    if (preset.id === "custom") {
+      if (baseEl) baseEl.value = "";
+      if (
+        modelEl &&
+        (modelEl.value === prevPreset.defaultModel || ModelIntentResolver.isSystemOneModel(modelEl.value))
+      ) {
+        modelEl.value = "gpt-4o-mini";
       }
+      if (apiKeyEl) {
+        apiKeyEl.placeholder = preset.keyPlaceholder;
+        apiKeyEl.value = "";
+      }
+      // Custom needs 服务地址 and 模型, which live under 高级.
+      const advanced = host.root.querySelector<HTMLDetailsElement>('details[data-conn-section="assistantAdvanced"]');
+      if (advanced) advanced.open = true;
+    } else {
+      if (baseEl) baseEl.value = preset.defaultBaseURL;
+      if (modelEl) modelEl.value = preset.defaultModel;
+      if (apiKeyEl) {
+        apiKeyEl.placeholder = preset.keyPlaceholder;
+        host.syncKeyFieldWithEndpoint(apiKeyEl, preset.defaultBaseURL);
+      }
+    }
 
-      host.root.querySelectorAll<HTMLElement>("[data-ai-preset]").forEach((el) => {
-        el.classList.toggle("is-active", el.dataset.aiPreset === preset.id);
-      });
-      syncSettingsSaveHint(host, "draft");
-    });
+    syncSettingsSaveHint(host, "draft");
   });
 
   const removeProviderBtn = host.root.querySelector<HTMLButtonElement>("#btn-remove-ai-provider");
@@ -1595,14 +1592,14 @@ export function bindSettingsEvents(host: SettingsEventsHost): void {
         disarmTimer = window.setTimeout(() => {
           armed = false;
           disarmTimer = undefined;
-          if (removeProviderBtn.isConnected) removeProviderBtn.textContent = t("移除此服务商的本机配置与密钥");
+          if (removeProviderBtn.isConnected) removeProviderBtn.textContent = t("移除此服务商");
         }, 4000);
         return;
       }
       clearTimeout(disarmTimer);
       disarmTimer = undefined;
       armed = false;
-      removeProviderBtn.textContent = t("移除此服务商的本机配置与密钥");
+      removeProviderBtn.textContent = t("移除此服务商");
       void removeActiveAssistantProvider(host);
     });
   }
@@ -1611,9 +1608,8 @@ export function bindSettingsEvents(host: SettingsEventsHost): void {
     const apiKeyEl = host.root.querySelector<HTMLInputElement>("#settings-api-key");
     const target = event.target as HTMLInputElement;
     const inferred = inferAssistantPreset(target.value);
-    host.root.querySelectorAll<HTMLElement>("[data-ai-preset]").forEach((el) => {
-      el.classList.toggle("is-active", el.dataset.aiPreset === inferred.id);
-    });
+    const providerEl = host.root.querySelector<HTMLSelectElement>("#settings-ai-provider");
+    if (providerEl) providerEl.value = inferred.id;
     if (apiKeyEl) {
       apiKeyEl.placeholder = inferred.keyPlaceholder;
       host.syncKeyFieldWithEndpoint(apiKeyEl, target.value);

@@ -907,9 +907,9 @@ export function renderAutomationAndSafetySettingsSections(ctx: SettingsViewConte
       ? `<p class="cc-field-hint" id="settings-auto-rules-empty" style="margin: 4px 0 8px 0;">${esc(
           uiText(
             lang,
-            "暂未创建自动化规则。可在下方选择锁屏离开、解锁回来、电源或外接显示器变化、休眠与息屏、深夜用机、定时或传感器条件快速添加。",
-            "暫未建立自動化規則。可在下方選擇鎖屏離開、解鎖回來、電源或外接顯示器變化、休眠與息屏、深夜用機、定時或感測器條件快速新增。",
-            "No automation rules yet. Add rules below for lock/away, unlock/back, power or external display changes, sleep and display off, late-night PC use, schedules, or sensor triggers.",
+            "暂无自动化规则",
+            "暫無自動化規則",
+            "No automation rules yet",
           ),
         )}</p>`
       : `<div id="settings-auto-rules-list" class="cc-timers-stack" style="margin: 6px 0 8px 0;">
@@ -947,14 +947,14 @@ export function renderAutomationAndSafetySettingsSections(ctx: SettingsViewConte
                 <details class="cc-field-hint">
                   <summary>${esc(uiText(lang, "最近运行", "最近執行", "Recent runs"))}</summary>
                   ${runRows ? `<ul>${runRows}</ul>` : esc(uiText(lang, "暂无运行记录", "暫無執行記錄", "No runs yet"))}
+                  <select data-auto-rule-mode="${esc(rule.id)}" aria-label="${esc(modeLabel)}">
+                    <option value="single">${esc(uiText(lang, "单次运行", "單次執行", "Single"))}</option>
+                    <option value="restart" ${rule.mode === "restart" ? "selected" : ""}>${esc(uiText(lang, "重新开始", "重新開始", "Restart"))}</option>
+                  </select>
                 </details>
               </div>
             </div>
             <div style="display: flex; align-items: center; gap: 6px; margin-left: auto;">
-              <select data-auto-rule-mode="${esc(rule.id)}" aria-label="${esc(modeLabel)}">
-                <option value="single">${esc(uiText(lang, "单次运行", "單次執行", "Single"))}</option>
-                <option value="restart" ${rule.mode === "restart" ? "selected" : ""}>${esc(uiText(lang, "重新开始", "重新開始", "Restart"))}</option>
-              </select>
               <input type="checkbox" data-auto-rule-toggle="${esc(rule.id)}" aria-label="${esc(uiText(lang, "启用规则", "啟用規則", "Enable rule"))}" ${rule.isEnabled ? "checked" : ""} />
               <button type="button" class="cc-btn-secondary" data-auto-rule-run="${esc(rule.id)}" ${isEventAutomationEnabled(ctx.settings) ? "" : "disabled"}>${esc(uiText(lang, "立即试运行", "立即試運行", "Run Now"))}</button>
               <button type="button" class="cc-btn-secondary" data-auto-rule-delete="${esc(rule.id)}">${esc(uiText(lang, "删除", "刪除", "Delete"))}</button>
@@ -1052,19 +1052,16 @@ export function renderAutomationAndSafetySettingsSections(ctx: SettingsViewConte
   return `
     <div class="cc-field" data-settings-anchor="automationRules" id="settings-automation-section">
       <div class="cc-field-row">
-        <label for="settings-event-automation-enabled">${esc(uiText(lang, "运行电脑状态自动化", "執行電腦狀態自動化", "Run PC Context Automation"))}</label>
-        <input id="settings-event-automation-enabled" type="checkbox" aria-describedby="settings-event-automation-hint" ${isEventAutomationEnabled(ctx.settings) ? "checked" : ""} />
+        <label for="settings-event-automation-enabled">${esc(uiText(lang, "运行自动化规则", "執行自動化規則", "Run Automation Rules"))}</label>
+        <input id="settings-event-automation-enabled" type="checkbox" ${isEventAutomationEnabled(ctx.settings) ? "checked" : ""} />
       </div>
-      <p class="cc-field-hint" id="settings-event-automation-hint">${esc(uiText(lang, "关闭后保留规则。重新开启时，目标不可用的规则会暂停。", "關閉後保留規則。重新開啟時，目標無法使用的規則會暫停。", "Turning this off preserves rules. Rules with unavailable targets are paused when you turn it back on."))}</p>
-      <div class="cc-field-row">
-        <label>${esc(uiText(lang, "本机状态自动化规则", "本機狀態自動化規則", "PC Context Automation Rules"))}</label>
+      <div class="cc-field-row" style="justify-content: flex-end;">
         <button type="button" class="cc-btn-secondary" id="btn-toggle-auto-form">${esc(
           draft.formOpen
             ? uiText(lang, "＋ 新建自动化规则", "＋ 新增自動化規則", "+ New Automation Rule")
             : uiText(lang, "＋ 展开新建规则", "＋ 展開新增規則", "+ Expand Rule Builder"),
         )}</button>
       </div>
-      <p class="cc-field-hint">${esc(uiText(lang, "根据电脑锁屏离开、解锁回来、深夜用机、定时或传感器状态自动控制当前家庭设备。", "根據電腦鎖屏離開、解鎖回來、深夜用機、定時或感測器狀態自動控制目前家庭設備。", "Run home actions automatically on PC lock/away, unlock/back, late-night usage, schedules, or sensor triggers."))}</p>
       ${highRiskConfirmHtml}
       ${rulesHtml}
       ${recentRunsHtml}
@@ -1074,9 +1071,6 @@ export function renderAutomationAndSafetySettingsSections(ctx: SettingsViewConte
           <label for="settings-auto-trigger">${esc(uiText(lang, "当本机发生", "當本機發生", "When PC / Sensor"))}</label>
           <select id="settings-auto-trigger" class="cc-select">${triggerOptionsHtml}</select>
         </div>
-        <p class="cc-field-hint" id="settings-auto-trigger-system-hint" style="margin: 2px 0 0 0;">${esc(
-          t("电源与显示器变化每 10 秒采样一次；休眠与息屏由系统电源通知即时推送，台式机没有电池，不会触发低电量规则。"),
-        )}</p>
         ${renderTriggerOptionsEditor(draft, aliasedDevices, lang, esc)}
         <div class="cc-field-row" style="margin-top: 8px; gap: 8px;">
           <label for="settings-auto-wifi-kind">${esc(uiText(lang, "Wi-Fi 附加条件", "Wi-Fi 附加條件", "Wi-Fi condition"))}</label>
@@ -1157,7 +1151,6 @@ export function renderAutomationAndSafetySettingsSections(ctx: SettingsViewConte
         <label for="settings-safety-master">${esc(uiText(lang, "主动安全守护与低电量提醒", "主動安全守護與低電量提醒", "Active Safety Guard & Low Battery Alerts"))}</label>
         <input id="settings-safety-master" type="checkbox" ${safetyPrefs.enableSafetyAlerts ? "checked" : ""} />
       </div>
-      <p class="cc-field-hint">${esc(uiText(lang, "监测大功率用电器长开、空调取暖连续运行、置顶常用设备掉线与电池低电量，并在面板顶部提供一键关闭。", "監測大功率電器長開、空調取暖連續運作、置頂常用設備斷線與電池低電量，並在面板頂部提供一鍵關閉。", "Watch for long-running high-wattage plugs, 4h climate/heaters, pinned device outages, and batteries below 15%."))}</p>
       <div class="cc-timers-stack" style="margin-top: 6px;">
         <label class="cc-checkbox"><input id="settings-safety-plug" type="checkbox" ${safetyPrefs.longRunningPlug ? "checked" : ""} ${safetyPrefs.enableSafetyAlerts ? "" : "disabled"} /><span>${esc(uiText(lang, "大功率插座长开提醒（>300W 连续 45 分钟）", "大功率插座長開提醒（>300W 連續 45 分鐘）", "High-power plug running >45 min (>300W)"))}</span></label>
         <label class="cc-checkbox"><input id="settings-safety-climate" type="checkbox" ${safetyPrefs.longRunningClimate ? "checked" : ""} ${safetyPrefs.enableSafetyAlerts ? "" : "disabled"} /><span>${esc(uiText(lang, "温控与取暖设备长开提醒（连续运行 4 小时）", "溫控與取暖設備長開提醒（連續運作 4 小時）", "Climate & heater running >4 hours"))}</span></label>
@@ -1168,7 +1161,6 @@ export function renderAutomationAndSafetySettingsSections(ctx: SettingsViewConte
 
     <div class="cc-field" data-settings-anchor="sensorAlerts" id="settings-sensor-alerts-section">
       <label>${esc(uiText(lang, "安防传感器告警", "安防感測器告警", "Security Sensor Alerts"))}</label>
-      <p class="cc-field-hint">${esc(uiText(lang, "监测烟感、燃气、水浸、门窗、人体移动、震动与门锁异常边沿变化；烟雾/燃气/水浸在首次采样异常时立即告警。", "監測煙感、燃氣、水浸、門窗、人體移動、震動與門鎖異常邊沿變化；煙霧/燃氣/水浸在首次取樣異常時立即告警。", "Edge-triggered alerts for smoke, gas, water leak, contact, motion, vibration, and door lock anomalies."))}</p>
       <div class="cc-timers-stack" style="margin-top: 6px;">${sensorAlertTogglesHtml}</div>
       <div class="cc-field-row" style="margin-top: 8px;">
         <label for="settings-sensor-only-away">${esc(uiText(lang, "门窗、移动与震动仅在离开或锁屏时提醒", "門窗、移動與震動僅在離開或鎖屏時提醒", "Notify door/motion/vibration only when away or locked"))}</label>
@@ -1183,14 +1175,16 @@ export function renderAutomationAndSafetySettingsSections(ctx: SettingsViewConte
         <input id="settings-doorbell-auto-popup" type="checkbox" ${safetyPrefs.doorbellAutoPopup ? "checked" : ""} />
       </div>
       <div class="cc-field-row" style="margin-top: 6px;">
-        <label for="settings-doorbell-chime">${esc(uiText(lang, "响铃时播放桌面提示音（锁屏时静音）", "響鈴時播放桌面提示音（鎖屏時靜音）", "Play chime on doorbell ring (muted while locked)"))}</label>
+        <label for="settings-doorbell-chime">${esc(uiText(lang, "门铃响时播放提示音", "門鈴響時播放提示音", "Play a chime when the doorbell rings"))}</label>
         <input id="settings-doorbell-chime" type="checkbox" ${safetyPrefs.doorbellChime ? "checked" : ""} />
       </div>
-      <div class="cc-field-row" style="margin-top: 6px; gap: 8px;">
-        <label for="settings-doorbell-seconds">${esc(uiText(lang, "无交互自动收起秒数", "無互動自動收起秒數", "Auto-close after inactivity"))}</label>
-        <select id="settings-doorbell-seconds" class="cc-select" style="width: auto;" ${safetyPrefs.doorbellAutoPopup ? "" : "disabled"}>${doorbellSecOptionsHtml}</select>
-      </div>
-      <p class="cc-field-hint">${esc(uiText(lang, "锁屏或正在手动查看摄像头画面时不抢占窗口；点击弹窗后自动取消倒计时并保持常驻。", "鎖屏或正在手動查看攝影機畫面時不搶佔視窗；點擊彈窗後自動取消倒數並保持常駐。", "Never interrupts locked screens or active manual camera views; any interaction keeps the view open."))}</p>
+      <details class="cc-conn-secondary" data-conn-section="doorbellAdvanced">
+        <summary class="cc-conn-secondary-summary">${esc(uiText(lang, "高级", "進階", "Advanced"))}</summary>
+        <div class="cc-field-row" style="margin-top: 6px; gap: 8px;">
+          <label for="settings-doorbell-seconds">${esc(uiText(lang, "门铃画面自动收起", "門鈴畫面自動收起", "Auto-close doorbell view"))}</label>
+          <select id="settings-doorbell-seconds" class="cc-select" style="width: auto;" ${safetyPrefs.doorbellAutoPopup ? "" : "disabled"}>${doorbellSecOptionsHtml}</select>
+        </div>
+      </details>
     </div>
 
     <div class="cc-field" data-settings-anchor="weeklyReport" id="settings-weekly-report-section">
@@ -1198,9 +1192,8 @@ export function renderAutomationAndSafetySettingsSections(ctx: SettingsViewConte
         <label for="settings-weekly-report-enabled">${esc(uiText(lang, "每周日家庭健康周报", "每週日家庭健康週報", "Weekly Home Health Report (Sundays)"))}</label>
         <input id="settings-weekly-report-enabled" type="checkbox" ${safetyPrefs.enableWeeklyHealthReport ? "checked" : ""} />
       </div>
-      <p class="cc-field-hint">${esc(uiText(lang, "每周日 20:00 汇总全屋用电变化、房间温湿度越界、插座待机耗电、滤芯与电池寿命及设备掉线诊断。", "每週日 20:00 彙整全屋用電變化、房間溫濕度越界、插座待機耗電、濾芯與電池壽命及設備斷線診斷。", "Every Sunday at 20:00, summarizes weekly energy trends, room climate, standby power, filter/battery life, and offline diagnostics."))}</p>
       <div class="cc-update-row" style="margin-top: 8px; gap: 6px; flex-wrap: wrap;">
-        <button type="button" class="cc-btn-secondary" id="btn-generate-copy-health-report">${esc(uiText(lang, "生成 / 复制 Markdown 健康周报", "產生 / 複製 Markdown 健康週報", "Generate & Copy Markdown Health Report"))}</button>
+        <button type="button" class="cc-btn-secondary" id="btn-generate-copy-health-report">${esc(uiText(lang, "导出本周周报", "匯出本週週報", "Export This Week's Report"))}</button>
         ${previewMarkdown !== null ? `<button type="button" class="cc-btn-secondary" id="btn-clear-health-report-preview">${esc(uiText(lang, "收起预览", "收起預覽", "Hide Preview"))}</button>` : ""}
       </div>
       ${

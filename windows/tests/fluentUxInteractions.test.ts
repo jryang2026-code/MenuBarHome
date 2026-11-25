@@ -401,7 +401,9 @@ describe("Fluent UX & Interaction Holistic Contract", () => {
     const miActiveCard = updatedConnPanel.querySelector<HTMLElement>(".cc-conn-card.is-active-mode");
     assert.ok(miActiveCard);
     assert.equal(miActiveCard.dataset.connSection, "xiaomiCloud");
-    const haSecondaryDetails = updatedConnPanel.querySelector<HTMLDetailsElement>("details.cc-conn-secondary");
+    const haSecondaryDetails = updatedConnPanel.querySelector<HTMLDetailsElement>(
+      'details.cc-conn-secondary[data-conn-section="homeAssistant"]',
+    );
     assert.ok(haSecondaryDetails);
     assert.equal(haSecondaryDetails.dataset.connSection, "homeAssistant");
     assert.equal(haSecondaryDetails.open, false);

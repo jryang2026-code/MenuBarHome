@@ -22,6 +22,13 @@ async function click(selector: string): Promise<void> {
   await setImmediate();
 }
 
+async function pickProvider(id: string): Promise<void> {
+  const select = element("#settings-ai-provider") as HTMLSelectElement;
+  select.value = id;
+  select.dispatchEvent(new Event("change", { bubbles: true }));
+  await setImmediate();
+}
+
 /** Types into a field the way a person does: value plus an input event. */
 function type(selector: string, value: string): void {
   const input = field(selector);
@@ -157,14 +164,13 @@ describe("Settings tab switching (#78)", () => {
     const app = startDemo();
     await click("#btn-settings");
     await click('[data-settings-tab="assistant"]');
-    await click('[data-ai-preset="deepseek"]');
+    await pickProvider("deepseek");
 
     app.render();
     await setImmediate();
 
     assert.equal(field("#settings-base-url").value, "https://api.deepseek.com/v1");
-    assert.ok(element('[data-ai-preset="deepseek"]').classList.contains("is-active"));
-    assert.ok(!element('[data-ai-preset="openrouter_jev"]').classList.contains("is-active"));
+    assert.equal((element("#settings-ai-provider") as HTMLSelectElement).value, "deepseek");
   });
 
   it("never leaks a newly hydrated provider key into a switched endpoint draft on re-render", async () => {
@@ -579,15 +585,15 @@ describe("WP3d · Windows 常规与家居连接导航整理", () => {
     const conn = panel("connection");
     assert.match(conn.textContent ?? "", /示例家庭，不会控制真实设备/);
     assert.match(conn.textContent ?? "", /先逛逛示例家庭/);
-    assert.match(conn.textContent ?? "", /专属连接钥匙/);
+    assert.match(conn.textContent ?? "", /访问密钥 \(Access Token\)/);
     assert.match(conn.textContent ?? "", /填入常用地址/);
     assert.doesNotMatch(conn.textContent ?? "", /查找家中的 Home Assistant/);
-    assert.match(conn.textContent ?? "", /不确定地址？可在 Home Assistant 网页设置里查看/);
+    assert.doesNotMatch(conn.textContent ?? "", /不确定地址？可在 Home Assistant 网页设置里查看/);
     assert.doesNotMatch(conn.textContent ?? "", /没找到？在 Home Assistant 网页设置里查看地址/);
     assert.match(conn.textContent ?? "", /个人资料/);
-    assert.match(conn.textContent ?? "", /使用非官方连接方式/);
+    assert.match(conn.textContent ?? "", /非官方直连，可能被小米限流或风控，到期需重扫/);
     assert.match(conn.textContent ?? "", /添加更多米家账号/);
-    assert.match(conn.textContent ?? "", /同时连接多个家居平台（相同设备自动合并）/);
+    assert.match(conn.textContent ?? "", /同时连接多个家居平台/);
 
     // 1. Clicking 填入常用地址 (#btn-fill-default-ha) fills http://homeassistant.local:8123 when empty,
     // and never overwrites user-typed URL.
