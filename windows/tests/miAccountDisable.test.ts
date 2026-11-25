@@ -1,3 +1,4 @@
+import { miCloudRateLimiter } from "../src/core/miCloud/rateLimiter.js";
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import type { Window } from "happy-dom";
@@ -54,7 +55,7 @@ import {
 } from "../src/core/miAccountControl.js";
 import { MiCloudError, MiotSpecResolver, parseMiotDeviceSpec, type HttpRequest, type HttpResponse, type HttpTransport, type MiSession } from "../src/core/miCloudClient.js";
 import { scheduleDelayedReadBack } from "../src/core/optimisticLock.js";
-import { getXiaomiBackoffUntilMs, recordXiaomiRateLimit } from "../src/core/pollingPolicy.js";
+import { getXiaomiBackoffUntilMs } from "../src/core/pollingPolicy.js";
 import { SCHEDULED_COMMANDS_STORAGE_KEY } from "../src/core/scheduledCommands.js";
 import { CredentialVault, type SecureInvoke } from "../src/core/secureStore.js";
 
@@ -320,7 +321,7 @@ describe("P2a-W Xiaomi account disable & P1b integration", () => {
     const camDev = app.devices.find((d) => d.name === "副号摄像机")!;
     app.cameraLive.activeLiveCameraId = camDev.id;
     app.cameraLive.liveCameraKeepAliveTimer = window.setInterval(() => {}, 15_000);
-    recordXiaomiRateLimit(app, SESS_B);
+    await miCloudRateLimiter.recordLimit(ACC_B, "60");
 
     calls.length = 0;
     const disableB = await setMiAccountEnabledOnHost(app, ACC_B, false);
@@ -335,9 +336,9 @@ describe("P2a-W Xiaomi account disable & P1b integration", () => {
     assert.equal(calls.some((c) => c.user === "20002"), false);
     assert.equal(calls.some((c) => c.user === "10001"), true);
 
-    recordXiaomiRateLimit(app, SESS_A);
+    await miCloudRateLimiter.recordLimit(ACC_A, "60");
     await setMiAccountEnabledOnHost(app, ACC_A, false, { confirmPause: true });
-    assert.equal(getXiaomiBackoffUntilMs(app, SESS_A), null);
+    assert.equal(getXiaomiBackoffUntilMs(SESS_A), null);
     assert.equal(canRefreshDevicesInBackground(app), false);
     calls.length = 0;
     await refreshDevices(app, false);

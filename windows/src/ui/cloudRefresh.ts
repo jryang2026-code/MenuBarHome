@@ -49,13 +49,10 @@ import { buildPanelDeviceGridModel, renderLongTailBarHtml } from "./panelSplitTi
 import { isWorkstationLocked } from "./transport.js";
 import {
   clearCachedXiaomiTopology,
-  clearXiaomiRateLimitBackoff,
   isPersistedMiSessionExpired,
   isXiaomiRateLimitError,
   miSessionFingerprint,
   persistMiSessionExpired,
-  recordXiaomiRateLimit,
-  shouldSkipSilentPollForBackoff,
   storeCachedXiaomiTopology,
   takeCachedXiaomiTopologyForPoll,
 } from "../core/pollingPolicy.js";
@@ -578,9 +575,6 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false, 
       return;
     }
     const refreshStartedAt = Date.now();
-    if (silent && shouldSkipSilentPollForBackoff(host, session, refreshStartedAt)) {
-      return;
-    }
     if (silent && typeof window !== "undefined" && window.__TAURI_INTERNALS__?.invoke) {
       if (host.lockProbeInFlight) return;
       host.lockProbeInFlight = true;
@@ -769,7 +763,6 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false, 
           ...(skipLightGroupMembers ? { skippedLightGroupMembers: true } : {}),
         });
       }
-      clearXiaomiRateLimitBackoff(host);
       // The setter clears only this session's own rejection key, so other accounts' records survive.
       host.miSessionExpired = false;
       host.lastMiCloudSyncFailed = false;
@@ -865,8 +858,6 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false, 
           host.miSessionExpired = true;
           persistMiSessionExpired(session, true);
           clearCachedXiaomiTopology(host);
-        } else if (isXiaomiRateLimitError(err)) {
-          recordXiaomiRateLimit(host, session, Date.now());
         }
       }
       if (!silent) {

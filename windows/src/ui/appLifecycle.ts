@@ -82,7 +82,7 @@ import {
   isConnectionRemovalPending,
   miConnectionRemovalScope,
 } from "../core/connectionRemoval.js";
-import { clearCachedXiaomiTopology, clearPersistedMiSessionExpired, clearXiaomiRateLimitBackoff } from "../core/pollingPolicy.js";
+import { clearCachedXiaomiTopology, clearPersistedMiSessionExpired } from "../core/pollingPolicy.js";
 import {
   buildHostCapabilityContext,
   haCacheIfEnabled,
@@ -498,7 +498,6 @@ export function signOutXiaomiAccount(host: MenuMijiaWindowsApp): void {
     host.settings.selectedHomeId = null;
     if (retryOnly) {
       clearCachedXiaomiTopology(host);
-      clearXiaomiRateLimitBackoff(host);
     }
     const clearMultiPromise = clearHostSessionAndDualSourceState(host, { revokeAll: false });
     host.miSessionExpired = false;
