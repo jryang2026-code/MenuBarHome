@@ -3040,3 +3040,194 @@ index 0000000..1decdb2
 +		t.Fatal("timed out waiting for msgClose after Producer.Start error")
 +	}
 +}
+diff --git a/internal/onvif/onvif.go b/internal/onvif/onvif.go
+index c305b70..a7540f1 100644
+--- a/internal/onvif/onvif.go
++++ b/internal/onvif/onvif.go
+@@ -25,2 +25,3 @@ func Init() {
+ 	streams.HandleFunc("onvif", streamOnvif)
++	api.HandleFunc("api/menubarmijia/readonly", readonlyStream)
+ 
+@@ -35,2 +36,41 @@ var log zerolog.Logger
+ 
++func readonlyStream(w http.ResponseWriter, r *http.Request) {
++	id := r.URL.Query().Get("id")
++	if len(id) != 32 || strings.ContainsFunc(id, func(c rune) bool {
++		return !strings.ContainsRune("0123456789abcdef", c)
++	}) {
++		w.WriteHeader(http.StatusBadRequest)
++		return
++	}
++	raw, jpeg := "cam_raw_genericcamera"+id, "cam_mjpeg_genericcamera"+id
++	switch r.Method {
++	case http.MethodPatch:
++		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 8192))
++		source := string(body)
++		_, options, _ := strings.Cut(source, "#")
++		params := streams.ParseQuery(options)
++		if err != nil || params.Get("menubarmijia-readonly") != "1" ||
++			(!strings.HasPrefix(source, "rtsp://") && !strings.HasPrefix(source, "onvif://") && !strings.HasPrefix(source, "tapo://")) {
++			w.WriteHeader(http.StatusBadRequest)
++			return
++		}
++		if _, err := streams.New(raw, source); err != nil {
++			w.WriteHeader(http.StatusBadRequest)
++			return
++		}
++		if _, err := streams.New(jpeg, "ffmpeg:"+raw+"#video=mjpeg"); err != nil {
++			streams.Delete(raw)
++			w.WriteHeader(http.StatusBadRequest)
++			return
++		}
++	case http.MethodDelete:
++		streams.Delete(jpeg)
++		streams.Delete(raw)
++	default:
++		w.WriteHeader(http.StatusMethodNotAllowed)
++		return
++	}
++	w.WriteHeader(http.StatusNoContent)
++}
++
+ func streamOnvif(rawURL string) (core.Producer, error) {
+diff --git a/internal/rtsp/rtsp.go b/internal/rtsp/rtsp.go
+index 31c2c5d..93e270d 100644
+--- a/internal/rtsp/rtsp.go
++++ b/internal/rtsp/rtsp.go
+@@ -103,3 +103,4 @@ func rtspHandler(rawURL string) (core.Producer, error) {
+ 		query := streams.ParseQuery(rawQuery)
+-		conn.Backchannel = query.Get("backchannel") == "1"
++		conn.RejectRedirects = query.Get("menubarmijia-readonly") == "1"
++		conn.Backchannel = !conn.RejectRedirects && query.Get("backchannel") == "1"
+ 		conn.Media = query.Get("media")
+diff --git a/pkg/onvif/client.go b/pkg/onvif/client.go
+index bad103c..5cf2842 100644
+--- a/pkg/onvif/client.go
++++ b/pkg/onvif/client.go
+@@ -8,2 +8,3 @@ import (
+ 	"net/http"
++	"net/netip"
+ 	"net/url"
+@@ -14,2 +15,10 @@ import (
+ 
++var readOnlyHTTPClient = &http.Client{
++	Timeout:   8 * time.Second,
++	Transport: &http.Transport{DisableKeepAlives: true},
++	CheckRedirect: func(*http.Request, []*http.Request) error {
++		return http.ErrUseLastResponse
++	},
++}
++
+ const PathDevice = "/onvif/device_service"
+@@ -64,2 +73,5 @@ func (c *Client) GetURI() (string, error) {
+ 		token = tokens[i]
++		if c.readOnly() {
++			token = html.UnescapeString(token)
++		}
+ 	}
+@@ -84,2 +96,15 @@ func (c *Client) GetURI() (string, error) {
+ 
++	if c.readOnly() {
++		// The app pins the camera's address before registering the source. Never
++		// forward its credentials to a different host or producer scheme.
++		target, targetErr := netip.ParseAddr(u.Hostname())
++		pinned, pinnedErr := netip.ParseAddr(c.url.Hostname())
++		if targetErr != nil || pinnedErr != nil || target.Unmap() != pinned.Unmap() ||
++			(u.Scheme != "rtsp" && u.Scheme != "rtsps") {
++			return "", errors.New("onvif: stream URI is outside the configured camera")
++		}
++		u.User = c.url.User
++		u.Fragment, u.RawFragment = "", ""
++	}
++
+ 	if u.User == nil && c.url.User != nil {
+@@ -137,2 +162,5 @@ func (c *Client) GetVideoSourceConfiguration(token string) ([]byte, error) {
+ func (c *Client) GetStreamUri(token string) ([]byte, error) {
++	if c.readOnly() {
++		token = html.EscapeString(token)
++	}
+ 	return c.Request(c.mediaURL, `<trt:GetStreamUri>
+@@ -176,2 +204,7 @@ func (c *Client) MediaRequest(operation string) ([]byte, error) {
+ 
++func (c *Client) readOnly() bool {
++	query, _ := url.ParseQuery(strings.ReplaceAll(c.url.Fragment, "#", "&"))
++	return query.Get("menubarmijia-readonly") == "1"
++}
++
+ func (c *Client) Request(url, body string) ([]byte, error) {
+@@ -185,2 +218,5 @@ func (c *Client) Request(url, body string) ([]byte, error) {
+ 	client := &http.Client{Timeout: time.Second * 5000}
++	if c.readOnly() {
++		client = readOnlyHTTPClient
++	}
+ 	res, err := client.Post(url, `application/soap+xml;charset=utf-8`, bytes.NewReader(e.Bytes()))
+diff --git a/pkg/onvif/envelope.go b/pkg/onvif/envelope.go
+index 76a4126..2c52cbe 100644
+--- a/pkg/onvif/envelope.go
++++ b/pkg/onvif/envelope.go
+@@ -6,2 +6,3 @@ import (
+ 	"fmt"
++	"html"
+ 	"net/url"
+@@ -52,3 +53,3 @@ func NewEnvelopeWithUser(user *url.Userinfo) *Envelope {
+ </s:Header>`,
+-		user.Username(),
++		html.EscapeString(user.Username()),
+ 		base64.StdEncoding.EncodeToString(h.Sum(nil)),
+diff --git a/pkg/rtsp/client.go b/pkg/rtsp/client.go
+index c960732..3178ec0 100644
+--- a/pkg/rtsp/client.go
++++ b/pkg/rtsp/client.go
+@@ -100,2 +100,5 @@ func (c *Conn) Do(req *tcp.Request) (*tcp.Response, error) {
+ 	case http.StatusMovedPermanently, http.StatusFound:
++		if c.RejectRedirects {
++			return nil, fmt.Errorf("rtsp: redirect rejected for read-only source")
++		}
+ 		rawURL := res.Header.Get("Location")
+diff --git a/pkg/rtsp/conn.go b/pkg/rtsp/conn.go
+index 2984c78..6ce6ea4 100644
+--- a/pkg/rtsp/conn.go
++++ b/pkg/rtsp/conn.go
+@@ -33,2 +33,4 @@ type Conn struct {
+ 
++	RejectRedirects bool
++
+ 	URL *url.URL
+diff --git a/pkg/tapo/client.go b/pkg/tapo/client.go
+index e52250c..01ee8c6 100644
+--- a/pkg/tapo/client.go
++++ b/pkg/tapo/client.go
+@@ -86,2 +86,7 @@ func (c *Client) newConn() (net.Conn, error) {
+ 	query := c.url.Query()
++	options, _ := url.ParseQuery(strings.ReplaceAll(c.url.Fragment, "#", "&"))
++	audio := "default"
++	if options.Get("menubarmijia-readonly") == "1" && options.Get("audio") == "0" {
++		audio = "disable"
++	}
+ 
+@@ -123,4 +128,4 @@ func (c *Client) newConn() (net.Conn, error) {
+ 	c.request = fmt.Sprintf(
+-		`{"params":{"preview":{"audio":["default"],"channels":[%s],"resolutions":["%s"]},"method":"get"},"seq":1,"type":"request"}`,
+-		channel, subtype,
++		`{"params":{"preview":{"audio":["%s"],"channels":[%s],"resolutions":["%s"]},"method":"get"},"seq":1,"type":"request"}`,
++		audio, channel, subtype,
+ 	)
+diff --git a/pkg/tapo/producer.go b/pkg/tapo/producer.go
+index 87a91ff..5f433d1 100644
+--- a/pkg/tapo/producer.go
++++ b/pkg/tapo/producer.go
+@@ -4,2 +4,4 @@ import (
+ 	"encoding/json"
++	"net/url"
++	"strings"
+ 
+@@ -37,2 +39,9 @@ func (c *Client) GetMedias() []*core.Media {
+ 
++	options, _ := url.ParseQuery(strings.ReplaceAll(c.url.Fragment, "#", "&"))
++	if options.Get("menubarmijia-readonly") == "1" {
++		if options.Get("audio") == "0" {
++			return c.medias[:1]
++		}
++		return c.medias[:2]
++	}
+ 	return c.medias

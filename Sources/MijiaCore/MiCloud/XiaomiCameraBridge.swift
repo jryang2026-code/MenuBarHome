@@ -1696,3 +1696,108 @@ final class RelayStopBox: @unchecked Sendable {
         lock.unlock()
     }
 }
+
+extension XiaomiCameraBridge {
+    func startGenericCamera(
+        _ camera: GenericCameraSource, credentials: GenericCameraSource.Credentials,
+        stream: GenericCameraSource.Stream, audioEnabled: Bool, allowPublic: Bool
+    ) async throws -> CameraStreamSource {
+        let address = try await camera.resolvedAddress(allowPublic: allowPublic)
+        guard camera.kind != .tapo || !credentials.password.isEmpty,
+              let canonicalSource = camera.source(stream, credentials: credentials, address: address) else {
+            throw GenericCameraError.invalidConnection
+        }
+        let slot = await acquireStreamSlot(streamKey: camera.deviceID)
+        defer { releaseStreamSlot(streamKey: camera.deviceID, slot: slot) }
+        while let pending = shutdownTask { await pending.value }
+        let epoch = runtimeEpoch
+        try checkRuntime(epoch)
+        try await ensureGo2RTCRunning()
+        try checkRuntime(epoch)
+        guard let owner = activeOwner?.session else { throw GenericCameraError.failedConnection }
+        let http = Self.makeLocalHTTPClient()
+        defer { http.invalidateAndCancel() }
+        let id = Self.genericStreamID(camera.deviceID)
+        let options = "#menubarmijia-readonly=1" + (audioEnabled ? "" : "#audio=0#media=video")
+        do {
+            try await updateGenericStream(http: http, owner: owner, id: id, source: canonicalSource + options)
+            try checkRuntime(epoch)
+            let path = "/api/stream.mp4"
+            let query = "src=cam_raw_genericcamera\(id)" + (audioEnabled ? "&mp4=all" : "&video=h264,h265&audio=0")
+            guard let mp4 = Self.streamURL(session: owner, path: path, query: query),
+                  let fallback = Self.streamURL(session: owner, path: "/api/stream.mjpeg", query: "src=cam_mjpeg_genericcamera\(id)") else {
+                throw GenericCameraError.failedConnection
+            }
+            return .liveMP4(mp4, mjpegFallback: fallback, ptz: nil)
+        } catch {
+            await Task { try? await updateGenericStream(http: http, owner: owner, id: id) }.value
+            try Task.checkCancellation()
+            throw error
+        }
+    }
+
+    func stopGenericCamera(deviceID: String) async {
+        let slot = await acquireStreamSlot(streamKey: deviceID)
+        defer { releaseStreamSlot(streamKey: deviceID, slot: slot) }
+        guard let owner = activeOwner?.session else { return }
+        let http = Self.makeLocalHTTPClient(timeout: 3)
+        defer { http.invalidateAndCancel() }
+        try? await updateGenericStream(http: http, owner: owner, id: Self.genericStreamID(deviceID))
+    }
+
+    func genericCameraFrame(
+        _ camera: GenericCameraSource, credentials: GenericCameraSource.Credentials, allowPublic: Bool,
+        onFrame: (@MainActor @Sendable (Data) -> Void)? = nil
+    ) async throws -> Data {
+        let playback = try await startGenericCamera(
+            camera, credentials: credentials, stream: .sub, audioEnabled: false, allowPublic: allowPublic
+        )
+        let http = Self.makeLocalHTTPClient(timeout: 8)
+        let result: Data?
+        do {
+            guard case .liveMP4(_, let url?, _) = playback,
+                  let frame = Go2RTCFrameEndpoint.frameJPEGURL(fromPlaybackURL: url) else {
+                throw GenericCameraError.failedConnection
+            }
+            var data: Data
+            repeat {
+                let (body, response) = try await http.data(for: Self.authorizedURLRequest(for: frame))
+                guard (response as? HTTPURLResponse)?.statusCode == 200, !body.isEmpty else {
+                    throw GenericCameraError.failedConnection
+                }
+                data = body
+                if let onFrame {
+                    await onFrame(data)
+                    try await Task.sleep(for: .seconds(1))
+                }
+            } while onFrame != nil
+            result = data
+        } catch {
+            result = nil
+        }
+        http.invalidateAndCancel()
+        await Task { await stopGenericCamera(deviceID: camera.deviceID) }.value
+        try Task.checkCancellation()
+        guard let result else { throw GenericCameraError.failedConnection }
+        return result
+    }
+
+    private static func genericStreamID(_ deviceID: String) -> String {
+        sanitizeDid(String(deviceID.dropFirst(GenericCameraSource.devicePrefix.count)))
+    }
+
+    // Credentials are sent only in the authenticated loopback request body. The helper keeps the
+    // source in memory so it never writes a credential-bearing go2rtc.yaml or logs the request URL.
+    private func updateGenericStream(http: URLSession, owner: Go2RTCSession, id: String, source: String? = nil) async throws {
+        guard id.count == 32, let url = Self.streamURL(session: owner, path: "/api/menubarmijia/readonly", query: "id=\(id)") else {
+            throw GenericCameraError.failedConnection
+        }
+        var request = Self.authorizedURLRequest(for: url, method: source == nil ? "DELETE" : "PATCH")
+        request.httpBody = source.map { Data($0.utf8) }
+        guard let (_, response) = try? await http.data(for: request), let response = response as? HTTPURLResponse else {
+            throw GenericCameraError.failedConnection
+        }
+        if response.statusCode == 404 { throw GenericCameraError.unsupportedHelper }
+        guard response.statusCode == 204 else { throw GenericCameraError.failedConnection }
+    }
+}

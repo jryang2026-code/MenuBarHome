@@ -31,8 +31,37 @@ public enum HAPlaintextConsent {
     /// Checks the current DNS answers before starting an HA request. URLSession can resolve
     /// the name again when it connects, leaving a window for DNS to change after this check.
     public static func validateConnectionAddress(_ url: URL) async throws {
+        try await resolveWithTimeout {
+            try validateConnectionAddress(url, resolve: lookup)
+        }
+    }
+
+    /// Pins the numeric address passed to go2rtc, so the helper never resolves the name again.
+    static func resolveCameraAddress(_ url: URL, allowPublic: Bool) async throws -> String {
+        try await resolveWithTimeout {
+            guard let host = url.host(percentEncoded: false)?.trimmingCharacters(in: CharacterSet(charactersIn: "[]")) else {
+                throw URLError(.badURL)
+            }
+            if let literal = EndpointAddressClass(numericAddress: host),
+               literal == .lan || (allowPublic && literal == .publicNetwork) {
+                return host
+            }
+            let addresses = try lookup(host)
+            guard let selected = addresses.first, addresses.allSatisfy({ address in
+                guard let kind = EndpointAddressClass(numericAddress: address) else { return false }
+                return kind == .lan || (allowPublic && kind == .publicNetwork)
+            }) else {
+                throw HAEndpointResolutionError.prohibitedAddress
+            }
+            return selected
+        }
+    }
+
+    private static func resolveWithTimeout<Value: Sendable>(
+        _ lookup: @escaping @Sendable () throws -> Value
+    ) async throws -> Value {
         try Task.checkCancellation()
-        let (resolved, completion) = AsyncThrowingStream<Void, Error>.makeStream()
+        let (resolved, completion) = AsyncThrowingStream<Value, Error>.makeStream()
         let timeoutTask = Task {
             do {
                 try await Task.sleep(for: addressLookupTimeout)
@@ -40,23 +69,24 @@ public enum HAPlaintextConsent {
             } catch {
             }
         }
+        defer { timeoutTask.cancel() }
         DispatchQueue.global(qos: .userInitiated).async {
             do {
-                try validateConnectionAddress(url, resolve: lookup)
+                completion.yield(try lookup())
                 completion.finish()
             } catch {
                 completion.finish(throwing: error)
             }
-            timeoutTask.cancel()
         }
         var result = resolved.makeAsyncIterator()
-        try await withTaskCancellationHandler {
-            _ = try await result.next()
+        let value = try await withTaskCancellationHandler {
+            try await result.next()
         } onCancel: {
             completion.finish(throwing: CancellationError())
         }
-        timeoutTask.cancel()
         try Task.checkCancellation()
+        guard let value else { throw URLError(.cannotFindHost) }
+        return value
     }
 
     static func validateConnectionAddress(_ url: URL, resolve: (String) throws -> [String]) throws {

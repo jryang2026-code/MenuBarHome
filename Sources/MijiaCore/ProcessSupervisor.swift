@@ -208,6 +208,8 @@ extension ProcessSupervisor {
             "exec",
             "ffmpeg",
             "xiaomi",
+            "onvif",
+            "tapo",
         ]
 
         struct Paths: Equatable, Sendable {

@@ -11,10 +11,16 @@
 | 基座 tag | `v1.9.15` |
 | 基座 commit | `7c05066c90ab6ad1fccb506d5f0408aa31ebe60f` |
 | 补丁文件 | `patches/0001-xiaomi-ptz.patch` |
-| 补丁 SHA-256 | `1321d9ec46d321370e1e05886ae79fb0fc10b2f9693cb1039cf56bb39e9794e9` |
+| 补丁 SHA-256 | `7a7483dcdd0985a892bcb59de0f32855ed3625ecf0ecf6d1bf2198a867bfa7e8` |
 | 许可 | MIT（保留 go2rtc 版权声明；补丁本身同样以 MIT 提供） |
 
-补丁的思路来自社区真机报告与上游 PR #2531（`bcamarneiro`，commit `1a056d7c29` / `e23a21b9ee`），但这里只保留单会话电机命令与租约端点，没有引入 ONVIF 相关代码。
+补丁的思路来自社区真机报告与上游 PR #2531（`bcamarneiro`，commit `1a056d7c29` / `e23a21b9ee`），米家云台使用单会话电机命令与租约端点。
+
+## 通用摄像机只读接入
+
+macOS 通过已认证的回环端点 `/api/menubarmijia/readonly` 在内存注册 RTSP、ONVIF 和 Tapo 源。摄像机凭据从钥匙串放入请求体，持久化的 `go2rtc.yaml` 只含桥自身的配置。关闭预览即移除注册，关闭桥进程会清空全部注册。
+
+只读源禁止 RTSP 重定向、ONVIF HTTP 重定向和跨主机媒体地址。RTSP 和 ONVIF 不使用音频回传，Tapo 只暴露接收轨道。静音预览不请求音频。主播放保持原始编码，JPEG 预览和兼容回退需要 FFmpeg。固定的 v1.9.15 尚未识别 RTSP `#keyframe=pli`。
 
 ## 补丁做了什么
 
