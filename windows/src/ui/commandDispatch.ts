@@ -111,6 +111,7 @@ export interface SliderWriteRequest {
   readonly isHighRisk?: boolean;
   readonly debounceHighRisk?: boolean;
   readonly execute?: () => Promise<void>;
+  readonly onFailure?: () => void;
 }
 
 interface SliderMailboxTiming {
@@ -282,9 +283,19 @@ function startSliderDrain(
         slot.pending = null;
         const startMs = state.timing.now();
         slot.startedCount += 1;
-        await (current.execute
-          ? current.execute()
-          : host.executeSingleCommand(current.device, current.command, current.summary, current.intent));
+        const seqBefore = peekDeviceWriteSeq(host, current.device.id);
+        const prevBanner = host.replyBanner;
+        try {
+          await (current.execute
+            ? current.execute()
+            : host.executeSingleCommand(current.device, current.command, current.summary, current.intent));
+          const failed =
+            (host.replyBanner !== prevBanner && host.replyBanner?.isError === true) ||
+            (!current.execute && peekDeviceWriteSeq(host, current.device.id) === seqBefore);
+          if (failed) current.onFailure?.();
+        } catch {
+          current.onFailure?.();
+        }
         if (!isCurrent()) { slot.pending = null; break; }
         if (isLan) {
           const remaining = state.timing.lanIntervalMs - Math.max(0, state.timing.now() - startMs);

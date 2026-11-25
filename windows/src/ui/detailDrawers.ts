@@ -12,6 +12,7 @@ import {
 } from "../core/miCloud/speakerActions.js";
 import { facetValue, formatReading } from "../core/miotFacetText.js";
 import {
+  clearSliderLiveValue,
   consumeSliderLiveValue,
   markSliderLiveValue,
   renderLiquidGlassSlider,
@@ -1065,6 +1066,7 @@ function bindCollapsedInlineSliders(
             summary: resolved.summary,
             intent: resolved.intent,
             isLiveInput: true,
+            onFailure: () => clearSliderLiveValue(slider),
           });
         }
       });

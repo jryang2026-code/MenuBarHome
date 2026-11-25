@@ -29,6 +29,7 @@ import { facetActionArguments, feedingConfirmationBannerText } from "../core/miC
 import { bindDetailDrawerEvents, coverMotorRequiresConfirmation, ensureDrawerLifecycleListeners } from "./detailDrawers.js";
 import {
   bindLiquidGlassSliders,
+  clearSliderLiveValue,
   consumeSliderLiveValue,
   markSliderLiveValue,
 } from "./liquidGlassSlider.js";
@@ -82,7 +83,15 @@ function dispatchLiveLanSlider(
 ): void {
   if (sliderIsHighRisk(host, dev) || !sliderUsesLAN(host, command, dev)) return;
   markSliderLiveValue(slider, value);
-  void submitSliderWrite(host, { slotKey, device: dev, command, summary, intent, isLiveInput: true });
+  void submitSliderWrite(host, {
+    slotKey,
+    device: dev,
+    command,
+    summary,
+    intent,
+    isLiveInput: true,
+    onFailure: () => clearSliderLiveValue(slider),
+  });
 }
 
 function confirmHighRiskForHost(
