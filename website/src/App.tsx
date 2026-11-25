@@ -4,7 +4,7 @@ import { ReactLenis, type LenisRef } from 'lenis/react';
 import gsap from 'gsap';
 import { ScrollTrigger } from 'gsap/ScrollTrigger';
 import { useGSAP } from '@gsap/react';
-import { SITE_COPY, type Locale, type PlatformOS } from './content/siteCopy';
+import { SITE_COPY, type DetectedOS, type Locale, type PlatformOS } from './content/siteCopy';
 import { useHomeStore } from './store/homeStore';
 import { HeroSection } from './components/hero/HeroSection';
 import { FeaturesSection } from './components/sections/FeaturesSection';
@@ -19,7 +19,7 @@ const LOCALE_STORAGE_KEY = 'mbh_locale_v1';
 const useIsomorphicLayoutEffect =
   typeof window !== 'undefined' ? useLayoutEffect : useEffect;
 
-function detectPlatformOS(): PlatformOS {
+function detectPlatformOS(): DetectedOS {
   if (typeof window === 'undefined') return 'macos';
 
   const params = new URLSearchParams(window.location.search);
@@ -28,6 +28,9 @@ function detectPlatformOS(): PlatformOS {
   if (forced === 'win' || forced === 'windows') return 'windows';
 
   const ua = navigator.userAgent || '';
+  // Phones, tablets, Linux and ChromeOS: iOS/iPadOS UAs also say "Mac OS X", so check them first.
+  if (/iphone|ipad|ipod|android|linux|cros/i.test(ua)) return 'other';
+  if (/macintosh/i.test(ua) && navigator.maxTouchPoints > 1) return 'other';
   if (/macintosh|mac os x/i.test(ua)) return 'macos';
   if (/windows|win32|win64|wow64/i.test(ua)) return 'windows';
 
@@ -43,7 +46,7 @@ function detectPlatformOS(): PlatformOS {
   if (/win/i.test(navPlatform)) return 'windows';
   if (/mac/i.test(navPlatform)) return 'macos';
 
-  return 'macos';
+  return 'other';
 }
 
 function detectLocale(): Locale {
@@ -86,6 +89,7 @@ export function App() {
   // Deterministic SSR/hydration defaults; real OS + locale hydrate synchronously before paint
   const [locale, setLocale] = useState<Locale>('en');
   const [os, setOs] = useState<PlatformOS>('macos');
+  const [unsupportedOs, setUnsupportedOs] = useState(false);
   const [reducedMotion, setReducedMotion] = useState(false);
 
   const appRef = useRef<HTMLDivElement>(null);
@@ -95,7 +99,8 @@ export function App() {
   useIsomorphicLayoutEffect(() => {
     const detectedOs = detectPlatformOS();
     const detectedLocale = detectLocale();
-    setOs(detectedOs);
+    setOs(detectedOs === 'windows' ? 'windows' : 'macos');
+    setUnsupportedOs(detectedOs === 'other');
     setLocale(detectedLocale);
     document.documentElement.lang = detectedLocale === 'zh' ? 'zh-CN' : 'en';
   }, []);
@@ -209,13 +214,19 @@ export function App() {
           <FeaturesSection
             copy={copy.features}
             locale={locale}
+            os={os}
             reducedMotion={reducedMotion}
           />
           <ShortcutsSection copy={copy.shortcuts} os={os} />
-          <DownloadSection copy={copy.download} os={os} onChangeOs={setOs} />
+          <DownloadSection
+            copy={copy.download}
+            os={os}
+            onChangeOs={setOs}
+            unsupportedOs={unsupportedOs}
+          />
         </main>
 
-        <FooterSection copy={copy.footer} />
+        <FooterSection copy={copy.footer} locale={locale} />
       </div>
     </MotionConfig>
   );

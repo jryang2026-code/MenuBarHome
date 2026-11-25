@@ -7,6 +7,8 @@ import {
   type PlatformOS,
   type SiteDictionary,
 } from '../../content/siteCopy';
+import { APP_VERSION } from '../../utils/appVersion';
+import { handleTablistKeyDown } from '../../utils/tablist';
 import { formatStatCount, useGitHubStats } from '../../hooks/useGitHubStats';
 import { FancyStarButton } from '../shared/FancyStarButton';
 
@@ -14,7 +16,10 @@ interface DownloadSectionProps {
   copy: SiteDictionary['download'];
   os: PlatformOS;
   onChangeOs: (os: PlatformOS) => void;
+  unsupportedOs?: boolean;
 }
+
+const OS_TABS: readonly PlatformOS[] = ['macos', 'windows'];
 
 function renderEditorialHeading(text: string): ReactNode {
   const splitPatterns = [', ', '，', ' and ', ' & ', '与', '和'];
@@ -42,7 +47,7 @@ function renderEditorialHeading(text: string): ReactNode {
   return text;
 }
 
-export function DownloadSection({ copy, os, onChangeOs }: DownloadSectionProps) {
+export function DownloadSection({ copy, os, onChangeOs, unsupportedOs = false }: DownloadSectionProps) {
   const [copied, setCopied] = useState(false);
   const [showStarNudge, setShowStarNudge] = useState(false);
   const { stars, downloads, isLive } = useGitHubStats();
@@ -68,7 +73,7 @@ export function DownloadSection({ copy, os, onChangeOs }: DownloadSectionProps) 
   };
 
   const primaryUrl = os === 'macos' ? RELEASE_URLS.macDmg : RELEASE_URLS.winExe;
-  const shaUrl = os === 'macos' ? RELEASE_URLS.macSha256 : RELEASE_URLS.winSha256;
+  const shaUrl = os === 'macos' ? RELEASE_URLS.macSha256 : RELEASE_URLS.winExeSha256;
   const sbomUrl = os === 'macos' ? RELEASE_URLS.macSbom : RELEASE_URLS.winSbom;
 
   return (
@@ -108,7 +113,7 @@ export function DownloadSection({ copy, os, onChangeOs }: DownloadSectionProps) 
                   <span className="text-[#4a433b]">{stats.downloadsLabel}</span>
                 </span>
                 <span aria-hidden="true" className="hidden text-[#1e1a16]/25 sm:inline">·</span>
-                <span className="hidden text-[#4a433b] sm:inline">v1.4.0 · MIT</span>
+                <span className="hidden text-[#4a433b] sm:inline">v{APP_VERSION} · MIT</span>
               </div>
             </div>
 
@@ -118,13 +123,17 @@ export function DownloadSection({ copy, os, onChangeOs }: DownloadSectionProps) 
             {/* Platform Switcher Tabs */}
             <div
               role="tablist"
-              aria-label="Target operating system"
+              aria-label={copy.platformAria}
+              onKeyDown={(e) => handleTablistKeyDown(e, OS_TABS, os, onChangeOs)}
               className="mt-5 inline-flex rounded-full bg-[#eee7dc] p-1 shadow-[inset_0_0_0_1px_rgba(38,30,22,0.09)]"
             >
               <button
                 type="button"
                 role="tab"
+                id="download-tab-macos"
+                aria-controls="download-panel"
                 aria-selected={os === 'macos'}
+                tabIndex={os === 'macos' ? 0 : -1}
                 onClick={() => onChangeOs('macos')}
                 className={`btn-tactile min-h-[44px] rounded-full px-4 text-[13.5px] font-medium sm:min-h-[38px] ${
                   os === 'macos'
@@ -137,7 +146,10 @@ export function DownloadSection({ copy, os, onChangeOs }: DownloadSectionProps) 
               <button
                 type="button"
                 role="tab"
+                id="download-tab-windows"
+                aria-controls="download-panel"
                 aria-selected={os === 'windows'}
+                tabIndex={os === 'windows' ? 0 : -1}
                 onClick={() => onChangeOs('windows')}
                 className={`btn-tactile min-h-[44px] rounded-full px-4 text-[13.5px] font-medium sm:min-h-[38px] ${
                   os === 'windows'
@@ -148,10 +160,23 @@ export function DownloadSection({ copy, os, onChangeOs }: DownloadSectionProps) 
                 {copy.winTab}
               </button>
             </div>
+            {unsupportedOs && (
+              <p
+                data-testid="unsupported-os-note"
+                className="mt-3 max-w-[44ch] text-[14px] leading-snug text-[#4a433b] text-pretty"
+              >
+                {copy.unsupportedOsNote}
+              </p>
+            )}
           </div>
 
           {/* Primary Download CTA + Tabular Build Spec Pill */}
-          <div className="flex flex-col items-start gap-2.5 md:shrink-0 md:items-end">
+          <div
+            id="download-panel"
+            role="tabpanel"
+            aria-labelledby={`download-tab-${os}`}
+            className="flex flex-col items-start gap-2.5 md:shrink-0 md:items-end"
+          >
             <a
               href={primaryUrl}
               onClick={handleDownloadTrigger}
@@ -273,6 +298,16 @@ export function DownloadSection({ copy, os, onChangeOs }: DownloadSectionProps) 
               >
                 {copy.sbomLink}
               </a>
+              {os === 'windows' && (
+                <a
+                  href={RELEASE_URLS.winMsiSha256}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="editorial-link inline-flex min-h-[44px] items-center font-mono text-[13px] font-medium text-[#1e1a16] sm:min-h-[32px]"
+                >
+                  {copy.msiShaLink}
+                </a>
+              )}
             </div>
 
             <div className="metric-mono metric-mono-accent">{copy.footprintNote}</div>

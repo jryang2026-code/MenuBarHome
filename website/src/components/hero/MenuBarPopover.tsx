@@ -38,6 +38,7 @@ import {
   type ScenePreset,
 } from '../../store/homeStore';
 import { playTactileSound } from '../../utils/tactileSound';
+import { handleTablistKeyDown } from '../../utils/tablist';
 import type { Locale, SiteDictionary } from '../../content/siteCopy';
 import {
   NATIVE_POPOVER_COPY,
@@ -363,6 +364,12 @@ export function MenuBarPopover({
   const q = searchQuery.trim().toLowerCase();
 
   // Room + Pinyin/Name filtering matching PanelSearch.swift
+  const selectRoom = (room: RoomFilter) => {
+    setRoomFilter(room);
+    if (q) setSearchQuery('');
+    playTactileSound('tick', soundEnabled);
+  };
+
   const matchesRoom = (room: RoomFilter) => roomFilter === 'all' || roomFilter === room;
 
   const showLamp =
@@ -603,7 +610,7 @@ export function MenuBarPopover({
         data-ui="true"
         style={shellStyle}
         className={`${isDark ? '[&_:focus-visible]:outline-[#fbbf24]' : 'classic-lg-shell'} w-full rounded-[24px] p-3 ${textPrimary}`}
-        aria-label="Interactive MenuBarHome macOS control panel"
+        aria-label={nativeCopy.a11y.panel}
       >
         {/* 1. Native Header: Orange House Orb + Title + Demo Pill + Hold All Off with Excl. Sub-Note */}
         <div className="mb-2 flex items-start justify-between gap-2">
@@ -733,7 +740,7 @@ export function MenuBarPopover({
               <button
                 type="button"
                 onClick={triggerVoiceCommand}
-                aria-label="Stop voice dictation"
+                aria-label={nativeCopy.a11y.stopDictation}
                 className="flex size-5 shrink-0 items-center justify-center rounded-full bg-[#ff453a] text-white"
               >
                 <span className="size-1.5 rounded-[1.5px] bg-white" />
@@ -767,7 +774,7 @@ export function MenuBarPopover({
                     </span>
                     <button
                       type="button"
-                      aria-label="Clear search"
+                      aria-label={nativeCopy.a11y.clearSearch}
                       onClick={() => setSearchQuery('')}
                       className={`rounded-full p-0.5 ${textSecondary} hover:opacity-100`}
                     >
@@ -797,7 +804,8 @@ export function MenuBarPopover({
         <div className="mb-2 flex items-center justify-between gap-1.5">
           <div
             role="tablist"
-            aria-label="Room filter"
+            aria-label={nativeCopy.a11y.roomFilter}
+            onKeyDown={(e) => handleTablistKeyDown(e, ROOMS, roomFilter, selectRoom)}
             className={`flex flex-1 items-center gap-0.5 rounded-full p-0.5 ${
               isDark ? 'bg-white/[0.07]' : 'liquid-glass-track'
             }`}
@@ -809,12 +817,11 @@ export function MenuBarPopover({
                   key={room}
                   role="tab"
                   type="button"
+                  id={`popover-room-tab-${room}`}
+                  aria-controls="popover-device-panel"
                   aria-selected={active}
-                  onClick={() => {
-                    setRoomFilter(room);
-                    if (q) setSearchQuery('');
-                    playTactileSound('tick', soundEnabled);
-                  }}
+                  tabIndex={room === roomFilter ? 0 : -1}
+                  onClick={() => selectRoom(room)}
                   className={`btn-tactile flex-1 rounded-full py-1 text-[11px] font-medium ${
                     active
                       ? isDark
@@ -978,7 +985,12 @@ export function MenuBarPopover({
         </div>
 
         {/* 4. Scroll-Safe Compact Native Bento Device Grid */}
-        <div className="max-h-[calc(100svh-360px)] space-y-2 overflow-y-auto pr-0.5">
+        <div
+          id="popover-device-panel"
+          role="tabpanel"
+          aria-labelledby={`popover-room-tab-${roomFilter}`}
+          className="max-h-[calc(100svh-360px)] space-y-2 overflow-y-auto pr-0.5"
+        >
           {/* Empty Search Fallback → LocalIntentParser hint (matches macos-hold-to-talk.png) */}
           {totalVisibleDevices === 0 && (
             <div
@@ -1004,7 +1016,7 @@ export function MenuBarPopover({
                   <div className={`${tileClasses(lampOn, focusedId === 'lamp')} flex items-center gap-1.5 px-2 py-2`}>
                     <button
                       type="button"
-                      aria-label={`Toggle ${copy.lampName}`}
+                      aria-label={nativeCopy.a11y.toggleDevice(copy.lampName)}
                       aria-pressed={lampOn}
                       onClick={() => {
                         toggleLamp();
@@ -1054,7 +1066,7 @@ export function MenuBarPopover({
                   <div className={`${tileClasses(ceilingOn, focusedId === 'ceiling')} flex items-center gap-1.5 px-2 py-2`}>
                     <button
                       type="button"
-                      aria-label={`Toggle ${copy.ceilingName}`}
+                      aria-label={nativeCopy.a11y.toggleDevice(copy.ceilingName)}
                       aria-pressed={ceilingOn}
                       onClick={() => {
                         toggleCeiling();
@@ -1252,7 +1264,7 @@ export function MenuBarPopover({
                 <div className="flex shrink-0 items-center gap-1.5">
                   <button
                     type="button"
-                    aria-label="Decrease AC temperature"
+                    aria-label={nativeCopy.a11y.decreaseAcTemp}
                     onClick={() => {
                       stepAcTemp(-1);
                       playTactileSound('tick', soundEnabled);
@@ -1271,7 +1283,7 @@ export function MenuBarPopover({
                   </span>
                   <button
                     type="button"
-                    aria-label="Increase AC temperature"
+                    aria-label={nativeCopy.a11y.increaseAcTemp}
                     onClick={() => {
                       stepAcTemp(1);
                       playTactileSound('tick', soundEnabled);
@@ -1312,7 +1324,7 @@ export function MenuBarPopover({
                   <div className={`${tileClasses(curtainOpen > 15, focusedId === 'curtains')} flex items-center gap-1.5 px-2 py-2`}>
                     <button
                       type="button"
-                      aria-label={`Cycle ${copy.curtainsName}`}
+                      aria-label={nativeCopy.a11y.cycleDevice(copy.curtainsName)}
                       onClick={() => {
                         cycleCurtains();
                         playTactileSound('click', soundEnabled);
@@ -1654,7 +1666,7 @@ export function MenuBarPopover({
           <div className="flex items-center gap-1">
             <button
               type="button"
-              aria-label="Refresh devices"
+              aria-label={nativeCopy.a11y.refreshDevices}
               onClick={() => {
                 setRefreshSpin(true);
                 playTactileSound('tick', soundEnabled);

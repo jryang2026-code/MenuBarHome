@@ -1,4 +1,3 @@
-import { useEffect, useState } from 'react';
 import {
   Camera,
   LampDesk,
@@ -14,8 +13,9 @@ import {
 } from 'lucide-react';
 import { kelvinToHex, useHomeStore, type ScenePreset } from '../../store/homeStore';
 import { playTactileSound } from '../../utils/tactileSound';
+import { useUkClock } from '../../hooks/useUkClock';
 import type { Locale, SiteDictionary } from '../../content/siteCopy';
-import { NATIVE_POPOVER_COPY } from './nativePopoverCopy';
+import { NATIVE_POPOVER_COPY, type NativePopoverStrings } from './nativePopoverCopy';
 
 interface SmokedGlassHudProps {
   copy: SiteDictionary['hero'];
@@ -58,7 +58,7 @@ export function SmokedGlassHud({ copy, locale, onFocusSearch }: SmokedGlassHudPr
       <div
         className="flex items-center gap-0.5 sm:gap-1"
         role="group"
-        aria-label="Room lighting scenes"
+        aria-label={nativeCopy.a11y.sceneGroup}
       >
         {presets.map((item) => {
           const active = preset === item.id;
@@ -266,10 +266,12 @@ export function DoorbellPiPCard({
   doorbellName,
   videoOnlyLabel,
   pinnedLabel,
+  a11y,
 }: {
   doorbellName: string;
   videoOnlyLabel: string;
   pinnedLabel: string;
+  a11y: NativePopoverStrings['a11y'];
 }) {
   const pipPinned = useHomeStore((s) => s.pipPinned);
   const pipGhosting = useHomeStore((s) => s.pipGhosting);
@@ -279,21 +281,7 @@ export function DoorbellPiPCard({
   const togglePip = useHomeStore((s) => s.togglePip);
   const toggleLamp = useHomeStore((s) => s.toggleLamp);
   const openCamera = useHomeStore((s) => s.openCamera);
-  const [clock, setClock] = useState('17:42:08');
-
-  useEffect(() => {
-    if (!pipPinned) return;
-    const fmt = () =>
-      new Date().toLocaleTimeString('en-GB', {
-        hour: '2-digit',
-        minute: '2-digit',
-        second: '2-digit',
-        hour12: false,
-      });
-    setClock(fmt());
-    const id = window.setInterval(() => setClock(fmt()), 1000);
-    return () => window.clearInterval(id);
-  }, [pipPinned]);
+  const clock = useUkClock(pipPinned);
 
   if (!pipPinned) return null;
 
@@ -302,7 +290,7 @@ export function DoorbellPiPCard({
   return (
     <aside
       data-ui="true"
-      aria-label={`${doorbellName} Picture in Picture`}
+      aria-label={a11y.pipRegion(doorbellName)}
       className={`w-[244px] overflow-hidden rounded-[16px] bg-[#161412]/94 text-[#f6f2eb] shadow-[0_22px_52px_-14px_rgba(16,12,8,0.62),inset_0_0_0_1px_rgba(255,245,230,0.14)] backdrop-blur-xl transition-[opacity,transform,filter] duration-300 [&_button:focus-visible]:outline-[#fbbf24] ${
         pipGhosting ? 'pip-ghost' : 'pip-pinned'
       }`}
@@ -362,7 +350,7 @@ export function DoorbellPiPCard({
               openCamera('doorbell');
               playTactileSound('click', soundEnabled);
             }}
-            aria-label="Open full live PTZ camera"
+            aria-label={a11y.openFullCamera}
             className="btn-tactile flex size-6 items-center justify-center rounded-full bg-black/62 text-[#e4ded4] hover:bg-black/85 hover:text-white"
           >
             <Maximize2 className="size-3" aria-hidden="true" />
@@ -373,7 +361,7 @@ export function DoorbellPiPCard({
               togglePip();
               playTactileSound('tick', soundEnabled);
             }}
-            aria-label="Close doorbell PiP"
+            aria-label={a11y.closePip}
             className="btn-tactile flex size-6 items-center justify-center rounded-full bg-black/62 text-[#e4ded4] hover:bg-black/85 hover:text-white"
           >
             <X className="size-3" aria-hidden="true" />
@@ -397,7 +385,7 @@ export function DoorbellPiPCard({
           </button>
           <button
             type="button"
-            aria-label="Toggle porch lamp from PiP"
+            aria-label={a11y.togglePorchLampFromPip}
             aria-pressed={lampOn}
             onClick={() => {
               toggleLamp();

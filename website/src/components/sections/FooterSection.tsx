@@ -1,10 +1,11 @@
-import { RELEASE_URLS, type SiteDictionary } from '../../content/siteCopy';
+import { RELEASE_URLS, type Locale, type SiteDictionary } from '../../content/siteCopy';
 
 interface FooterSectionProps {
   copy: SiteDictionary['footer'];
+  locale: Locale;
 }
 
-export function FooterSection({ copy }: FooterSectionProps) {
+export function FooterSection({ copy, locale }: FooterSectionProps) {
   return (
     <footer className="mt-6 border-t border-[#1e1a16]/[0.09]">
       <div className="mx-auto w-full max-w-[1080px] px-5 py-10 sm:px-10 sm:py-12">
@@ -23,7 +24,7 @@ export function FooterSection({ copy }: FooterSectionProps) {
           </div>
 
           <nav
-            aria-label="Footer"
+            aria-label={copy.navAria}
             className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[13.5px] lg:flex-nowrap lg:gap-x-5"
           >
             <a
@@ -35,7 +36,7 @@ export function FooterSection({ copy }: FooterSectionProps) {
               {copy.links.github}
             </a>
             <a
-              href={RELEASE_URLS.devicesDoc}
+              href={locale === 'zh' ? RELEASE_URLS.devicesDocZh : RELEASE_URLS.devicesDoc}
               target="_blank"
               rel="noreferrer"
               className="inline-flex min-h-[44px] items-center whitespace-nowrap text-[#4a433b] underline-offset-4 transition-colors hover:text-[#9a4a12] hover:underline hover:decoration-[#9a4a12]/50 sm:min-h-[36px]"
@@ -43,7 +44,7 @@ export function FooterSection({ copy }: FooterSectionProps) {
               {copy.links.devices}
             </a>
             <a
-              href={RELEASE_URLS.faqDoc}
+              href={locale === 'zh' ? RELEASE_URLS.faqDocZh : RELEASE_URLS.faqDoc}
               target="_blank"
               rel="noreferrer"
               className="inline-flex min-h-[44px] items-center whitespace-nowrap text-[#4a433b] underline-offset-4 transition-colors hover:text-[#9a4a12] hover:underline hover:decoration-[#9a4a12]/50 sm:min-h-[36px]"
@@ -66,6 +67,14 @@ export function FooterSection({ copy }: FooterSectionProps) {
             >
               {copy.links.zhReadme}
             </a>
+            <a
+              href={`${import.meta.env.BASE_URL}THIRD_PARTY_LICENSES.txt`}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex min-h-[44px] items-center whitespace-nowrap text-[#4a433b] underline-offset-4 transition-colors hover:text-[#9a4a12] hover:underline hover:decoration-[#9a4a12]/50 sm:min-h-[36px]"
+            >
+              {copy.licenses}
+            </a>
           </nav>
         </div>
 
@@ -79,6 +88,9 @@ export function FooterSection({ copy }: FooterSectionProps) {
           </span>
           <p className="mt-1.5 font-mono text-[13px] text-[#5b5349] tabular-nums">
             {copy.copyright}
+          </p>
+          <p className="mt-2 max-w-[60ch] text-[13px] leading-snug text-[#5b5349] text-pretty">
+            {copy.privacyNote}
           </p>
         </div>
       </div>
