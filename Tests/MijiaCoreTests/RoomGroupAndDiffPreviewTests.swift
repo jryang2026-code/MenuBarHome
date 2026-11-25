@@ -76,6 +76,52 @@ struct RoomGroupAndDiffPreviewTests {
         else { Issue.record("Missing c1") }
     }
 
+    private struct HeldCoverWriteProvider: HomeProvider {
+        let mock: MockHomeProvider
+        let gate: ScheduledCommandTestSupport.SleepGate
+
+        func events() -> AsyncStream<HomeProviderEvent> { mock.events() }
+        func refreshNow() async { await mock.refreshNow() }
+
+        func execute(_ command: DeviceCommand) async throws {
+            try await mock.execute(command)
+            if command == .setNumberValue(entityId: "cover.c1", value: 0) { await gate.sleep() }
+        }
+    }
+
+    @Test func coverGroupUndoPreservesPositionsAcrossRefreshBetweenSends() async throws {
+        func curtain(_ id: String, _ position: Int) -> SmartDevice {
+            dev(id, .cover(.init(entityId: "cover.\(id)", subtype: .curtain, positionPercent: position,
+                                 reportedPositionPercent: position, positionWritable: true, motion: .stopped)))
+        }
+        let gate = ScheduledCommandTestSupport.SleepGate()
+        let provider = MockHomeProvider(snapshot: .init(devices: [curtain("c1", 25), curtain("c2", 40)]))
+        let store = HomeStore(provider: HeldCoverWriteProvider(mock: provider, gate: gate),
+                              defaultsSuiteName: "test.roomgroup.\(UUID())")
+        defer { store.stop() }
+        try await store.waitForTestSnapshot()
+        let group = try #require(store.roomAutoGroups(for: "living").first)
+        let action = Task { await store.toggleRoomGroup(group) }
+        defer { action.cancel() }
+
+        try await awaitState { gate.waiting == 1 }
+        let refreshed = curtain("c2", 80)
+        await provider.updateSnapshot(.init(devices: [curtain("c1", 0), refreshed]))
+        try await awaitState { store.devices.first { $0.id == refreshed.id }?.kind == refreshed.kind }
+        #expect(store.lastCoverPositions[refreshed.id] == 80)
+        gate.release()
+
+        guard case .executed = await action.value else { Issue.record("Expected executed"); return }
+        store.pauseUndoBannerCountdown()
+        let undo = try #require(store.undoTurnAllOff())
+        await undo.value
+        let commands = await provider.executedCommands
+        #expect(commands == [
+            .setNumberValue(entityId: "cover.c1", value: 0), .setNumberValue(entityId: "cover.c2", value: 0),
+            .setNumberValue(entityId: "cover.c1", value: 25), .setNumberValue(entityId: "cover.c2", value: 40),
+        ])
+    }
+
     @Test func groupWriteEnforcesLockScreenCapabilitySingleConfirmationAndUndo() async throws {
         let p1 = dev("p1", name: "客厅插座A", .plug(.init(switchEntityId: "switch.p1", isOn: false)))
         let p2 = dev("p2", name: "客厅插座B", .plug(.init(switchEntityId: "switch.p2", isOn: false)))
