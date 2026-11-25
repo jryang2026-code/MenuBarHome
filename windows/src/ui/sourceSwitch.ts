@@ -31,6 +31,8 @@ export interface SourceSwitchHost {
   lastUndoAction: UndoAction | null;
   pendingCloudConsent: { utterance: string; endpoint: string } | null;
   lastManuallyUsedLightId: string | null;
+  pendingDiffPreview: MenuMijiaWindowsApp["pendingDiffPreview"];
+  pendingRoomGroupConfirm: MenuMijiaWindowsApp["pendingRoomGroupConfirm"];
   pendingSuggestions: AssistantSuggestion[];
   applyPanelHeight(): void;
   clearPendingHighRisk(options?: { readonly syncPin?: boolean }): void;
@@ -44,6 +46,9 @@ export interface SwitchHomeHost {
   aiProactiveSignature: string | null;
   isRefreshingProactive: boolean;
   proactiveRetryAfterMs: number | null;
+  pendingDiffPreview: MenuMijiaWindowsApp["pendingDiffPreview"];
+  pendingRoomGroupConfirm: MenuMijiaWindowsApp["pendingRoomGroupConfirm"];
+  pendingSuggestions: AssistantSuggestion[];
   clearPendingHighRisk(options?: { readonly syncPin?: boolean }): void;
 }
 
@@ -83,8 +88,12 @@ export function switchSource(host: SourceSwitchHost, reason: string): void {
   host.lastUndoAction = null;
   host.pendingCloudConsent = null;
   host.clearPendingHighRisk();
-  host.lastManuallyUsedLightId = null;
+  // Inline confirmation cards belong to the old source's device set (§13); advanceAssistantEpoch
+  // would be broader than this switch, so clear the three AI-bound pending fields explicitly.
+  host.pendingDiffPreview = null;
+  host.pendingRoomGroupConfirm = null;
   host.pendingSuggestions = [];
+  host.lastManuallyUsedLightId = null;
   // The footer dialog lists the previous source's platform states, so it closes with the switch.
   app.connectionDetailsOpen = false;
   if ("isLongTailExpanded" in app) {
@@ -112,4 +121,10 @@ export function switchHome(host: SwitchHomeHost): void {
   host.aiProactiveSignature = null;
   host.isRefreshingProactive = false;
   host.proactiveRetryAfterMs = null;
+  // A confirmation armed for the previous home must not survive the switch (§13): its confirm
+  // click resolves the pending promise with `false` instead of issuing device writes against a
+  // device set that no longer exists in the newly selected home.
+  host.pendingDiffPreview = null;
+  host.pendingRoomGroupConfirm = null;
+  host.pendingSuggestions = [];
 }

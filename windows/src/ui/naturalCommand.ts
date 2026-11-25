@@ -410,6 +410,7 @@ export async function handleNaturalCommand(
           recordHabits: plan.source === "local" && !fromScheduled,
           learnAfterRun: host.settings.habitLearningEnabled && plan.source === "model",
           sourceRevision,
+          homeRevision: host.homeRevision,
         });
         if (hazardous.length > 0) {
           host.pendingSuggestions = ModelActionPolicy.chips(sanitized, null, "confirm:local", aliasedDevices, host.scenes, true);
