@@ -4,6 +4,11 @@ import { HaBlockedRequestError, getHaScopeLifecyclePhase, haConnectionScope } fr
 import type { HomeAssistantClient } from "./homeAssistant.js";
 import { MiotCommandMapper, miotShortName, propKeyString } from "./miCloudClient.js";
 import type { MiCloudClient, MiotSpecResolver } from "./miCloudClient.js";
+import {
+  isChannelPowerProperty,
+  isMultiKeySwitchSpec,
+  type MiCloudChannelWriteBatcher,
+} from "./miCloud/channelWriteBatcher.js";
 import { readMiotPower, type DeviceCommand, type SmartDevice, type SynthesizedHome } from "./models.js";
 
 export interface ExecuteOptions {
@@ -17,6 +22,11 @@ export interface ExecuteOptions {
    */
   readonly beforeSend?: () => void;
   readonly beforeFallback?: () => void | Promise<void>;
+  /**
+   * Re-checked right before a coalesced multi-channel batch is sent (after the 100 ms window) and
+   * again before cloud fallback. Returning false cancels that channel's write without touching the wire.
+   */
+  readonly stillAllowed?: () => boolean | Promise<boolean>;
 }
 
 /** The dispatch surface shared by all built-in sources (ADR-0020). */
@@ -99,11 +109,14 @@ export class HomeAssistantProvider implements HomeProvider {
 }
 
 export interface MiCloudProviderDependencies {
-  readonly client: Pick<MiCloudClient, "setProps" | "getProps" | "action"> & Partial<Pick<MiCloudClient, "runManualScene">>;
+  readonly client: Pick<MiCloudClient, "setProps" | "getProps" | "action"> &
+    Partial<Pick<MiCloudClient, "runManualScene" | "setPropVerdicts">>;
   readonly sceneForEntity?: (entityId: string) => import("./models.js").HomeScene | undefined;
   readonly specResolver: Pick<MiotSpecResolver, "resolve">;
   /** The card whose controls own this entity id, or undefined when no card does. */
   readonly deviceForEntity: (entityId: string) => SmartDevice | undefined;
+  readonly channelBatcher?: MiCloudChannelWriteBatcher;
+  readonly accountKey?: string;
 }
 
 export class MiCloudProvider implements HomeCommandProvider {
@@ -114,7 +127,7 @@ export class MiCloudProvider implements HomeCommandProvider {
   constructor(private readonly dependencies: MiCloudProviderDependencies) {}
 
   async execute(command: DeviceCommand, options: ExecuteOptions = {}): Promise<boolean | null> {
-    const { client, specResolver, deviceForEntity } = this.dependencies;
+    const { client, specResolver, deviceForEntity, channelBatcher, accountKey = "" } = this.dependencies;
     if (command.kind === "activateScene" && miSceneAccount(command.entityId)) {
       if (!client.runManualScene) throw new Error("Xiaomi scenes unavailable");
       return executeMiScene(
@@ -135,31 +148,54 @@ export class MiCloudProvider implements HomeCommandProvider {
     });
     const mapped = MiotCommandMapper.map(command, spec);
     const beforeFallback = options.beforeFallback ?? options.beforeSend;
-    options.beforeSend?.();
-    if (mapped.kind === "action") {
-      await client.action(mapped.call, beforeFallback, options.userInitiated, options.beforeSend);
-      return null;
+    const sendSingle = async (): Promise<boolean | null> => {
+      options.beforeSend?.();
+      if (mapped.kind === "action") {
+        await client.action(mapped.call, beforeFallback, options.userInitiated, options.beforeSend);
+        return null;
+      }
+      await client.setProps(mapped.writes, beforeFallback, options.userInitiated, options.beforeSend);
+      if (!options.readBackPower) return null;
+      const power = mapped.writes.find((write) => {
+        if (typeof write.value === "boolean") return true;
+        if (write.value !== 0 && write.value !== 1) return false;
+        const service = spec.services.find((s) => s.iid === write.siid);
+        const prop = service?.properties.find((p) => p.iid === write.piid);
+        const shortName = prop ? miotShortName(prop.type) : "";
+        return shortName === "on" || shortName === "heating";
+      });
+      if (!power) return null;
+      let read: Map<string, unknown>;
+      try {
+        read = await client.getProps([power]);
+      } catch (error) {
+        throw new PowerReadBackError(error);
+      }
+      const isOn = readMiotPower(read.get(propKeyString(power)));
+      // The write may have landed; the old row is no longer a trusted reading.
+      if (isOn === null) throw new PowerReadBackError(new Error(t("未能读回设备状态")));
+      return isOn;
+    };
+    if (
+      channelBatcher &&
+      !options.readBackPower &&
+      command.kind === "setSwitch" &&
+      mapped.kind === "setProps" &&
+      mapped.writes.length === 1 &&
+      isChannelPowerProperty(mapped.writes[0]!, spec) &&
+      isMultiKeySwitchSpec(spec)
+    ) {
+      return channelBatcher.enqueue({
+        accountKey,
+        property: mapped.writes[0]!,
+        spec,
+        client,
+        userInitiated: options.userInitiated,
+        beforeSend: options.beforeSend,
+        stillAllowed: options.stillAllowed,
+        executeSingle: sendSingle,
+      });
     }
-    await client.setProps(mapped.writes, beforeFallback, options.userInitiated, options.beforeSend);
-    if (!options.readBackPower) return null;
-    const power = mapped.writes.find((write) => {
-      if (typeof write.value === "boolean") return true;
-      if (write.value !== 0 && write.value !== 1) return false;
-      const service = spec.services.find((s) => s.iid === write.siid);
-      const prop = service?.properties.find((p) => p.iid === write.piid);
-      const shortName = prop ? miotShortName(prop.type) : "";
-      return shortName === "on" || shortName === "heating";
-    });
-    if (!power) return null;
-    let read: Map<string, unknown>;
-    try {
-      read = await client.getProps([power]);
-    } catch (error) {
-      throw new PowerReadBackError(error);
-    }
-    const isOn = readMiotPower(read.get(propKeyString(power)));
-    // The write may have landed; the old row is no longer a trusted reading.
-    if (isOn === null) throw new PowerReadBackError(new Error(t("未能读回设备状态")));
-    return isOn;
+    return sendSingle();
   }
 }

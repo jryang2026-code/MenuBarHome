@@ -106,7 +106,11 @@ function round2(value: number): number {
   return Math.round(value * 100) / 100;
 }
 
-export function buildSmoothCubicBezierPath(points: ReadonlyArray<{ readonly x: number; readonly y: number }>): string {
+export function buildSmoothCubicBezierPath(
+  points: ReadonlyArray<{ readonly x: number; readonly y: number }>,
+  minY = PLOT_TOP,
+  maxY = PLOT_BOTTOM,
+): string {
   if (points.length === 0) return "";
   const first = points[0]!;
   if (points.length === 1) {
@@ -122,9 +126,9 @@ export function buildSmoothCubicBezierPath(points: ReadonlyArray<{ readonly x: n
     const minX = Math.min(p1.x, p2.x);
     const maxX = Math.max(p1.x, p2.x);
     const cp1x = round2(clamp(p1.x + (p2.x - p0.x) * tension, minX, maxX));
-    const cp1y = round2(clamp(p1.y + (p2.y - p0.y) * tension, PLOT_TOP, PLOT_BOTTOM));
+    const cp1y = round2(clamp(p1.y + (p2.y - p0.y) * tension, minY, maxY));
     const cp2x = round2(clamp(p2.x - (p3.x - p1.x) * tension, minX, maxX));
-    const cp2y = round2(clamp(p2.y - (p3.y - p1.y) * tension, PLOT_TOP, PLOT_BOTTOM));
+    const cp2y = round2(clamp(p2.y - (p3.y - p1.y) * tension, minY, maxY));
     cmds.push(`C ${cp1x} ${cp1y}, ${cp2x} ${cp2y}, ${round2(p2.x)} ${round2(p2.y)}`);
   }
   return cmds.join(" ");
@@ -708,6 +712,191 @@ function computePlotGeometry(
   };
 }
 
+export interface SparklineGeometry {
+  readonly metric: SensorMetricKind;
+  readonly coords: readonly CubicPoint[];
+  readonly yMinDisplay: number;
+  readonly yMaxDisplay: number;
+  readonly observedMin: number;
+  readonly observedMax: number;
+  readonly latest: number;
+  readonly observedCount: number;
+  readonly linePath: string;
+  readonly areaPath: string;
+  readonly rangeLabel: string;
+}
+
+const SPARKLINE_WIDTH = 104;
+const SPARKLINE_HEIGHT = 20;
+const SPARKLINE_PAD = 2;
+
+export function sparklineMinRange(metric: SensorMetricKind, tempUnit: TemperatureUnit = getTemperatureUnit()): number {
+  switch (metric) {
+    case "temperature":
+      return tempUnit === "fahrenheit" ? 9 : 5;
+    case "humidity":
+      return 10;
+    case "pm25":
+      return 20;
+    case "illuminance":
+      return 50;
+  }
+}
+
+function formatSparklineRange(
+  minRaw: number,
+  maxRaw: number,
+  metric: SensorMetricKind,
+  tempUnit: TemperatureUnit,
+): string {
+  const lo = formatSensorMetricValue(minRaw, metric, tempUnit);
+  const hi = formatSensorMetricValue(maxRaw, metric, tempUnit);
+  if (lo === hi) return hi;
+  if (metric === "temperature") {
+    const loNum = formatTemperatureValue(minRaw, tempUnit, 1);
+    const hiNum = formatTemperatureValue(maxRaw, tempUnit, 1);
+    return `${loNum}–${hiNum}${temperatureSymbol(tempUnit)}`;
+  }
+  if (metric === "humidity") {
+    return `${Math.round(minRaw)}–${Math.round(maxRaw)}%`;
+  }
+  return `${lo}–${hi}`;
+}
+
+export function computeSparklineGeometry(
+  points: readonly SensorHistoryPoint[],
+  metric: SensorMetricKind,
+  tempUnit: TemperatureUnit = getTemperatureUnit(),
+  width = SPARKLINE_WIDTH,
+  height = SPARKLINE_HEIGHT,
+  pad = SPARKLINE_PAD,
+): SparklineGeometry | null {
+  const observed: Array<{ readonly index: number; readonly raw: number; readonly disp: number }> = [];
+  let rawMin = Number.POSITIVE_INFINITY;
+  let rawMax = Number.NEGATIVE_INFINITY;
+  let dispMinObs = Number.POSITIVE_INFINITY;
+  let dispMaxObs = Number.NEGATIVE_INFINITY;
+
+  points.forEach((pt, index) => {
+    const raw = pointMetricValue(pt, metric);
+    if (raw === null || !Number.isFinite(raw)) return;
+    const disp = toDisplayMetricNumber(raw, metric, tempUnit);
+    observed.push({ index, raw, disp });
+    rawMin = Math.min(rawMin, raw);
+    rawMax = Math.max(rawMax, raw);
+    dispMinObs = Math.min(dispMinObs, disp);
+    dispMaxObs = Math.max(dispMaxObs, disp);
+  });
+
+  if (observed.length === 0 || !Number.isFinite(rawMin) || !Number.isFinite(rawMax)) {
+    return null;
+  }
+
+  const minRange = sparklineMinRange(metric, tempUnit);
+  const dispSpanObs = dispMaxObs - dispMinObs;
+  let yMinDisplay: number;
+  let yMaxDisplay: number;
+  if (dispSpanObs < minRange) {
+    const mid = (dispMinObs + dispMaxObs) / 2;
+    yMinDisplay = mid - minRange / 2;
+    yMaxDisplay = mid + minRange / 2;
+  } else {
+    const padding = dispSpanObs * 0.12;
+    yMinDisplay = dispMinObs - padding;
+    yMaxDisplay = dispMaxObs + padding;
+  }
+  if (metric !== "temperature") {
+    yMinDisplay = Math.max(0, yMinDisplay);
+  }
+  if (metric === "humidity") {
+    yMaxDisplay = Math.min(100, yMaxDisplay);
+    if (yMaxDisplay - yMinDisplay < minRange) {
+      if (yMinDisplay <= 0) yMaxDisplay = Math.min(100, minRange);
+      else if (yMaxDisplay >= 100) yMinDisplay = Math.max(0, 100 - minRange);
+    }
+  }
+
+  const span = Math.max(0.1, yMaxDisplay - yMinDisplay);
+  const innerW = Math.max(1, width - pad * 2);
+  const innerH = Math.max(1, height - pad * 2);
+  const slotDenom = Math.max(1, points.length - 1);
+
+  const coords: CubicPoint[] = observed.map((item) => {
+    const x =
+      points.length <= 1
+        ? round2(pad + innerW / 2)
+        : round2(pad + (item.index / slotDenom) * innerW);
+    const ratio = clamp((item.disp - yMinDisplay) / span, 0, 1);
+    const y = round2(pad + innerH * (1 - ratio));
+    return { x, y, slotIndex: item.index };
+  });
+
+  const linePath = buildSmoothCubicBezierPath(coords, pad, height - pad);
+  const areaPath =
+    coords.length >= 2
+      ? `${linePath} L ${coords[coords.length - 1]!.x} ${height - pad} L ${coords[0]!.x} ${height - pad} Z`
+      : "";
+
+  return {
+    metric,
+    coords,
+    yMinDisplay,
+    yMaxDisplay,
+    observedMin: rawMin,
+    observedMax: rawMax,
+    latest: observed[observed.length - 1]!.raw,
+    observedCount: observed.length,
+    linePath,
+    areaPath,
+    rangeLabel: formatSparklineRange(rawMin, rawMax, metric, tempUnit),
+  };
+}
+
+/**
+ * Renders tiny read-only 24-hour hover sparklines from the existing local `SensorHistoryStore`.
+ * Display only: never records samples or triggers remote history fetches.
+ */
+export function renderSensorHoverSparklineLayer(
+  dev: SmartDevice,
+  facets: readonly FacetControl[] = [],
+  escapeHtml: (value: string) => string,
+  compact = false,
+  store: SensorHistoryStore = sharedSensorHistoryStore(),
+): string {
+  if (!dev.isOnline || dev.telemetryStale) return "";
+  const points24 = store.points(dev.id, "24h");
+  const metrics = availableSensorMetrics(dev, facets, points24);
+  if (metrics.length === 0) return "";
+
+  const tempUnit = getTemperatureUnit();
+  const cards: string[] = [];
+  for (const metric of metrics) {
+    const geom = computeSparklineGeometry(points24, metric, tempUnit);
+    if (!geom) continue;
+    const accent = metricAccentColor(metric, geom.latest);
+    const isPrimary = cards.length === 0;
+    const svgInner =
+      geom.coords.length >= 2
+        ? `<path d="${geom.areaPath}" fill="${accent}" fill-opacity="0.18"/>
+           <path d="${geom.linePath}" fill="none" stroke="${accent}" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+           <circle cx="${geom.coords[geom.coords.length - 1]!.x}" cy="${geom.coords[geom.coords.length - 1]!.y}" r="2.2" fill="${accent}"/>`
+        : `<line x1="${SPARKLINE_PAD}" y1="${geom.coords[0]!.y}" x2="${SPARKLINE_WIDTH - SPARKLINE_PAD}" y2="${geom.coords[0]!.y}" stroke="${accent}" stroke-opacity="0.45" stroke-width="1.1" stroke-dasharray="3 2.5"/>
+           <circle cx="${geom.coords[0]!.x}" cy="${geom.coords[0]!.y}" r="2.2" fill="${accent}"/>`;
+
+    cards.push(
+      `<div class="cc-sensor-sparkline ${isPrimary ? "is-primary" : ""} ${compact ? "is-compact" : ""}" data-sensor-sparkline="${escapeHtml(dev.id)}" data-sparkline-metric="${metric}">
+        <div class="cc-sensor-sparkline-head">
+          <span class="cc-sensor-sparkline-win" style="color:${accent}">24h</span>
+          <span class="cc-sensor-sparkline-range">${escapeHtml(geom.rangeLabel)}</span>
+        </div>
+        <svg class="cc-sensor-sparkline-svg" viewBox="0 0 ${SPARKLINE_WIDTH} ${SPARKLINE_HEIGHT}" width="${SPARKLINE_WIDTH}" height="${SPARKLINE_HEIGHT}" preserveAspectRatio="none">${svgInner}</svg>
+      </div>`,
+    );
+  }
+  if (cards.length === 0) return "";
+  return `<div class="cc-sensor-sparkline-layer" aria-hidden="true">${cards.join("")}</div>`;
+}
+
 export function renderSensorHistorySection(
   dev: SmartDevice,
   facets: readonly FacetControl[] = [],
@@ -1002,6 +1191,40 @@ export function bindSensorHistoryEvents(host: MenuMijiaWindowsApp): void {
         e.stopPropagation();
         toggleSensorExpand(card, true);
       });
+
+      const resolveHoverSparklineMetric = (target: EventTarget | null): string | null => {
+        if (host.isEditingLayout || host.valuesAreStale || card.classList.contains("is-expanded")) {
+          return null;
+        }
+        const primaryEl = card.querySelector<HTMLElement>(".cc-sensor-sparkline.is-primary");
+        const primaryMetric = primaryEl?.dataset.sparklineMetric ?? null;
+        if (!primaryMetric) return null;
+        if (closestHtmlTarget(target, ".cc-hum-ring, .cc-sensor-hum, .cc-hum-bar")) {
+          const humEl = card.querySelector<HTMLElement>('.cc-sensor-sparkline[data-sparkline-metric="humidity"]');
+          if (humEl) return "humidity";
+        }
+        if (closestHtmlTarget(target, ".cc-sensor-temp, .cc-sensor-main, .cc-sensor-wide, .cc-tile-body, .cc-tile-status")) {
+          const tempEl = card.querySelector<HTMLElement>('.cc-sensor-sparkline[data-sparkline-metric="temperature"]');
+          if (tempEl) return "temperature";
+          return primaryMetric;
+        }
+        return null;
+      };
+      const onSparklineOver = (e: Event) => {
+        const metric = resolveHoverSparklineMetric(e.target);
+        if (metric) {
+          card.dataset.sparklineActive = metric;
+        } else {
+          delete card.dataset.sparklineActive;
+        }
+      };
+      const onSparklineLeave = () => {
+        delete card.dataset.sparklineActive;
+      };
+      card.addEventListener("mouseover", onSparklineOver);
+      card.addEventListener("pointermove", onSparklineOver);
+      card.addEventListener("mouseleave", onSparklineLeave);
+      card.addEventListener("pointerleave", onSparklineLeave);
     });
 
   host.root

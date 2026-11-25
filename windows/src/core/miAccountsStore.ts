@@ -1,6 +1,11 @@
 import { miCloudRateLimiter } from "./miCloud/rateLimiter.js";
 import { executeMiScene, miSceneAccount, miSceneRows, refreshMiScenes, type MiSceneSnapshot } from "./miCloud/scenes.js";
 import { discoverMiHome } from "./miCloud/discovery.js";
+import {
+  isChannelPowerProperty,
+  isMultiKeySwitchSpec,
+  type MiCloudChannelWriteBatcher,
+} from "./miCloud/channelWriteBatcher.js";
 import { PowerReadBackError, type ExecuteOptions, type HomeCommandProvider } from "./homeProvider.js";
 import { readMiotPower } from "./models.js";
 import { tr3, type LanguagePreference } from "./i18n.js";
@@ -1504,6 +1509,7 @@ export class MultiAccountMiCloudProvider implements HomeCommandProvider {
       readonly transport: HttpTransport;
       readonly storage?: Storage | null;
       readonly clientForSession?: (session: MiSession) => MiCloudClient;
+      readonly channelBatcher?: MiCloudChannelWriteBatcher;
     },
   ) {}
 
@@ -1572,7 +1578,7 @@ export class MultiAccountMiCloudProvider implements HomeCommandProvider {
       const client = this.dependencies.clientForSession?.(account.session) ??
         new MiCloudClient(account.session, this.dependencies.transport);
       const beforeFallback = options.beforeFallback ?? options.beforeSend;
-      try {
+      const sendSingle = async (): Promise<boolean | null> => {
         if (write.kind === "action") {
           await client.action(write.call, beforeFallback, options.userInitiated, options.beforeSend);
           return null;
@@ -1590,6 +1596,29 @@ export class MultiAccountMiCloudProvider implements HomeCommandProvider {
         const isOn = readMiotPower(read.get(propKeyString(power)));
         if (isOn === null) throw new PowerReadBackError(new Error("未能读回设备状态"));
         return isOn;
+      };
+      try {
+        if (
+          this.dependencies.channelBatcher &&
+          !options.readBackPower &&
+          command.kind === "setSwitch" &&
+          write.kind === "setProps" &&
+          write.writes.length === 1 &&
+          isChannelPowerProperty(write.writes[0]!, spec) &&
+          isMultiKeySwitchSpec(spec)
+        ) {
+          return await this.dependencies.channelBatcher.enqueue({
+            accountKey: account.id,
+            property: write.writes[0]!,
+            spec,
+            client,
+            userInitiated: options.userInitiated,
+            beforeSend: options.beforeSend,
+            stillAllowed: options.stillAllowed,
+            executeSingle: sendSingle,
+          });
+        }
+        return await sendSingle();
       } catch (error) {
         if (error instanceof MiCloudError && error.kind === "sessionExpired") {
           sawExpired = true;
