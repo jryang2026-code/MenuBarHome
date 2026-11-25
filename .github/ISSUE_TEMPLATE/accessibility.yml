@@ -1,0 +1,47 @@
+name: 无障碍障碍反馈 / Accessibility Barrier
+description: 键盘导航、读屏器（VoiceOver / Narrator / NVDA）、减弱动态效果或视觉对比度问题
+labels: ["accessibility", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈无障碍体验问题。**不需要披露个人残障情况，也不强制要求提供截图或录屏。**
+        若附带截图或日志，请先遮盖设备名、局域网 IP、DID 与令牌等敏感信息。
+  - type: dropdown
+    id: platform
+    attributes:
+      label: 平台 / Platform
+      options:
+        - macOS
+        - Windows
+        - 两者都有 / Both
+    validations:
+      required: true
+  - type: input
+    id: assistive-tech
+    attributes:
+      label: 使用的辅助技术或输入方式 / Assistive technology or input method
+      description: 例如：纯键盘、VoiceOver、Windows 讲述人 (Narrator)、NVDA、放大器、减弱动态效果（选填）
+    validations:
+      required: false
+  - type: input
+    id: versions
+    attributes:
+      label: 系统与应用版本 / OS & App version
+      description: 例如：macOS 26.1 / MenuBarHome 1.4.0（可在 设置 → 关于 查看，选填）
+    validations:
+      required: false
+  - type: textarea
+    id: barrier
+    attributes:
+      label: 遇到的障碍与期望行为 / Barrier & expected behavior
+      description: 请描述你正在尝试完成的操作、所在界面（面板 / 设置 / 详情抽屉）、实际发生的情况以及期望的行为
+    validations:
+      required: true
+  - type: textarea
+    id: extra
+    attributes:
+      label: 补充信息或临时替代方案 / Additional context (optional)
+      description: 可选：复现步骤、读屏器实际朗读内容，或可选截图
+    validations:
+      required: false
