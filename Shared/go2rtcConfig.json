@@ -18,6 +18,8 @@
     "mjpeg",
     "exec",
     "ffmpeg",
-    "xiaomi"
+    "xiaomi",
+    "onvif",
+    "tapo"
   ]
 }

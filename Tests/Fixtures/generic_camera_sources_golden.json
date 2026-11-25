@@ -1,0 +1,58 @@
+{
+  "cases": [
+    {
+      "input": {
+        "id": "00000000-0000-4000-8000-000000000001",
+        "name": "rtsp",
+        "kind": "rtsp",
+        "host": "camera.local",
+        "path": "/live/main",
+        "subStream": "/live/sub?unicast=1"
+      },
+      "main": "rtsp://{user}:{pass}@camera.local:554/live/main#backchannel=0",
+      "sub": "rtsp://{user}:{pass}@camera.local:554/live/sub?unicast=1#backchannel=0"
+    },
+    {
+      "input": {
+        "id": "00000000-0000-4000-8000-000000000002",
+        "name": "onvif",
+        "kind": "onvif",
+        "host": "camera.local",
+        "port": 2020
+      },
+      "main": "onvif://{user}:{pass}@camera.local:2020#backchannel=0",
+      "sub": "onvif://{user}:{pass}@camera.local:2020?subtype=1#backchannel=0"
+    },
+    {
+      "input": {
+        "id": "00000000-0000-4000-8000-000000000003",
+        "name": "isapi",
+        "kind": "isapi",
+        "host": "camera.local",
+        "channel": 3
+      },
+      "main": "rtsp://{user}:{pass}@camera.local:554/Streaming/Channels/301#backchannel=0",
+      "sub": "rtsp://{user}:{pass}@camera.local:554/Streaming/Channels/302#backchannel=0"
+    },
+    {
+      "input": {
+        "id": "00000000-0000-4000-8000-000000000004",
+        "name": "dahua",
+        "kind": "dahua",
+        "host": "camera.local"
+      },
+      "main": "rtsp://{user}:{pass}@camera.local:554/cam/realmonitor?channel=1&subtype=0#backchannel=0",
+      "sub": "rtsp://{user}:{pass}@camera.local:554/cam/realmonitor?channel=1&subtype=1#backchannel=0"
+    },
+    {
+      "input": {
+        "id": "00000000-0000-4000-8000-000000000005",
+        "name": "tapo",
+        "kind": "tapo",
+        "host": "camera.local"
+      },
+      "main": "tapo://{pass}@camera.local",
+      "sub": "tapo://{pass}@camera.local?subtype=1"
+    }
+  ]
+}

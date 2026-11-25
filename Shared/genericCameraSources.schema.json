@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Generic camera source",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "name", "kind", "host"],
+  "properties": {
+    "id": { "type": "string", "format": "uuid" },
+    "name": { "type": "string", "minLength": 1 },
+    "kind": { "enum": ["rtsp", "onvif", "isapi", "dahua", "tapo"] },
+    "host": { "type": "string", "minLength": 1, "description": "Bare hostname or IP address, without URL user information." },
+    "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+    "path": { "type": "string", "pattern": "^/(?!/)[^#]*$", "description": "RTSP request path and optional query, without authority or fragment." },
+    "channel": { "type": "integer", "minimum": 1, "maximum": 999, "default": 1 },
+    "mainStream": { "type": "string", "description": "Main stream override. Same-host RTSP path, ONVIF profile index or token, or Tapo subtype (0/1)." },
+    "subStream": { "type": "string", "description": "Substream override in the same format as mainStream." }
+  },
+  "if": { "properties": { "kind": { "const": "rtsp" } } },
+  "else": { "not": { "required": ["path"] } }
+}
