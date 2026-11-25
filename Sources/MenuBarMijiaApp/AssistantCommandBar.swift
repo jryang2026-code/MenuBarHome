@@ -908,8 +908,7 @@ struct AssistantSuggestionsRow: View {
     let store: HomeStore
 
     var body: some View {
-        let isJev = ModelIntentResolver.isSystemOneModel(store.assistantConfig.model)
-        return ScrollView(.horizontal, showsIndicators: false) {
+        ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 6) {
                 if store.proactiveSuggestionsEnabled {
                     Button {
@@ -924,7 +923,7 @@ struct AssistantSuggestionsRow: View {
                                 Image(systemName: "wand.and.stars")
                                     .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
                             }
-                            Text(isJev ? L10n.tr("Jev 猜你想做", "Jev Suggests") : L10n.tr("AI 猜你想做", "AI Suggests"))
+                            Text(L10n.tr("猜你想做", "Suggestions"))
                                 .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
                         }
                         .foregroundStyle(Color.accentColor)

@@ -813,7 +813,7 @@ public struct DeviceCardView: View {
                     Text(L10n.tr("实时功率", "Live Power"))
                         .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
                         .foregroundStyle(.secondary)
-                    Text(String(format: "%.0f W", spec.powerWatts ?? 0))
+                    Text(spec.powerWatts.map { String(format: "%.0f W", $0) } ?? "—")  // No meter is not 0 W.
                         .font(.system(size: DesignTokens.TypeSize.body, weight: .semibold, design: .rounded))
                         .monospacedDigit()
                 }

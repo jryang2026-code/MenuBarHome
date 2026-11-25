@@ -97,8 +97,8 @@ const SETTINGS_TABS: ReadonlyArray<SettingsTabSpec> = [
     color: "#737885",
     subtitle: () =>
       tr3(
-        "菜单栏外观、设备卡片、面板主题与快捷键。",
-        "選單列外觀、裝置卡片、面板主題與快速鍵。",
+        "托盘外观、设备卡片、面板主题与快捷键。",
+        "托盤外觀、裝置卡片、面板主題與快速鍵。",
         "Appearance, device cards, panel theme, and shortcuts.",
       ),
   },
@@ -319,7 +319,7 @@ export interface SettingsViewContext {
     );
     return `
       <div class="cc-sheet-backdrop">
-        <div class="cc-sheet cc-settings-sheet" role="dialog" aria-modal="true" aria-label="${t("偏好设置")}">
+        <div class="cc-sheet cc-settings-sheet" role="dialog" aria-modal="true" aria-label="${ctx.escapeHtml(tr3("设置", "設定", "Settings"))}">
           <button class="cc-circle-btn is-small cc-settings-close-btn" id="btn-close-settings" title="${t("返回控制中心")}" aria-label="${t("返回控制中心")}">
             ${SF_ICONS.xmark}
           </button>
@@ -335,7 +335,7 @@ export interface SettingsViewContext {
                     type="search"
                     autocomplete="off"
                     placeholder="${ctx.escapeHtml(searchPlaceholder)}"
-                    aria-label="${ctx.escapeHtml(tr3("搜索偏好设置", "搜尋偏好設定", "Search Preferences"))}"
+                    aria-label="${ctx.escapeHtml(tr3("搜索设置", "搜尋設定", "Search Settings"))}"
                   />
                   <button
                     type="button"
@@ -1176,7 +1176,7 @@ function renderAssistantPanel(ctx: SettingsViewContext): string {
     <div class="cc-field" data-settings-anchor="habitMemory">
       <label class="cc-checkbox">
         <input type="checkbox" id="settings-habit" ${ctx.settings.habitLearningEnabled ? "checked" : ""} />
-        <span>${t("自动记住自然语言习惯（相同表达下次 0ms 本地直达）")}</span>
+        <span>${t("自动记住自然语言习惯（相同说法下次直接在本地执行）")}</span>
       </label>
       <div data-settings-anchor="habitShare">
         <label class="cc-checkbox">

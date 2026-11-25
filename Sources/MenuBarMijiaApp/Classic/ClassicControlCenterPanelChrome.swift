@@ -894,7 +894,7 @@ extension ClassicControlCenterPanel {
                     .foregroundStyle(.primary)
                 Text(
                     store.isDualSourceActive
-                        ? L10n.tr("请检查两端配置，或在偏好设置中查看连接状态", "Check both configurations, or review connection status in Preferences")
+                        ? L10n.tr("请检查两端配置，或在设置中查看连接状态", "Check both configurations, or review connection status in Settings")
                         : (disconnectedEmptyBackend == .xiaomiCloud
                             ? L10n.tr("无需额外部署服务器，使用手机「米家」App 扫码即可同步设备", "Scan with the Mi Home app on your phone to sync devices without a server")
                             : L10n.tr("点击下方按钮配置服务器地址与令牌，或切换为手机米家扫码直连", "Configure your server URL and token below, or switch to Xiaomi Cloud QR login"))
@@ -913,7 +913,7 @@ extension ClassicControlCenterPanel {
                     Button {
                         presentSettingsWindow()
                     } label: {
-                        Text(L10n.tr("偏好设置", "Preferences"))
+                        Text(L10n.tr("设置", "Settings"))
                     }
                     .buttonStyle(ClassicPillActionButtonStyle())
                 }
@@ -941,7 +941,7 @@ extension ClassicControlCenterPanel {
                     Button {
                         presentSettingsWindow()
                     } label: {
-                        Text(L10n.tr("偏好设置", "Preferences"))
+                        Text(L10n.tr("设置", "Settings"))
                     }
                     .buttonStyle(ClassicPillActionButtonStyle())
                 }
@@ -951,10 +951,7 @@ extension ClassicControlCenterPanel {
                 Text(L10n.tr("同步完成，但没有拉取到可显示的设备", "Synced, but no devices to show"))
                     .font(.system(size: DesignTokens.TypeSize.body, weight: .semibold))
                     .foregroundStyle(.primary)
-                Text(L10n.tr(
-                    "请确认手机米家 App 里这个账号能看到设备（被共享的家庭也算）。仍然为空，请在偏好设置里「复制诊断信息」反馈。",
-                    "Check that this account can see devices in the Mi Home app (shared homes included). If it is still empty, use Copy Diagnostics in Preferences and report it."
-                ))
+                Text(EmptyPanelDiagnosisPresenter.syncedButEmptyDetail(store: store))
                     .font(.system(size: DesignTokens.TypeSize.caption))
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -967,7 +964,7 @@ extension ClassicControlCenterPanel {
                     Button {
                         presentSettingsWindow()
                     } label: {
-                        Text(L10n.tr("偏好设置", "Preferences"))
+                        Text(L10n.tr("设置", "Settings"))
                     }
                     .buttonStyle(ClassicPillActionButtonStyle())
                 }

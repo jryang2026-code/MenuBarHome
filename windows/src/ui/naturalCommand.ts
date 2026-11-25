@@ -74,14 +74,14 @@ export async function handleNaturalCommand(
     if (query) {
       if (host.isResolvingIntent) host.advanceAssistantEpoch();
       if (delaySpec) {
-        host.replyBanner = { text: t("定时查询仅支持查看当前状态"), source: t("0ms 本地直达"), isError: true };
+        host.replyBanner = { text: t("定时查询仅支持查看当前状态"), source: t("本地直达"), isError: true };
         host.render();
         return;
       }
       const plan = answerStateQuery(query, withAliases(host.layout, host.devices));
       host.replyBanner = plan
-        ? { text: plan.reply, source: t("0ms 本地直达") }
-        : { text: t("当前快照没有可回答的状态"), source: t("0ms 本地直达"), isError: true };
+        ? { text: plan.reply, source: t("本地直达") }
+        : { text: t("当前快照没有可回答的状态"), source: t("本地直达"), isError: true };
       host.render();
       return;
     }
@@ -102,7 +102,7 @@ export async function handleNaturalCommand(
       if (count < 0) return;
       host.replyBanner = {
         text: count > 0 ? t("已取消 {count} 项定时指令", { count: count }) : t("当前没有待执行的定时指令"),
-        source: t("0ms 本地直达"),
+        source: t("本地直达"),
       };
       host.render();
       return;
@@ -162,7 +162,7 @@ export async function handleNaturalCommand(
             host.pendingSuggestions = [];
             host.replyBanner = {
               text: resolved.reply || t("无法找到指令对应的设备"),
-              source: t("0ms 本地直达"),
+              source: t("本地直达"),
             };
             host.render();
             return;
@@ -229,7 +229,7 @@ export async function handleNaturalCommand(
       const aliasedDevices = withAliases(host.layout, host.devices);
       const localPlan = LocalIntentParser.parse(trimmed, aliasedDevices, host.scenes, localParseOptions(host));
       let plan: IntentPlan | null = localPlan;
-      let sourceLabel = t("0ms 本地直达");
+      let sourceLabel = t("本地直达");
 
       if (
         (!plan || (plan.intents.length === 0 && plan.suggestions.length === 0)) &&

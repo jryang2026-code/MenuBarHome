@@ -19,7 +19,9 @@ struct MoodActionsRow: View {
     var body: some View {
         HStack {
             Button {
-                roomId = rooms.first?.id ?? ""
+                // Start on the room being viewed; the first room is only a fallback.
+                let viewing = store.selectedRoomId
+                roomId = rooms.first(where: { $0.id == viewing })?.id ?? rooms.first?.id ?? ""
                 name = ""
                 isCapturing = true
             } label: {
@@ -32,13 +34,18 @@ struct MoodActionsRow: View {
                         ForEach(rooms) { room in Text(room.name).tag(room.id) }
                     }
                     TextField(L10n.tr("氛围名称", "Mood Name"), text: $name)
-                    Button(L10n.tr("保存", "Save")) {
-                        if store.captureMood(name: name, roomId: roomId) {
-                            isCapturing = false
+                    HStack {
+                        Spacer()
+                        Button(L10n.tr("取消", "Cancel")) { isCapturing = false }
+                            .keyboardShortcut(.cancelAction)
+                        Button(L10n.tr("保存", "Save")) {
+                            if store.captureMood(name: name, roomId: roomId) {
+                                isCapturing = false
+                            }
                         }
+                        .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        .keyboardShortcut(.defaultAction)
                     }
-                    .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    .keyboardShortcut(.defaultAction)
                 }
                 .padding(14)
                 .frame(width: 250)

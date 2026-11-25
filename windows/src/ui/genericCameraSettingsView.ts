@@ -41,12 +41,15 @@ interface Draft {
   testing: boolean;
   testStatus: string | null;
   testPreviewDataUrl: string | null;
+  /** Camera whose Remove was clicked once; the second click deletes it and its saved credentials. */
+  armedDeleteId: string | null;
 }
 
 const draftsByHost = new WeakMap<object, Draft>();
 const emptyDraft = (): Draft => ({
   open: false, editingId: null, name: "", kind: "rtsp", host: "", port: "", path: "", channel: "1",
   username: "", password: "", confirmNonLocal: false, error: null, testing: false, testStatus: null, testPreviewDataUrl: null,
+  armedDeleteId: null,
 });
 const getDraft = (host: object): Draft => {
   let d = draftsByHost.get(host);
@@ -72,7 +75,7 @@ export function renderGenericCamerasSettingsBlock(
 
   const listHtml = cameras.length === 0
     ? `<p class="cc-field-hint" data-generic-cameras-empty style="margin:4px 0 6px;">${esc(tr("尚未添加通用摄像机（只读实时预览，凭据仅存于 Windows 凭据管理器）。", "尚未新增通用攝影機（唯讀即時預覽，憑證僅存於 Windows 憑證管理員）。", "No generic cameras yet (read-only live view; credentials stay in Windows Credential Manager).", lang))}</p>`
-    : cameras.map((c) => `<div class="cc-settings-account-card" data-generic-camera-row="${esc(c.id)}" style="padding:7px 10px;margin-bottom:6px;border-radius:10px;background:rgba(128,128,128,0.08);border:1px solid rgba(128,128,128,0.14);"><div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;"><strong style="font-size:12.5px;">${esc(c.name)}</strong><span class="cc-inline-pill" style="font-size:11px;padding:1px 6px;">${esc(kindLabel(c.kind, lang))}</span><span class="cc-field-hint" style="margin:0;font-size:11.5px;">${esc(c.port ? `${c.host}:${c.port}` : c.host)}</span><div style="margin-left:auto;display:flex;gap:6px;"><button type="button" class="cc-inline-pill" data-generic-cam-edit="${esc(c.id)}">${esc(tr("编辑", "編輯", "Edit", lang))}</button><button type="button" class="cc-btn-danger" data-generic-cam-delete="${esc(c.id)}" style="padding:2px 8px;font-size:11.5px;">${esc(tr("删除", "刪除", "Remove", lang))}</button></div></div></div>`).join("");
+    : cameras.map((c) => `<div class="cc-settings-account-card" data-generic-camera-row="${esc(c.id)}" style="padding:7px 10px;margin-bottom:6px;border-radius:10px;background:rgba(128,128,128,0.08);border:1px solid rgba(128,128,128,0.14);"><div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;"><strong style="font-size:12.5px;">${esc(c.name)}</strong><span class="cc-inline-pill" style="font-size:11px;padding:1px 6px;">${esc(kindLabel(c.kind, lang))}</span><span class="cc-field-hint" style="margin:0;font-size:11.5px;">${esc(c.port ? `${c.host}:${c.port}` : c.host)}</span><div style="margin-left:auto;display:flex;gap:6px;"><button type="button" class="cc-inline-pill" data-generic-cam-edit="${esc(c.id)}">${esc(tr("编辑", "編輯", "Edit", lang))}</button><button type="button" class="cc-btn-danger" data-generic-cam-delete="${esc(c.id)}" style="padding:2px 8px;font-size:11.5px;" title="${esc(tr("同时清除这台摄像机保存的登录凭据", "同時清除這台攝影機儲存的登入憑證", "Also deletes this camera's saved credentials", lang))}">${esc(d.armedDeleteId === c.id ? tr("再点一次确认移除", "再點一次確認移除", "Click again to remove", lang) : tr("删除", "刪除", "Remove", lang))}</button></div></div></div>`).join("");
 
   const formHtml = !d.open ? "" : `<div id="generic-camera-form" data-generic-camera-form style="margin-top:8px;padding:10px;border-radius:10px;background:rgba(128,128,128,0.08);display:flex;flex-direction:column;gap:8px;">
     <div class="cc-field-row" style="gap:8px;">
@@ -165,6 +168,13 @@ export function bindGenericCameraSettingsEvents(host: GenericCameraSettingsHost)
   sec.querySelectorAll<HTMLButtonElement>("[data-generic-cam-delete]").forEach((btn) => on(btn, "click", (el) => {
     const id = el.dataset.genericCamDelete;
     if (!id) return;
+    // Removing also wipes the saved credentials, so the first click only arms it (as AI provider removal does).
+    if (d.armedDeleteId !== id) {
+      d.armedDeleteId = id;
+      host.render();
+      return;
+    }
+    d.armedDeleteId = null;
     void secureStoreDelete(genericCameraCredentialName(id)).catch(() => {}).finally(() => {
       host.settings.genericCameras = (host.settings.genericCameras ?? []).filter((c) => c.id !== id);
       if (d.editingId === id) Object.assign(d, emptyDraft());

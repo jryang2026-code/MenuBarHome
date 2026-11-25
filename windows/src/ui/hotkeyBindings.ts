@@ -405,7 +405,7 @@ export async function executeCustomHotkeyBinding(
     }
     const intents: DeviceIntent[] = [{ targetId: scene.id, operation: { kind: "activateScene" } }];
     const reply = IntentReply.describe(intents, host.devices, host.scenes);
-    await host.executeIntents(intents, reply, t("0ms 本地直达"), { recordHabits: true });
+    await host.executeIntents(intents, reply, t("本地直达"), { recordHabits: true });
     const message = host.replyBanner?.text ?? reply;
     await notifyIfPanelHidden(message);
     if (host.replyBanner?.isError) {

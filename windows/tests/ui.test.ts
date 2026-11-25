@@ -7131,7 +7131,7 @@ describe("Tray feedback, status, search and keyboard (UX-03, UX-04, UX-19, UX-20
     app.cameraLive.liveCameraHidden = true;
     app.render();
     const standbyCard = element('.win-island--top details.win-camera-card');
-    assert.match(standbyCard.textContent ?? "", /120s/);
+    assert.match(standbyCard.textContent ?? "", /连接保持中/);
   });
 
   it("closes an open subpage on Ctrl+F or / search shortcuts and reveals filtered-out camera drawers from Top Island", async () => {

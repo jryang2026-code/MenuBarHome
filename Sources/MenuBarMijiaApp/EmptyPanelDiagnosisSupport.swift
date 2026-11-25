@@ -66,7 +66,7 @@ enum EmptyPanelDiagnosisPresenter {
                     "请先在手机「米家」App 中确认已创建或接受共享家庭，再回来重新同步。",
                     "Check the Mi Home app on your phone to confirm a home or shared home exists for this account, then sync again."
                 ),
-                actionTitle: L10n.tr("打开米家确认家庭", "Check Homes in Mi Home"),
+                actionTitle: L10n.tr("查看米家账号", "Open Xiaomi Account"),
                 showsResyncButton: true,
                 action: reason.suggestedAction
             )
@@ -84,6 +84,28 @@ enum EmptyPanelDiagnosisPresenter {
                 action: reason.suggestedAction
             )
         }
+    }
+
+    /// What to check when a sync finished with nothing to show, for the source that is actually connected:
+    /// a Home Assistant-only user is never sent to the Mi Home app.
+    @MainActor
+    static func syncedButEmptyDetail(store: HomeStore) -> String {
+        if store.hasEnabledHASource && store.hasEnabledMiSource {
+            return L10n.tr(
+                "米家和 Home Assistant 都没有返回可显示的设备。请在手机米家 App 确认家庭里有设备，并检查 Home Assistant 实体是否已启用。仍然为空，请在设置里「复制诊断信息」反馈。",
+                "Neither Xiaomi Home nor Home Assistant returned devices to show. Check that your homes have devices in the Mi Home app and that the Home Assistant entities are enabled. If it is still empty, use Copy Diagnostics in Settings and report it."
+            )
+        }
+        if store.hasEnabledHASource {
+            return L10n.tr(
+                "Home Assistant 没有返回可控制的设备。请确认令牌所属用户能看到这些实体，且实体已启用。仍然为空，请在设置里「复制诊断信息」反馈。",
+                "Home Assistant returned no controllable devices. Check that the token's user can see the entities and that they are enabled. If it is still empty, use Copy Diagnostics in Settings and report it."
+            )
+        }
+        return L10n.tr(
+            "请确认手机米家 App 里这个账号能看到设备（被共享的家庭也算）。仍然为空，请在设置里「复制诊断信息」反馈。",
+            "Check that this account can see devices in the Mi Home app (shared homes included). If it is still empty, use Copy Diagnostics in Settings and report it."
+        )
     }
 
     static func perform(_ action: EmptyPanelSuggestedAction, store: HomeStore) {

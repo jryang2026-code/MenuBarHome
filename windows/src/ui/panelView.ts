@@ -313,14 +313,6 @@ export function renderPanel(host: MenuMijiaWindowsApp): void {
             >
               ${SF_ICONS.sliderHorizontal}
             </button>
-            <button
-              class="cc-footer-icon-btn is-danger"
-              id="btn-quit-app"
-              title="${t("完全退出 MenuBarHome")}"
-              aria-label="${t("退出")}"
-            >
-              ${SF_ICONS.power}
-            </button>
           </div>
         </footer>`;
   const overlaysHtml = `
@@ -444,20 +436,20 @@ function renderNotificationStack(host: MenuMijiaWindowsApp, includeCameraDeck = 
         const canToggleCam = deviceCanTogglePower(cam);
         const canExpandCam = hasDetailDrawer(cam, host.deviceFacets[cam.id] ?? []);
         const summaryState = isWarmStandby
-          ? trText("120s 保活", "120s warm")
+          ? trText("连接保持中", "Kept warm")
           : camOn
             ? trText("实时 · 高清", "Live · HD")
             : trText("镜头休眠", "Sleeping");
         const summaryMeta = cam.roomName ? `${cam.roomName} · ${summaryState}` : summaryState;
         const detailStatus = isWarmStandby
-          ? trText("P2P 120s 保活就绪", "P2P 120s warm standby")
+          ? trText("连接保持中 · 再次打开更快", "Connection kept warm · reopens faster")
           : !camOn
             ? trText("镜头隐私休眠中", "Privacy sleep active")
             : cam.kind.isMotionDetectionOn
               ? trText("移动侦测开启 · 点击速览", "Motion alert on · Tap to view")
               : trText("实时画面就绪 · 点击速览", "Live stream ready · Tap to view");
         const liveBadge = isWarmStandby
-          ? trText("120s 保活", "120s warm")
+          ? trText("连接保持中", "Kept warm")
           : camOn
             ? trText("高清", "HD")
             : trText("已休眠", "Asleep");

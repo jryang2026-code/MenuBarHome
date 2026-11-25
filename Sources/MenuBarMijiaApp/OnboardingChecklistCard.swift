@@ -24,7 +24,12 @@ struct OnboardingChecklistCard: View {
             Spacer(minLength: 4)
 
             if store.shouldShowLaunchAtLoginSuggestion {
-                launchOverflow
+                if nextStep == nil {
+                    // Alone on the row, the reminder's one job is a visible "Turn On"; × skips it.
+                    launchPrimaryButton
+                } else {
+                    launchOverflow
+                }
             }
 
             if let next = nextStep {
@@ -54,8 +59,8 @@ struct OnboardingChecklistCard: View {
             .buttonStyle(.plain)
             .accessibilityLabel(Text(L10n.tr("关闭上手清单", "Close getting-started checklist")))
             .panelHelp(L10n.tr(
-                "关闭清单；随时可在设置 → 通用 → 首次设置重新打开",
-                "Close the checklist; reopen it in Settings → General → Setup"
+                "关闭清单；随时可在设置里搜索「初始设置引导」重新打开",
+                "Close the checklist; reopen it by searching Settings for “Setup Guide”"
             ))
         }
         .padding(.horizontal, theme == .classic ? 10 : 12)
@@ -91,7 +96,7 @@ struct OnboardingChecklistCard: View {
                 "Start \(done)/3 · Next: \(nextAction(next))"
             )
         }
-        return L10n.tr("开机自动启动", "Launch at Login")
+        return L10n.tr("登录 Mac 时自动启动", "Launch at Login")
     }
 
     private func nextAction(_ step: OnboardingStep) -> String {
@@ -142,6 +147,25 @@ struct OnboardingChecklistCard: View {
 
     @MainActor private var launchAtLogin: LaunchAtLoginCoordinator { .live(store: store) }
 
+    private var launchPrimaryButton: some View {
+        Button(store.launchAtLoginPolicy.needsManualApproval
+               ? L10n.tr("去系统设置开启", "Open System Settings")
+               : L10n.tr("开启", "Turn On")) {
+            if store.launchAtLoginPolicy.needsManualApproval {
+                launchAtLogin.openSystemSettings()
+            } else {
+                withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) {
+                    launchAtLogin.setEnabled(true)
+                }
+            }
+        }
+        .themedPillButtonStyle(theme, isSelected: true, tintColor: .accentColor)
+        .accessibilityLabel(Text(store.launchAtLoginPolicy.needsManualApproval
+            ? L10n.tr("去系统设置开启登录时自动启动", "Open System Settings to turn on Launch at Login")
+            : L10n.tr("开启登录 Mac 时自动启动", "Turn on Launch at Login")))
+        .panelHelp(launchAtLoginDetail)
+    }
+
     private var launchOverflow: some View {
         Menu {
             if store.launchAtLoginPolicy.needsManualApproval {
@@ -185,8 +209,8 @@ struct OnboardingChecklistCard: View {
             )
         }
         return L10n.tr(
-            "登录 Mac 后自动打开面板，不用再找菜单栏。",
-            "Open the panel automatically after you log in, without hunting for the menu bar."
+            "登录 Mac 后安静地待在菜单栏，随时点开就能控制，不会弹出打扰。",
+            "Starts quietly in the menu bar when you log in, ready whenever you click it."
         )
     }
 }

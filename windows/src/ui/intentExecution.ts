@@ -361,11 +361,16 @@ function isSequentialBulkSource(sourceLabel: string): boolean {
   const normalized = sourceLabel.trim().toLowerCase();
   return (
     sourceLabel === t("一键全关") ||
-    sourceLabel === t("0ms 本地直达") ||
+    sourceLabel === t("本地直达") ||
     normalized === "一键全关" ||
     normalized === "all off" ||
     normalized === "turn all off" ||
     normalized === "0ms 本地直达" ||
+    normalized === "本地直达" ||
+    normalized === "本地直達" ||
+    normalized === "0ms 本地直達" ||
+    normalized === "0 ms local" ||
+    normalized === "local" ||
     normalized === "instant local"
   );
 }
