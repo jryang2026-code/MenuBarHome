@@ -411,6 +411,17 @@ export async function handleNaturalCommand(
           learnAfterRun: host.settings.habitLearningEnabled && plan.source === "model",
           sourceRevision,
         });
+        if (hazardous.length > 0) {
+          host.pendingSuggestions = ModelActionPolicy.chips(sanitized, null, "confirm:local", aliasedDevices, host.scenes, true);
+          const hint = ManualControlPolicy.wallSwitchLightHintForIntents(hazardous, aliasedDevices);
+          host.replyBanner = {
+            text: t("「{action}」属于高风险设备，再点一次确认执行", {
+              action: IntentReply.describe(hazardous, aliasedDevices, host.scenes).replace(/^已/, ""),
+            }),
+            source: t("需要确认"),
+            ...(hint ? { hint } : {}),
+          };
+        }
         host.isResolvingIntent = false;
         host.render();
         return;

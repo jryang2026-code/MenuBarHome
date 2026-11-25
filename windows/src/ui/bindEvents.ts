@@ -1026,6 +1026,7 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
       btn.addEventListener("click", () => {
         const suggestion = host.pendingSuggestions.find((s) => s.id === btn.dataset.suggestionId);
         if (!suggestion) return;
+        host.pendingDiffPreview = null;
         host.pendingSuggestions = host.pendingSuggestions.filter((s) => s.id !== suggestion.id);
         if (host.settings.connectionMode !== "demo" || isDualSourceEnabled(host)) {
           const gateMsg = evaluateIntentsWriteGate({
