@@ -1,7 +1,6 @@
 import Foundation
-import os
 
-final class MiCloudRateLimiter: Sendable {
+final class MiCloudRateLimiter: @unchecked Sendable {
     static let shared = MiCloudRateLimiter()
 
     // A full 6-second visible poll interval refills 12 read requests (1,200 properties)
@@ -25,7 +24,8 @@ final class MiCloudRateLimiter: Sendable {
         var consecutiveLimits = 0
     }
 
-    private let accounts = OSAllocatedUnfairLock(initialState: [String: AccountState]())
+    private let lock = NSLock()
+    private var accounts: [String: AccountState] = [:]
     private let uptime: @Sendable () -> TimeInterval
     private let wallClock: @Sendable () -> Date
     private let jitter: @Sendable () -> Double
@@ -41,7 +41,7 @@ final class MiCloudRateLimiter: Sendable {
     }
 
     func admit(account: String, write: Bool) -> Admission {
-        accounts.withLock { accounts in
+        lock.withLock {
             let now = uptime()
             var state = accounts[account] ?? AccountState(lastRefill: now)
             defer { accounts[account] = state }
@@ -68,7 +68,7 @@ final class MiCloudRateLimiter: Sendable {
     func recordLimit(account: String, retryAfter: String?) {
         let minimumDelay = Self.retryAfterDelay(retryAfter, now: wallClock()) ?? 0
         let sample = jitter()
-        accounts.withLock { accounts in
+        lock.withLock {
             let now = uptime()
             var state = accounts[account] ?? AccountState(lastRefill: now)
             state.generation &+= 1
@@ -80,7 +80,7 @@ final class MiCloudRateLimiter: Sendable {
     }
 
     func recordReadSuccess(account: String, generation: UInt64) {
-        accounts.withLock { accounts in
+        lock.withLock {
             guard var state = accounts[account], state.generation == generation else { return }
             state.consecutiveLimits = 0
             accounts[account] = state
@@ -88,7 +88,7 @@ final class MiCloudRateLimiter: Sendable {
     }
 
     func readCooldown(account: String) -> TimeInterval {
-        accounts.withLock { accounts in
+        lock.withLock {
             max(0, (accounts[account]?.readNotBefore ?? 0) - uptime())
         }
     }
