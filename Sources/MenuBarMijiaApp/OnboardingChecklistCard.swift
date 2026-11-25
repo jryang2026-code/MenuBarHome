@@ -116,8 +116,8 @@ struct OnboardingChecklistCard: View {
             return L10n.tr("去连接账号", "Connect an account")
         case .searchDevice:
             return L10n.tr(
-                "把光标放进搜索框；磁贴左侧开关、右侧打开调节",
-                "Focus the search field; tile left toggles, right opens controls"
+                "把光标放进搜索框；点设备图标开关，点设备名展开调节",
+                "Focus the search field; click a device's icon to toggle it, its name to open controls"
             )
         case .allOffAndUndo:
             if store.allOffTargets.isEmpty {

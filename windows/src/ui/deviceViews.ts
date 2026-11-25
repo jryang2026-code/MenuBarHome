@@ -1653,9 +1653,9 @@ export function renderDeviceTile(dev: SmartDevice, state: DeviceTileViewState): 
           type="button"
           class="cc-tile-body"
           data-body-device="${id}"
-          title="${actionLayout.kind === "adjustOnly" ? escape(deviceAdjustTooltip(isExpanded)) : kind === "camera" ? t("点击放大打开摄像机实时画面") : actionLayout.kind === "split" && !isExpanded ? t("点击切换开关") : hasDrawer ? t("点击展开精细调节") : t("点击切换开关")}"
+          title="${actionLayout.kind === "adjustOnly" ? escape(deviceAdjustTooltip(isExpanded)) : kind === "camera" ? t("点击放大打开摄像机实时画面") : hasDrawer ? t("点击展开精细调节") : t("点击切换开关")}"
           aria-label="${escape(dev.name)}，${escape(shownSubtitle)}"
-          ${actionLayout.kind === "adjustOnly" ? `aria-expanded="${isExpanded}"` : `aria-pressed="${isOn}"`}
+          ${actionLayout.kind === "adjustOnly" || (actionLayout.kind === "split" && hasDrawer) ? `aria-expanded="${isExpanded}"` : `aria-pressed="${isOn}"`}
         >
           <div class="cc-tile-title-row">
             <div class="cc-tile-name">${escape(dev.name)}</div>

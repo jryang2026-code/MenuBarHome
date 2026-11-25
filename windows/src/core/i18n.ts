@@ -1049,9 +1049,9 @@ const CATALOG: Readonly<Record<string, readonly [string, string]>> = {
     "点击右下角系统托盘图标或按 {hotkey} 随时呼出面板。",
     "Click the system tray icon or press {hotkey} anytime to open the panel.",
   ],
-  "磁贴左侧一键开关，右侧展开精细调节。": [
-    "磁贴左侧一键开关，右侧展开精细调节。",
-    "Click the left side of a tile to toggle, or the right side to open detailed controls.",
+  "点设备图标一键开关，点设备名展开精细调节。": [
+    "点设备图标一键开关，点设备名展开精细调节。",
+    "Click a device's icon to toggle it, or its name to open detailed controls.",
   ],
   "按住「全关」0.6 秒确认，可在 10 秒内撤销，3 台起为 15 秒。": [
     "按住「全关」0.6 秒确认，可在 10 秒内撤销，3 台起为 15 秒。",

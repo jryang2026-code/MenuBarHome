@@ -877,7 +877,7 @@ export function mountOnboardingGuide(host: OnboardingRenderViewHost): void {
       <div class="cc-field" data-onboarding-step="4">
         <label class="cc-onboarding-label">${esc(t("快捷操作与托盘提示"))}</label>
         <p class="cc-field-hint cc-onboarding-tip">• ${esc(t("点击右下角系统托盘图标或按 {hotkey} 随时呼出面板。", { hotkey: hotkeyText }))}</p>
-        <p class="cc-field-hint cc-onboarding-tip">• ${esc(t("磁贴左侧一键开关，右侧展开精细调节。"))}</p>
+        <p class="cc-field-hint cc-onboarding-tip">• ${esc(t("点设备图标一键开关，点设备名展开精细调节。"))}</p>
         <p class="cc-field-hint cc-onboarding-tip">• ${esc(onboardingAllOffTimingCopy())}</p>
 
         <div class="cc-field-row cc-onboarding-block">
