@@ -647,6 +647,7 @@ extension HomeStore {
                     clearOptimisticLockEntries(for: incoming.id)
                     clearOptimisticRevisions(for: incoming.id)
                     coverCommandOrigins.removeValue(forKey: incoming.id)
+                    groupCoverIgnoreUntil.removeValue(forKey: incoming.id)
                     lastCoverPositions.removeValue(forKey: incoming.id)
                     manualWriteSessions.removeValue(forKey: incoming.id)
                     optimisticLockRevision[incoming.id, default: 0] &+= 1
@@ -698,7 +699,11 @@ extension HomeStore {
                     }
                 }
                 var lockedFields = activeLockedFields(for: incoming.id, at: now)
-                if lockedFields.contains(.coverPosition), !staleFields.contains(.coverPosition),
+                let ignoringGroupCover = isIgnoringGroupCoverUpdates(for: incoming.id, at: now)
+                if ignoringGroupCover, case .cover = incoming.kind {
+                    lockedFields.insert(.coverPosition)
+                }
+                if !ignoringGroupCover, lockedFields.contains(.coverPosition), !staleFields.contains(.coverPosition),
                    let local = existingById[incoming.id],
                    coverTravelTakesOver(deviceId: incoming.id, local: local, incoming: incoming) {
                     // The motor has confirmed the command, so its own report is authoritative.

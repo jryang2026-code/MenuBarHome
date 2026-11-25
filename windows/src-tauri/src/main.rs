@@ -6,6 +6,7 @@ mod camera;
 mod camera_events;
 mod camera_pip;
 mod companion;
+mod canonical_registry;
 mod desktop_shell;
 mod job_object;
 mod process_supervisor;
@@ -405,6 +406,9 @@ fn main() {
             set_tray_tooltip, send_desktop_notification,
             set_companion_integration,
             write_raycast_snapshot,
+            canonical_registry::load_canonical_registry,
+            canonical_registry::save_canonical_registry,
+            canonical_registry::clear_canonical_registry,
             remove_raycast_snapshot,
             companion_status,
             drain_pending_open_urls,

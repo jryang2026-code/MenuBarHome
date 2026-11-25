@@ -1097,7 +1097,7 @@ enum PanelSearchKeyboard {
         state.end()
         store.presentAssistantBar()
         Task { @MainActor in
-            await store.runAssistantCommand(utterance)
+            await store.runAssistantCommand(utterance, preferDiffPreview: true)
         }
     }
 }

@@ -1,3 +1,4 @@
+import { nativeCanonicalRegistry } from "../core/canonicalDeviceRegistry.js";
 import { miSceneRows, refreshMiScenes, type MiSceneSnapshot } from "../core/miCloud/scenes.js";
 import { markTimerSnapshotReady, scheduledCommandIdentity } from "./scheduledCommands.js";
 import type { MenuMijiaWindowsApp } from "./app.js";
@@ -1772,7 +1773,9 @@ export function setHostHAInvokeOverride(host: MenuMijiaWindowsApp, invoke: HAInv
 
 export function getHostDualSourceCoordinator(host: MenuMijiaWindowsApp): DualSourceCoordinator {
   if (!host.dualSourceCoordinator) {
+    const nativeRegistry = nativeCanonicalRegistry();
     host.dualSourceCoordinator = new DualSourceCoordinator(undefined, {
+      ...(nativeRegistry ? { nativeRegistry } : {}),
       onRecompute: (merged) => {
         if (!isHostAttachedToActiveWindow(host) || !isDualSourceEnabled(host)) return;
         applyDualSourceMergeToHost(host, merged);
@@ -1920,6 +1923,7 @@ async function refreshDualSourceDevices(
               home: res.home,
               pollCapturedEpoch,
               identity: homeAssistantIdentity(endpoint, token),
+              haScope: haConnectionScope(endpoint),
               identities: res.identities,
               safetySignalsByDeviceId: res.safetySignalsByDeviceId,
               ...(haPrune !== null

@@ -568,7 +568,7 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
             isPanelWindow: MenuBarPanelController.shared.isPanelWindow(NSApp.keyWindow),
             isShowingMiReauth: store.isShowingMiReauth,
             isAllOffHoldActive: transient.isConfirmationGestureActive,
-            hasPendingConfirmation: store.pendingCloudConsent != nil,
+            hasPendingConfirmation: store.pendingCloudConsent != nil || store.pendingDiffPreview != nil,
             isShowingConnectionDetail: PanelConnectionDetailState.shared.isPresented,
             isConnectionStatusFocused: PanelConnectionDetailState.shared.isStatusControlFocused,
             hasActivePrompt: LayoutUIState.shared.hasActivePrompt,
@@ -608,7 +608,11 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
             PanelTransientUIState.shared.cancelAllOffHold()
             PanelTransientUIState.shared.cancelDeviceControlGesture()
         case .cancelPendingConfirmation:
-            store.declinePendingCloudRequest()
+            if store.pendingDiffPreview != nil {
+                store.cancelPendingDiffPreview()
+            } else {
+                store.declinePendingCloudRequest()
+            }
         case .dismissConnectionDetail:
             PanelConnectionDetailState.shared.dismiss(restoreFocus: true)
         case .focusConnectionStatus:

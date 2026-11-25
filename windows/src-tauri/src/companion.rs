@@ -88,7 +88,7 @@ fn ensure_confined_companion_dir(dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn write_atomic_file(dir: &Path, file_name: &str, prefix: &str, bytes: &[u8]) -> Result<PathBuf, String> {
+pub(crate) fn write_atomic_file(dir: &Path, file_name: &str, prefix: &str, bytes: &[u8]) -> Result<PathBuf, String> {
     ensure_confined_companion_dir(dir)?;
     std::fs::create_dir_all(dir).map_err(|err| format!("创建伴侣目录失败：{err}"))?;
     let seq = SNAPSHOT_TMP_SEQ.fetch_add(1, Ordering::Relaxed);

@@ -15,6 +15,7 @@ import type { TemperatureUnitPreference } from "../core/temperature.js";
 declare global {
   interface Window {
     __TAURI_INTERNALS__?: {
+      metadata?: unknown;
       invoke: <T>(cmd: string, args?: Record<string, unknown>) => Promise<T>;
     };
     webkitSpeechRecognition?: new () => SpeechRecognitionInstance;

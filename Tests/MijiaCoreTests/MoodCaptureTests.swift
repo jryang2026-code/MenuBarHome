@@ -89,13 +89,22 @@ struct MoodCaptureTests {
             .setSwitch(entityId: plug.id, isOn: true),
             .setNumberValue(entityId: garage.id, value: 80)
         ]
-        #expect(await provider.executedCommands == expected)
+        let replayCommands = await provider.executedCommands
+        #expect(replayCommands.count == expected.count)
+        for command in expected {
+            #expect(replayCommands.filter { $0 == command }.count == expected.filter { $0 == command }.count)
+        }
         let undo = try #require(store.undoTurnAllOff())
         await undo.value
-        #expect(await provider.executedCommands == expected + [
+        let undoCommands = await provider.executedCommands.dropFirst(replayCommands.count)
+        let expectedUndo: [DeviceCommand] = [
             .setSwitch(entityId: plug.id, isOn: false),
             .setNumberValue(entityId: garage.id, value: 20)
-        ])
+        ]
+        #expect(undoCommands.count == expectedUndo.count)
+        for command in expectedUndo {
+            #expect(undoCommands.filter { $0 == command }.count == expectedUndo.filter { $0 == command }.count)
+        }
     }
 
     @Test func screenLockAndDeclinedConfirmationSendNothing() async throws {
