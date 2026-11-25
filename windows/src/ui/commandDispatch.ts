@@ -5,6 +5,7 @@ import { getCachedXiaomiTopology, miSessionFingerprint } from "../core/pollingPo
 import { miSceneAccount } from "../core/miCloud/scenes.js";
 import { requestMiSceneConfirmation } from "./sceneConfirmation.js";
 import { isWorkstationLockBlockingControl } from "./transport.js";
+import { isInsideScheduledTimerTick } from "./speechGuard.js";
 import type { MenuMijiaWindowsApp } from "./app.js";
 import type { UndoAction } from "./appTypes.js";
 import {
@@ -113,6 +114,8 @@ export interface SliderWriteRequest {
   readonly debounceHighRisk?: boolean;
   readonly execute?: () => Promise<void>;
   readonly onFailure?: () => void;
+  /** Re-checked against live state right before a queued write is sent; a message refuses it. */
+  readonly revalidateBeforeSend?: () => string | null;
 }
 
 interface SliderMailboxTiming {
@@ -282,6 +285,13 @@ function startSliderDrain(
         if (!isCurrent()) { slot.pending = null; break; }
         const current = slot.pending;
         slot.pending = null;
+        const refusal = current.revalidateBeforeSend?.() ?? null;
+        if (refusal !== null) {
+          host.replyBanner = { text: refusal, source: t("需要确认"), isError: true };
+          host.render();
+          current.onFailure?.();
+          continue;
+        }
         const startMs = state.timing.now();
         slot.startedCount += 1;
         const seqBefore = peekDeviceWriteSeq(host, current.device.id);
@@ -1138,6 +1148,9 @@ export async function applyCommand(
 ): Promise<boolean> {
   const sourceRevision = host.sourceRevision;
   const homeRevision = host.homeRevision;
+  // Only a scheduled timer tick may run while Windows is locked, and only when it reaches this
+  // call synchronously; every other write stays subject to the lock guard at send time.
+  const lockExempt = isInsideScheduledTimerTick();
   const originalCommand = command;
   const wasUndoRestore = undoRestoreCommands.has(originalCommand);
   const capturedFacet = wasUndoRestore
@@ -1215,7 +1228,7 @@ export async function applyCommand(
     if (effectiveMode === "homeAssistant") {
       command = homeAssistantCommand(command, host.devices, host.deviceFacets);
     }
-    const readPower = await dispatchCloudCommand(host, command, readBackPower, originalCommand.entityId, userInitiated);
+    const readPower = await dispatchCloudCommand(host, command, readBackPower, originalCommand.entityId, userInitiated, lockExempt);
     if (typeof readPower === "boolean") command = withReadPower(command, readPower);
   } catch (error) {
     if (sourceRevision !== host.sourceRevision) return false;
@@ -1498,15 +1511,12 @@ async function dispatchCloudCommand(
   readBackPower: boolean,
   originalEntityId: string,
   userInitiated: boolean,
+  lockExempt: boolean,
 ): Promise<boolean | null> {
   const sourceRevision = host.sourceRevision;
   const homeRevision = host.homeRevision;
   const isMiotChannelSwitch =
     !readBackPower && command.kind === "setSwitch" && parseMiotAddress(command.entityId) !== null;
-  const wasLocked =
-    isMiotChannelSwitch && host.settings?.blockControlWhileLocked
-      ? await isWorkstationLockBlockingControl(host)
-      : false;
   const provider = homeProviderFor(host);
   const beforeSend = () => {
     if (sourceRevision !== host.sourceRevision || homeRevision !== host.homeRevision) {
@@ -1536,7 +1546,7 @@ async function dispatchCloudCommand(
         if (sourceRevision !== host.sourceRevision || homeRevision !== host.homeRevision) {
           return false;
         }
-        if (!wasLocked && (await isWorkstationLockBlockingControl(host))) {
+        if (!lockExempt && (await isWorkstationLockBlockingControl(host))) {
           return false;
         }
         if (host.miSessionExpired && effectiveCommandBackend(host, command) === "xiaomiCloud") {

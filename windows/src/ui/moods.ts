@@ -9,7 +9,10 @@ import {
   saveMoodSnapshots, type MoodField, type MoodSnapshot, type MoodTarget,
 } from "../core/moodSnapshot.js";
 import type { DeviceCommand, SmartDevice } from "../core/models.js";
-import { claimDeviceWrite, currentDeviceWriteClaim, lockOptimistic, ownsDeviceWrite, peekDeviceWriteSeq, type DeviceWriteClaim } from "../core/optimisticLock.js";
+import {
+  claimDeviceWrite, currentDeviceWriteClaim, lockOptimistic, ownsDeviceWrite, peekDeviceWriteSeq, registerUndoActionBatch,
+  type DeviceWriteClaim, type OptimisticLockHost, type UndoActionBatch,
+} from "../core/optimisticLock.js";
 import { switchLightMarkIds } from "../core/switchLightMarks.js";
 import type { MenuMijiaWindowsApp } from "./app.js";
 import type { UndoAction, UndoStep } from "./appTypes.js";
@@ -30,6 +33,33 @@ interface MoodStep {
   readonly command: DeviceCommand; readonly restore: readonly DeviceCommand[];
   readonly priorDevice: SmartDevice; readonly requiresConfirmation: boolean;
   readonly hazardProfileKey: string; readonly initialClaim: DeviceWriteClaim;
+}
+
+/**
+ * Owns a finished mood's undo: each device's restore runs only while the mood (or this undo's own
+ * restore) is still the newest write to it, so a device the user took over meanwhile is skipped.
+ */
+class MoodUndoBatch implements UndoActionBatch {
+  public readonly isStopped = true;
+  public readonly isFinished = true;
+  public constructor(private readonly claims: Map<string, DeviceWriteClaim>) {}
+  public stop(): void {}
+  public async waitForInFlight(): Promise<void> {}
+  public recordWriteClaim(deviceId: string, claim: DeviceWriteClaim): void { this.claims.set(deviceId, claim); }
+  public ownsDeviceWrite(host: OptimisticLockHost, deviceId: string): boolean {
+    const claim = this.claims.get(deviceId);
+    return claim !== undefined && ownsDeviceWrite(host, claim);
+  }
+  public async applyRestoreCommand(
+    host: OptimisticLockHost & { applyCommand(command: DeviceCommand, readBackPower?: boolean): Promise<boolean> },
+    deviceId: string,
+    command: DeviceCommand,
+  ): Promise<boolean> {
+    const seqBefore = peekDeviceWriteSeq(host, deviceId);
+    const sendPromise = host.applyCommand(command);
+    this.recordWriteClaim(deviceId, peekDeviceWriteSeq(host, deviceId) === seqBefore ? claimDeviceWrite(host, deviceId) : currentDeviceWriteClaim(host, deviceId));
+    return sendPromise;
+  }
 }
 
 const syncPin = (host: MenuMijiaWindowsApp): void => invokeTauriVoid("set_pin_popover", { pin: shouldKeepPopoverPinned(host) });
@@ -233,6 +263,7 @@ export async function applyMoodForHost(host: MenuMijiaWindowsApp, id: string, op
     return failOutcome(host, "blocked", tr3("设备控制权限已变更，已取消应用氛围「{name}」", "裝置控制權限已變更，已取消套用氛圍「{name}」", 'Device permissions changed; cancelled mood "{name}"', { name: mood.name }, pref), blockedLabel);
   }
 
+  const undoBefore = host.lastUndoAction;
   const restoreMap = new Map<string, { commands: DeviceCommand[]; prior: SmartDevice }>();
   const restoreOrder: string[] = [];
   const latestClaims = new Map<string, DeviceWriteClaim>();
@@ -263,21 +294,29 @@ export async function applyMoodForHost(host: MenuMijiaWindowsApp, id: string, op
       latestClaims.set(rechecked.deviceId, writeClaim);
       succeededCount += 1;
       executedDevices.add(rechecked.deviceId);
-      if (rechecked.restore.length > 0) {
+      // Undo returns to the state the user saw when the mood was planned (and confirmed), not to
+      // a value a refresh slipped in behind the confirmation prompt (#532 parity).
+      if (step.restore.length > 0) {
         let entry = restoreMap.get(rechecked.deviceId);
-        if (!entry) { entry = { commands: [], prior: rechecked.priorDevice }; restoreMap.set(rechecked.deviceId, entry); restoreOrder.push(rechecked.deviceId); }
-        entry.commands.unshift(...rechecked.restore);
+        if (!entry) { entry = { commands: [], prior: step.priorDevice }; restoreMap.set(rechecked.deviceId, entry); restoreOrder.push(rechecked.deviceId); }
+        entry.commands.unshift(...step.restore);
       }
     } else if (!failedNames.includes(step.deviceName)) {
       failedNames.push(step.deviceName);
     }
   }
 
-  const undoSteps: UndoStep[] = restoreOrder.map((deviceId) => ({ deviceId, commands: restoreMap.get(deviceId)!.commands }));
+  // A device the user (or anything else) wrote after the mood is theirs: its stale mood restore is
+  // dropped now, and the batch keeps dropping it if it is taken over before Undo is pressed.
+  const undoBatch = new MoodUndoBatch(new Map(restoreOrder.map((did) => [did, latestClaims.get(did)!])));
+  const ownedOrder = restoreOrder.filter((did) => undoBatch.ownsDeviceWrite(host, did));
+  const undoSteps: UndoStep[] = ownedOrder.map((deviceId) => ({ deviceId, commands: restoreMap.get(deviceId)!.commands }));
   const summary = tr3("已应用氛围「{name}」（{count} 台设备）", "已套用氛圍「{name}」（{count} 台裝置）", 'Applied mood "{name}" ({count} devices)', { name: mood.name, count: executedDevices.size }, pref);
-  if (undoSteps.length > 0) {
+  const newerUndoPublished = host.lastUndoAction !== null && host.lastUndoAction !== undoBefore;
+  if (undoSteps.length > 0 && !newerUndoPublished) {
     const undoAction: UndoAction = { summary, steps: undoSteps, expiresAtMs: Date.now() + 8_000 };
-    recordUndoKindSnapshots(undoAction, new Map(restoreOrder.map((did) => [did, restoreMap.get(did)!.prior.kind])));
+    recordUndoKindSnapshots(undoAction, new Map(ownedOrder.map((did) => [did, restoreMap.get(did)!.prior.kind])));
+    registerUndoActionBatch(undoAction, undoBatch);
     host.lastUndoAction = undoAction;
   }
 

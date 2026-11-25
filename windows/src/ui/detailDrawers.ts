@@ -146,6 +146,31 @@ export function coverPositionRequiresConfirmation(
   return coverMotorRequiresConfirmation(subtype, to > start ? "open" : "close");
 }
 
+/**
+ * Re-checks a queued cover position write against the live position right before it is sent. A
+ * write queued as closing (no confirmation asked) that would now open the cover — something else
+ * moved it while an earlier write was in flight — is refused instead of opening unconfirmed.
+ */
+export function queuedCoverPositionRefusal(
+  host: Pick<MenuMijiaWindowsApp, "devices">,
+  deviceId: string,
+  value: number,
+  confirmed: boolean,
+): string | null {
+  if (confirmed) return null;
+  const live = host.devices.find((d) => d.id === deviceId);
+  if (!live || live.kind.kind !== "cover") {
+    return tr3("设备状态已变化，未发送", "裝置狀態已變化，未發送", "Device state changed; not sent");
+  }
+  if (!coverPositionRequiresConfirmation(live.kind.subtype, live.kind.positionPercent, value)) return null;
+  return tr3(
+    "{name}位置已变化，调到 {percent}% 会打开，未发送。请重新拖动并确认",
+    "{name}位置已變化，調到 {percent}% 會打開，未發送。請重新拖動並確認",
+    "{name} has moved; {percent}% would now open it, so nothing was sent. Drag again to confirm",
+    { name: live.name, percent: value },
+  );
+}
+
 export function renderApplianceDrawer(
   dev: SmartDevice,
   k: ApplianceSpec,
@@ -672,8 +697,9 @@ export function bindDetailDrawerEvents(
       // A curtain keeps the drag as its confirmation; a garage door, gate or an opener opening
       // asks first, the same rule its motor buttons follow. The prompt names the value that will be
       // sent, not the snapped one the row shows (1 % displays as 0 % but still moves the door).
+      const confirmed = coverPositionRequiresConfirmation(dev.kind.subtype, dev.kind.positionPercent, clamped);
       if (
-        coverPositionRequiresConfirmation(dev.kind.subtype, dev.kind.positionPercent, clamped) &&
+        confirmed &&
         !confirmHighRisk(
           dev.id,
           command,
@@ -688,6 +714,7 @@ export function bindDetailDrawerEvents(
         device: dev,
         command,
         summary,
+        revalidateBeforeSend: () => queuedCoverPositionRefusal(host, dev.id, clamped, confirmed),
       });
     });
   });
@@ -1079,16 +1106,18 @@ function bindCollapsedInlineSliders(
         });
         const resolved = resolveInlineCommand();
         if (!resolved) return;
+        let revalidateBeforeSend: (() => string | null) | undefined;
         if (resolved.isCover && resolved.dev.kind.kind === "cover") {
           // A garage door hides this inline slider; a window opener or airer shows it and asks the
           // same way its motor buttons do when the drag opens. The prompt names the value that will
           // be sent, not the snapped one the row shows.
+          const confirmed = coverPositionRequiresConfirmation(
+            resolved.dev.kind.subtype,
+            resolved.dev.kind.positionPercent,
+            resolved.value,
+          );
           if (
-            coverPositionRequiresConfirmation(
-              resolved.dev.kind.subtype,
-              resolved.dev.kind.positionPercent,
-              resolved.value,
-            ) &&
+            confirmed &&
             !confirmHighRisk(
               resolved.dev.id,
               resolved.command,
@@ -1098,6 +1127,9 @@ function bindCollapsedInlineSliders(
             slider.value = String(Math.round(resolved.dev.kind.positionPercent ?? 0));
             return;
           }
+          const { id: coverId } = resolved.dev;
+          const coverValue = resolved.value;
+          revalidateBeforeSend = () => queuedCoverPositionRefusal(host, coverId, coverValue, confirmed);
         } else if (consumeSliderLiveValue(slider, resolved.value)) {
           return;
         }
@@ -1107,6 +1139,7 @@ function bindCollapsedInlineSliders(
           command: resolved.command,
           summary: resolved.summary,
           intent: resolved.intent,
+          revalidateBeforeSend,
         });
       });
     });
