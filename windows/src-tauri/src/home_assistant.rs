@@ -388,7 +388,7 @@ async fn authenticated(url: &str, token: &str) -> Result<Socket, String> {
         .await
         .map_err(|_| "Home Assistant address lookup timed out")?
         .map_err(|_| "Home Assistant address lookup failed")?;
-    let addresses = crate::network::EndpointAddressPolicy::for_endpoint(host, port)
+    let addresses = crate::network::EndpointAddressPolicy::for_endpoint(host, port, parsed.scheme())
         .validate(addresses)
         .map_err(|error| error.to_string())?;
     let tcp = connect_addresses_with_budget(

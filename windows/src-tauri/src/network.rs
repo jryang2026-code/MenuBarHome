@@ -198,24 +198,20 @@ fn address_class(ip: IpAddr) -> AddressClass {
 
 #[derive(Clone, Copy)]
 pub(crate) struct EndpointAddressPolicy {
-    expected: AddressClass,
+    requires_lan: bool,
     #[cfg(test)]
     fixture: Option<SocketAddr>,
 }
 
 impl EndpointAddressPolicy {
-    pub(crate) fn for_endpoint(host: &str, _port: u16) -> Self {
+    pub(crate) fn for_endpoint(host: &str, _port: u16, scheme: &str) -> Self {
         let host = normalize_host(host);
-        let expected = match host.parse::<IpAddr>() {
-            Ok(ip) => match address_class(ip) {
-                AddressClass::Lan => AddressClass::Lan,
-                _ => AddressClass::Public,
-            },
-            Err(_) if is_local_network_host(&host) => AddressClass::Lan,
-            Err(_) => AddressClass::Public,
-        };
+        let local = host.parse::<IpAddr>().map_or_else(
+            |_| is_local_network_host(&host),
+            |ip| address_class(ip) == AddressClass::Lan,
+        );
         Self {
-            expected,
+            requires_lan: local && matches!(scheme, "http" | "ws"),
             #[cfg(test)]
             fixture: host.parse::<IpAddr>().ok().map(|ip| SocketAddr::new(ip, _port))
                 .filter(|addr| LOOPBACK_FIXTURES.read().unwrap().contains(addr)),
@@ -232,10 +228,11 @@ impl EndpointAddressPolicy {
             if self.fixture == Some(*address) {
                 continue;
             }
-            if address_class(address.ip()) != self.expected {
+            let class = address_class(address.ip());
+            if class == AddressClass::Prohibited || (self.requires_lan && class == AddressClass::Public) {
                 return Err(io::Error::new(
                     io::ErrorKind::PermissionDenied,
-                    "endpoint address is outside its configured public or LAN scope",
+                    "endpoint resolved to a prohibited IP address or a public IP for local plaintext traffic",
                 ));
             }
         }
@@ -298,7 +295,7 @@ pub(crate) async fn native_http_with_scope(
     // Hyper skips the resolver for IP literals, so validate them before checkout.
     let host = normalize_host(parsed_url.host_str().expect("validated request host"));
     let port = parsed_url.port_or_known_default().expect("validated request port");
-    let address_policy = EndpointAddressPolicy::for_endpoint(&host, port);
+    let address_policy = EndpointAddressPolicy::for_endpoint(&host, port, parsed_url.scheme());
     if let Ok(ip) = host.parse::<IpAddr>() {
         address_policy.validate([SocketAddr::new(ip, port)]).map_err(|error| error.to_string())?;
     }
@@ -782,19 +779,27 @@ mod address_policy_tests {
     }
 
     #[test]
-    fn rejects_the_entire_answer_when_an_address_leaves_the_configured_scope() {
-        for (host, permitted, refused) in [
-            ("cloud.example", "192.0.2.1:443", "192.168.1.1:443"),
-            ("home.lan", "192.168.1.2:8123", "192.0.2.1:8123"),
-            ("home.lan", "192.168.1.2:8123", "[::ffff:127.0.0.1]:8123"),
+    fn validates_dns_answers_for_the_configured_host_and_scheme() {
+        let lan = "192.168.1.2:8123".parse::<SocketAddr>().unwrap();
+        for (host, scheme, other, allowed) in [
+            ("cloud.example", "https", "100.64.0.1:8123", true),
+            ("cloud.example", "http", "192.0.2.1:8123", true),
+            ("cloud.example", "https", "127.0.0.1:8123", false),
+            ("home.lan", "http", "192.0.2.1:8123", false),
+            ("home.lan", "https", "192.0.2.1:8123", true),
+            ("home.local", "ws", "192.0.2.1:8123", false),
+            ("home.local", "wss", "192.0.2.1:8123", true),
+            ("home.lan", "http", "[::ffff:127.0.0.1]:8123", false),
+            ("192.168.1.2", "http", "192.0.2.1:8123", false),
         ] {
-            let permitted: SocketAddr = permitted.parse().unwrap();
-            let policy = EndpointAddressPolicy::for_endpoint(host, permitted.port());
-            assert_eq!(policy.validate([permitted]).unwrap(), [permitted]);
-            assert_eq!(
-                policy.validate([permitted, refused.parse().unwrap()]).unwrap_err().kind(),
-                io::ErrorKind::PermissionDenied,
-            );
+            let policy = EndpointAddressPolicy::for_endpoint(host, lan.port(), scheme);
+            let addresses = [lan, other.parse().unwrap()];
+            let result = policy.validate(addresses);
+            if allowed {
+                assert_eq!(result.unwrap(), addresses, "{scheme}://{host} with {other}");
+            } else {
+                assert_eq!(result.unwrap_err().kind(), io::ErrorKind::PermissionDenied, "{scheme}://{host} with {other}");
+            }
         }
     }
 
@@ -805,7 +810,7 @@ mod address_policy_tests {
             allowed_origins: HashSet::new(),
             original_origin: "https://cloud.example:443".into(),
             ha_scope: None,
-            address_policy: EndpointAddressPolicy::for_endpoint("cloud.example", 443),
+            address_policy: EndpointAddressPolicy::for_endpoint("cloud.example", 443, "https"),
         };
         let result = tauri::async_runtime::block_on(HTTP_REDIRECT_SCOPE.scope(
             scope,
