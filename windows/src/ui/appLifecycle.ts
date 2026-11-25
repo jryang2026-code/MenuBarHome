@@ -1,4 +1,5 @@
 import { finishPanelComposition, handlePanelKey } from "./panelKeyboard.js";
+import { dismissPendingMoodPrompts } from "./moods.js";
 import { handleSettingsSheetEscape } from "./settingsEvents.js";
 import { switchSource } from "./sourceSwitch.js";
 import { processScheduledCommands, scheduledCommandIdentity } from "./scheduledCommands.js";
@@ -1488,7 +1489,9 @@ export function bindGlobalKeys(
                 ? (host.devices.find((d) => d.id === target.deviceId)?.name ?? target.deviceId)
                 : target.kind === "scene"
                   ? (host.scenes.find((s) => s.id === target.sceneId)?.name ?? target.sceneId)
-                  : quickActionTitle(target.actionId);
+                  : target.kind === "mood"
+                    ? (host.moods.find((m) => m.id === target.moodId)?.name ?? target.moodId)
+                    : quickActionTitle(target.actionId);
             const nextBinding: HotkeyBinding = {
               id: `hk-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
               target,
@@ -1523,6 +1526,12 @@ export function bindGlobalKeys(
       if (hasPendingUrlConfirmation(host)) {
         e.preventDefault();
         dismissPendingUrlConfirmation(host, false);
+        return;
+      }
+      if (host.pendingMoodConfirm !== null || host.pendingMoodCapture !== null) {
+        e.preventDefault();
+        dismissPendingMoodPrompts(host);
+        host.render();
         return;
       }
       if (host.ctxMenu !== null || host.isHomeMenuOpen) {

@@ -7,6 +7,7 @@ import { cancelPendingControlWrites } from "./commandDispatch.js";
 import type { SourceEpoch } from "./sourceEpoch.js";
 import { resetPanelSplitTransientState } from "./panelSplitTiles.js";
 import { abortVoiceInput, clearUndoHoverPause } from "./speechGuard.js";
+import { dismissPendingMoodPrompts } from "./moods.js";
 
 /**
  * Structural slice of `MenuMijiaWindowsApp` that a connection-source switch
@@ -61,6 +62,7 @@ export function switchSource(host: SourceSwitchHost, reason: string): void {
   // the real MenuMijiaWindowsApp, and SourceSwitchHost is its structural slice.
   const app = host as MenuMijiaWindowsApp;
   abortVoiceInput(app);
+  dismissPendingMoodPrompts(app);
   // Advance the epoch before resolving any pending URL confirmation so the drain loop sees
   // queued links as belonging to the previous source and cancels them cleanly.
   host.sourceEpoch.advance("source");
@@ -98,6 +100,7 @@ export function switchSource(host: SourceSwitchHost, reason: string): void {
 export function switchHome(host: SwitchHomeHost): void {
   // Invalidate any in-flight cloud refresh from the previous home so it cannot overwrite the new selection.
   host.sourceEpoch.advance("home");
+  dismissPendingMoodPrompts(host as MenuMijiaWindowsApp);
   cancelPendingControlWrites(host as MenuMijiaWindowsApp);
   // A confirmation armed for the previous home must not survive the switch: its confirm click
   // resolves the pending promise with `false` (and drops the inline buttons) instead of running
