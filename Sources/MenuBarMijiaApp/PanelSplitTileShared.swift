@@ -171,6 +171,8 @@ struct SplitDeviceTileHeader<Orb: View, Badge: View, QuickBadge: View>: View {
         }
     }
 
+    /// Same split as the full-row card: the orb switches, the name and status (with the chevron)
+    /// open the controls. Tiles without controls keep the whole face as the switch (`primaryOnly`).
     private func splitBody(primary: DeviceTilePrimaryKind) -> some View {
         HStack(alignment: isHeroTile ? .top : .center, spacing: 0) {
             Button {
@@ -179,30 +181,18 @@ struct SplitDeviceTileHeader<Orb: View, Badge: View, QuickBadge: View>: View {
                     _ = DeviceTileActionLayout.performPrimary(for: device, store: store)
                 }
             } label: {
-                HStack(spacing: 9) {
-                    orb()
-                    titleAndStatusBlock
-                    Spacer(minLength: 4)
-                }
-                .padding(.leading, leadingPadding)
-                .padding(.trailing, 6)
-                .padding(.vertical, verticalPadding)
-                .frame(maxWidth: .infinity, minHeight: DesignTokens.minHitTarget, maxHeight: isExpanded ? nil : .infinity, alignment: isHeroTile ? .topLeading : .leading)
-                .contentShape(Rectangle())
+                orb()
+                    .padding(.leading, leadingPadding)
+                    .padding(.trailing, 4)
+                    .padding(.vertical, verticalPadding)
+                    .frame(minHeight: DesignTokens.minHitTarget, maxHeight: isExpanded ? nil : .infinity, alignment: isHeroTile ? .top : .center)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(PressableCardButtonStyle())
             .accessibilityLabel(Text(accessibilitySummary))
             .accessibilityHint(Text(DeviceTileActionLayout.primaryHint(for: device, kind: primary)))
             .panelHelp(DeviceTileActionLayout.primaryTooltip(for: device, kind: primary))
-            .panelControlGesture(for: device, store: store, ringAlignment: .leading, ringDiameter: 54,
-                                 slideAlignment: .trailing, slideWidth: 64, reserveSlideSpace: true,
-                                 opensCameraLive: true, label: device.name)
-
-            Rectangle()
-                .fill(Color.primary.opacity(colorScheme == .dark ? 0.14 : 0.09))
-                .frame(width: DesignTokens.hairline)
-                .padding(.vertical, 10)
-                .accessibilityHidden(true)
+            .panelControlGesture(for: device, store: store, opensCameraLive: true, label: device.name)
 
             Button {
                 guard !isEditingLayout else { return }
@@ -211,6 +201,9 @@ struct SplitDeviceTileHeader<Orb: View, Badge: View, QuickBadge: View>: View {
                 }
             } label: {
                 HStack(spacing: 3) {
+                    titleAndStatusBlock
+                        .padding(.leading, 5)
+                    Spacer(minLength: 4)
                     quickBadge()
                     Image(systemName: "chevron.right")
                         .font(.system(size: DesignTokens.TypeSize.footnote, weight: .semibold))
@@ -219,9 +212,10 @@ struct SplitDeviceTileHeader<Orb: View, Badge: View, QuickBadge: View>: View {
                             $0.rotationEffect(.degrees(isExpanded ? 90 : 0))
                         }
                 }
-                .padding(.leading, 7)
                 .padding(.trailing, max(8, trailingPadding - 2))
-                .frame(minWidth: 32, minHeight: DesignTokens.minHitTarget, maxHeight: isExpanded ? nil : .infinity)
+                .padding(.vertical, verticalPadding)
+                .frame(maxWidth: .infinity, minHeight: DesignTokens.minHitTarget, maxHeight: isExpanded ? nil : .infinity, alignment: isHeroTile ? .topLeading : .leading)
+                // The whole name-and-status target lights on hover, so its reach is visible before the click.
                 .background(
                     Color.primary.opacity(isAdjustHovered && !isEditingLayout ? (colorScheme == .dark ? 0.09 : 0.05) : 0)
                         .animation(AppleMotion.resolve(.hoverFade, reduceMotion: reduceMotion), value: isAdjustHovered)

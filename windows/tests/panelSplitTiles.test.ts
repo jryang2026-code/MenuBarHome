@@ -358,12 +358,17 @@ describe("WP5b-2 · 4-way tile action layout, hit zones, a11y, camera lock guard
       assert.equal(commands.length, beforeCount + 1);
       assert.equal(host.expandedDeviceId, null);
 
-      // In Classic 2-column split card, clicking the left text body also triggers primary toggle
+      // Classic 2-column split card follows the same rule as every card: the name opens the drawer, it never switches.
       if (theme === "classic") {
-        el<HTMLButtonElement>('[data-body-device="light-split"]').click();
+        const body = el<HTMLButtonElement>('[data-body-device="light-split"]');
+        assert.equal(body.getAttribute("aria-expanded"), "false");
+        assert.equal(body.hasAttribute("aria-pressed"), false);
+        body.click();
         await flushImmediate();
-        assert.equal(commands.length, beforeCount + 2);
-        assert.equal(host.expandedDeviceId, null);
+        assert.equal(commands.length, beforeCount + 1);
+        assert.equal(host.expandedDeviceId, "light-split");
+        host.expandedDeviceId = null;
+        host.render();
       }
 
       // split right adjust button expands and collapses detail drawer with exact aria-label & aria-expanded

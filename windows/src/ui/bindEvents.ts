@@ -1524,6 +1524,7 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
           host.render();
           return;
         }
+        // Cameras keep the name as a way into the live view (tracked in #539 for cross-platform parity).
         if (dev.kind.kind === "camera") {
           openCameraPrimaryForHost(id);
           return;
@@ -1539,13 +1540,8 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
           }
           return;
         }
-        // `split`: in Classic collapsed compact tiles (`is-bento-card`), the left zone (orb + body)
-        // runs the primary toggle while the right chevron opens the drawer; in Fluent capsules,
-        // `.win-split-pill` separates left toggle vs right chevron and the caption expands the drawer.
-        if (tile?.classList.contains("is-bento-card") && !tile.classList.contains("is-expanded")) {
-          toggleDeviceById(id);
-          return;
-        }
+        // `split`: one rule on every card and both themes, as on macOS — the orb switches, the name
+        // and status open the drawer; a card without a drawer lets the body switch too.
         if (hasDetailDrawer(dev, facets)) {
           host.expandedDeviceId = host.expandedDeviceId === id ? null : id;
           host.render();
