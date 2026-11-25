@@ -65,7 +65,7 @@ public final class CameraEventStore: @unchecked Sendable {
     }
 
     public func snapshotData(for event: CameraEvent) -> Data? {
-        guard let name = event.snapshotFile, Self.isSafeFilename(name) else { return nil }
+        guard let name = event.snapshotFile, Self.isSafeSnapshotFilename(name) else { return nil }
         return lock.withLock { try? Data(contentsOf: directory.appendingPathComponent(name)) }
     }
 
@@ -95,14 +95,17 @@ public final class CameraEventStore: @unchecked Sendable {
         }
     }
 
+    /// Records an event, rejecting camera IDs that could carry a URL, credentials, or control
+    /// characters. Mirrors Windows `CameraEventStore.record` by returning `nil` when rejected.
     @discardableResult
     public func record(
         cameraID: String,
         kind: CameraEvent.Kind,
         timestamp: Date? = nil,
         snapshotData: Data? = nil
-    ) -> CameraEvent {
-        lock.withLock {
+    ) -> CameraEvent? {
+        guard Self.isSafeCameraId(cameraID) else { return nil }
+        return lock.withLock {
             let now = timestamp ?? clock()
             let snapshotFile = snapshotData.map { _ in "snapshot-\(UUID().uuidString).jpeg" }
             let event = CameraEvent(cameraID: cameraID, kind: kind, timestamp: now, snapshotFile: snapshotFile)
@@ -123,9 +126,58 @@ public final class CameraEventStore: @unchecked Sendable {
 
     private func load() {
         lock.withLock {
-            events = (try? Data(contentsOf: eventsURL)).flatMap { try? JSONDecoder.cameraEvent.decode([CameraEvent].self, from: $0) } ?? []
+            let rawEvents = (try? Data(contentsOf: eventsURL))
+                .flatMap { try? JSONSerialization.jsonObject(with: $0) } as? [Any] ?? []
+            // One corrupt row must not erase the whole retention window: sanitize each element
+            // independently, exactly like Windows `sanitizeCameraEventRecord`.
+            events = rawEvents.compactMap(Self.sanitize)
             pruneLocked(now: clock())
         }
+    }
+
+    /// Mirrors Windows `sanitizeCameraEventRecord`: unsafe fields are dropped, never persisted into
+    /// the in-memory history. A non-object row (including a bare JSON string) is simply skipped.
+    static func sanitize(_ raw: Any) -> CameraEvent? {
+        guard let object = raw as? [String: Any],
+              let rawID = object["id"] as? String,
+              let id = sanitizedID(rawID),
+              let cameraID = object["cameraID"] as? String, isSafeCameraId(cameraID),
+              let rawKind = object["kind"] as? String,
+              let kind = CameraEvent.Kind(rawValue: rawKind),
+              let rawTimestamp = object["timestamp"] as? String,
+              let timestamp = parseTimestamp(rawTimestamp) else { return nil }
+        let snapshotFile: String?
+        switch object["snapshotFile"] {
+        case let name as String:
+            snapshotFile = isSafeSnapshotFilename(name) ? name : nil
+        default:
+            snapshotFile = nil
+        }
+        return CameraEvent(id: id, cameraID: cameraID, kind: kind, timestamp: timestamp, snapshotFile: snapshotFile)
+    }
+
+    private static func sanitizedID(_ raw: String) -> UUID? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed.count <= 64,
+              trimmed.unicodeScalars.allSatisfy({ scalar in
+                (scalar.value >= 48 && scalar.value <= 57)
+                    || (scalar.value >= 65 && scalar.value <= 90)
+                    || (scalar.value >= 97 && scalar.value <= 122)
+                    || scalar.value == 45 || scalar.value == 95
+              }) else { return nil }
+        return UUID(uuidString: trimmed)
+    }
+
+    private static func parseTimestamp(_ raw: String) -> Date? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        fractional.timeZone = TimeZone(secondsFromGMT: 0)
+        if let date = fractional.date(from: trimmed) { return date }
+        let wholeSeconds = ISO8601DateFormatter()
+        wholeSeconds.formatOptions = [.withInternetDateTime]
+        wholeSeconds.timeZone = TimeZone(secondsFromGMT: 0)
+        return wholeSeconds.date(from: trimmed)
     }
 
     private func pruneLocked(now: Date) {
@@ -134,14 +186,45 @@ public final class CameraEventStore: @unchecked Sendable {
         let removed = events.filter { !kept.contains($0) }
         events = kept
         for event in removed {
-            if let name = event.snapshotFile, Self.isSafeFilename(name) {
+            if let name = event.snapshotFile, Self.isSafeSnapshotFilename(name) {
                 try? FileManager.default.removeItem(at: directory.appendingPathComponent(name))
             }
         }
     }
 
-    private static func isSafeFilename(_ name: String) -> Bool {
-        name == URL(fileURLWithPath: name).lastPathComponent && !name.isEmpty
+    /// Windows `isSafeCameraId`: no blanks, URLs, whitespace, or control characters.
+    static func isSafeCameraId(_ cameraID: String) -> Bool {
+        let trimmed = cameraID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed.count <= 256, trimmed == cameraID,
+              !trimmed.contains("://") else { return false }
+        return trimmed.unicodeScalars.allSatisfy { scalar in
+            scalar.value > 0x1f && !CharacterSet.whitespacesAndNewlines.contains(scalar)
+        }
+    }
+
+    /// Windows `isSafeSnapshotFilename`, including Windows separators and drive letters so a
+    /// crafted record cannot escape the event directory on either platform.
+    static func isSafeSnapshotFilename(_ name: String) -> Bool {
+        guard !name.isEmpty, name.count <= 128 else { return false }
+        for forbidden in ["..", "/", "\\", "://", ":", "?", "#", "@"] {
+            if name.contains(forbidden) { return false }
+        }
+        let lower = name.lowercased()
+        let stem: Substring
+        if lower.hasPrefix("snapshot-"), lower.hasSuffix(".jpeg") {
+            stem = name.dropFirst("snapshot-".count).dropLast(".jpeg".count)
+        } else if lower.hasPrefix("snapshot-"), lower.hasSuffix(".jpg") {
+            stem = name.dropFirst("snapshot-".count).dropLast(".jpg".count)
+        } else {
+            return false
+        }
+        guard !stem.isEmpty else { return false }
+        return stem.unicodeScalars.allSatisfy { scalar in
+            (scalar.value >= 48 && scalar.value <= 57)
+                || (scalar.value >= 65 && scalar.value <= 90)
+                || (scalar.value >= 97 && scalar.value <= 122)
+                || scalar.value == 46 || scalar.value == 95 || scalar.value == 45
+        }
     }
 }
 
@@ -153,7 +236,4 @@ private extension NSLock {
 
 private extension JSONEncoder {
     static var cameraEvent: JSONEncoder { let e = JSONEncoder(); e.dateEncodingStrategy = .iso8601; return e }
-}
-private extension JSONDecoder {
-    static var cameraEvent: JSONDecoder { let d = JSONDecoder(); d.dateDecodingStrategy = .iso8601; return d }
 }
