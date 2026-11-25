@@ -100,6 +100,18 @@ public actor MiCloudProvider: HomeProvider {
     private var lastRefreshBroadcastSweepAt: Date?
     private var refreshSweepPending = false
     private var isLocalNetworkDenied = false
+    private enum ReachabilityPermission { case unknown, granted, denied }
+    private struct ReachabilityAttempt {
+        let retryAt: Date
+        var evidence: (endpoint: MiIODeviceEndpoint, result: OfflineLANReachability)?
+    }
+    private static let reachabilityInterval: TimeInterval = 300
+    private var reachabilityPermission = ReachabilityPermission.unknown
+    private var reachabilityAttempts: [String: ReachabilityAttempt] = [:]
+    private var reachabilityProbe: Task<Int?, any Error>?
+    private var reachabilityRevision: UInt64 = 0
+    private var reachabilitySelection: String?
+    private var reachabilityThrottleUntil: Date?
     private var sharedHomeDids: Set<String> = []
     private var doorbellBaselineTime: [String: Date] = [:]
     private var lastDoorbellTimestamp: [String: Date] = [:]
@@ -239,6 +251,7 @@ public actor MiCloudProvider: HomeProvider {
     public func shutdown() async {
         guard !isShutDown else { return }
         isShutDown = true
+        clearReachability()
         for task in channelWriteTasks.values { task.cancel() }
         for entry in pendingChannelWrites.values.joined() { entry.reply.resume(throwing: MiIOError.shutDown) }
         pendingChannelWrites.removeAll()
@@ -272,6 +285,7 @@ public actor MiCloudProvider: HomeProvider {
 
     public func refreshNow() async {
         guard !isShutDown else { return }
+        syncReachabilitySelection()
         if let rejected = rejectedSession {
             // A wake refresh cannot revive a refused Mi token: only a scan that changed the stored
             // serviceToken may poll again, and that credential rebuilds the loop from scratch.
@@ -443,6 +457,7 @@ public actor MiCloudProvider: HomeProvider {
 
     private func restartLoop() {
         guard !isShutDown else { return }
+        clearReachability()
         loopTask?.cancel()
         loopTask = Task { await self.runLoop() }
     }
@@ -455,6 +470,9 @@ public actor MiCloudProvider: HomeProvider {
             return
         }
         if self.session?.sharesCredentials(with: session) != true {
+            reachabilityPermission = .unknown
+            reachabilityAttempts.removeAll()
+            reachabilityThrottleUntil = nil
             manualScenes = topologyCache?.load(for: session)?.manualScenes ?? []
             lastSceneRefresh = nil
         }
@@ -552,6 +570,7 @@ public actor MiCloudProvider: HomeProvider {
         var pendingError: (any Error)?
         do {
             try await body()
+            await probeOfflineReachability()
         } catch is CancellationError {
             throw CancellationError()
         } catch MiCloudError.sessionExpired {
@@ -610,6 +629,9 @@ public actor MiCloudProvider: HomeProvider {
             guard !Task.isCancelled && !isShutDown else { throw CancellationError() }
             if let rejected = session ?? currentSession() { latchRejection(rejected) }
             throw MiCloudError.sessionExpired
+        } catch MiCloudError.http(429) {
+            throttleReachability()
+            throw MiCloudError.http(429)
         }
     }
 
@@ -632,6 +654,7 @@ public actor MiCloudProvider: HomeProvider {
     /// Keeps the refused credential out of every later request and sends the one re-auth event;
     /// a repeat must not re-open a prompt the user has already answered.
     private func latchRejection(_ rejected: MiSession) {
+        clearReachability()
         rejectedSession = rejected
         guard !didReportSessionExpired else { return }
         didReportSessionExpired = true
@@ -653,6 +676,8 @@ public actor MiCloudProvider: HomeProvider {
     /// Declared `async` so it wins over the protocol's no-op default in async callers.
     public func setPollingContext(_ context: PollingContext) async {
         guard !isShutDown, context != pollingContext else { return }
+        let invalidatesReachability = !context.systemActive
+            || context.haTransportRevision != pollingContext.haTransportRevision
         logger.info("Mi cloud polling: \(context.description, privacy: .public) (\(self.pollsSinceContextChange, privacy: .public) polls since last change)")
         if context.systemActive && !pollingContext.systemActive {
             pollRequested = true
@@ -663,6 +688,9 @@ public actor MiCloudProvider: HomeProvider {
             lastWakePollAt = nil
         }
         pollingContext = context
+        if invalidatesReachability, clearReachability() {
+            emitSnapshot(closesAwayGap: false)
+        }
         pollsSinceContextChange = 0
         waitTask?.cancel()
     }
@@ -708,6 +736,8 @@ public actor MiCloudProvider: HomeProvider {
     /// Drops the cached home so an expired account stops contributing devices to the merged panel.
     private func clearExpiredSnapshot() {
         api = nil
+        clearReachability()
+        reachabilityPermission = .unknown
         if let session {
             topologyCache?.remove(accountID: MiAccount(session: session).id)
         }
@@ -790,6 +820,7 @@ public actor MiCloudProvider: HomeProvider {
                 rooms = outcome.rooms
             }
             let roomsError = outcome.error
+            if (roomsError as? MiCloudError) == .http(429) { throttleReachability() }
             logger.info("Mi cloud rooms: \(self.rooms.count, privacy: .public), homes: \(Self.homeOptions(from: self.rooms).count, privacy: .public)")
             try await refreshDeviceList(api, retryUnresolved: true, refreshScenes: false)
             if roomsError == nil {
@@ -884,6 +915,12 @@ public actor MiCloudProvider: HomeProvider {
             }
         }
         reconcileLANEndpoints(devices)
+        for (did, attempt) in reachabilityAttempts {
+            if let evidence = attempt.evidence,
+               offlineReachabilityEndpoint(for: commandRecord(for: did)) != evidence.endpoint {
+                reachabilityAttempts[did]?.evidence = nil
+            }
+        }
         try await refreshGroupMembers(api)
         if refreshScenes { try await refreshManualScenes(api) }
         persistTopologyIfNeeded()
@@ -1509,6 +1546,10 @@ public actor MiCloudProvider: HomeProvider {
     }
 
     private func updateLocalNetworkDenied(_ denied: Bool) {
+        if denied {
+            reachabilityPermission = .denied
+            clearReachability()
+        }
         if !denied {
             for (did, var state) in lanHealthByDid where state.lastErrorWasLocalNetworkDenied {
                 state.cooldownUntil = nil; state.lastErrorWasLocalNetworkDenied = false; lanHealthByDid[did] = state
@@ -1581,10 +1622,14 @@ public actor MiCloudProvider: HomeProvider {
     }
 
     private func recordLANSuccess(did: String, rttMs: Int? = nil, allowClearingDenied: Bool = true) {
+        reachabilityPermission = .granted
         let quantized = rttMs.map(DeviceTransportDiagnostics.quantizeRTT) ?? lanHealthByDid[did]?.lastRTTMs
         lanHealthByDid[did] = LANHealthState(consecutiveFailures: 0, cooldownUntil: nil, lastRTTMs: quantized, lastErrorWasLocalNetworkDenied: false)
         lanTransportSucceededDids.insert(did)
-        if allowClearingDenied, isLocalNetworkDenied { updateLocalNetworkDenied(false) }
+        if allowClearingDenied {
+            reachabilityPermission = .granted
+            if isLocalNetworkDenied { updateLocalNetworkDenied(false) }
+        }
     }
 
     private func recordLANFailure(
@@ -1617,6 +1662,95 @@ public actor MiCloudProvider: HomeProvider {
         lanHealthByDid[did] = state
         lanSucceededDids.remove(did)
         lanTransportSucceededDids.remove(did)
+    }
+
+    // MARK: - Offline LAN Reachability
+
+    @discardableResult
+    private func clearReachability() -> Bool {
+        reachabilityRevision &+= 1
+        reachabilityProbe?.cancel()
+        var hadEvidence = false
+        for (did, attempt) in reachabilityAttempts where attempt.evidence != nil {
+            hadEvidence = true
+            reachabilityAttempts[did]?.evidence = nil
+        }
+        return hadEvidence
+    }
+
+    private func syncReachabilitySelection() {
+        let selected = selectedHomeLoader()
+        guard selected != reachabilitySelection else { return }
+        reachabilitySelection = selected
+        clearReachability()
+    }
+
+    private func throttleReachability() {
+        reachabilityThrottleUntil = now().addingTimeInterval(max(60, cloudBackoffSeconds))
+        reachabilityProbe?.cancel()
+    }
+
+    private func offlineReachabilityEndpoint(for record: MiDeviceRecord?) -> MiIODeviceEndpoint? {
+        guard let record, !record.isOnline, record.splitParentDid == nil,
+              LocalMiIOClient.reachabilityDeviceID(record.did) != nil,
+              LocalMiIOClient.isLANEligiblePID(record.pid),
+              let ip = record.localIp?.trimmingCharacters(in: .whitespacesAndNewlines),
+              LocalMiIOClient.isPrivateRFC1918IPv4(ip),
+              let token = record.token?.trimmingCharacters(in: .whitespacesAndNewlines),
+              MiIOPacket.validateToken(token) != nil,
+              hasConfirmedWriteOwnership(of: record) else { return nil }
+        return MiIODeviceEndpoint(did: record.did, ip: ip, token: token)
+    }
+
+    private var canProbeOfflineReachability: Bool {
+        guard let session, currentSession()?.sharesCredentials(with: session) == true else { return false }
+        return !isShutDown && pollingContext.systemActive && reachabilityPermission == .granted
+            && !isLocalNetworkDenied && isCloudAllowed
+            && (reachabilityThrottleUntil.map { now() >= $0 } ?? true)
+            && !isSessionRejected
+    }
+
+    private func probeOfflineReachability() async {
+        syncReachabilitySelection()
+        let time = now()
+        guard !Task.isCancelled, canProbeOfflineReachability, reachabilityProbe == nil,
+              lastPolledSelection == reachabilitySelection, let localClient else { return }
+        let activeDids = Set(devices.map(\.did))
+        reachabilityAttempts = reachabilityAttempts.filter { did, attempt in
+            activeDids.contains(did) || time < attempt.retryAt
+        }
+        guard let endpoint = scopedDevicesAndRooms().devices.lazy
+            .filter({ self.reachabilityAttempts[$0.did].map { time >= $0.retryAt } ?? true })
+            .compactMap({ self.offlineReachabilityEndpoint(for: $0) })
+            .min(by: {
+                (reachabilityAttempts[$0.did]?.retryAt ?? .distantPast)
+                    < (reachabilityAttempts[$1.did]?.retryAt ?? .distantPast)
+            }) else { return }
+
+        let revision = reachabilityRevision
+        let did = endpoint.did
+        reachabilityAttempts[did] = ReachabilityAttempt(retryAt: time.addingTimeInterval(Self.reachabilityInterval))
+        let probe = Task { try await localClient.probeReachability(endpoint) }
+        reachabilityProbe = probe
+        let outcome = await withTaskCancellationHandler { await probe.result } onCancel: { probe.cancel() }
+        reachabilityProbe = nil
+        guard !Task.isCancelled, !probe.isCancelled, revision == reachabilityRevision,
+              selectedHomeLoader() == reachabilitySelection, canProbeOfflineReachability else { return }
+        switch outcome {
+        case .success(let rtt?):
+            guard offlineReachabilityEndpoint(for: commandRecord(for: did)) == endpoint else { return }
+            let result = OfflineLANReachability(
+                rttMs: DeviceTransportDiagnostics.quantizeRTT(rtt),
+                expiresAt: now().addingTimeInterval(Self.reachabilityInterval)
+            )
+            reachabilityAttempts[did]?.evidence = (endpoint, result)
+            emitSnapshot(closesAwayGap: false)
+        case .failure(let error) where (error as? MiIOError) == .localNetworkDenied:
+            reachabilityPermission = .denied
+            if clearReachability() { emitSnapshot(closesAwayGap: false) }
+        default:
+            break
+        }
     }
 
     // MARK: - MIoT Doorbell Event Bridging
@@ -1795,6 +1929,7 @@ public actor MiCloudProvider: HomeProvider {
     static let propertyUnsupportedCode = -704002000
 
     private func emitSnapshot(closesAwayGap: Bool = true) {
+        syncReachabilitySelection()
         let (visibleDevices, visibleRooms) = scopedDevicesAndRooms()
         let plan = typePrunePlan(for: (visibleDevices, visibleRooms))
         let cloudBackingOff = cloudRetryNotBefore != nil
@@ -1848,6 +1983,12 @@ public actor MiCloudProvider: HomeProvider {
                 consecutiveFailures: health?.consecutiveFailures ?? 0,
                 usedBroadcastRecovery: lanBindingsByDid[primaryMiotDid]?.usedBroadcastRecovery ?? false
             )
+            if let evidence = reachabilityAttempts[home.devices[i].id]?.evidence,
+               currentNow < evidence.result.expiresAt,
+               let session, currentSession()?.sharesCredentials(with: session) == true,
+               offlineReachabilityEndpoint(for: commandRecord(for: home.devices[i].id)) == evidence.endpoint {
+                home.deviceTransportDiagnostics[home.devices[i].id]?.offlineLANReachability = evidence.result
+            }
             if cloudBackingOff {
                 if !candidateDids.contains(where: { lanSucceededDids.contains($0) }) {
                     home.devices[i].telemetryStale = true
