@@ -3886,6 +3886,62 @@ button.cc-footer-label.is-action { color: var(--win-critical); text-decoration: 
   font-weight: 600;
 }
 
+.cc-ha-discover-status {
+  margin: 6px 0 0;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--text-secondary);
+}
+
+.cc-ha-discover-status.is-error {
+  color: var(--win-caution, #c87400);
+}
+
+.cc-ha-candidates {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-top: 6px;
+}
+
+.cc-ha-candidate-btn {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 9px;
+  border-radius: var(--r-control);
+  border: 1px solid var(--win-control-stroke);
+  background: var(--win-control-bg);
+  color: var(--text-primary);
+  text-align: left;
+  cursor: pointer;
+}
+
+.cc-ha-candidate-btn:hover {
+  background: var(--win-control-hover);
+}
+
+.cc-ha-candidate-name {
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 16px;
+}
+
+.cc-ha-candidate-url {
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--text-secondary);
+}
+
+.cc-ha-url-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
 .cc-camera-stage {
   position: relative;
   overflow: hidden;

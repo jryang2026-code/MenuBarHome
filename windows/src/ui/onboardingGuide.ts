@@ -21,6 +21,14 @@ import type { ConnectionMode, QrLoginPhase } from "./appTypes.js";
 import { demoDevices, demoScenes } from "./demo.js";
 import { isPlainHttpRemoteEndpoint, normalizeHaEndpoint } from "./haEndpoint.js";
 import {
+  cancelHomeAssistantDiscovery,
+  discoverHomeAssistantOnLan,
+  haDiscoveryFailureStatus,
+  renderHaDiscoveredCandidates,
+  resolveHaDiscoveryOutcome,
+  type HaDiscoveredInstance,
+} from "./haDiscovery.js";
+import {
   haCacheIfEnabled,
   isHostHaEnabled,
   setHostDualSourceEnabled,
@@ -216,6 +224,10 @@ interface OnboardingSessionState {
   selectedMode: ConnectionMode | null;
   haURLDraft: string;
   haTokenDraft: string;
+  haDiscovering: boolean;
+  haDiscoverGeneration: number;
+  haDiscovered: readonly HaDiscoveredInstance[];
+  haDiscoverStatus: { text: string; isError: boolean } | null;
   haConnectError: string | null;
   haConnecting: boolean;
   haConnectGeneration: number;
@@ -229,7 +241,18 @@ interface OnboardingSessionState {
 
 const onboardingSessionByHost = new WeakMap<object, OnboardingSessionState>();
 
+function cancelOnboardingHaDiscovery(session: OnboardingSessionState): void {
+  session.haDiscoverGeneration += 1;
+  if (!session.haDiscovering) return;
+  session.haDiscovering = false;
+  cancelHomeAssistantDiscovery();
+}
+
 export function clearOnboardingSession(host: object): void {
+  const existing = onboardingSessionByHost.get(host);
+  if (existing) {
+    cancelOnboardingHaDiscovery(existing);
+  }
   onboardingSessionByHost.delete(host);
 }
 
@@ -360,6 +383,10 @@ function ensureSession(host: OnboardingRenderViewHost): OnboardingSessionState {
     selectedMode: initialMode,
     haURLDraft: host.settings.haBaseURL,
     haTokenDraft: host.settings.haToken,
+    haDiscovering: false,
+    haDiscoverGeneration: 0,
+    haDiscovered: [],
+    haDiscoverStatus: null,
     haConnectError: null,
     haConnecting: false,
     haConnectGeneration: 0,
@@ -534,6 +561,9 @@ export interface OnboardingQrStepView {
 export interface OnboardingHaStepView {
   readonly urlDraft: string;
   readonly tokenDraft: string;
+  readonly discovering?: boolean;
+  readonly discovered?: readonly HaDiscoveredInstance[];
+  readonly discoverStatus?: { readonly text: string; readonly isError: boolean } | null;
   readonly connecting: boolean;
   readonly error: string | null;
   readonly connectedCount: number | null;
@@ -601,19 +631,38 @@ export function renderOnboardingConnectStep(input: OnboardingConnectStepInput): 
   if (input.mode === "homeAssistant") {
     const { ha } = input;
     const warnPlainHttp = isPlainHttpRemoteEndpoint(ha.urlDraft);
+    const discovering = Boolean(ha.discovering);
+    const discovered = ha.discovered ?? [];
+    const discoverStatus = ha.discoverStatus ?? null;
+    const candidatesHtml = renderHaDiscoveredCandidates(discovered, esc, "data-onboarding-ha-candidate");
     return `
       <div class="cc-field" data-onboarding-step="2">
         <p class="cc-field-hint cc-onboarding-hint is-above" data-onboarding-ha-hint>
           ${esc(t("在 Home Assistant 网页设置里查看地址"))}
         </p>
         <label for="onboarding-ha-url">Home Assistant URL</label>
-        <input
-          id="onboarding-ha-url"
-          class="cc-input"
-          type="url"
-          placeholder="http://homeassistant.local:8123"
-          value="${esc(ha.urlDraft)}"
-        />
+        <div class="cc-onboarding-row">
+          <input
+            id="onboarding-ha-url"
+            class="cc-input"
+            type="url"
+            placeholder="http://homeassistant.local:8123"
+            value="${esc(ha.urlDraft)}"
+          />
+          <button type="button" class="cc-btn-secondary" id="btn-onboarding-discover-ha" ${discovering ? "disabled" : ""}>
+            ${esc(discovering ? t("正在查找…") : t("在局域网中查找"))}
+          </button>
+        </div>
+        ${
+          discoverStatus
+            ? `<p class="cc-ha-discover-status ${discoverStatus.isError ? "is-error" : ""}" data-onboarding-ha-discover-status role="status">${esc(discoverStatus.text)}</p>`
+            : ""
+        }
+        ${
+          candidatesHtml
+            ? `<div class="cc-ha-candidates" data-onboarding-ha-candidates>${candidatesHtml}</div>`
+            : ""
+        }
         <p class="cc-onboarding-warning is-spaced" data-onboarding-ha-http-warning role="note" ${warnPlainHttp ? "" : "hidden"}>
           ${esc(t("令牌将以明文在网络上传输，远程访问建议使用 HTTPS 或 Nabu Casa 地址。"))}
         </p>
@@ -721,6 +770,9 @@ export function mountOnboardingGuide(host: OnboardingRenderViewHost): void {
     ha: {
       urlDraft: session.haURLDraft,
       tokenDraft: session.haTokenDraft,
+      discovering: session.haDiscovering,
+      discovered: session.haDiscovered,
+      discoverStatus: session.haDiscoverStatus,
       connecting: session.haConnecting,
       error: session.haConnectError,
       connectedCount: session.haConnectedCount,
@@ -892,6 +944,9 @@ export function mountOnboardingGuide(host: OnboardingRenderViewHost): void {
     btn.addEventListener("click", () => {
       const mode = btn.dataset.onboardingMode as ConnectionMode | undefined;
       if (!mode) return;
+      if (mode !== "homeAssistant") {
+        cancelOnboardingHaDiscovery(session);
+      }
       session.selectedMode = mode;
       session.addingSecondPlatform = false;
       session.statusNote = null;
@@ -938,6 +993,7 @@ export function mountOnboardingGuide(host: OnboardingRenderViewHost): void {
   });
 
   sheet.querySelector("#btn-onboarding-back")?.addEventListener("click", () => {
+    cancelOnboardingHaDiscovery(session);
     session.selectedMode = null;
     session.addingSecondPlatform = false;
     session.haConnectError = null;
@@ -945,6 +1001,7 @@ export function mountOnboardingGuide(host: OnboardingRenderViewHost): void {
   });
 
   sheet.querySelector("#btn-onboarding-use-demo")?.addEventListener("click", () => {
+    cancelOnboardingHaDiscovery(session);
     session.selectedMode = "demo";
     session.haConnectError = null;
     switchConnectionModeInOnboarding(host, "demo");
@@ -991,7 +1048,70 @@ export function mountOnboardingGuide(host: OnboardingRenderViewHost): void {
     session.haTokenDraft = (event.target as HTMLInputElement).value;
   });
 
+  sheet.querySelector("#btn-onboarding-discover-ha")?.addEventListener("click", () => {
+    if (session.haDiscovering) return;
+    const gen = ++session.haDiscoverGeneration;
+    session.haDiscovering = true;
+    session.haDiscovered = [];
+    session.haDiscoverStatus = { text: t("正在查找…"), isError: false };
+    const capturedToken = host.sourceEpoch.capture();
+    host.render();
+    announceGuideStatus(host, t("正在查找…"));
+    void discoverHomeAssistantOnLan()
+      .then((found) => {
+        if (
+          onboardingSessionByHost.get(host) !== session ||
+          host.activeSheet !== "onboarding" ||
+          session.selectedMode !== "homeAssistant" ||
+          session.haDiscoverGeneration !== gen ||
+          !capturedToken.isCurrent()
+        ) {
+          return;
+        }
+        session.haDiscovering = false;
+        const outcome = resolveHaDiscoveryOutcome(found);
+        session.haDiscovered = outcome.results;
+        session.haDiscoverStatus = outcome.status;
+        host.render();
+        announceGuideStatus(host, outcome.status.text);
+      })
+      .catch(() => {
+        if (
+          onboardingSessionByHost.get(host) !== session ||
+          host.activeSheet !== "onboarding" ||
+          session.selectedMode !== "homeAssistant" ||
+          session.haDiscoverGeneration !== gen ||
+          !capturedToken.isCurrent()
+        ) {
+          return;
+        }
+        session.haDiscovering = false;
+        session.haDiscovered = [];
+        session.haDiscoverStatus = haDiscoveryFailureStatus();
+        host.render();
+        announceGuideStatus(host, session.haDiscoverStatus.text);
+      });
+  });
+
+  sheet.querySelectorAll<HTMLButtonElement>("[data-onboarding-ha-candidate]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const pickedUrl = btn.dataset.onboardingHaCandidate?.trim();
+      if (!pickedUrl) return;
+      session.haURLDraft = pickedUrl;
+      session.haDiscoverStatus = { text: t("已填入地址：{url}", { url: pickedUrl }), isError: false };
+      renderGuideFocused(host, "#onboarding-ha-url");
+      const urlInput = sheet.querySelector<HTMLInputElement>("#onboarding-ha-url");
+      if (urlInput && urlInput.value !== pickedUrl) {
+        urlInput.value = pickedUrl;
+      }
+      const warnEl = sheet.querySelector<HTMLElement>("[data-onboarding-ha-http-warning]");
+      if (warnEl) warnEl.hidden = !isPlainHttpRemoteEndpoint(pickedUrl);
+      announceGuideStatus(host, session.haDiscoverStatus.text);
+    });
+  });
+
   sheet.querySelector("#btn-onboarding-connect-ha")?.addEventListener("click", () => {
+    cancelOnboardingHaDiscovery(session);
     const endpoint = normalizeHaEndpoint(session.haURLDraft);
     const token = session.haTokenDraft.trim();
     if (!endpoint || !token) {

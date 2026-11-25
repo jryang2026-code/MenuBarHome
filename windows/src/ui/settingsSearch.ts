@@ -327,7 +327,7 @@ const RAW_SPECS: readonly RawAnchorSpec[] = [
     anchor: "haServerAddress",
     section: SEC_CONNECTION,
     title: ["Home Assistant 服务器地址", "Home Assistant 伺服器位址", "Home Assistant Server URL"],
-    synonyms: ["服务器", "地址", "填入常用地址", "填入常用位址", "默认地址", "局域网", "代理", "链接", "home assistant", "fill default address", "default address", "ha", "server", "url", "nabu casa", "8123", "websocket", "daili", "dizhi"],
+    synonyms: ["服务器", "地址", "在局域网中查找", "在區域網路中尋找", "填入常用地址", "填入常用位址", "默认地址", "局域网", "代理", "链接", "home assistant", "find on my network", "discover", "mdns", "fill default address", "default address", "ha", "server", "url", "nabu casa", "8123", "websocket", "daili", "dizhi"],
   },
   {
     anchor: "haToken",

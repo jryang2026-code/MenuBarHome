@@ -964,6 +964,10 @@ private struct GeneralSettingsTab: View {
                     .font(.system(size: DesignTokens.TypeSize.caption))
                     .foregroundStyle(DesignTokens.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
+
+                    Divider().overlay(Color.primary.opacity(0.06))
+
+                    CustomHotkeyBindingsSection(store: store)
                 }
                 .settingsRow(anchor: .globalHotkey)
             }

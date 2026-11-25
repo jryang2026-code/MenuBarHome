@@ -10,7 +10,7 @@ The macOS version is built natively in Swift 6, while the Windows 11 client is a
 | Feature Area | macOS Native (14+) | Windows 11 Tray | Details |
 | :--- | :---: | :---: | :--- |
 | **Mi Home Direct QR Connect** | ✅ Supported | ✅ Supported | Scan with Mi Home app; supports multiple Xiaomi accounts at once and CN, SG, DE, US, and RU regional servers on both platforms; loads homes you own plus homes shared with your account |
-| **Home Assistant Integration** | ✅ Supported | ✅ Supported | macOS keeps a persistent WebSocket event stream with LAN mDNS discovery; Windows fetches WebSocket snapshots and runs service calls per action. Both support running alongside Mi Home with automatic cross-source device merging and grouping `xiaomi_home` entities by physical device |
+| **Home Assistant Integration** | ✅ Supported | ✅ Supported | macOS keeps a persistent WebSocket event stream with LAN mDNS discovery; Windows supports on-demand LAN mDNS discovery (`_home-assistant._tcp.local`), fetches WebSocket snapshots, and runs service calls per action. Both support running alongside Mi Home with automatic cross-source device merging and grouping `xiaomi_home` entities by physical device |
 | **Keyboard Search & Control** | ✅ Supported | ✅ Supported | Search by device name, room, or pinyin initials. Arrow keys select and adjust devices. Enter toggles a result or runs a command |
 | **Global Activation Hotkey** | ✅ `⌥M` (Customizable) | ✅ `Alt+M` (Customizable) | Windows 1.1.4 adds custom key recording with collision detection |
 | **Voice Interaction** | ✅ Menu bar hold / Hotkey hold / Hands-free | ⚠️ Hands-free only | macOS supports native Speech frameworks; Windows uses WebView speech recognition |

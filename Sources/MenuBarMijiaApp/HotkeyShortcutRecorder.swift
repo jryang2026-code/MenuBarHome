@@ -24,12 +24,32 @@ public final class HotkeySettingsState {
 
     public private(set) var shortcut: HotkeyShortcut = HotkeyPreferences.load()
     public private(set) var registrationError: String?
+    public private(set) var panelConflictError: String?
     public private(set) var isRegistered = false
+    public private(set) var bindings: [HotkeyBinding] = HotkeyBindingsPreferences.load()
+    public private(set) var bindingErrors: [String: String] = [:]
+    public private(set) var bindingConflictError: String?
 
     private init() {}
 
     func reload() {
         shortcut = HotkeyPreferences.load()
+    }
+
+    func reloadBindings() {
+        bindings = HotkeyBindingsPreferences.load()
+    }
+
+    func setBindingErrors(_ errors: [String: String]) {
+        bindingErrors = errors
+    }
+
+    func setPanelConflictError(_ error: String?) {
+        panelConflictError = error
+    }
+
+    func setBindingConflictError(_ error: String?) {
+        bindingConflictError = error
     }
 
     func markRegistered(_ shortcut: HotkeyShortcut) {
@@ -52,7 +72,7 @@ public final class HotkeySettingsState {
     /// Carbon reports `eventHotKeyExistsErr` (-9878) when another app owns the chord.
     private static let hotKeyExistsStatus: OSStatus = -9878
 
-    private static func message(for status: OSStatus) -> String {
+    static func message(for status: OSStatus) -> String {
         if status == hotKeyExistsStatus {
             return L10n.tr(
                 "这个组合已被其他应用占用，换一个再试。",
@@ -113,10 +133,20 @@ public final class NotificationPermissionState {
 @Observable
 @MainActor
 final class HotkeyRecorderController {
+    enum RecordingTarget: Equatable {
+        case panel
+        case binding(id: String)
+        case newBinding
+    }
+
     static let shared = HotkeyRecorderController()
 
-    private(set) var isRecording = false
+    private(set) var recordingTarget: RecordingTarget?
+    var isRecording: Bool { recordingTarget != nil }
+    var isRecordingPanel: Bool { recordingTarget == .panel }
+
     @ObservationIgnored private var monitor: Any?
+    @ObservationIgnored private var customOnRecorded: ((HotkeyShortcut) -> Void)?
     private let state: HotkeySettingsState
 
     private init(state: HotkeySettingsState = .shared) {
@@ -124,16 +154,27 @@ final class HotkeyRecorderController {
     }
 
     func toggle() {
-        if isRecording {
+        if recordingTarget == .panel {
             stop()
         } else {
-            start()
+            start(target: .panel)
         }
     }
 
-    func start() {
-        guard monitor == nil else { return }
-        isRecording = true
+    func toggleCustom(target: RecordingTarget, onRecorded: @escaping (HotkeyShortcut) -> Void) {
+        if recordingTarget == target {
+            stop()
+        } else {
+            start(target: target, onRecorded: onRecorded)
+        }
+    }
+
+    func start(target: RecordingTarget = .panel, onRecorded: ((HotkeyShortcut) -> Void)? = nil) {
+        stop()
+        recordingTarget = target
+        customOnRecorded = onRecorded
+        state.setPanelConflictError(nil)
+        state.setBindingConflictError(nil)
         monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { [weak self] event in
             guard let self, self.isRecording else { return event }
             // NSEvent 不能跨 Sendable 边界：先把需要的原语提出来（本地监视器保证主线程）。
@@ -152,7 +193,8 @@ final class HotkeyRecorderController {
             NSEvent.removeMonitor(monitor)
         }
         monitor = nil
-        isRecording = false
+        recordingTarget = nil
+        customOnRecorded = nil
     }
 
     /// Records the captured key. Returns `true` when the event was consumed (always, while recording:
@@ -176,11 +218,65 @@ final class HotkeyRecorderController {
             return true
         }
 
-        HotkeyPreferences.save(shortcut)
-        HotkeyAndNotificationManager.shared.applyHotkeyPreference()
-        state.reload()
-        stop()
-        return true
+        switch recordingTarget {
+        case .panel:
+            if let conflict = HotkeyBindingsPreferences.validate(
+                shortcut: shortcut,
+                panelShortcut: state.shortcut,
+                checkPanelConflict: false,
+                existingBindings: state.bindings
+            ) {
+                state.setPanelConflictError(conflict.userMessage)
+                NSSound.beep()
+                return true
+            }
+            state.setPanelConflictError(nil)
+            HotkeyPreferences.save(shortcut)
+            HotkeyAndNotificationManager.shared.applyHotkeyPreference()
+            state.reload()
+            stop()
+            return true
+
+        case .binding(let id):
+            if let conflict = HotkeyBindingsPreferences.validate(
+                shortcut: shortcut,
+                excludingBindingId: id,
+                panelShortcut: state.shortcut,
+                checkPanelConflict: true,
+                existingBindings: state.bindings
+            ) {
+                state.setBindingConflictError(conflict.userMessage)
+                NSSound.beep()
+                return true
+            }
+            state.setBindingConflictError(nil)
+            let callback = customOnRecorded
+            stop()
+            callback?(shortcut)
+            return true
+
+        case .newBinding:
+            if let conflict = HotkeyBindingsPreferences.validate(
+                shortcut: shortcut,
+                excludingBindingId: nil,
+                panelShortcut: state.shortcut,
+                checkPanelConflict: true,
+                existingBindings: state.bindings
+            ) {
+                state.setBindingConflictError(conflict.userMessage)
+                NSSound.beep()
+                return true
+            }
+            state.setBindingConflictError(nil)
+            let callback = customOnRecorded
+            stop()
+            callback?(shortcut)
+            return true
+
+        case nil:
+            stop()
+            return true
+        }
     }
 
     /// Whether a key event is the currently configured global shortcut.
@@ -268,20 +364,21 @@ struct HotkeyRecorderRow: View {
                     recorder.toggle()
                 } label: {
                     HStack(spacing: 5) {
-                        Image(systemName: recorder.isRecording ? "record.circle" : "keyboard")
+                        Image(systemName: recorder.isRecordingPanel ? "record.circle" : "keyboard")
                             .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
-                        Text(recorder.isRecording
+                        Text(recorder.isRecordingPanel
                              ? L10n.tr("按下组合…", "Press keys…")
                              : state.shortcut.displayString)
                             .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold, design: .rounded))
                     }
                 }
-                .buttonStyle(PillActionButtonStyle(isSelected: recorder.isRecording, tintColor: .accentColor))
+                .buttonStyle(PillActionButtonStyle(isSelected: recorder.isRecordingPanel, tintColor: .accentColor))
                 .help(L10n.tr("点击后按下新的组合；Esc 取消", "Click, then press a new combination; Esc cancels"))
 
                 if !state.shortcut.isDefault {
                     Button(L10n.tr("恢复 ⌥M", "Reset ⌥M")) {
                         HotkeyPreferences.reset()
+                        state.setPanelConflictError(nil)
                         state.reload()
                         HotkeyAndNotificationManager.shared.applyHotkeyPreference()
                     }
@@ -289,13 +386,25 @@ struct HotkeyRecorderRow: View {
                 }
             }
 
-            if recorder.isRecording {
+            if recorder.isRecordingPanel {
                 Text(L10n.tr(
                     "需要至少一个 ⌘ / ⌥ / ⌃ / ⇧，或单按 F1–F20。Esc 取消。",
                     "Use at least one of ⌘ / ⌥ / ⌃ / ⇧, or a single F1–F20 key. Esc cancels."
                 ))
                 .font(.system(size: DesignTokens.TypeSize.caption))
                 .foregroundStyle(.secondary)
+            }
+
+            if let conflict = state.panelConflictError {
+                HStack(spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: DesignTokens.TypeSize.caption))
+                        .foregroundStyle(.orange)
+                    Text(conflict)
+                        .font(.system(size: DesignTokens.TypeSize.caption))
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
 
             if let error = state.registrationError {
@@ -317,6 +426,232 @@ struct HotkeyRecorderRow: View {
         }
         .onDisappear {
             recorder.stop()
+        }
+    }
+}
+
+// MARK: - Per-Device / Per-Scene Global Hotkey Bindings (P1-6)
+
+struct CustomHotkeyBindingsSection: View {
+    let store: HomeStore
+    private var state: HotkeySettingsState { .shared }
+    private var recorder: HotkeyRecorderController { .shared }
+
+    @State private var isAdding = false
+    @State private var selectedTarget: HotkeyBindingTarget?
+
+    private var toggleableDevices: [SmartDevice] {
+        store.devices.filter(\.isPrimaryToggleable)
+    }
+
+    private func label(for target: HotkeyBindingTarget) -> String {
+        switch target {
+        case .devicePower(let id):
+            return store.devices.first(where: { $0.id == id })?.name ?? id
+        case .scene(let id):
+            return store.scenes.first(where: { $0.id == id })?.name ?? id
+        case .quickAction(let action):
+            return action.title
+        }
+    }
+
+    private func iconName(for target: HotkeyBindingTarget) -> String {
+        switch target {
+        case .devicePower: return "power"
+        case .scene: return "sparkles"
+        case .quickAction(let action): return action.sfSymbolName
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Text(L10n.tr("单设备 / 场景全局热键", "Device & Scene Global Hotkeys"))
+                    .font(.system(size: DesignTokens.TypeSize.body, weight: .medium))
+
+                Text("\(state.bindings.count)/\(HotkeyBindingsPreferences.maxBindings)")
+                    .font(.system(size: DesignTokens.TypeSize.caption, design: .rounded))
+                    .foregroundStyle(.secondary)
+
+                Spacer()
+
+                if !isAdding, state.bindings.count < HotkeyBindingsPreferences.maxBindings {
+                    Button {
+                        selectedTarget = toggleableDevices.first.map { .devicePower(deviceId: $0.id) }
+                            ?? store.scenes.first.map { .scene(sceneId: $0.id) }
+                            ?? .quickAction(.lightsOff)
+                        state.setBindingConflictError(nil)
+                        isAdding = true
+                    } label: {
+                        Label(L10n.tr("添加热键", "Add Hotkey"), systemImage: "plus")
+                            .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
+                    }
+                    .buttonStyle(PillActionButtonStyle())
+                }
+            }
+
+            Text(L10n.tr(
+                "一步开关常用设备或触发场景；沿用锁屏阻止与高危二次确认。",
+                "Toggle a device or run a scene in one keystroke; screen-lock and high-risk confirmations still apply."
+            ))
+            .font(.system(size: DesignTokens.TypeSize.caption))
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+
+            ForEach(state.bindings) { binding in
+                bindingRow(binding)
+            }
+
+            if isAdding {
+                addBindingRow
+            }
+
+            if let conflict = state.bindingConflictError {
+                HStack(spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: DesignTokens.TypeSize.caption))
+                        .foregroundStyle(.orange)
+                    Text(conflict)
+                        .font(.system(size: DesignTokens.TypeSize.caption))
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+        .onDisappear {
+            recorder.stop()
+        }
+    }
+
+    @ViewBuilder
+    private func bindingRow(_ binding: HotkeyBinding) -> some View {
+        let available = binding.isTargetAvailable(devices: store.devices, scenes: store.scenes)
+        let displayName = binding.resolvedDisplayName(devices: store.devices, scenes: store.scenes)
+        let isRecordingThis = recorder.recordingTarget == .binding(id: binding.id)
+
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                Image(systemName: iconName(for: binding.target))
+                    .font(.system(size: DesignTokens.TypeSize.caption))
+                    .foregroundStyle(available ? Color.secondary : Color.orange)
+                    .frame(width: 14)
+
+                Text(displayName)
+                    .font(.system(size: DesignTokens.TypeSize.body))
+                    .foregroundStyle(available ? .primary : .secondary)
+                    .lineLimit(1)
+
+                if !available {
+                    Text(L10n.tr("已失效", "Unavailable"))
+                        .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
+                        .foregroundStyle(.orange)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.orange.opacity(0.14), in: Capsule())
+                }
+
+                Spacer()
+
+                Button {
+                    recorder.toggleCustom(target: .binding(id: binding.id)) { newShortcut in
+                        var updated = state.bindings
+                        if let idx = updated.firstIndex(where: { $0.id == binding.id }) {
+                            updated[idx].shortcut = newShortcut
+                            HotkeyBindingsPreferences.save(updated)
+                            HotkeyAndNotificationManager.shared.applyCustomHotkeyBindings()
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: isRecordingThis ? "record.circle" : "keyboard")
+                            .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
+                        Text(isRecordingThis ? L10n.tr("按下组合…", "Press keys…") : binding.shortcut.displayString)
+                            .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold, design: .rounded))
+                    }
+                }
+                .buttonStyle(PillActionButtonStyle(isSelected: isRecordingThis, tintColor: .accentColor))
+
+                Button {
+                    if isRecordingThis { recorder.stop() }
+                    var updated = state.bindings
+                    updated.removeAll { $0.id == binding.id }
+                    HotkeyBindingsPreferences.save(updated)
+                    state.setBindingConflictError(nil)
+                    HotkeyAndNotificationManager.shared.applyCustomHotkeyBindings()
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 10, weight: .semibold))
+                }
+                .buttonStyle(PillActionButtonStyle())
+                .help(L10n.tr("移除此热键", "Remove hotkey"))
+            }
+
+            if let error = state.bindingErrors[binding.id] {
+                Text(error)
+                    .font(.system(size: DesignTokens.TypeSize.caption))
+                    .foregroundStyle(.orange)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var addBindingRow: some View {
+        let isRecordingNew = recorder.recordingTarget == .newBinding
+        HStack(spacing: 8) {
+            Picker("", selection: $selectedTarget) {
+                if !toggleableDevices.isEmpty {
+                    Section(L10n.tr("设备开关", "Device Power")) {
+                        ForEach(toggleableDevices, id: \.id) { device in
+                            Text(device.name).tag(Optional(HotkeyBindingTarget.devicePower(deviceId: device.id)))
+                        }
+                    }
+                }
+                if !store.scenes.isEmpty {
+                    Section(L10n.tr("场景", "Scenes")) {
+                        ForEach(store.scenes, id: \.id) { scene in
+                            Text(scene.name).tag(Optional(HotkeyBindingTarget.scene(sceneId: scene.id)))
+                        }
+                    }
+                }
+                Section(L10n.tr("快捷操作", "Quick Actions")) {
+                    ForEach(QuickAction.allCases) { action in
+                        Text(action.title).tag(Optional(HotkeyBindingTarget.quickAction(action)))
+                    }
+                }
+            }
+            .labelsHidden()
+            .frame(maxWidth: 200)
+
+            Spacer()
+
+            Button {
+                guard let target = selectedTarget else { return }
+                let targetLabel = label(for: target)
+                recorder.toggleCustom(target: .newBinding) { shortcut in
+                    var updated = state.bindings
+                    guard updated.count < HotkeyBindingsPreferences.maxBindings else { return }
+                    updated.append(HotkeyBinding(target: target, targetLabel: targetLabel, shortcut: shortcut))
+                    HotkeyBindingsPreferences.save(updated)
+                    HotkeyAndNotificationManager.shared.applyCustomHotkeyBindings()
+                    isAdding = false
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: isRecordingNew ? "record.circle" : "keyboard")
+                        .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
+                    Text(isRecordingNew ? L10n.tr("按下组合…", "Press keys…") : L10n.tr("录制快捷键", "Record Key"))
+                        .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
+                }
+            }
+            .buttonStyle(PillActionButtonStyle(isSelected: isRecordingNew, tintColor: .accentColor))
+            .disabled(selectedTarget == nil)
+
+            Button(L10n.tr("取消", "Cancel")) {
+                if isRecordingNew { recorder.stop() }
+                state.setBindingConflictError(nil)
+                isAdding = false
+            }
+            .buttonStyle(PillActionButtonStyle())
         }
     }
 }
