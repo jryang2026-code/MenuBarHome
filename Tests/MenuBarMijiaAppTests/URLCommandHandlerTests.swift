@@ -357,9 +357,9 @@ struct URLCommandHandlerTests {
     func companionCopyShipsInThreeLanguages() {
         for language in [AppLanguage.zhHans, AppLanguage.zhHant, AppLanguage.en] {
             L10n.$overrideLanguage.withValue(language) {
-                #expect(!CompanionSettingsCopy.toggleTitle.isEmpty && !CompanionSettingsCopy.scopeHint.isEmpty && !CompanionSettingsCopy.copiedToast.isEmpty)
+                #expect(!CompanionSettingsCopy.toggleTitle.isEmpty && !CompanionSettingsCopy.statusEnabled.isEmpty && !CompanionSettingsCopy.copiedToast.isEmpty)
                 if language == .zhHant {
-                    #expect(CompanionSettingsCopy.toggleTitle == "外部快捷工具與伴生整合（Raycast / CLI / MCP）")
+                    #expect(CompanionSettingsCopy.toggleTitle == "Raycast / CLI / MCP 整合")
                     #expect(CompanionSettingsCopy.copyConfigButton == "複製設定" && CompanionSettingsCopy.checkButton == "檢查" && CompanionSettingsCopy.disconnectButton == "斷開")
                 } else if language == .en {
                     #expect(CompanionSettingsCopy.copyConfigButton == "Copy Config" && CompanionSettingsCopy.checkButton == "Check" && CompanionSettingsCopy.disconnectButton == "Disconnect")

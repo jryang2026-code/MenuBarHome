@@ -130,7 +130,7 @@ public enum AssistantProviderPreset: String, CaseIterable, Identifiable, Sendabl
     public var keyPlaceholder: String {
         switch self {
         case .openRouterJev:
-            return L10n.tr("点「导入」读取 CodexBar/环境变量，或手动输入 sk-or-...", "Tap Import to read CodexBar/env, or enter sk-or-...")
+            return L10n.tr("粘贴 API Key", "Paste an API key")
         case .nativeJev:
             return L10n.tr("粘贴 TypeSafe 原生 Jev API Key", "Paste TypeSafe Native Jev API Key")
         case .deepSeek:

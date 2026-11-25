@@ -22,13 +22,6 @@ struct EnergySettingsSection: View {
         let dailyTotals = history.dailyTotals(dayCount: 7)
         let rankingTotals = history.deviceTotals(dayCount: 7)
         SettingsSection(title: L10n.tr("插座用电统计", "Plug Energy"), anchor: .energyHistory) {
-            Text(L10n.tr(
-                "只保存在这台 Mac 上，来源是每个插座自己的累计电量计数，不用功率估算用电。记录从第一次收到读数开始，之前的用电不会补算；第一次读数只作为基线。跨零点的增量记在前一个采样日，不拆分也不猜测，因此「今天」不会把昨天可能用掉的电算进来。记录保留 31 天，可随时清除。",
-                "Stored on this Mac only. Every figure comes from each plug's own cumulative counter — usage is never estimated from wattage. Recording starts with the first reading; earlier usage is never backfilled, and the first reading only sets a baseline. A delta that spans midnight is credited to the earlier sample day instead of being split or guessed, so “today” cannot claim energy that may have been used yesterday. History keeps 31 days and can be cleared at any time."
-            ))
-            .font(.system(size: DesignTokens.TypeSize.caption))
-            .foregroundStyle(DesignTokens.secondaryText)
-            .fixedSize(horizontal: false, vertical: true)
 
             if let startedAt = history.recordingStartedAt {
                 Text(L10n.tr(
@@ -40,8 +33,8 @@ struct EnergySettingsSection: View {
 
                 if !history.hasMeasuredConsumption {
                     Text(L10n.tr(
-                        "已记下基线，还等第一次电量增长：只有插座计数真的涨了，才会产生用电数字。",
-                        "The baseline is stored; the first measured increase is still pending. A figure appears only when a counter actually grows."
+                        "已开始记录，等待用电数据",
+                        "Recording started; waiting for usage data"
                     ))
                     .font(.system(size: DesignTokens.TypeSize.caption))
                     .foregroundStyle(DesignTokens.secondaryText)
@@ -49,8 +42,8 @@ struct EnergySettingsSection: View {
                 }
             } else {
                 Text(L10n.tr(
-                    "还没有收到插座的电量读数。接入带累计电量的插座后会自动开始记录。",
-                    "No plug counter reading yet. Recording starts automatically once a plug that reports cumulative energy is connected."
+                    "接入计量插座后自动记录",
+                    "Recording starts once an energy-metering plug is connected"
                 ))
                 .font(.system(size: DesignTokens.TypeSize.caption))
                 .foregroundStyle(DesignTokens.secondaryText)
@@ -157,8 +150,8 @@ struct EnergySettingsSection: View {
             }
 
             Text(L10n.tr(
-                "显示「—」表示当天没有记录（应用未运行或设备未上报），不代表没有用电。",
-                "A “—” means nothing was recorded that day (the app was not running or the plug reported nothing) — it does not mean zero usage."
+                "「—」表示当天无记录",
+                "“—” means nothing was recorded that day"
             ))
             .font(.system(size: DesignTokens.TypeSize.caption))
             .foregroundStyle(.secondary.opacity(0.8))
@@ -177,8 +170,8 @@ struct EnergySettingsSection: View {
 
             if ranking.isEmpty {
                 Text(L10n.tr(
-                    "还没有可排行的用电增量。插座电量计数增长后会自动出现。",
-                    "No measured increase yet. Devices appear once their counter grows."
+                    "暂无用电记录",
+                    "No energy records yet"
                 ))
                 .font(.system(size: DesignTokens.TypeSize.caption))
                 .foregroundStyle(DesignTokens.secondaryText)
@@ -249,18 +242,6 @@ struct EnergySettingsSection: View {
                 .foregroundStyle(.orange)
                 .fixedSize(horizontal: false, vertical: true)
             }
-            Text(history.pricePerKwh == nil
-                ? L10n.tr(
-                    "金额默认隐藏。填入本地电价后，按实测电量换算费用，不用功率估算。",
-                    "Cost is hidden until you enter your price. It is the measured energy times this price, never estimated from wattage."
-                )
-                : L10n.tr(
-                    "金额 = 实测电量 × 电价，仅在本机计算。",
-                    "Cost = measured energy × price, calculated on this Mac only."
-                ))
-            .font(.system(size: DesignTokens.TypeSize.caption))
-            .foregroundStyle(.secondary.opacity(0.8))
-            .fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -268,16 +249,6 @@ struct EnergySettingsSection: View {
 
     private var clearRow: some View {
         HStack(spacing: 8) {
-            Image(systemName: "trash")
-                .font(.system(size: DesignTokens.TypeSize.caption))
-                .foregroundStyle(DesignTokens.secondaryText)
-            Text(L10n.tr(
-                "清除会删除全部用电记录与基线，下一次读数重新开始；电价保留。",
-                "Clearing deletes every recorded sample and baseline so the next reading starts over; the price is kept."
-            ))
-            .font(.system(size: DesignTokens.TypeSize.caption))
-            .foregroundStyle(DesignTokens.secondaryText)
-            .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 8)
             Button(L10n.tr("清除用电记录", "Clear energy history")) {
                 isConfirmingClear = true

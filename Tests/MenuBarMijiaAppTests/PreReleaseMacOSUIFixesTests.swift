@@ -200,7 +200,7 @@ struct PreReleaseMacOSUIFixesTests {
         connState.isExpanded = false
         connState.applyInitialDefaultsIfNeeded(accountCount: 1, isDualSourceActive: true)
         #expect(!connState.isExpanded)
-        connState.expandForHighlightIfNeeded(.dualSourceFusion)
+        connState.expandForHighlightIfNeeded(.miMultiAccounts)
         #expect(connState.isExpanded)
 
         var regionState = MiAccountSection.RegionDisclosureState()

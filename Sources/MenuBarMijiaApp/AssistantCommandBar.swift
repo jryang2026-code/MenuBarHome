@@ -1020,55 +1020,31 @@ private struct ExecutionRouteBadge: View {
 // MARK: - Settings: AI 指令
 
 enum AssistantSettingsCopy {
-    static var title: String {
-        L10n.tr("AI 助手（可选）", "AI assistant (optional)")
-    }
-
-    static var subtitle: String {
-        L10n.tr(
-            "不填也能用：开关、调光、温度等常规指令在本机解析",
-            "Leave this empty and switches, dimming and temperature still work on this Mac."
-        )
-    }
+    /// Names the card in the unsaved-changes prompt; the card itself shows no title (the page header has it).
+    static var title: String { L10n.tr("AI 助手", "AI assistant") }
 
     static var providerLabel: String { L10n.tr("服务商", "Provider") }
 
     /// The feature switch at the top of the AI card (P5a-M). Off means zero AI requests; the
     /// provider form stays editable so the config can be prepared before turning it back on.
-    static var enableTitle: String {
-        L10n.tr("启用 AI 一句话控制", "Enable AI command control")
-    }
+    static var enableTitle: String { L10n.tr("启用 AI 助手", "Enable AI assistant") }
 
-    static var disabledHint: String {
-        L10n.tr(
-            "关闭后不再发送 AI 请求，指令只在本机解析；已保存的服务商配置与密钥会保留。",
-            "When off, no AI requests are sent; commands are parsed on this Mac. Saved provider settings and keys are kept."
-        )
-    }
+    static var disabledHint: String { L10n.tr("仅本地解析，密钥保留", "Parsed on this Mac only; keys are kept") }
 
     static var removeProvider: String { L10n.tr("移除此服务商", "Remove this provider") }
 
     /// 主动建议 on its own switch (P5b-M); independent of the AI switch above.
-    static var proactiveTitle: String {
-        L10n.tr("主动建议（猜你想做）", "Proactive suggestions")
-    }
+    static var proactiveTitle: String { L10n.tr("主动建议", "Proactive suggestions") }
 
-    static var proactiveHint: String {
-        L10n.tr(
-            "关闭后，面板不再显示建议，也不再为建议做后台推断；安全提醒、撤销和定时照常运行。",
-            "When off, the panel shows no suggestions and makes no background inference for them; safety alerts, undo and timers keep running."
-        )
-    }
+    static var askWhenUnsureTitle: String { L10n.tr("不确定时先问我", "Ask me when unsure") }
+
+    static var askWhenUnsureHint: String { L10n.tr("高风险操作仍需确认", "High-risk actions still ask first") }
 
     static var removeProviderConfirm: String { L10n.tr("再点一次确认移除", "Click again to confirm removal") }
 
-    static var apiKeyLabel: String {
-        L10n.tr("API Key（只存在本机钥匙串）", "API Key (stored only in this Mac's Keychain)")
-    }
+    static var apiKeyLabel: String { "API Key" }
 
-    static var apiKeyPlaceholder: String {
-        L10n.tr("粘贴 API Key，没有也能用", "Paste an API key, or leave it empty")
-    }
+    static var apiKeyPlaceholder: String { L10n.tr("粘贴 API Key", "Paste an API key") }
 
     static var advancedTitle: String { L10n.tr("高级", "Advanced") }
 
@@ -1076,34 +1052,11 @@ enum AssistantSettingsCopy {
 
     static var modelLabel: String { L10n.tr("模型", "Model") }
 
-    static var protocolNote: String {
-        L10n.tr(
-            "支持 System One（/v1/systemone）和 OpenAI 兼容接口（/v1/chat/completions）。",
-            "Supports System One (/v1/systemone) and OpenAI-compatible endpoints (/v1/chat/completions)."
-        )
-    }
+    static var learnHabits: String { L10n.tr("学习使用习惯", "Learn usage habits") }
 
-    static var learnHabits: String {
-        L10n.tr("学习我的使用习惯（用于猜你想做）", "Learn my usage habits (for proactive suggestions)")
-    }
+    static var shareHabits: String { L10n.tr("向 AI 附带习惯摘要", "Send habit summary to AI") }
 
-    static var learnHabitsNote: String {
-        L10n.tr(
-            "习惯只保存在这台 Mac 上，不会外发；只有下面的「发送习惯摘要」打开后才会随指令发出。",
-            "Habits stay on this Mac. They leave it only if “Share habit summary” below is on."
-        )
-    }
-
-    static var shareHabits: String {
-        L10n.tr("发送习惯摘要（只包含这句话点名的设备）", "Share habit summary (only devices this command names)")
-    }
-
-    static var onDeviceSpeech: String {
-        L10n.tr(
-            "语音只在本机识别（不把声音发给苹果，系统支持时生效）",
-            "On-device speech recognition only (when supported by macOS)"
-        )
-    }
+    static var onDeviceSpeech: String { L10n.tr("优先本机语音识别", "Prefer on-device speech recognition") }
 
     static var habitPreviewPlaceholder: String {
         L10n.tr("预览这句话会发送的习惯摘要", "Preview the habit summary this sentence would send")
@@ -1121,15 +1074,15 @@ enum AssistantSettingsCopy {
 
     static var privacyExplanation: String {
         L10n.tr(
-            "发给 AI 的内容：你说的那句话、设备名称/房间/当前状态、时间段、室温。打开「发送习惯摘要」后，还会发送这句话点名的设备的习惯摘要。只有本机解析不了的指令才会发送。API Key 和米家登录信息只存在本机钥匙串，不会发送。",
-            "Sent to AI only when local parsing cannot resolve: your command text, device names/rooms/states, time slot, and room temperature. Turning on “Share habit summary” also sends the habit summary for devices this command names. API keys and Xiaomi credentials stay in your local Keychain."
+            "本机听不懂的指令和主动建议，会连同设备名和状态发给 AI 服务；密钥存在本机",
+            "Commands this Mac can't parse, and proactive suggestions, send device names and states to the AI service; keys are stored on this Mac and sent only to that service"
         )
     }
 
     static var restoreDefaults: String { L10n.tr("恢复默认", "Restore Defaults") }
-    static var testConnection: String { L10n.tr("测试连接", "Test AI") }
+    static var testConnection: String { L10n.tr("测试连接", "Test Connection") }
     static var testingConnection: String { L10n.tr("测试中…", "Testing…") }
-    static var saveConfiguration: String { L10n.tr("保存 AI 配置", "Save AI Config") }
+    static var saveConfiguration: String { L10n.tr("保存", "Save") }
     static var keySaved: String { L10n.tr("已填写", "Key saved") }
     static var loopback: String { L10n.tr("本机免密", "Local, no key") }
     static var httpsRequired: String { L10n.tr("需用 https，否则不会发送", "Use https or nothing is sent") }
@@ -1239,6 +1192,11 @@ struct AssistantSettingsSection: View {
     /// Two-click confirm for 移除此服务商 (P5a-M): the first click only arms the button.
     @State private var isArmedForRemoval = false
     @Environment(\.settingsUnsavedChanges) private var unsaved
+    @Environment(\.settingsSearchFocus) private var searchFocus
+    /// Rows that live inside 高级; a search hit on one opens the disclosure.
+    static let advancedAnchors: Set<SettingsAnchor?> = [
+        .assistantServiceAddress, .assistantModel, .assistantKeyImport, .assistantRemoveProvider, .habitMemory, .onDeviceSpeech
+    ]
     /// The fields as last loaded or saved; edits that differ from them are unsaved (#148).
     @State private var savedFields: AssistantSettingsDraft.Fields?
 
@@ -1281,8 +1239,15 @@ struct AssistantSettingsSection: View {
                 get: { store.aiAssistantEnabled },
                 set: { newValue in _ = store.setAIAssistantEnabled(newValue) }
             )) {
-                Text(AssistantSettingsCopy.enableTitle)
-                    .font(.system(size: DesignTokens.TypeSize.body, weight: .medium))
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(AssistantSettingsCopy.enableTitle)
+                        .font(.system(size: DesignTokens.TypeSize.body, weight: .medium))
+                    if let headerStatus {
+                        Text(headerStatus)
+                            .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
+                            .foregroundStyle(isInsecure ? Color.orange : Color.green)
+                    }
+                }
             }
             .toggleStyle(.glass)
             .controlSize(.regular)
@@ -1292,24 +1257,6 @@ struct AssistantSettingsSection: View {
                 Text(AssistantSettingsCopy.disabledHint)
                     .font(.system(size: DesignTokens.TypeSize.caption))
                     .foregroundStyle(DesignTokens.secondaryText)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(AssistantSettingsCopy.title)
-                        .font(.system(size: DesignTokens.TypeSize.body, weight: .semibold))
-                    Spacer(minLength: 8)
-                    if let headerStatus {
-                        Text(headerStatus)
-                            .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
-                            .foregroundStyle(isInsecure ? Color.orange : Color.green)
-                    }
-                }
-                Text(AssistantSettingsCopy.subtitle)
-                    .font(.system(size: DesignTokens.TypeSize.caption))
-                    .foregroundStyle(DesignTokens.secondaryText)
-                    .fixedSize(horizontal: false, vertical: true)
             }
 
             HStack {
@@ -1345,76 +1292,13 @@ struct AssistantSettingsSection: View {
             }
             .settingsRow(anchor: .assistantProvider)
 
-            HStack(spacing: 6) {
-                if isArmedForRemoval {
-                    Button(AssistantSettingsCopy.removeProviderConfirm, action: removeSelectedProvider)
-                        .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .red))
-                    Button(L10n.tr("取消", "Cancel")) { isArmedForRemoval = false }
-                        .buttonStyle(PillActionButtonStyle())
-                } else {
-                    Button(AssistantSettingsCopy.removeProvider) { isArmedForRemoval = true }
-                        .buttonStyle(PillActionButtonStyle())
-                        .help(L10n.tr(
-                            "只清除该服务商的本机配置与密钥，其他服务商不受影响",
-                            "Clears only this provider's local settings and key; other providers are untouched"
-                        ))
-                }
-                Text(L10n.tr("只清除该服务商的密钥与授权，其他服务商保留。", "Clears only this provider's key and consent; other providers are kept."))
-                    .font(.system(size: DesignTokens.TypeSize.caption))
-                    .foregroundStyle(DesignTokens.secondaryText)
-                    .fixedSize(horizontal: false, vertical: true)
-                Spacer()
-            }
-            .settingsRow(anchor: .assistantRemoveProvider)
-
             labeledField(AssistantSettingsCopy.apiKeyLabel) {
                 SecureField(AssistantSettingsCopy.apiKeyPlaceholder, text: $apiKeyDraft)
                     .textFieldStyle(.roundedBorder)
             }
             .settingsRow(anchor: .assistantAPIKey)
 
-            VStack(alignment: .leading, spacing: 3) {
-                Toggle(isOn: Binding(
-                    get: { store.proactiveSuggestionsEnabled },
-                    set: { newValue in _ = store.setProactiveSuggestionsEnabled(newValue) }
-                )) {
-                    Text(AssistantSettingsCopy.proactiveTitle)
-                        .font(.system(size: DesignTokens.TypeSize.body, weight: .medium))
-                }
-                .toggleStyle(.glass)
-                .controlSize(.regular)
-
-                Text(AssistantSettingsCopy.proactiveHint)
-                    .font(.system(size: DesignTokens.TypeSize.caption))
-                    .foregroundStyle(DesignTokens.secondaryText)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            .settingsRow(anchor: .proactiveSuggestions)
-
-            privacySection(habitItems: habitItems, habitCount: habitCount)
-                .settingsRow(anchor: .habitMemory)
-
-            DisclosureGroup(isExpanded: $showsAdvanced) {
-                if showsAdvanced {
-                    advancedFields(importedSource: importedSource)
-                        .padding(.top, 6)
-                }
-            } label: {
-                Text(AssistantSettingsCopy.advancedTitle)
-                    .font(.system(size: DesignTokens.TypeSize.body, weight: .medium))
-            }
-
             HStack(spacing: 6) {
-                Button(AssistantSettingsCopy.restoreDefaults) {
-                    selectedPreset = .openRouterJev
-                    baseURLDraft = AssistantConfig.defaultBaseURL
-                    modelDraft = AssistantConfig.defaultModel
-                    apiKeyDraft = store.storedAssistantAPIKey(forBaseURL: AssistantConfig.defaultBaseURL)
-                    _ = saveCurrentDraft()
-                    store.showToast(L10n.tr("已恢复默认 AI 配置", "Restored default AI configuration"))
-                }
-                .buttonStyle(PillActionButtonStyle())
-
                 Button(isTestingConnection ? AssistantSettingsCopy.testingConnection : AssistantSettingsCopy.testConnection) {
                     guard let saved = saveCurrentDraft() else { return }
                     isTestingConnection = true
@@ -1428,7 +1312,7 @@ struct AssistantSettingsSection: View {
                 .disabled(isTestingConnection || !store.aiAssistantEnabled)
                 .help(store.aiAssistantEnabled
                     ? ""
-                    : L10n.tr("AI 一句话控制已关闭，测试连接不可用", "AI command control is off; the connection check is unavailable"))
+                    : L10n.tr("AI 助手已关闭，测试连接不可用", "The AI assistant is off; the connection check is unavailable"))
                 .settingsRow(anchor: .assistantTest)
 
                 Spacer()
@@ -1442,7 +1326,70 @@ struct AssistantSettingsSection: View {
                 }
                 .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .accentColor))
             }
-            .padding(.top, 2)
+
+            Toggle(isOn: Binding(
+                get: { store.proactiveSuggestionsEnabled },
+                set: { newValue in _ = store.setProactiveSuggestionsEnabled(newValue) }
+            )) {
+                Text(AssistantSettingsCopy.proactiveTitle)
+                    .font(.system(size: DesignTokens.TypeSize.body, weight: .medium))
+            }
+            .toggleStyle(.glass)
+            .controlSize(.regular)
+            .padding(.top, 4)
+            .settingsRow(anchor: .proactiveSuggestions)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Toggle(isOn: Binding(
+                    get: { store.askWhenUnsureBeforeAIActions },
+                    set: { store.askWhenUnsureBeforeAIActions = $0 }
+                )) {
+                    Text(AssistantSettingsCopy.askWhenUnsureTitle)
+                        .font(.system(size: DesignTokens.TypeSize.body, weight: .medium))
+                }
+                .toggleStyle(.glass)
+                .controlSize(.regular)
+
+                Text(AssistantSettingsCopy.askWhenUnsureHint)
+                    .font(.system(size: DesignTokens.TypeSize.caption))
+                    .foregroundStyle(DesignTokens.secondaryText)
+            }
+            .settingsRow(anchor: .askWhenUnsure)
+
+            consentedEndpointsRow
+
+            // #50: stays outside 高级 so the fallback to Apple's servers is never hidden.
+            if store.prefersOnDeviceSpeech && !Self.supportsOnDeviceSpeech(for: store.effectiveLanguage) {
+                Label(
+                    L10n.tr(
+                        "当前语言不支持本机识别，语音可能经苹果服务器处理",
+                        "On-device recognition isn't available for this language; Apple's servers may process your audio"
+                    ),
+                    systemImage: "exclamationmark.triangle.fill"
+                )
+                .font(.system(size: DesignTokens.TypeSize.caption))
+                .foregroundStyle(.orange)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Text(AssistantSettingsCopy.privacyExplanation)
+                .font(.system(size: DesignTokens.TypeSize.caption))
+                .foregroundStyle(DesignTokens.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
+
+            DisclosureGroup(isExpanded: $showsAdvanced) {
+                if showsAdvanced {
+                    VStack(alignment: .leading, spacing: 9) {
+                        advancedFields(importedSource: importedSource)
+                        habitSection(habitItems: habitItems, habitCount: habitCount)
+                            .settingsRow(anchor: .habitMemory)
+                    }
+                    .padding(.top, 6)
+                }
+            } label: {
+                Text(AssistantSettingsCopy.advancedTitle)
+                    .font(.system(size: DesignTokens.TypeSize.body, weight: .medium))
+            }
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -1458,7 +1405,13 @@ struct AssistantSettingsSection: View {
             selectedPreset = AssistantProviderPreset.infer(baseURL: config.baseURL)
             apiKeyDraft = store.storedAssistantAPIKey(forBaseURL: config.baseURL)
             savedFields = draftFields
+            if selectedPreset == .custom || Self.advancedAnchors.contains(searchFocus?.highlight) {
+                showsAdvanced = true
+            }
             registerUnsavedForm()
+        }
+        .onChange(of: searchFocus?.highlight) { _, highlight in
+            if Self.advancedAnchors.contains(highlight) { showsAdvanced = true }
         }
         .onChange(of: hasUnsavedEdits) { _, _ in registerUnsavedForm() }
         .onDisappear { unsaved?.unregister("assistant") }
@@ -1551,6 +1504,7 @@ struct AssistantSettingsSection: View {
             )
             .textFieldStyle(.roundedBorder)
         }
+        .settingsRow(anchor: .assistantServiceAddress)
 
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 4) {
@@ -1581,15 +1535,39 @@ struct AssistantSettingsSection: View {
             .controlSize(.regular)
             .font(.system(size: DesignTokens.TypeSize.body, design: .monospaced))
         }
-
-        Text(AssistantSettingsCopy.protocolNote)
-            .font(.system(size: DesignTokens.TypeSize.caption))
-            .foregroundStyle(DesignTokens.secondaryText)
-            .fixedSize(horizontal: false, vertical: true)
+        .settingsRow(anchor: .assistantModel)
 
         if selectedPreset.supportsKeyImport {
             keyImportRow(importedSource: importedSource)
+                .settingsRow(anchor: .assistantKeyImport)
         }
+
+        HStack(spacing: 6) {
+            if isArmedForRemoval {
+                Button(AssistantSettingsCopy.removeProviderConfirm, action: removeSelectedProvider)
+                    .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .red))
+                Button(L10n.tr("取消", "Cancel")) { isArmedForRemoval = false }
+                    .buttonStyle(PillActionButtonStyle())
+            } else {
+                Button(AssistantSettingsCopy.removeProvider) { isArmedForRemoval = true }
+                    .buttonStyle(PillActionButtonStyle())
+                    .help(L10n.tr(
+                        "只清除该服务商的本机配置与密钥，其他服务商不受影响",
+                        "Clears only this provider's local settings and key; other providers are untouched"
+                    ))
+            }
+            Button(AssistantSettingsCopy.restoreDefaults) {
+                selectedPreset = .openRouterJev
+                baseURLDraft = AssistantConfig.defaultBaseURL
+                modelDraft = AssistantConfig.defaultModel
+                apiKeyDraft = store.storedAssistantAPIKey(forBaseURL: AssistantConfig.defaultBaseURL)
+                _ = saveCurrentDraft()
+                store.showToast(L10n.tr("已恢复默认 AI 配置", "Restored default AI configuration"))
+            }
+            .buttonStyle(PillActionButtonStyle())
+            Spacer()
+        }
+        .settingsRow(anchor: .assistantRemoveProvider)
     }
 
     /// Whether the current UI language ships an on-device recognizer on this Mac (#50).
@@ -1600,7 +1578,7 @@ struct AssistantSettingsSection: View {
     }
 
     @ViewBuilder
-    private func privacySection(habitItems: [UserHabitMemory.ReadableItem], habitCount: Int) -> some View {
+    private func habitSection(habitItems: [UserHabitMemory.ReadableItem], habitCount: Int) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Toggle(isOn: Binding(
                 get: { store.isHabitLearningEnabled },
@@ -1612,11 +1590,6 @@ struct AssistantSettingsSection: View {
             .toggleStyle(.glass)
             .controlSize(.regular)
 
-            Text(AssistantSettingsCopy.learnHabitsNote)
-                .font(.system(size: DesignTokens.TypeSize.caption))
-                .foregroundStyle(DesignTokens.secondaryText)
-                .fixedSize(horizontal: false, vertical: true)
-
             Toggle(isOn: Binding(
                 get: { store.habitSharing == .on },
                 set: { store.habitSharing = $0 ? .on : .off }
@@ -1627,53 +1600,26 @@ struct AssistantSettingsSection: View {
             .toggleStyle(.glass)
             .controlSize(.regular)
 
-            // #149: the preview only makes sense while sharing is on; off, it was a box beside the words
-            // "nothing is sent".
+            // #149: the preview only makes sense while sharing is on. It shows exactly what one sentence would send.
             if store.habitSharing == .on {
                 TextField(AssistantSettingsCopy.habitPreviewPlaceholder, text: $habitShareSample)
                     .textFieldStyle(.roundedBorder)
                     .font(.system(size: DesignTokens.TypeSize.caption))
 
-                let habitSharePreview = shareHabitSentence(
-                    sharing: store.habitSharing,
-                    memory: store.userHabitMemory,
-                    devices: store.devices,
-                    scenes: store.scenes,
-                    mention: .utterance(habitShareSample),
-                    now: Date()
-                )
-                Text(habitSharePreview.isEmpty ? AssistantSettingsCopy.habitPreviewEmpty : habitSharePreview)
-                    .font(.system(size: DesignTokens.TypeSize.caption))
-                    .foregroundStyle(DesignTokens.secondaryText)
-                    .fixedSize(horizontal: false, vertical: true)
-            } else {
-                Text(AssistantSettingsCopy.habitPreviewEmpty)
-                    .font(.system(size: DesignTokens.TypeSize.caption))
-                    .foregroundStyle(DesignTokens.secondaryText)
-            }
-
-            Toggle(isOn: Binding(
-                get: { store.prefersOnDeviceSpeech },
-                set: { store.prefersOnDeviceSpeech = $0 }
-            )) {
-                Text(AssistantSettingsCopy.onDeviceSpeech)
-                    .font(.system(size: DesignTokens.TypeSize.caption))
-            }
-            .toggleStyle(.glass)
-            .controlSize(.regular)
-
-            // #50: say so instead of silently falling back to Apple's servers.
-            if store.prefersOnDeviceSpeech && !Self.supportsOnDeviceSpeech(for: store.effectiveLanguage) {
-                Label(
-                    L10n.tr(
-                        "当前语言（\(store.effectiveLanguage.speechLocaleIdentifier)）不支持本机识别，语音将使用苹果服务器。",
-                        "This language (\(store.effectiveLanguage.speechLocaleIdentifier)) can't be recognized on-device; Apple's servers will be used."
-                    ),
-                    systemImage: "exclamationmark.triangle.fill"
-                )
-                .font(.system(size: DesignTokens.TypeSize.caption))
-                .foregroundStyle(.orange)
-                .fixedSize(horizontal: false, vertical: true)
+                if !habitShareSample.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    let habitSharePreview = shareHabitSentence(
+                        sharing: store.habitSharing,
+                        memory: store.userHabitMemory,
+                        devices: store.devices,
+                        scenes: store.scenes,
+                        mention: .utterance(habitShareSample),
+                        now: Date()
+                    )
+                    Text(habitSharePreview.isEmpty ? AssistantSettingsCopy.habitPreviewEmpty : habitSharePreview)
+                        .font(.system(size: DesignTokens.TypeSize.caption))
+                        .foregroundStyle(DesignTokens.secondaryText)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
 
             HStack {
@@ -1719,27 +1665,38 @@ struct AssistantSettingsSection: View {
                 }
             }
 
-            let consented = store.consentedCloudEndpoints
-            if !consented.isEmpty {
-                HStack(spacing: 6) {
-                    Text(L10n.tr("已允许发送到：\(consented.joined(separator: "、"))", "Allowed to send to: \(consented.joined(separator: ", "))"))
-                        .font(.system(size: DesignTokens.TypeSize.caption))
-                        .foregroundStyle(DesignTokens.secondaryText)
-                        .lineLimit(2)
-                    Spacer(minLength: 4)
-                    Button(L10n.tr("撤销授权", "Revoke")) {
-                        store.revokeCloudConsent()
-                        storageRevision &+= 1
-                        store.showToast(L10n.tr("已撤销，下次发往云端前会再问你", "Revoked; you will be asked before the next cloud request"))
-                    }
-                    .buttonStyle(PillActionButtonStyle())
-                }
+            Toggle(isOn: Binding(
+                get: { store.prefersOnDeviceSpeech },
+                set: { store.prefersOnDeviceSpeech = $0 }
+            )) {
+                Text(AssistantSettingsCopy.onDeviceSpeech)
+                    .font(.system(size: DesignTokens.TypeSize.caption))
             }
+            .toggleStyle(.glass)
+            .controlSize(.regular)
+            .settingsRow(anchor: .onDeviceSpeech)
+            .help(L10n.tr("不把声音发给苹果，系统支持时生效", "Keeps audio off Apple's servers when macOS supports it"))
 
-            Text(AssistantSettingsCopy.privacyExplanation)
-                .font(.system(size: DesignTokens.TypeSize.caption))
-                .foregroundStyle(DesignTokens.secondaryText)
-                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    @ViewBuilder
+    private var consentedEndpointsRow: some View {
+        let consented = store.consentedCloudEndpoints
+        if !consented.isEmpty {
+            HStack(spacing: 6) {
+                Text(L10n.tr("已允许发送到：\(consented.joined(separator: "、"))", "Allowed to send to: \(consented.joined(separator: ", "))"))
+                    .font(.system(size: DesignTokens.TypeSize.caption))
+                    .foregroundStyle(DesignTokens.secondaryText)
+                    .lineLimit(2)
+                Spacer(minLength: 4)
+                Button(L10n.tr("撤销授权", "Revoke")) {
+                    store.revokeCloudConsent()
+                    storageRevision &+= 1
+                    store.showToast(L10n.tr("已撤销，下次发往云端前会再问你", "Revoked; you will be asked before the next cloud request"))
+                }
+                .buttonStyle(PillActionButtonStyle())
+            }
         }
     }
 
@@ -1764,7 +1721,7 @@ struct AssistantSettingsSection: View {
                 .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
                 .foregroundStyle(Color.accentColor)
             } else {
-                Button(L10n.tr("从环境变量或其他工具导入 Key", "Import key from environment variables or other tools")) {
+                Button(L10n.tr("从本机环境导入 Key", "Import key from this Mac")) {
                     if let label = AssistantConfig.importAmbientAPIKey(forBaseURL: target, defaults: store.userDefaults, vault: store.credentialVault) {
                         apiKeyDraft = store.storedAssistantAPIKey(forBaseURL: target)
                         storageRevision &+= 1
@@ -1783,9 +1740,6 @@ struct AssistantSettingsSection: View {
                 .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
                 .foregroundStyle(Color.accentColor)
                 .help(L10n.tr("点了才会读取 ~/.config/codexbar/config.json 和环境变量", "Reads ~/.config/codexbar/config.json and environment variables only when clicked"))
-                Text(L10n.tr("仅在你点击后读取，不会自动使用。", "Read only when you click; never used automatically."))
-                    .font(.system(size: DesignTokens.TypeSize.caption))
-                    .foregroundStyle(DesignTokens.secondaryText)
             }
             Spacer(minLength: 0)
         }

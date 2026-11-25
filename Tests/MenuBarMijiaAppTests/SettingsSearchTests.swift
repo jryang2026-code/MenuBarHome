@@ -52,7 +52,7 @@ struct SettingsSearchTests {
             ("令牌", .haToken),
             ("米家", .miAccount),
             ("电视", .lgTV),
-            ("把握度", .confidenceThreshold),
+            ("把握度", .askWhenUnsure),
             ("习惯", .habitMemory),
             ("浅色", .appearanceMode),
             ("面板高度", .panelHeight),
@@ -66,6 +66,36 @@ struct SettingsSearchTests {
             let hits = SettingsSearch.search(query)
             #expect(hits.contains { $0.anchor == anchor },
                     "「\(query)」should reach \(anchor.rawValue), got \(hits.map(\.anchor.rawValue))")
+        }
+    }
+
+    @Test("AI rows under Advanced are found by their control names and old names")
+    func assistantAdvancedRowsAreSearchable() {
+        L10n.$overrideLanguage.withValue(.zhHans) {
+            let expected: [(String, SettingsAnchor)] = [
+                ("移除此服务商", .assistantRemoveProvider),
+                ("优先本机语音识别", .onDeviceSpeech),
+                ("从本机环境导入 Key", .assistantKeyImport),
+                ("服务地址", .assistantServiceAddress),
+                ("模型", .assistantModel),
+                ("把握度阈值", .askWhenUnsure),
+                ("高风险操作仍需确认", .askWhenUnsure),
+                ("更多显示选项", .compactGrid),
+                ("高级显示", .compactGrid),
+            ]
+            for (query, anchor) in expected {
+                let hits = SettingsSearch.search(query)
+                #expect(hits.first?.anchor == anchor,
+                        "「\(query)」should rank \(anchor.rawValue) first, got \(hits.map(\.anchor.rawValue))")
+            }
+            #expect(SettingsSearch.search("AI 服务商与模型").contains { $0.anchor == .assistantProvider })
+        }
+        L10n.$overrideLanguage.withValue(.en) {
+            #expect(SettingsSearch.search("Remove this provider").first?.anchor == .assistantRemoveProvider)
+        }
+        for anchor in [SettingsAnchor.assistantServiceAddress, .assistantModel, .assistantKeyImport,
+                       .assistantRemoveProvider, .habitMemory, .onDeviceSpeech] {
+            #expect(AssistantSettingsSection.advancedAnchors.contains(anchor))
         }
     }
 
@@ -367,7 +397,7 @@ struct SettingsSearchTests {
         for anchor in [SettingsAnchor.appearanceMode, .panelTheme, .panelHeight, .climatePanelModule] {
             #expect(anchor.tab == .general, "\(anchor.rawValue) should route to .general")
         }
-        for anchor in [SettingsAnchor.miMultiAccounts, .dualSourceFusion, .localNetwork] {
+        for anchor in [SettingsAnchor.miMultiAccounts, .localNetwork] {
             #expect(anchor.tab == .connection, "\(anchor.rawValue) should route to .connection")
         }
 
@@ -389,7 +419,6 @@ struct SettingsSearchTests {
             ("查找家中的 Home Assistant", .haDiscovery),
             ("先逛逛示例家庭", .demoMode),
             ("添加更多米家账号", .miMultiAccounts),
-            ("同时连接多个家居平台", .dualSourceFusion),
             ("网络硬件地址", .lgTV),
         ]
         for (query, expectedAnchor) in everydayQueries {
@@ -408,7 +437,6 @@ struct SettingsSearchTests {
             hasLocalNetworkBlock: false
         )
         #expect(demo.blockReason(for: .miMultiAccounts) == .demoMode)
-        #expect(demo.blockReason(for: .dualSourceFusion) == .demoMode)
     }
 
     @Test("Local Network permission banner is searchable when blocked and explained accurately when no block is detected")

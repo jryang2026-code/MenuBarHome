@@ -216,8 +216,8 @@ public struct MiAccountSection: View {
 
     static func regionDisclosureTitle(for region: MiCloudRegion) -> String {
         L10n.format(
-            "高级：云端服务器地区（当前：%@）",
-            "Advanced: Cloud Region (Current: %@)",
+            "云端服务器地区（%@）",
+            "Cloud region (%@)",
             region.label
         )
     }
@@ -648,12 +648,6 @@ public struct MiAccountSection: View {
 
     private var loggedOutView: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(L10n.tr(
-                "无需额外部署 Home Assistant，扫码即可通过米家云端直连同步设备与房间。",
-                "No Home Assistant needed. Scan with the Mi Home app to sync devices and rooms directly from Xiaomi Cloud."
-            ))
-                .font(.system(size: DesignTokens.TypeSize.caption))
-                .foregroundStyle(DesignTokens.secondaryText)
 
             HStack {
                 Spacer()
@@ -669,8 +663,8 @@ public struct MiAccountSection: View {
         // #146 & WP3a: the risk is always visible (>= 12pt), never buried in fine print or advanced disclosure.
         Label {
             Text(L10n.tr(
-                "直连使用非官方接口，小米可能限制请求或风控账号；介意的话请改用官方的 Home Assistant (xiaomi_home)。登录凭证只存在本机钥匙串，会过期，到期需重新扫码。",
-                "Direct mode uses an unofficial API, so Xiaomi may rate-limit or flag accounts. If that worries you, use Home Assistant (xiaomi_home) instead. Sign-in stays in your local Keychain and expires; you will need to scan again."
+                "非官方直连，可能被小米限流或风控，到期需重扫",
+                "Unofficial direct link; Xiaomi may rate-limit or flag it. Sign-in expires and needs a new scan"
             ))
             .fixedSize(horizontal: false, vertical: true)
         } icon: {
