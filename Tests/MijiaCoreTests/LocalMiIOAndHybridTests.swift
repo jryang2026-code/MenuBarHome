@@ -740,7 +740,7 @@ struct LocalMiIOClientTests {
         }
         let client = LocalMiIOClient(transport: transport, maxRetries: 0)
         #if canImport(Network)
-        let nwTransport = NWConnectionMiIOUDPTransport()
+        let bsdTransport = BSDMiIOUDPTransport()
         #endif
         let rejectedHosts = ["192.0.2.10", "8.8.8.8", "127.0.0.1", "example.com"]
 
@@ -757,13 +757,13 @@ struct LocalMiIOClientTests {
             }
             #if canImport(Network)
             await #expect(throws: MiIOError.invalidAddress(host)) {
-                _ = try await nwTransport.send(MiIOPacket.helloPacket, to: host, port: 54321, timeout: .milliseconds(50))
+                _ = try await bsdTransport.send(MiIOPacket.helloPacket, to: host, port: 54321, timeout: .milliseconds(50))
             }
             #endif
         }
         #expect(await transport.sends.isEmpty)
         #if canImport(Network)
-        await nwTransport.shutdown()
+        await bsdTransport.shutdown()
         #endif
         await client.shutdown()
 
@@ -1331,15 +1331,6 @@ struct LocalMiIOClientTests {
         #expect(Set(matchingHosts.withValue { $0 }) == ["192.168.1.11", "192.168.1.12", "192.168.1.13", "192.168.1.53"])
         await multiWaveClient.shutdown()
 
-        #if canImport(Network)
-        // Verify NWConnectionMiIOUDPTransport timeout outcome is deterministically serialized on the Network queue:
-        // once a send completion is queued on the Network queue, a concurrent timeout must report .timeout (post-send),
-        // whereas a timeout before send completion reports .sendFailed (pre-send).
-        let nwTransport = NWConnectionMiIOUDPTransport()
-        #expect(await nwTransport.testTimeoutClassification(simulateQueuedSendCompletionBeforeTimeout: true) == .timeout)
-        #expect(await nwTransport.testTimeoutClassification(simulateQueuedSendCompletionBeforeTimeout: false) == .sendFailed)
-        await nwTransport.shutdown()
-        #endif
     }
 
     @Test("A discovery wave keeps a reply the transport received before cancellation", .timeLimit(.minutes(1)))
