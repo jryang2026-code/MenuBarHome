@@ -3001,6 +3001,10 @@ export function bindUnifiedUpperStack(host: MenuMijiaWindowsApp): void {
     };
     cardEl.addEventListener("pointerup", (e: PointerEvent) => finishPointer(e, false));
     cardEl.addEventListener("pointercancel", (e: PointerEvent) => finishPointer(e, true));
+    // Another element taking the capture ends the swipe without pointerup/pointercancel.
+    cardEl.addEventListener("lostpointercapture", (e: PointerEvent) => {
+      if (activePointerId !== null && (typeof e.pointerId !== "number" || e.pointerId === activePointerId)) finishPointer(e, true);
+    });
   }
 }
 
