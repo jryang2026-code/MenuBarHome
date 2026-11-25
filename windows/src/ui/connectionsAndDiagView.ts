@@ -2917,13 +2917,12 @@ export function renderCustomHomeTitleField(ctx: ConnectionsAndDiagViewContext): 
   const defaultTitlePlaceholder = host ? defaultPanelHomeTitle(host) : tr3("我的米家", "我的米家", "My Home", lang);
   return `
     <div class="cc-field" id="conn-diag-title-section" data-settings-anchor="dashboardTitle">
-      <label for="settings-custom-home-title">${esc(tr3("自定义面板顶部标题", "自訂面板頂部標題", "Custom Panel Header Title", lang))}</label>
+      <label for="settings-custom-home-title">${esc(tr3("面板标题", "面板標題", "Panel Title", lang))}</label>
       <div style="display:flex;gap:6px;align-items:center;">
         <input id="settings-custom-home-title" class="cc-input" type="text" autocomplete="off" placeholder="${esc(defaultTitlePlaceholder)}" value="${esc(customTitleValue)}" style="flex:1;" />
         <button type="button" class="cc-btn-secondary" id="btn-save-custom-home-title">${esc(tr3("应用", "套用", "Apply", lang))}</button>
         ${readCustomHomeTitle(ctx.settings) !== "" ? `<button type="button" class="cc-inline-pill" id="btn-reset-custom-home-title">${esc(tr3("恢复默认", "恢復預設", "Reset", lang))}</button>` : ""}
       </div>
-      <p class="cc-field-hint" style="margin-top:4px;">${esc(tr3("留空并点击应用将恢复默认家庭名称。", "留空並點擊套用將恢復預設家庭名稱。", "Leave blank and apply to restore the default home name.", lang))}</p>
     </div>`;
 }
 
@@ -2976,7 +2975,7 @@ export function renderConnectionsAndDiagSection(
 
   const accountCardsHtml =
     accounts.length === 0
-      ? `<p class="cc-field-hint" data-mi-accounts-empty style="margin:4px 0 8px;">${esc(tr3("尚未登录米家账号。可点击下方按钮扫码添加首个或多个跨地区账号。", "尚未登入米家帳號。可點擊下方按鈕掃碼新增首個或多個跨地區帳號。", "No Xiaomi account signed in yet. Scan below to add one or multiple regional accounts.", lang))}</p>`
+      ? `<p class="cc-field-hint" data-mi-accounts-empty style="margin:4px 0 8px;">${esc(tr3("尚未登录米家账号", "尚未登入米家帳號", "No Xiaomi account signed in", lang))}</p>`
       : accounts
           .map((acc, index) => {
             const isEnabled = !disabledSet.has(acc.id);
@@ -3069,22 +3068,22 @@ export function renderConnectionsAndDiagSection(
   const dualHint =
     dualChecked && pairedCount > 0
       ? tr3(
-          `双源融合运行中 · 已自动配对去重 ${pairedCount} 台同体设备（右键卡片可锁定单设备数据源）`,
-          `雙源融合執行中 · 已自動配對去重 ${pairedCount} 台同體裝置（右鍵卡片可鎖定單一裝置資料來源）`,
-          `Dual-source active · ${pairedCount} paired device(s) deduplicated (right-click a card to pin source)`,
+          `已合并 ${pairedCount} 台相同设备`,
+          `已合併 ${pairedCount} 台相同裝置`,
+          `${pairedCount} matching device(s) merged`,
           lang,
         )
       : dualSupported
         ? tr3(
-            "开启后同屏合并 HA 与米家设备并按 DID/MAC 自动去重；右键合并卡片可固定优先源。",
-            "開啟後同屏合併 HA 與米家裝置並依 DID/MAC 自動去重；右鍵合併卡片可固定優先來源。",
-            "Merges HA and Xiaomi devices on one dashboard with automatic DID/MAC deduplication.",
+            "HA 与米家设备一起显示，相同设备只显示一次",
+            "HA 與米家裝置一起顯示，相同裝置只顯示一次",
+            "Shows HA and Xiaomi devices together; matching devices appear once",
             lang,
           )
         : tr3(
-            "需同时配置 Home Assistant 地址/令牌并登录至少一个米家账号后可开启。",
-            "需同時設定 Home Assistant 位址/權杖並登入至少一個米家帳號後可開啟。",
-            "Configure both Home Assistant URL/token and at least one Xiaomi account to enable.",
+            "需先连上 Home Assistant 并登录米家账号",
+            "需先連上 Home Assistant 並登入米家帳號",
+            "Connect Home Assistant and sign in to Xiaomi first",
             lang,
           );
 
@@ -3111,7 +3110,7 @@ export function renderConnectionsAndDiagSection(
 
           <div class="cc-field" id="conn-diag-dual-ha-section" data-settings-anchor="dualSourceFusion">
             <label class="cc-switch-row" for="settings-dual-source-enabled">
-              <span>${esc(tr3("同时连接多个家居平台（相同设备自动合并）", "同時連接多個家居平台（相同裝置自動合併）", "Connect Multiple Home Platforms Simultaneously (Auto-Merge Identical Devices)", lang))}</span>
+              <span>${esc(tr3("同时连接多个家居平台", "同時連接多個家居平台", "Connect Multiple Home Platforms", lang))}</span>
               <input id="settings-dual-source-enabled" type="checkbox" ${dualChecked ? "checked" : ""} ${dualSupported || dualChecked ? "" : "disabled"} />
             </label>
             <p class="cc-field-hint" style="margin-top:4px;">${esc(dualHint)}</p>
@@ -3129,7 +3128,7 @@ export function renderConnectionsAndDiagSection(
               <label style="margin:0;font-weight:600;">${esc(tr3("未能显示在面板的设备", "未能顯示在面板的裝置", "Devices Not Shown in Panel", lang))}</label>
               <button type="button" class="cc-btn-secondary" id="btn-scan-unsupported-devices" style="margin-left:auto;" ${isScanning ? "disabled" : ""}>${esc(isScanning ? tr3("正在扫描…", "正在掃描…", "Scanning…", lang) : tr3("扫描未能显示的设备", "掃描未能顯示的裝置", "Scan Hidden Devices", lang))}</button>
             </div>
-            <p class="cc-field-hint" style="margin-top:4px;">${esc(tr3("遍历所有已登录米家账号及活跃后端，列出未识别型号与跳过原因，并提供零隐私泄露的适配反馈链接。", "遍歷所有已登入米家帳號及活躍後端，列出未識別型號與略過原因，並提供零隱私洩漏的適配回饋連結。", "Scans all signed-in Xiaomi accounts and active backends for skipped models with desensitized GitHub feedback links.", lang))}</p>
+            <p class="cc-field-hint" style="margin-top:4px;">${esc(tr3("查找未在面板显示的设备", "尋找未在面板顯示的裝置", "Find devices not shown in the panel", lang))}</p>
             ${scanError ? `<p class="cc-field-hint" id="conn-diag-scan-error" style="color:#e67e22;margin-top:4px;">${esc(scanError)}</p>` : ""}
             ${!isScanning && lastScannedAtMs !== null && unsupportedDevices.length === 0 && !scanError ? `<p class="cc-field-hint" id="conn-diag-scan-empty" style="color:#2ecc71;margin-top:4px;">${esc(tr3("未发现未能显示的设备", "未發現未能顯示的裝置", "No skipped devices found", lang))}</p>` : ""}
             ${
@@ -3155,13 +3154,13 @@ export function renderConnectionsAndDiagSection(
 
           <div class="cc-field" id="conn-diag-diagnostics-section" data-settings-anchor="copyDiagnostics">
             <div class="cc-field-row" style="gap:8px;flex-wrap:wrap;">
-              <label style="margin:0;font-weight:600;">${esc(tr3("脱敏诊断报告", "去識別化診斷報告", "Desensitized Diagnostics", lang))}</label>
+              <label style="margin:0;font-weight:600;">${esc(tr3("排障信息", "排障資訊", "Troubleshooting Info", lang))}</label>
               <div style="margin-left:auto;display:flex;gap:6px;align-items:center;">
                 ${session?.diagCopied ? `<span id="conn-diag-copied-badge" class="cc-field-hint" style="margin:0;color:#2ecc71;">${esc(tr3("已复制", "已複製", "Copied", lang))}</span>` : ""}
                 <button type="button" class="cc-btn-primary" id="btn-copy-diagnostics-report">${esc(tr3("复制脱敏诊断报告", "複製去識別化診斷報告", "Copy Diagnostics Report", lang))}</button>
               </div>
             </div>
-            <p class="cc-field-hint" style="margin-top:4px;">${esc(tr3("导出含版本、后端、设备型号计数、摄像机流模式、轮询退避与错误计数的 Markdown 摘要，绝不包含令牌、DID、IP/MAC 或家庭名称。", "匯出含版本、後端、裝置型號計數、攝影機串流模式、輪詢退避與錯誤計數的 Markdown 摘要，絕不包含權杖、DID、IP/MAC 或家庭名稱。", "Exports Markdown with version, backend, model counts, camera stream modes, and error counts — zero tokens, DIDs, IPs/MACs, or home names.", lang))}</p>
+            <p class="cc-field-hint" style="margin-top:4px;">${esc(tr3("不含账号、密钥与设备 ID", "不含帳號、金鑰與裝置 ID", "No accounts, keys or device IDs", lang))}</p>
             ${session?.diagMarkdownPreview ? `<textarea id="conn-diag-markdown-preview" class="cc-input" readonly rows="7" style="margin-top:6px;width:100%;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:11px;resize:vertical;">${esc(session.diagMarkdownPreview)}</textarea>` : ""}
           </div>
         </div>
@@ -3268,22 +3267,17 @@ function renderHaDisconnectRowHtml(
           )
         : !haEnabled
           ? tr3(
-              "Home Assistant 已停用 · 重新启用后恢复同步并重验受影响的定时与自动化（服务器地址与令牌已保留）。",
-              "Home Assistant 已停用 · 重新啟用後恢復同步並重驗受影響的定時與自動化（伺服器位址與權杖已保留）。",
-              "Home Assistant is turned off · Re-enable to resume sync and revalidate paused items (URL & token kept).",
+              "已停用，配置已保留",
+              "已停用，設定已保留",
+              "Turned off; settings kept",
               lang,
             )
-          : tr3(
-              "独立断开 Home Assistant：清除 HA 令牌并自动切回米家单源（未登录米家时清空残留设备）。",
-              "獨立中斷 Home Assistant：清除 HA 權杖並自動切回米家單源（未登入米家時清空殘留裝置）。",
-              "Disconnect HA independently: clears HA token and falls back to Xiaomi Cloud (or clears devices if signed out).",
-              lang,
-            )
+          : ""
     : hasHAUrl
       ? tr3(
-          "Home Assistant 令牌未连接（保留服务器地址以便后续重连）。",
-          "Home Assistant 權杖未連線（保留伺服器位址以便後續重連）。",
-          "Home Assistant token disconnected (server URL kept for reconnecting).",
+          "Home Assistant 未连接，地址已保留",
+          "Home Assistant 未連線，位址已保留",
+          "Home Assistant not connected; URL kept",
           lang,
         )
       : tr3("当前未连接 Home Assistant。", "目前未連線 Home Assistant。", "Home Assistant is not connected.", lang);

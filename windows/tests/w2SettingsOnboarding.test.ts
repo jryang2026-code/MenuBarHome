@@ -53,6 +53,13 @@ async function click(selector: string): Promise<void> {
   await setImmediate();
 }
 
+async function pickProvider(id: string): Promise<void> {
+  const select = element("#settings-ai-provider") as HTMLSelectElement;
+  select.value = id;
+  select.dispatchEvent(new Event("change", { bubbles: true }));
+  await setImmediate();
+}
+
 function type(selector: string, value: string): void {
   const input = field(selector);
   input.value = value;
@@ -702,7 +709,7 @@ describe("Wave 2 · A9 AI Assistant Enhancements (askWhenUnsure, Connection Prob
     startDemoApp();
     await click("#btn-settings");
     await click('[data-settings-tab="assistant"]');
-    await click('[data-ai-preset="deepseek"]');
+    await pickProvider("deepseek");
     type("#settings-api-key", "sk-test-deepseek");
     invokeOrder.length = 0;
     await click("#btn-test-ai-connection");
@@ -787,7 +794,7 @@ describe("Wave 2 · A9 AI Assistant Enhancements (askWhenUnsure, Connection Prob
 
       holdEnvLookup = true;
       await click("#btn-import-env-key");
-      await click('[data-ai-preset="deepseek"]');
+      await pickProvider("deepseek");
       type("#settings-api-key", "sk-deepseek-manual");
       releaseEnvLookup("sk-stale-openrouter-key");
       await setImmediate();

@@ -332,8 +332,8 @@ const RAW_SPECS: readonly RawAnchorSpec[] = [
   {
     anchor: "haToken",
     section: SEC_CONNECTION,
-    title: ["Home Assistant 访问令牌", "Home Assistant 存取權杖", "Home Assistant Access Token"],
-    synonyms: ["令牌", "专属连接钥匙", "專屬連線鑰匙", "连接钥匙", "访问令牌", "长期令牌", "权杖", "密钥", "token", "connection key", "personal connection key", "access token", "ha token", "long-lived", "credential", "key", "lingpai"],
+    title: ["访问密钥 (Access Token)", "存取金鑰 (Access Token)", "Access Token"],
+    synonyms: ["Home Assistant 访问令牌", "访问密钥", "令牌", "专属连接钥匙", "專屬連線鑰匙", "连接钥匙", "访问令牌", "长期令牌", "权杖", "密钥", "token", "connection key", "personal connection key", "access token", "ha token", "long-lived", "credential", "key", "lingpai"],
   },
   {
     anchor: "miCloudRegion",
@@ -356,8 +356,8 @@ const RAW_SPECS: readonly RawAnchorSpec[] = [
   {
     anchor: "assistantProvider",
     section: SEC_ASSISTANT,
-    title: ["AI 服务商预设", "AI 服務商預設", "AI Provider Preset"],
-    synonyms: ["服务商", "預設", "预设", "大模型", "自定义", "openrouter", "jev", "deepseek", "qwen", "千问", "glm", "智谱", "kimi", "openai", "gemini", "groq", "ollama", "custom", "provider", "preset"],
+    title: ["服务商", "服務商", "Provider"],
+    synonyms: ["AI 服务商预设", "服务商预设", "启用 AI 助手", "AI 一句话控制", "AI 开关", "enable ai", "預設", "预设", "大模型", "自定义", "openrouter", "jev", "deepseek", "qwen", "千问", "glm", "智谱", "kimi", "openai", "gemini", "groq", "ollama", "custom", "provider", "preset"],
   },
   {
     anchor: "proactiveSuggestions",
@@ -368,38 +368,38 @@ const RAW_SPECS: readonly RawAnchorSpec[] = [
   {
     anchor: "assistantBaseURL",
     section: SEC_ASSISTANT,
-    title: ["AI 服务地址（接口代理 URL）", "AI 服務位址（介面代理 URL）", "AI Endpoint Base URL"],
-    synonyms: ["接口地址", "服务地址", "代理", "反代", "中转", "地址", "base url", "endpoint", "proxy", "url", "api url", "systemone", "chat completions", "daili", "jiekou"],
+    title: ["服务地址", "服務位址", "Service URL"],
+    synonyms: ["AI 服务地址", "接口代理", "高级", "接口地址", "服务地址", "代理", "反代", "中转", "地址", "base url", "endpoint", "proxy", "url", "api url", "systemone", "chat completions", "daili", "jiekou"],
   },
   {
     anchor: "assistantModel",
     section: SEC_ASSISTANT,
-    title: ["AI 决策模型", "AI 決策模型", "AI Decision Model"],
-    synonyms: ["模型", "模型名", "决策模型", "model", "llm", "jev-latest", "deepseek-chat", "gpt-4o", "moxing"],
+    title: ["模型", "模型", "Model"],
+    synonyms: ["AI 决策模型", "AI 模型", "模型", "模型名", "决策模型", "model", "llm", "jev-latest", "deepseek-chat", "gpt-4o", "moxing"],
   },
   {
     anchor: "assistantAPIKey",
     section: SEC_ASSISTANT,
-    title: ["AI API Key（密钥）", "AI API Key（金鑰）", "AI API Key"],
-    synonyms: ["密钥", "金鑰", "秘钥", "口令", "api key", "apikey", "key", "token", "secret", "sk-", "miyao"],
+    title: ["API Key", "API Key", "API Key"],
+    synonyms: ["AI API Key", "密钥", "金鑰", "秘钥", "口令", "api key", "apikey", "key", "token", "secret", "sk-", "miyao"],
   },
   {
     anchor: "assistantEnvImport",
     section: SEC_ASSISTANT,
-    title: ["从环境变量导入 API Key", "從環境變數匯入 API Key", "Import API Key from Environment"],
-    synonyms: ["环境变量", "環境變數", "导入密钥", "自动导入", "env", "environment variable", "import key", "openrouter_api_key", "deepseek_api_key", "openai_api_key", "huanjingbianliang"],
+    title: ["从本机环境导入 Key", "從本機環境匯入 Key", "Import Key from Environment"],
+    synonyms: ["从环境变量导入 API Key", "环境变量", "環境變數", "导入密钥", "自动导入", "env", "environment variable", "import key", "openrouter_api_key", "deepseek_api_key", "openai_api_key", "huanjingbianliang"],
   },
   {
     anchor: "assistantTest",
     section: SEC_ASSISTANT,
-    title: ["测试 AI 连接", "測試 AI 連線", "Test AI Connection"],
-    synonyms: ["测试", "測試", "测试连接", "连通性", "延迟", "耗时", "探针", "test", "test connection", "ping", "verify", "latency", "probe", "ceshi"],
+    title: ["测试连接", "測試連線", "Test Connection"],
+    synonyms: ["测试 AI 连接", "连通性检测", "测试", "測試", "测试连接", "连通性", "延迟", "耗时", "探针", "test", "test connection", "ping", "verify", "latency", "probe", "ceshi"],
   },
   {
     anchor: "askWhenUnsure",
     section: SEC_ASSISTANT,
-    title: ["AI 不确定时先让我确认", "AI 不確定時先讓我確認", "Ask Me When AI Is Unsure"],
-    synonyms: ["不确定", "不確定", "先问我", "确认", "把握度", "防误触", "ask when unsure", "unsure", "confirm", "confidence", "ask me", "buqueding"],
+    title: ["不确定时先问我", "不確定時先問我", "Ask Me When Unsure"],
+    synonyms: ["AI 不确定时先让我确认", "不确定", "不確定", "先问我", "确认", "把握度", "防误触", "ask when unsure", "unsure", "confirm", "confidence", "ask me", "buqueding"],
   },
   {
     anchor: "cloudConsent",
@@ -410,14 +410,14 @@ const RAW_SPECS: readonly RawAnchorSpec[] = [
   {
     anchor: "habitMemory",
     section: SEC_ASSISTANT,
-    title: ["习惯记忆与逐条管理", "習慣記憶與逐條管理", "Habit Memory & Per-Item Management"],
-    synonyms: ["习惯", "習慣", "记忆", "記憶", "口头禅", "猜你想控", "时段习惯", "先后习惯", "清空习惯", "删除习惯", "habit", "habits", "memory", "learned", "forget", "xiguan", "jiyi"],
+    title: ["学习使用习惯", "學習使用習慣", "Learn Usage Habits"],
+    synonyms: ["习惯记忆与逐条管理", "自动记住自然语言习惯", "已学习", "习惯", "習慣", "记忆", "記憶", "口头禅", "猜你想控", "时段习惯", "先后习惯", "清空习惯", "删除习惯", "habit", "habits", "memory", "learned", "forget", "xiguan", "jiyi"],
   },
   {
     anchor: "habitShare",
     section: SEC_ASSISTANT,
-    title: ["发送习惯摘要与预览", "傳送習慣摘要與預覽", "Habit Summary Sharing & Preview"],
-    synonyms: ["习惯摘要", "发送习惯", "摘要预览", "habit share", "habit summary", "preview", "zhaiyao"],
+    title: ["向 AI 附带习惯摘要", "向 AI 附帶習慣摘要", "Include Habit Summary for AI"],
+    synonyms: ["发送习惯摘要与预览", "发送习惯摘要", "习惯摘要", "发送习惯", "摘要预览", "habit share", "habit summary", "preview", "zhaiyao"],
   },
   {
     anchor: "blockControlWhileLocked",
@@ -437,20 +437,20 @@ const RAW_SPECS: readonly RawAnchorSpec[] = [
   {
     anchor: "raycast",
     section: SEC_SECURITY,
-    title: ["Raycast 与本地 CLI / MCP 集成", "Raycast 與本機 CLI / MCP 整合", "Raycast & Local CLI / MCP Integration"],
-    synonyms: ["raycast", "cli", "mcp", "快照", "本机令牌", "本地集成", "外部工具", "integration", "bridge", "snapshot"],
+    title: ["Raycast / CLI / MCP 集成", "Raycast / CLI / MCP 整合", "Raycast / CLI / MCP Integration"],
+    synonyms: ["Raycast 与本地 CLI / MCP 集成", "高级", "raycast", "cli", "mcp", "快照", "本机令牌", "本地集成", "外部工具", "integration", "bridge", "snapshot"],
   },
   {
     anchor: "allowURLControl",
     section: SEC_SECURITY,
-    title: ["允许 menumijia:// 外部链接免确认直控", "允許 menumijia:// 外部連結免確認直控", "Allow menumijia:// Direct URL Control"],
-    synonyms: ["外部链接", "直控", "免确认", "协议链接", "代理链接", "url", "menumijia", "deeplink", "deep link", "direct control", "scheme", "lianjie"],
+    title: ["允许外部链接直控（跳过确认）", "允許外部連結直控（略過確認）", "Allow Direct Control from Links"],
+    synonyms: ["允许 menumijia:// 外部链接免确认直控", "高级", "外部链接", "直控", "免确认", "协议链接", "代理链接", "url", "menumijia", "deeplink", "deep link", "direct control", "scheme", "lianjie"],
   },
   {
     anchor: "advancedDeviceWrites",
     section: SEC_SECURITY,
-    title: ["允许写入高级/高风险设备属性", "允許寫入進階/高風險裝置屬性", "Allow Secondary / High-Risk Controls"],
-    synonyms: ["高级属性", "高风险", "更多设置", "次要控件", "门锁", "取暖", "水阀", "advanced", "facets", "more settings", "secondary", "high risk", "heater", "valve", "gaoji"],
+    title: ["允许「更多设置」写入次要控件", "允許「更多設定」寫入次要控制項", "Allow Writes to Secondary Controls"],
+    synonyms: ["允许写入高级/高风险设备属性", "高级属性", "高风险", "更多设置", "次要控件", "门锁", "取暖", "水阀", "advanced", "facets", "more settings", "secondary", "high risk", "heater", "valve", "gaoji"],
   },
   {
     anchor: "energyHistory",
@@ -490,8 +490,10 @@ const RAW_SPECS: readonly RawAnchorSpec[] = [
   {
     anchor: "automationRules",
     section: SEC_AUTOMATION,
-    title: ["本机状态自动化规则", "本機狀態自動化規則", "PC Context Automation Rules"],
+    title: ["运行自动化规则", "執行自動化規則", "Run Automation Rules"],
     synonyms: [
+      "本机状态自动化规则",
+      "运行电脑状态自动化",
       "自动化",
       "自动化规则",
       "自動",
@@ -633,8 +635,8 @@ const RAW_SPECS: readonly RawAnchorSpec[] = [
   {
     anchor: "allOffDevices",
     section: SEC_SYSTEM,
-    title: ["「全关」包含哪些设备", "「全關」包含哪些裝置", "Devices Included in All Off"],
-    synonyms: ["全关", "全關", "一键全关", "全屋关", "插座", "扫地机", "白名单", "all off", "turn all off", "master off", "exclude", "quanguan"],
+    title: ["「全关」包含的设备", "「全關」包含的裝置", "Devices in All Off"],
+    synonyms: ["「全关」包含哪些设备", "已包含", "全关", "全關", "一键全关", "全屋关", "插座", "扫地机", "白名单", "all off", "turn all off", "master off", "exclude", "quanguan"],
   },
   {
     anchor: "signOut",

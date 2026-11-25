@@ -609,7 +609,7 @@ describe("Wave 3 · B3 Energy Settings Panel, Plug Drawer Today Cell & Settings 
     setLanguage("zh-Hant");
     app.render();
     assert.match(element("#settings-energy-section").textContent ?? "", /插座用電統計/);
-    assert.match(element("#settings-energy-section").textContent ?? "", /清空用電統計/);
+    assert.match(element("#settings-energy-section").textContent ?? "", /清除用電記錄/);
 
     setLanguage("en");
     app.render();

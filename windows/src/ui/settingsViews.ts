@@ -32,7 +32,6 @@ import type { QRLoginTicket } from "../core/miCloudClient.js";
 import {
   MI_CLOUD_REGIONS,
   maskedMiUserId,
-  miCloudRegionLabel,
   normalizeMiCloudRegion,
 } from "../core/miCloudClient.js";
 import { deviceCanTogglePower, joinsAllOff, type HomeScene, type SmartDevice } from "../core/models.js";
@@ -121,9 +120,9 @@ const SETTINGS_TABS: ReadonlyArray<SettingsTabSpec> = [
     color: "#705ce6",
     subtitle: () =>
       tr3(
-        "AI 的密钥、模型、主动建议与常用习惯记忆。",
-        "AI 的金鑰、模型、主動建議與常用習慣記憶。",
-        "AI endpoints, models, proactive suggestions, and learned habits.",
+        "配置 AI 服务与建议偏好",
+        "設定 AI 服務與建議偏好",
+        "AI service and suggestion preferences",
       ),
   },
   {
@@ -248,9 +247,8 @@ export function restoreSettingsDraft(
   const baseEl = root.querySelector<HTMLInputElement>("#settings-base-url");
   if (baseEl) {
     const preset = inferAssistantPreset(baseEl.value);
-    root.querySelectorAll<HTMLElement>("[data-ai-preset]").forEach((el) => {
-      el.classList.toggle("is-active", el.dataset.aiPreset === preset.id);
-    });
+    const providerEl = root.querySelector<HTMLSelectElement>("#settings-ai-provider");
+    if (providerEl) providerEl.value = preset.id;
     const apiKeyEl = root.querySelector<HTMLInputElement>("#settings-api-key");
     if (apiKeyEl) {
       apiKeyEl.placeholder = preset.keyPlaceholder;
@@ -439,7 +437,7 @@ export function buildInactiveTabCacheKey(ctx: SettingsViewContext, tabId: Settin
   }
   if (tabId === "assistant") {
     return JSON.stringify([
-      t("AI 服务商预设（支持 OpenRouter Jev、原生 Jev、DeepSeek、千问、GLM 等）"),
+      t("服务商"),
       ctx.settings.assistantBaseURL, ctx.settings.assistantModel, ctx.apiKeyFor(ctx.settings.assistantBaseURL),
       readAskWhenUnsure(ctx.settings), ctx.settings.cloudConsentEndpoints, ctx.settings.habitLearningEnabled,
       ctx.settings.habitShareEnabled, ctx.settings.learnedShortcuts, ctx.settings.habitEntries,
@@ -554,7 +552,6 @@ function renderCustomHotkeyBindingsSection(ctx: SettingsViewContext): string {
       <span>${ctx.escapeHtml(tr3("单设备 / 场景全局热键", "單裝置 / 場景全域快捷鍵", "Device & Scene Global Hotkeys"))} <span class="cc-field-hint" style="margin:0;">${bindings.length}/${MAX_CUSTOM_HOTKEY_BINDINGS}</span></span>
       ${!isAdding && bindings.length < MAX_CUSTOM_HOTKEY_BINDINGS ? `<button type="button" class="cc-btn-secondary" id="btn-add-custom-hotkey">${ctx.escapeHtml(tr3("+ 添加热键", "+ 新增熱鍵", "+ Add Hotkey"))}</button>` : ""}
     </div>
-    <p class="cc-field-hint" style="margin:4px 0 0;">${ctx.escapeHtml(tr3("一步开关常用设备或触发场景；沿用锁屏阻止与高危二次确认。", "一步開關常用裝置或觸發場景；沿用鎖屏阻止與高危二次確認。", "Toggle a device or run a scene in one keystroke; screen-lock and high-risk confirmations still apply."))}</p>
     ${rowsHtml}
     ${addHtml}
     ${ctx.customHotkeyConflictError ? `<p class="cc-field-hint" id="custom-hotkey-conflict-msg" style="color:#e67e22;margin:6px 0 0;">${ctx.escapeHtml(ctx.customHotkeyConflictError)}</p>` : ""}
@@ -667,19 +664,13 @@ function renderGeneralPanel(ctx: SettingsViewContext): string {
         <div class="cc-field cc-field-row" data-settings-anchor="voiceControl">
           <div>
             <label for="settings-voice-input">${t("语音输入")}</label>
-            <p class="cc-field-hint" style="margin: 2px 0 0 0;">${ctx.escapeHtml(
+            ${
               isSpeechRecognitionSupported()
-                ? tr3(
-                    "打开后，面板顶部显示麦克风按钮，用当前界面语言听写。关闭后按钮隐藏，也不会启动识别。",
-                    "開啟後，面板頂部顯示麥克風按鈕，用目前介面語言聽寫。關閉後按鈕隱藏，也不會啟動辨識。",
-                    "When on, a microphone button appears at the top of the panel and dictates in your UI language. When off, the button is hidden and recognition never starts.",
-                  )
-                : tr3(
-                    "这台电脑不支持在线语音识别。开关会保留你的选择，但暂时只能用键盘和文字指令。",
-                    "這台電腦不支援線上語音辨識。開關會保留你的選擇，但暫時只能用鍵盤和文字指令。",
-                    "This PC does not support online speech recognition. Your choice is kept, but for now only the keyboard and typed commands work.",
-                  ),
-            )}</p>
+                ? ""
+                : `<p class="cc-field-hint" style="margin: 2px 0 0 0;">${ctx.escapeHtml(
+                    tr3("此电脑暂不支持语音识别", "此電腦暫不支援語音辨識", "Speech recognition isn't available on this PC"),
+                  )}</p>`
+            }
           </div>
           <input id="settings-voice-input" type="checkbox" ${isVoiceInputEnabled(ctx.settings) ? "checked" : ""} />
         </div>
@@ -786,7 +777,6 @@ function renderGeneralPanel(ctx: SettingsViewContext): string {
             <input id="settings-panel-opacity" class="cc-range" type="range" min="${PANEL_OPACITY_MIN}" max="${PANEL_OPACITY_MAX}" step="1" value="${ctx.settings.panelOpacity}" aria-valuemin="${PANEL_OPACITY_MIN}" aria-valuemax="${PANEL_OPACITY_MAX}" aria-valuenow="${ctx.settings.panelOpacity}" />
             <span class="cc-opacity-preview" aria-hidden="true"><span class="cc-opacity-preview-panel">Aa</span></span>
           </div>
-          <p class="cc-field-hint">${t("壁纸透出导致文字看不清时调高；100% 为不透明。")}</p>
         </div>
 
         <div class="cc-field" data-settings-anchor="panelAnchor">
@@ -794,7 +784,6 @@ function renderGeneralPanel(ctx: SettingsViewContext): string {
           <div class="cc-segmented-pills">
             ${PANEL_ANCHORS.map((a) => `<button class="cc-seg-pill ${ctx.panelAnchor === a.id ? "is-active" : ""}" data-panel-anchor="${a.id}" aria-pressed="${ctx.panelAnchor === a.id}">${ctx.escapeHtml(a.title)}</button>`).join("")}
           </div>
-          <p class="cc-field-hint">${t("拖动面板顶部即可移动，松开后吸附到最近的角落。")}</p>
         </div>
 
         <div class="cc-field cc-field-row" data-settings-anchor="compactGridMode">
@@ -818,16 +807,7 @@ function renderGeneralPanel(ctx: SettingsViewContext): string {
 
     <div class="cc-settings-group-card">
       <div class="cc-field cc-field-row" data-settings-anchor="setupGuide">
-        <div>
-          <label>${ctx.escapeHtml(tr3("首次设置与新手引导", "首次設定與新手引導", "Setup & Onboarding Guide"))}</label>
-          <p class="cc-field-hint" style="margin: 2px 0 0 0;">${ctx.escapeHtml(
-            tr3(
-              "随时重新打开平台引导，查看连接、快捷键与全关撤销说明。",
-              "隨時重新打開平台引導，查看連線、快速鍵與全關復原說明。",
-              "Reopen the platform setup guide anytime to review connections, shortcuts, and All Off.",
-            ),
-          )}</p>
-        </div>
+        <label>${ctx.escapeHtml(tr3("首次设置与新手引导", "首次設定與新手引導", "Setup & Onboarding Guide"))}</label>
         <button type="button" class="cc-btn-secondary" id="btn-reopen-onboarding">${ctx.escapeHtml(
           Boolean(ctx.settings.miSession) || Boolean(ctx.settings.haBaseURL.trim() && ctx.settings.haToken.trim())
             ? tr3("重新查看新手引导", "重新查看新手引導", "Reopen Setup Guide")
@@ -860,13 +840,6 @@ function renderHomeAssistantCredentialsBlock(ctx: SettingsViewContext): string {
         <input id="settings-ha-url" class="cc-input" type="url" value="${ctx.escapeHtml(ctx.settings.haBaseURL)}" placeholder="http://homeassistant.local:8123" />
         <p class="cc-ha-discover-status" id="settings-ha-discover-status" role="status" hidden></p>
         <div class="cc-ha-candidates" id="settings-ha-candidates" hidden></div>
-        <p class="cc-field-hint" style="margin: 4px 0 0;">${ctx.escapeHtml(
-          tr3(
-            "不确定地址？可在 Home Assistant 网页设置里查看。",
-            "不確定位址？可在 Home Assistant 網頁設定裡查看。",
-            "Unsure of the address? Check your Home Assistant web settings.",
-          ),
-        )}</p>
         <p
           class="cc-field-hint"
           data-ha-plaintext-warning
@@ -874,26 +847,26 @@ function renderHomeAssistantCredentialsBlock(ctx: SettingsViewContext): string {
           style="margin: 4px 0 0; font-size: 12px; color: #e67e22;"
         >${ctx.escapeHtml(
           tr3(
-            "专属连接钥匙将以明文传送。远程连接建议使用 HTTPS 或 Nabu Casa 地址。",
-            "專屬連線鑰匙將以明文傳送。遠端連線建議使用 HTTPS 或 Nabu Casa 位址。",
-            "Your dedicated connection key will travel unencrypted. Prefer HTTPS or Nabu Casa for remote access.",
+            "当前为明文 HTTP，建议改用 HTTPS",
+            "目前為明文 HTTP，建議改用 HTTPS",
+            "This is plain HTTP; switch to HTTPS",
           ),
         )}</p>
       </div>
       <div data-settings-anchor="haToken" style="margin-top: 6px;">
         <label for="settings-ha-token">${ctx.escapeHtml(
           tr3(
-            "专属连接钥匙 (Access Token)",
-            "專屬連線鑰匙 (Access Token)",
-            "Dedicated Connection Key (Access Token)",
+            "访问密钥 (Access Token)",
+            "存取金鑰 (Access Token)",
+            "Access Token",
           ),
         )}</label>
         <input id="settings-ha-token" class="cc-input" type="password" autocomplete="off" value="${ctx.escapeHtml(ctx.settings.haToken)}" />
         <p class="cc-field-hint" style="margin: 4px 0 0;">${ctx.escapeHtml(
           tr3(
-            "可在 Home Assistant 网页左下角「个人资料 → 安全设置」底部创建长期专属连接钥匙。",
-            "可在 Home Assistant 網頁左下角「個人資料 → 安全設定」底部建立長期專屬連線鑰匙。",
-            "Create a long-lived connection key at the bottom of Profile → Security in your Home Assistant web UI.",
+            "在 HA「个人资料 → 安全」底部创建",
+            "在 HA「個人資料 → 安全」底部建立",
+            "Create one at the bottom of Profile → Security in HA",
           ),
         )}</p>
       </div>
@@ -905,9 +878,9 @@ function renderXiaomiCloudBlock(ctx: SettingsViewContext): string {
   return `
     <p class="cc-field-hint" data-mi-unofficial-warning style="margin: 0; font-size: 12px; color: #e67e22;">${ctx.escapeHtml(
       tr3(
-        "使用非官方连接方式。小米可能限制请求或风控账号，登录会过期，到期需重新扫码。凭据安全保存在本机。",
-        "使用非官方連線方式。小米可能限制請求或風控帳號，登入會過期，到期需重新掃碼。憑證安全儲存在本機。",
-        "Uses an unofficial connection method. Xiaomi may rate-limit or restrict accounts, and sign-in expires and requires rescanning. Credentials stay safely on this PC.",
+        "非官方直连，可能被小米限流或风控，到期需重扫",
+        "非官方直連，可能被小米限流或風控，到期需重掃",
+        "Unofficial connection: Xiaomi may rate-limit or flag it; rescan when it expires",
       ),
     )}</p>
 
@@ -931,15 +904,18 @@ function renderXiaomiCloudBlock(ctx: SettingsViewContext): string {
       }
     </div>
 
-    <div class="cc-field" data-settings-anchor="miCloudRegion">
-      <label>${t("云端服务器地区")}</label>
-      <select class="cc-input" data-mi-region>
-        ${MI_CLOUD_REGIONS.map(
-          (region) => `<option value="${region.code}" ${normalizeMiCloudRegion(ctx.settings.miCloudRegion) === region.code ? "selected" : ""}>${ctx.escapeHtml(t(region.label))}</option>`,
-        ).join("")}
-      </select>
-      <p class="cc-field-hint">${ctx.escapeHtml(t("当前选择：{region}。切换后请重新扫码登录该地区的米家账号；已登录会话仍使用登录时的地区。", { region: t(miCloudRegionLabel(ctx.settings.miCloudRegion)) }))}</p>
-    </div>
+    <details class="cc-conn-secondary" data-conn-section="miRegionAdvanced" ${normalizeMiCloudRegion(ctx.settings.miCloudRegion) !== "cn" ? "open" : ""}>
+      <summary class="cc-conn-secondary-summary">${ctx.escapeHtml(tr3("高级", "進階", "Advanced"))}</summary>
+      <div class="cc-field" data-settings-anchor="miCloudRegion">
+        <label>${t("云端服务器地区")}</label>
+        <select class="cc-input" data-mi-region>
+          ${MI_CLOUD_REGIONS.map(
+            (region) => `<option value="${region.code}" ${normalizeMiCloudRegion(ctx.settings.miCloudRegion) === region.code ? "selected" : ""}>${ctx.escapeHtml(t(region.label))}</option>`,
+          ).join("")}
+        </select>
+        <p class="cc-field-hint">${ctx.escapeHtml(t("切换地区需重新扫码"))}</p>
+      </div>
+    </details>
   `;
 }
 
@@ -1009,7 +985,6 @@ function renderConnectionPanel(ctx: SettingsViewContext): string {
           ${ctx.escapeHtml(demoEntryLabel)}
         </button>
       </div>
-      <p class="cc-field-hint" style="margin: 2px 0 0;">${ctx.escapeHtml(demoHint)}</p>
     </div>
     ${modeBlocks}
     ${renderConnectionsAndDiagSection(ctx)}
@@ -1048,47 +1023,91 @@ function renderAssistantPanel(ctx: SettingsViewContext): string {
     scenes: ctx.scenes ?? [],
   });
 
+  const aiEnabled = isAiAssistantEnabled(ctx.settings);
+  const advancedOpen =
+    currentPreset.id === "custom" ||
+    ctx.settings.assistantBaseURL.trim() === "" ||
+    ctx.settings.assistantModel.trim() === "";
+
   return `
-    <div class="cc-field cc-field-row" data-settings-anchor="assistantProvider">
+    <div class="cc-field cc-field-row">
       <div>
-        <label for="settings-ai-enabled">${t("AI 一句话控制")}</label>
-        <p class="cc-field-hint" style="margin: 2px 0 0 0;">${t("关闭后，指令只在本机解析，不再发送 AI 请求；已保存的服务商配置与密钥保留。")}</p>
+        <label for="settings-ai-enabled">${t("启用 AI 助手")}</label>
+        <p class="cc-field-hint" id="settings-ai-off-hint" style="margin: 2px 0 0 0;" ${aiEnabled ? "hidden" : ""}>${t("仅本地解析，密钥保留")}</p>
       </div>
-      <input id="settings-ai-enabled" type="checkbox" ${isAiAssistantEnabled(ctx.settings) ? "checked" : ""} />
+      <input id="settings-ai-enabled" type="checkbox" ${aiEnabled ? "checked" : ""} />
     </div>
 
-    <div class="cc-field cc-field-row" data-settings-anchor="proactiveSuggestions">
-      <div>
-        <label for="settings-proactive-enabled">${t("主动建议")}</label>
-        <p class="cc-field-hint" style="margin: 2px 0 0 0;">${t("关闭后，面板不再显示建议，也不再为建议做后台推断；安全提醒、撤销和定时照常运行。")}</p>
-      </div>
-      <input id="settings-proactive-enabled" type="checkbox" ${isProactiveSuggestionsEnabled(ctx.settings) ? "checked" : ""} />
-    </div>
-
-    <div class="cc-field">
-      <label>${t("AI 服务商预设（支持 OpenRouter Jev、原生 Jev、DeepSeek、千问、GLM 等）")}</label>
-      <div class="cc-segmented-pills" style="flex-wrap: wrap;">
+    <div class="cc-field" data-settings-anchor="assistantProvider">
+      <label for="settings-ai-provider">${t("服务商")}</label>
+      <select id="settings-ai-provider" class="cc-input">
         ${ASSISTANT_PROVIDER_PRESETS.map((preset) => {
           const label =
             preset.id === "custom"
               ? tr3("自定义", "自訂", "Custom")
               : preset.shortTitle;
-          return `<button
-            type="button"
-            class="cc-seg-pill ${currentPreset.id === preset.id ? "is-active" : ""}"
-            data-ai-preset="${ctx.escapeHtml(preset.id)}"
-          >${ctx.escapeHtml(label)}</button>`;
+          return `<option value="${ctx.escapeHtml(preset.id)}" data-ai-preset="${ctx.escapeHtml(preset.id)}" ${currentPreset.id === preset.id ? "selected" : ""}>${ctx.escapeHtml(label)}</option>`;
         }).join("")}
-      </div>
-      <div class="cc-update-row" style="margin-top: 6px; gap: 6px; flex-wrap: wrap;">
-        <button type="button" class="cc-inline-pill" id="btn-remove-ai-provider" title="${ctx.escapeHtml(
-          t("只移除当前服务商保存的密钥、端点绑定与云端授权；其他服务商的密钥与绑定保留。"),
-        )}">${t("移除此服务商的本机配置与密钥")}</button>
-      </div>
+      </select>
     </div>
 
+    <div class="cc-field" data-settings-anchor="assistantAPIKey">
+      <label for="settings-api-key">API Key</label>
+      <input
+        id="settings-api-key"
+        class="cc-input"
+        type="password"
+        placeholder="${ctx.escapeHtml(currentPreset.keyPlaceholder)}"
+        value="${ctx.escapeHtml(ctx.apiKeyFor(ctx.settings.assistantBaseURL))}"
+      />
+    </div>
+
+    <div class="cc-field" data-settings-anchor="assistantTest">
+      <button type="button" class="cc-btn-secondary" id="btn-test-ai-connection">${ctx.escapeHtml(
+        tr3("测试连接", "測試連線", "Test Connection"),
+      )}</button>
+      <div id="settings-ai-test-status" class="cc-field-hint" style="margin-top: 4px;"></div>
+    </div>
+
+    <div class="cc-field cc-field-row" data-settings-anchor="proactiveSuggestions">
+      <label for="settings-proactive-enabled">${t("主动建议")}</label>
+      <input id="settings-proactive-enabled" type="checkbox" ${isProactiveSuggestionsEnabled(ctx.settings) ? "checked" : ""} />
+    </div>
+
+    <div class="cc-field cc-field-row" data-settings-anchor="askWhenUnsure">
+      <div>
+        <label for="settings-ask-when-unsure">${ctx.escapeHtml(
+          tr3("不确定时先问我", "不確定時先問我", "Ask Me When Unsure"),
+        )}</label>
+        <p class="cc-field-hint" style="margin: 2px 0 0 0;">${ctx.escapeHtml(
+          tr3("高风险设备始终先确认", "高風險裝置一律先確認", "High-risk devices always ask first"),
+        )}</p>
+      </div>
+      <input id="settings-ask-when-unsure" type="checkbox" ${askWhenUnsure ? "checked" : ""} />
+    </div>
+
+    <p class="cc-field-hint" data-ai-cloud-notice>${ctx.escapeHtml(
+      tr3(
+        "本机听不懂的指令，会连同设备名和状态发给 AI 服务；密钥只存本机",
+        "本機聽不懂的指令，會連同裝置名稱和狀態傳給 AI 服務；金鑰只存本機",
+        "Commands this PC can't parse are sent to the AI service with device names and states; keys stay on this PC",
+      ),
+    )}</p>
+
+    ${
+      ctx.settings.cloudConsentEndpoints.length > 0
+        ? `<div class="cc-field" data-settings-anchor="cloudConsent">
+      <label>${t("已允许发送到：{endpoints}", { endpoints: ctx.escapeHtml(ctx.settings.cloudConsentEndpoints.join("、")) })}</label>
+      <button type="button" class="cc-btn-secondary" id="btn-revoke-cloud">${t("撤销授权")}</button>
+    </div>`
+        : ""
+    }
+
+    <details class="cc-conn-secondary" data-conn-section="assistantAdvanced" ${advancedOpen ? "open" : ""}>
+      <summary class="cc-conn-secondary-summary">${ctx.escapeHtml(tr3("高级", "進階", "Advanced"))}</summary>
+
     <div class="cc-field" data-settings-anchor="assistantBaseURL">
-      <label>${t("AI 服务地址（支持 /v1/systemone 与 OpenAI 兼容 /v1/chat/completions）")}</label>
+      <label for="settings-base-url">${t("服务地址")}</label>
       <input
         id="settings-base-url"
         class="cc-input"
@@ -1099,7 +1118,7 @@ function renderAssistantPanel(ctx: SettingsViewContext): string {
     </div>
 
     <div class="cc-field" data-settings-anchor="assistantModel">
-      <label>${t("决策模型（如 ~typesafe/jev-latest、jev-latest、deepseek-chat）")}</label>
+      <label for="settings-model">${t("模型")}</label>
       <input
         id="settings-model"
         class="cc-input"
@@ -1108,83 +1127,29 @@ function renderAssistantPanel(ctx: SettingsViewContext): string {
       />
     </div>
 
-    <div class="cc-field" data-settings-anchor="assistantAPIKey">
-      <label>${t("API Key（本机安全保存）")}</label>
-      <input
-        id="settings-api-key"
-        class="cc-input"
-        type="password"
-        placeholder="${ctx.escapeHtml(currentPreset.keyPlaceholder)}"
-        value="${ctx.escapeHtml(ctx.apiKeyFor(ctx.settings.assistantBaseURL))}"
-      />
-      <div class="cc-update-row" data-settings-anchor="assistantEnvImport" style="margin-top: 6px; gap: 6px; flex-wrap: wrap;">
+    <div class="cc-field">
+      <div class="cc-update-row" data-settings-anchor="assistantEnvImport" style="gap: 6px; flex-wrap: wrap;">
         <button type="button" class="cc-inline-pill" id="btn-import-env-key">${ctx.escapeHtml(
-          tr3(
-            "从环境变量导入 API Key",
-            "從環境變數匯入 API Key",
-            "Import API Key from Environment",
-          ),
+          tr3("从本机环境导入 Key", "從本機環境匯入 Key", "Import Key from Environment"),
         )}</button>
         <span id="settings-env-import-status" class="cc-field-hint" style="margin: 0;"></span>
       </div>
-    </div>
-
-    <div class="cc-field" data-settings-anchor="assistantTest">
-      <div class="cc-update-row" style="gap: 8px; flex-wrap: wrap;">
-        <div>
-          <label>${ctx.escapeHtml(tr3("连通性检测", "連通性檢測", "Connection Check"))}</label>
-          <p class="cc-field-hint" style="margin: 2px 0 0 0;">${ctx.escapeHtml(
-            tr3(
-              "向当前配置的 AI 端点发送最小探针，检测响应耗时与密钥有效性。",
-              "向目前設定的 AI 端點傳送最小探針，檢測回應耗時與金鑰有效性。",
-              "Send a minimal probe to the configured AI endpoint to verify latency and key validity.",
-            ),
-          )}</p>
-        </div>
-        <button type="button" class="cc-btn-secondary" id="btn-test-ai-connection">${ctx.escapeHtml(
-          tr3("测试 AI 连接", "測試 AI 連線", "Test AI Connection"),
-        )}</button>
+      <div class="cc-update-row" style="margin-top: 6px; gap: 6px; flex-wrap: wrap;">
+        <button type="button" class="cc-inline-pill" id="btn-remove-ai-provider">${t("移除此服务商")}</button>
       </div>
-      <div id="settings-ai-test-status" class="cc-field-hint" style="margin-top: 4px;"></div>
     </div>
-
-    <div class="cc-field cc-field-row" data-settings-anchor="askWhenUnsure">
-      <div>
-        <label for="settings-ask-when-unsure">${ctx.escapeHtml(
-          tr3("AI 不确定时先让我确认", "AI 不確定時先讓我確認", "Ask Me When AI Is Unsure"),
-        )}</label>
-        <p class="cc-field-hint" style="margin: 2px 0 0 0;">${ctx.escapeHtml(
-          tr3(
-            "当指令存在歧义或把握度偏低时，先展示候选操作卡片供你确认。",
-            "當指令存在歧義或把握度偏低時，先展示候選操作卡片供你確認。",
-            "Show confirmation chips instead of acting immediately when an utterance is ambiguous.",
-          ),
-        )}</p>
-      </div>
-      <input id="settings-ask-when-unsure" type="checkbox" ${askWhenUnsure ? "checked" : ""} />
-    </div>
-
-    ${
-      ctx.settings.cloudConsentEndpoints.length > 0
-        ? `<div class="cc-field" data-settings-anchor="cloudConsent">
-      <label>${t("已允许发送到：{endpoints}", { endpoints: ctx.escapeHtml(ctx.settings.cloudConsentEndpoints.join("、")) })}</label>
-      <button type="button" class="cc-btn-secondary" id="btn-revoke-cloud">${t("撤销授权（下次发往云端前再问）")}</button>
-    </div>`
-        : ""
-    }
 
     <div class="cc-field" data-settings-anchor="habitMemory">
       <label class="cc-checkbox">
         <input type="checkbox" id="settings-habit" ${ctx.settings.habitLearningEnabled ? "checked" : ""} />
-        <span>${t("自动记住自然语言习惯（相同说法下次直接在本地执行）")}</span>
+        <span>${t("学习使用习惯")}</span>
       </label>
       <div data-settings-anchor="habitShare">
         <label class="cc-checkbox">
           <input type="checkbox" id="settings-habit-share" ${ctx.settings.habitShareEnabled ? "checked" : ""} />
-          <span>${t("发送习惯摘要（只包含这句话点名的设备）")}</span>
+          <span>${t("向 AI 附带习惯摘要")}</span>
         </label>
-        <label>${t("预览这句话会发送的习惯摘要")}</label>
-        <input id="settings-habit-share-sample" class="cc-input" type="text" />
+        <input id="settings-habit-share-sample" class="cc-input" type="text" placeholder="${ctx.escapeHtml(t("输入一句话，预览附带的摘要"))}" />
         <div id="settings-habit-share-preview">${t("不会发送习惯摘要")}</div>
       </div>
       ${
@@ -1207,9 +1172,8 @@ function renderAssistantPanel(ctx: SettingsViewContext): string {
         ctx.settings.habitEntries.length > 0 || sequences.length > 0 || readableHabits.length > 0
           ? `<div class="cc-timers-stack">
               <div class="cc-timer-row" style="gap: 6px; flex-wrap: wrap;">
-                <span style="flex: 1;">${t("已学习 {count} 条时段习惯、{sequences} 条先后习惯（用于猜你想控）", {
-                  count: ctx.settings.habitEntries.length,
-                  sequences: sequences.length,
+                <span style="flex: 1;">${t("已学习 {count} 条习惯", {
+                  count: ctx.settings.habitEntries.length + sequences.length,
                 })}</span>
                 <div style="display: flex; gap: 6px; align-items: center;">
                   <button
@@ -1248,6 +1212,7 @@ function renderAssistantPanel(ctx: SettingsViewContext): string {
           : ""
       }
     </div>
+    </details>
   `;
 }
 
@@ -1259,16 +1224,16 @@ function renderCompanionControls(ctx: SettingsViewContext): string {
     ? `<p class="cc-field-hint" id="settings-companion-notice" role="status"${notice.isError ? ' style="color: #e74c3c;"' : ""}>${notice.lines.map((line) => ctx.escapeHtml(line)).join("<br />")}</p>`
     : `<p class="cc-field-hint" id="settings-companion-notice" role="status" hidden></p>`;
   return `
-        <p class="cc-field-hint">${ctx.escapeHtml(tr3(
-          "访问范围：仅这台电脑的当前用户。外部工具只读快照里的设备、场景和状态，通过 menumijia:// 链接控制；拿不到米家或 Home Assistant 账号，高风险确认和锁屏拦截照常生效。断开不会改动外部工具自己的配置文件。",
-          "存取範圍：僅這台電腦的目前使用者。外部工具只讀快照裡的裝置、場景和狀態，透過 menumijia:// 連結控制；拿不到米家或 Home Assistant 帳號，高風險確認和鎖定畫面攔截照常生效。中斷連線不會改動外部工具自己的設定檔。",
-          "Access: only the current user on this PC. Companions read devices, scenes and status from the snapshot and control them through menumijia:// links; they never get your Mi Home or Home Assistant account, and high-risk confirmation and the lock-screen guard still apply. Disconnecting leaves the tools' own config files untouched.",
-        ))}</p>
+        ${enabled ? `<p class="cc-field-hint">${ctx.escapeHtml(tr3(
+          "仅本机可读，不共享账号凭据",
+          "僅本機可讀，不共享帳號憑證",
+          "Readable on this PC only; account credentials are never shared",
+        ))}</p>` : ""}
         <div class="cc-field-row" style="margin-top: 6px; gap: 6px; flex-wrap: wrap; justify-content: flex-start;">
           <button type="button" class="cc-btn-secondary" id="btn-companion-copy-config">${ctx.escapeHtml(tr3("复制配置", "複製設定", "Copy Config"))}</button>
           <button type="button" class="cc-btn-secondary" id="btn-companion-detect">${ctx.escapeHtml(tr3("检测接入", "檢測接入", "Check Connection"))}</button>
           ${enabled || notice?.retryDisconnect ? `<button type="button" class="cc-btn-secondary" id="btn-companion-disconnect">${ctx.escapeHtml(enabled
-            ? tr3("断开并吊销令牌", "中斷連線並撤銷權杖", "Disconnect & Revoke Token")
+            ? tr3("断开", "中斷連線", "Disconnect")
             : tr3("重试删除快照", "重試刪除快照", "Retry Snapshot Deletion"))}</button>` : ""}
         </div>
         ${noticeHtml}`;
@@ -1276,6 +1241,9 @@ function renderCompanionControls(ctx: SettingsViewContext): string {
 
 /** 安全与提醒: lock-screen blocking, scheduled commands, companion links, high-risk writes, energy, automation/alerts, and All Off scope. */
 function renderSafetyPanel(ctx: SettingsViewContext): string {
+  const allOffCandidates = ctx.devices.filter(
+    (d) => d.kind.kind !== "sensor" && d.kind.kind !== "fridge" && d.kind.kind !== "cover",
+  );
   return `
     <div class="cc-settings-group-card">
       <div class="cc-field">
@@ -1285,7 +1253,7 @@ function renderSafetyPanel(ctx: SettingsViewContext): string {
             <label for="settings-block-while-locked">${t("锁屏时禁止控制设备")}</label>
             <input id="settings-block-while-locked" type="checkbox" ${ctx.settings.blockControlWhileLocked ? "checked" : ""} />
           </div>
-          <p class="cc-field-hint">${t("锁屏期间拦截手动与外部链接控制；已设好的定时任务仍按时执行。")}</p>
+          <p class="cc-field-hint">${t("不影响定时任务与自动化规则")}</p>
         </div>
 
         <div data-settings-anchor="scheduledCommands">
@@ -1293,30 +1261,36 @@ function renderSafetyPanel(ctx: SettingsViewContext): string {
             <label for="settings-scheduled-commands-enabled">${t("运行定时任务")}</label>
             <input id="settings-scheduled-commands-enabled" type="checkbox" ${isScheduledCommandsEnabled(ctx.settings) ? "checked" : ""} />
           </div>
-          <p class="cc-field-hint">${t("关闭后停止到点执行和补发，已排定的定时暂停保留；重新开启时先复验目标，已过期的不补发，改为进入错过流程。")}</p>
+          <p class="cc-field-hint">${t("关闭后暂停执行，过期不补发")}</p>
         </div>
 
-        <div data-settings-anchor="raycast">
+      </div>
+
+      <details class="cc-conn-secondary" data-conn-section="safetyAdvanced">
+        <summary class="cc-conn-secondary-summary">${ctx.escapeHtml(tr3("高级", "進階", "Advanced"))}</summary>
+        <div class="cc-field" data-settings-anchor="raycast">
           <div class="cc-field-row" style="margin-top: 8px;">
-            <label for="settings-raycast-integration">${t("Raycast 与本地 CLI / MCP 集成")}</label>
+            <label for="settings-raycast-integration">${t("Raycast / CLI / MCP 集成")}</label>
             <input id="settings-raycast-integration" type="checkbox" ${ctx.settings.enableRaycastIntegration ? "checked" : ""} />
           </div>
-          <p class="cc-field-hint">${t("在 %LOCALAPPDATA%\\MenuBarMijia 导出设备快照并签发本机令牌（不含账号凭据）；关闭后立即删除快照并吊销令牌。")}</p>
           ${renderCompanionControls(ctx)}
         </div>
 
-        <div data-settings-anchor="allowURLControl">
+        <div class="cc-field" data-settings-anchor="allowURLControl">
           <div class="cc-field-row" style="margin-top: 8px;">
-            <label for="settings-allow-direct-url">${t("允许 menumijia:// 外部链接免确认直控")}</label>
+            <label for="settings-allow-direct-url">${t("允许外部链接直控（跳过确认）")}</label>
             <input id="settings-allow-direct-url" type="checkbox" ${ctx.settings.allowDirectURLControl ? "checked" : ""} />
           </div>
-          <p class="cc-field-hint">${t("关闭时，未携带本机令牌的外部网页或快捷方式链接须先在面板中确认；高风险设备与锁屏拦截始终生效。")}</p>
+          <p class="cc-field-hint">${t("链接直接执行；高风险设备仍会确认，锁屏拦截照常")}</p>
         </div>
-      </div>
+      </details>
 
       <div class="cc-field" data-settings-anchor="advancedDeviceWrites">
         <div class="cc-field-row">
-          <label for="settings-allow-advanced-facets">${t("允许写入高级/高风险设备属性")}</label>
+          <div>
+            <label for="settings-allow-advanced-facets">${t("允许「更多设置」写入次要控件")}</label>
+            <p class="cc-field-hint" style="margin: 2px 0 0 0;">${t("解锁「更多设置」里默认只读的控件")}</p>
+          </div>
           <input id="settings-allow-advanced-facets" type="checkbox" ${ctx.settings.allowAdvancedFacetWrites ? "checked" : ""} />
         </div>
         <div
@@ -1348,10 +1322,14 @@ function renderSafetyPanel(ctx: SettingsViewContext): string {
 
     <div class="cc-settings-group-card">
       <div class="cc-field" data-settings-anchor="allOffDevices">
-        <label>${t("「全关」包含哪些设备（插座、扫地机默认不包含）")}</label>
+        <label>${t("「全关」包含的设备")}</label>
+        <p class="cc-field-hint" style="margin: 2px 0 4px 0;">${t("插座、扫地机等默认不参与")}</p>
+        <details class="cc-conn-secondary" data-conn-section="allOffDevices">
+        <summary class="cc-conn-secondary-summary">${ctx.escapeHtml(t("已包含 {count} 台设备", {
+          count: allOffCandidates.filter((d) => joinsAllOff(d, ctx.settings.allOffOverrides)).length,
+        }))}</summary>
         <div class="cc-timers-stack">
-          ${ctx.devices
-            .filter((d) => d.kind.kind !== "sensor" && d.kind.kind !== "fridge" && d.kind.kind !== "cover")
+          ${allOffCandidates
             .map(
               (d) => `
             <label class="cc-checkbox">
@@ -1361,6 +1339,7 @@ function renderSafetyPanel(ctx: SettingsViewContext): string {
             )
             .join("")}
         </div>
+        </details>
       </div>
     </div>
   `;
@@ -1394,11 +1373,7 @@ function renderAboutPanel(ctx: SettingsViewContext): string {
       <div class="cc-field">
         <label>${ctx.escapeHtml(tr3("诊断与排障工具", "診斷與排障工具", "Diagnostics & Troubleshooting"))}</label>
         <p class="cc-field-hint" style="margin: 2px 0 6px 0;">${ctx.escapeHtml(
-          tr3(
-            "排查未能识别的设备型号，或复制不含凭据与家庭隐私的 Markdown 诊断摘要。",
-            "排查未能識別的裝置型號，或複製不含憑證與家庭隱私的 Markdown 診斷摘要。",
-            "Scan for skipped device models or copy a desensitized Markdown diagnostic report.",
-          ),
+          tr3("不含账号、密钥与设备 ID", "不含帳號、金鑰與裝置 ID", "No accounts, keys or device IDs"),
         )}</p>
         <div style="display: flex; gap: 6px; flex-wrap: wrap;">
           <button type="button" class="cc-btn-secondary" id="btn-about-jump-scanner">${ctx.escapeHtml(
@@ -1412,23 +1387,16 @@ function renderAboutPanel(ctx: SettingsViewContext): string {
 
       <div class="cc-field">
         <div class="cc-field-row">
-          <div>
-            <label>${ctx.escapeHtml(tr3("反馈问题", "回饋問題", "Report a Problem"))}</label>
-            <p class="cc-field-hint" style="margin: 2px 0 0 0;">${ctx.escapeHtml(
-              tr3(
-                "在浏览器打开 GitHub Issue，版本、系统、各数据源设备数与错误码已自动填好；提交前你可以改。同一段内容也会复制到剪贴板。",
-                "在瀏覽器開啟 GitHub Issue，版本、系統、各資料來源裝置數與錯誤碼已自動填好；提交前你可以改。同一段內容也會複製到剪貼簿。",
-                "Opens a GitHub issue in the browser with version, OS, per-source device counts and error codes prefilled. You review and submit it; the same block lands on the clipboard.",
-              ),
-            )}</p>
-          </div>
+          <label>${ctx.escapeHtml(tr3("反馈问题", "回饋問題", "Report a Problem"))}</label>
           <button type="button" class="cc-btn-primary" id="btn-about-report-problem">${ctx.escapeHtml(
-            tr3("反馈问题（预填诊断）", "回饋問題（預填診斷）", "Report a Problem"),
+            tr3("反馈问题", "回饋問題", "Report a Problem"),
           )}</button>
         </div>
       </div>
     </div>
 
+    <details class="cc-conn-secondary" data-conn-section="aboutAdvanced">
+      <summary class="cc-conn-secondary-summary">${ctx.escapeHtml(tr3("高级", "進階", "Advanced"))}</summary>
     <div class="cc-settings-group-card">
       <div class="cc-field" data-settings-anchor="signOut">
         <div class="cc-field-row">
@@ -1438,9 +1406,9 @@ function renderAboutPanel(ctx: SettingsViewContext): string {
             )}</label>
             <p class="cc-field-hint" style="margin: 2px 0 0 0;">${ctx.escapeHtml(
               tr3(
-                "一键清除米家会话、Home Assistant 令牌、全部 AI 服务商 API Key 及本机快照桥接令牌。",
-                "一鍵清除米家工作階段、Home Assistant 權杖、全部 AI 服務商 API Key 及本機快照橋接權杖。",
-                "Clear Xiaomi session, Home Assistant token, all AI provider API keys, and local bridge tokens at once.",
+                "清除全部账号与密钥，回到示例家庭",
+                "清除全部帳號與金鑰，回到範例家庭",
+                "Clears every account and key and returns to the demo home",
               ),
             )}</p>
           </div>
@@ -1457,8 +1425,8 @@ function renderAboutPanel(ctx: SettingsViewContext): string {
         >
           <span style="font-size: 12px;">${ctx.escapeHtml(
             tr3(
-              "确认退出并清除本机保存的所有账号会话、HA 令牌、全部 AI 密钥与本地桥接令牌？此操作不可撤销。",
-              "確認登出並清除本機儲存的所有帳號工作階段、HA 權杖、全部 AI 金鑰與本機橋接權杖？此操作無法復原。",
+              "确认退出并清除本机保存的所有账号会话、HA 密钥、全部 AI 密钥与本地桥接密钥？此操作不可撤销。",
+              "確認登出並清除本機儲存的所有帳號工作階段、HA 金鑰、全部 AI 金鑰與本機橋接金鑰？此操作無法復原。",
               "Sign out and permanently delete all saved Xiaomi sessions, HA tokens, AI API keys, and local bridge tokens?",
             ),
           )}</span>
@@ -1472,12 +1440,12 @@ function renderAboutPanel(ctx: SettingsViewContext): string {
           </div>
         </div>
       </div>
+    </div>
+    </details>
 
+    <div class="cc-settings-group-card">
       <div class="cc-field cc-field-row" data-settings-anchor="quitApp">
-        <div>
-          <label>${t("退出 MenuBarHome")}</label>
-          <p class="cc-field-hint" style="margin: 2px 0 0 0;">${ctx.escapeHtml(quitHint)}</p>
-        </div>
+        <label>${t("退出 MenuBarHome")}</label>
         <button class="cc-btn-danger cc-btn-ghost-danger" id="btn-settings-quit" data-settings-anchor="quitApp" title="${ctx.escapeHtml(quitHint)}">${t("退出 MenuBarHome")}</button>
       </div>
     </div>
@@ -1577,7 +1545,7 @@ function renderUpdateDownloadProgress(
     const release = ctx.availableUpdate;
     const hasInstaller = Boolean(release?.installerAsset);
     const notes = release?.notes?.trim() ?? "";
-    const statusText = ctx.updateStatusMessage?.text ?? (release && hasInstaller ? t("可直接下载并安装，无需打开浏览器") : "");
+    const statusText = ctx.updateStatusMessage?.text ?? "";
     const activeProgress = ctx.isInstallingUpdate
       ? (ctx.updateProgress ?? getUpdateProgressForSettings(ctx.settings))
       : null;
@@ -1610,7 +1578,7 @@ function renderUpdateDownloadProgress(
         ${notes ? `<div class="cc-update-notes">${renderReleaseNotesMarkdown(notes, (v) => ctx.escapeHtml(v))}</div>` : ""}
         <label class="cc-checkbox" style="margin-top: 6px;">
           <input type="checkbox" id="settings-auto-update" ${ctx.settings.autoCheckUpdates ? "checked" : ""} />
-          <span>${t("每天自动检查更新（关闭后不再请求 GitHub）")}</span>
+          <span>${t("自动检查更新")}</span>
         </label>
       </div>
     `;
