@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { Window } from "happy-dom";
+import { miCloudRateLimiter } from "../src/core/miCloud/rateLimiter.js";
 import { installWindow } from "./dom.js";
 
 export function element<T extends Element = HTMLElement>(selector: string): T {
@@ -48,6 +49,7 @@ export async function closeTestWindow(dom: Window): Promise<void> {
   } catch {
   }
   await dom.happyDOM.abort();
+  await miCloudRateLimiter.clear();
   dom.close();
   if (previousGlobalFetch !== undefined) {
     Object.defineProperty(globalThis, "fetch", { value: previousGlobalFetch, configurable: true, writable: true });

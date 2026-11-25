@@ -993,8 +993,8 @@ export function derivePollingBackoffDiagnostics(options: { readonly host?: objec
   readonly nowMs?: number;
 }): PollingBackoffDiagnostics { const nowMs = options.nowMs ?? Date.now();
   const untilCandidates: number[] = [];
-  if (options.host && options.primarySession) {
-    const primaryUntil = getXiaomiBackoffUntilMs(options.host, options.primarySession);
+  if (options.primarySession) {
+    const primaryUntil = getXiaomiBackoffUntilMs(options.primarySession);
     if (primaryUntil !== null && primaryUntil > nowMs) { untilCandidates.push(primaryUntil);
     }
   }

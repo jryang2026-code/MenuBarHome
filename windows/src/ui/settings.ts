@@ -16,6 +16,7 @@ import {
 import { MI_ACCOUNT_CAPABILITY_STORAGE_KEY } from "../core/miAccountControl.js";
 import { normalizeMiCloudRegion } from "../core/miCloudClient.js";
 import type { SmartDevice } from "../core/models.js";
+import { MOOD_SNAPSHOTS_STORAGE_KEY } from "../core/moodSnapshot.js";
 import { SCHEDULED_COMMANDS_STORAGE_KEY } from "../core/scheduledCommands.js";
 import { normalizeCustomHotkeyBindings } from "./hotkeyBindings.js";
 import {
@@ -79,6 +80,7 @@ const AUXILIARY_LOCAL_DATA_KEYS = [
   CANONICAL_DEVICE_REGISTRY_STORAGE_KEY,
   ROOM_IDENTITY_REGISTRY_STORAGE_KEY,
   SCHEDULED_COMMANDS_STORAGE_KEY,
+  MOOD_SNAPSHOTS_STORAGE_KEY,
   AutomationRuleStore.storageKey,
 ] as const;
 

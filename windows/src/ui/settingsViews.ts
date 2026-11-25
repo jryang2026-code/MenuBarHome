@@ -27,6 +27,7 @@ import {
 } from "./speechGuard.js";
 import { isPlainHttpRemoteEndpoint } from "./haEndpoint.js";
 import type { GitHubRelease } from "../core/updateChecker.js";
+import type { MoodSnapshot } from "../core/moodSnapshot.js";
 import type { QRLoginTicket } from "../core/miCloudClient.js";
 import {
   MI_CLOUD_REGIONS,
@@ -265,6 +266,7 @@ export interface SettingsViewContext {
   readonly settings: PersistedSettings;
   readonly devices: readonly SmartDevice[];
   readonly scenes?: readonly HomeScene[];
+  readonly moods?: readonly MoodSnapshot[];
   readonly availableUpdate: GitHubRelease | null;
   readonly activeTab: SettingsTab;
   readonly apiKeyFor: (baseURL: string) => string;
@@ -428,6 +430,7 @@ export function buildInactiveTabCacheKey(ctx: SettingsViewContext, tabId: Settin
       ctx.settings.launchAtLogin, ctx.settings.enableGlobalHotkey, ctx.settings.globalHotkey,
       ctx.settings.customHotkeyBindings, ctx.isRecordingCustomHotkeyId, ctx.customHotkeyConflictError,
       ctx.customHotkeyRegistrationErrors, ctx.isAddingCustomHotkey, ctx.newCustomHotkeyTargetKey,
+      (ctx.moods ?? []).map((m) => [m.id, m.name]),
       ctx.isRecordingHotkey, ctx.hotkeyNeedsHint, ctx.hotkeyRegistrationError,
       readCustomHomeTitle(ctx.settings), ctx.connDiagHost?.connDiagSession?.titleDraft,
       ctx.connDiagHost?.homeTitle, ctx.settings.selectedHomeId, ctx.connDiagHost?.homes.map((h) => [h.id, h.name]),
@@ -470,6 +473,7 @@ function renderSettingsTabPanel(
 function renderCustomHotkeyBindingsSection(ctx: SettingsViewContext): string {
   const bindings = normalizeCustomHotkeyBindings(ctx.settings.customHotkeyBindings);
   const scenes = ctx.scenes ?? [];
+  const moods = ctx.moods ?? [];
   const toggleableDevices = ctx.devices.filter((d) => deviceCanTogglePower(d));
   const regErrors = ctx.customHotkeyRegistrationErrors ?? {};
   const recordingId = ctx.isRecordingCustomHotkeyId ?? null;
@@ -477,8 +481,8 @@ function renderCustomHotkeyBindingsSection(ctx: SettingsViewContext): string {
 
   const rowsHtml = bindings
     .map((binding) => {
-      const available = isHotkeyBindingTargetAvailable(binding, ctx.devices, scenes);
-      const label = resolvedHotkeyBindingLabel(binding, ctx.devices, scenes);
+      const available = isHotkeyBindingTargetAvailable(binding, ctx.devices, scenes, moods);
+      const label = resolvedHotkeyBindingLabel(binding, ctx.devices, scenes, moods);
       const isRec = recordingId === binding.id;
       const err = regErrors[binding.id];
       return `<div class="cc-custom-hotkey-row" style="margin-top: 6px;">
@@ -505,7 +509,9 @@ function renderCustomHotkeyBindingsSection(ctx: SettingsViewContext): string {
         ? encodeHotkeyTargetKey({ kind: "devicePower", deviceId: toggleableDevices[0].id })
         : scenes[0]
           ? encodeHotkeyTargetKey({ kind: "scene", sceneId: scenes[0].id })
-          : encodeHotkeyTargetKey({ kind: "quickAction", actionId: "lightsOff" }));
+          : moods[0]
+            ? encodeHotkeyTargetKey({ kind: "mood", moodId: moods[0].id })
+            : encodeHotkeyTargetKey({ kind: "quickAction", actionId: "lightsOff" }));
     const deviceOpts = toggleableDevices
       .map((d) => {
         const val = encodeHotkeyTargetKey({ kind: "devicePower", deviceId: d.id });
@@ -516,6 +522,12 @@ function renderCustomHotkeyBindingsSection(ctx: SettingsViewContext): string {
       .map((s) => {
         const val = encodeHotkeyTargetKey({ kind: "scene", sceneId: s.id });
         return `<option value="${ctx.escapeHtml(val)}" ${val === selectedKey ? "selected" : ""}>${ctx.escapeHtml(s.name)}</option>`;
+      })
+      .join("");
+    const moodOpts = moods
+      .map((m) => {
+        const val = encodeHotkeyTargetKey({ kind: "mood", moodId: m.id });
+        return `<option value="${ctx.escapeHtml(val)}" ${val === selectedKey ? "selected" : ""}>${ctx.escapeHtml(m.name)}</option>`;
       })
       .join("");
     const quickOpts = allQuickActionIds()
@@ -529,6 +541,7 @@ function renderCustomHotkeyBindingsSection(ctx: SettingsViewContext): string {
       <select id="select-custom-hotkey-target" class="cc-input" style="flex:1;min-width:0;">
         ${deviceOpts ? `<optgroup label="${ctx.escapeHtml(tr3("设备开关", "裝置開關", "Device Power"))}">${deviceOpts}</optgroup>` : ""}
         ${sceneOpts ? `<optgroup label="${ctx.escapeHtml(tr3("场景", "場景", "Scenes"))}">${sceneOpts}</optgroup>` : ""}
+        ${moodOpts ? `<optgroup label="${ctx.escapeHtml(tr3("氛围", "氛圍", "Moods"))}">${moodOpts}</optgroup>` : ""}
         <optgroup label="${ctx.escapeHtml(tr3("快捷操作", "快捷操作", "Quick Actions"))}">${quickOpts}</optgroup>
       </select>
       <button type="button" class="cc-seg-pill ${isRecNew ? "is-active" : ""}" id="btn-record-new-custom-hotkey" aria-pressed="${isRecNew}">${isRecNew ? t("按下组合…") : ctx.escapeHtml(tr3("录制快捷键", "錄製快捷鍵", "Record Key"))}</button>

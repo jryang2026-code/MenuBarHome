@@ -33,6 +33,17 @@ struct MacOSPrivacyAndHUDTests {
         }
     }
 
+    @Test
+    func hudSelectsScreenContainingMouse() {
+        let screens = [
+            CGRect(x: 0, y: 0, width: 1440, height: 900),
+            CGRect(x: 1440, y: 0, width: 1920, height: 1080),
+        ]
+        #expect(hotkeyHUDScreenIndex(mouseLocation: CGPoint(x: 100, y: 100), screenFrames: screens) == 0)
+        #expect(hotkeyHUDScreenIndex(mouseLocation: CGPoint(x: 1500, y: 100), screenFrames: screens) == 1)
+        #expect(hotkeyHUDScreenIndex(mouseLocation: CGPoint(x: -10, y: 100), screenFrames: screens) == nil)
+    }
+
     @Test("The latest hotkey action replaces the HUD and gets its own 1.2 second timeout without taking focus")
     func hudReplacesActionAndHidesWithoutTakingFocus() async throws {
         _ = NSApplication.shared

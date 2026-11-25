@@ -9,7 +9,10 @@ import { STORAGE_KEY } from "../src/ui/appConstants.js";
 import { setLanguage } from "../src/core/i18n.js";
 import { CHANNEL_WRITE_BATCH_WINDOW_MS, MiCloudChannelWriteBatcher } from "../src/core/miCloud/channelWriteBatcher.js";
 import { MiCloudClient, type MiotPropWrite } from "../src/core/miCloud/client.js";
-import { MiCloudError } from "../src/core/miCloud/session.js";
+import { MiCloudError, type MiSession } from "../src/core/miCloud/session.js";
+import { MiCloudCrypto } from "../src/core/miCloudCrypto.js";
+import { MiCloudRateLimiter } from "../src/core/miCloud/rateLimiter.js";
+import { miAccountId } from "../src/core/pollingPolicy.js";
 import type { MiotDeviceSpec } from "../src/core/miCloud/spec.js";
 import { MiCloudProvider } from "../src/core/homeProvider.js";
 import { setChannelWriteBatcherForTesting } from "../src/ui/commandDispatch.js";
@@ -179,5 +182,56 @@ describe("Multi-channel 100 ms write coalescing (parity with #506 ChannelWriteBa
     assert.equal(verdicts[0], null);
     assert.ok(verdicts[1] instanceof MiCloudError && verdicts[1].kind === "api" && verdicts[1].code === -1);
     assert.ok(verdicts[2] instanceof MiCloudError && verdicts[2].kind === "badResponse");
+  });
+
+  it("turns off four channels during read cooldown using the last reserved write token", async () => {
+    const session: MiSession = {
+      userId: "100", cUserId: "c", ssecurity: "AQIDBA==", serviceToken: "token", passToken: "", region: "cn",
+    };
+    const accountKey = miAccountId(session);
+    const limiter = new MiCloudRateLimiter(() => 0, () => 0, () => 0);
+    await limiter.recordLimit(accountKey, "60");
+    for (let i = 0; i < 7; i++) {
+      assert.equal((await limiter.admit(accountKey, true)).kind, "admitted");
+    }
+    const requests: MiotPropWrite[][] = [];
+    const client = new MiCloudClient(session, async ({ url, body }) => {
+      assert.equal(new URL(url).pathname, "/app/miotspec/prop/set");
+      const form = new URLSearchParams(body);
+      const signedNonce = MiCloudCrypto.signedNonce(session.ssecurity, form.get("_nonce")!);
+      const { params } = JSON.parse(MiCloudCrypto.decryptResponse(form.get("data")!, signedNonce)) as {
+        params: MiotPropWrite[];
+      };
+      requests.push(params);
+      return {
+        status: 200,
+        headers: {},
+        body: JSON.stringify({ code: 0, result: params.map((write) => ({ ...write, code: 0 })) }),
+      };
+    }, limiter);
+    const did = "101";
+    const spec = makeFourOutletSpec();
+    const channels = makeFourOutletDevices(did);
+    const sleepGate = new SleepGate();
+    const batcher = new MiCloudChannelWriteBatcher({ sleep: (ms) => sleepGate.sleep(ms) });
+    const provider = new MiCloudProvider({
+      client,
+      specResolver: { resolve: async () => spec },
+      deviceForEntity: (id) => channels.find((device) => device.kind.kind === "plug" && device.kind.switchEntityId === id),
+      channelBatcher: batcher,
+      accountKey,
+    });
+
+    const off = Promise.all(CHANNEL_SIIDS.map((siid) =>
+      provider.execute({ kind: "setSwitch", entityId: `miot:${did}:${siid}`, isOn: false }, { userInitiated: true }),
+    ));
+    await waitUntil(() => batcher.pendingCount(did, accountKey) === 4 && sleepGate.waiting === 1, "4 channels queued");
+    sleepGate.release();
+    assert.deepEqual(await off, [null, null, null, null]);
+    assert.deepEqual(requests, [CHANNEL_SIIDS.map((siid) => ({ did, siid, piid: 1, value: false }))]);
+    assert.equal(client.readCooldownMs, 60_000);
+    await assert.rejects(() => client.getProps([{ did, siid: 2, piid: 1 }]), { code: 429 });
+    await assert.rejects(() => client.setProps([{ did, siid: 2, piid: 1, value: true }]), { code: 429 });
+    assert.equal(requests.length, 1);
   });
 });

@@ -8,6 +8,10 @@ struct HotkeyHUDState: Equatable, Sendable {
     var generation: UInt64
 }
 
+func hotkeyHUDScreenIndex(mouseLocation: CGPoint, screenFrames: [CGRect]) -> Int? {
+    screenFrames.firstIndex { $0.contains(mouseLocation) }
+}
+
 enum HotkeyHUDTiming { static let displayDuration: Duration = .milliseconds(1_200) }
 
 @MainActor
@@ -61,7 +65,7 @@ final class HotkeyHUDController {
         let panel = window ?? makeWindow()
         window = panel
         panel.contentView = NSHostingView(rootView: HotkeyHUDView(state: state))
-        panel.setFrame(frame(for: screen ?? NSScreen.main), display: true)
+        panel.setFrame(frame(for: screen), display: true)
         panel.orderFrontRegardless()
         dismissTask?.cancel()
         dismissTask = Task { @MainActor [weak self, sleep] in
@@ -87,8 +91,16 @@ final class HotkeyHUDController {
     }
 
     private func frame(for screen: NSScreen?) -> NSRect {
-        let visible = screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+        let visible = (screen ?? preferredScreen())?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
         return NSRect(x: visible.maxX - 236, y: visible.maxY - 56, width: 220, height: 42)
+    }
+
+    private func preferredScreen() -> NSScreen? {
+        let screens = NSScreen.screens
+        if let index = hotkeyHUDScreenIndex(mouseLocation: NSEvent.mouseLocation, screenFrames: screens.map(\.frame)) {
+            return screens[index]
+        }
+        return NSScreen.main ?? screens.first
     }
 }
 
