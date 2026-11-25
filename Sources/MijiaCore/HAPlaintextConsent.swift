@@ -173,9 +173,22 @@ public enum HAPlaintextConsent {
     /// loopback custom camera URL configured by the user.
     public static func isAllowedLoopbackStreamURL(_ url: URL, customStreamURL: String?) async -> Bool {
         if await XiaomiCameraBridge.shared.isManagedStreamURL(url) { return true }
-        guard let customStreamURL, let customURL = URL(string: customStreamURL),
-              hasSameOrigin(url, as: customURL),
-              AssistantEndpoint(customStreamURL)?.isLoopback == true else { return false }
+        guard let customStreamURL else { return false }
+        let trimmedCustom = customStreamURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedCustom.isEmpty,
+              let customURL = URL(string: trimmedCustom),
+              let urlComponents = URLComponents(url: url, resolvingAgainstBaseURL: true),
+              let customComponents = URLComponents(url: customURL, resolvingAgainstBaseURL: true),
+              let urlOrigin = normalizedOrigin(from: urlComponents, allowUserInfo: true),
+              let customOrigin = normalizedOrigin(from: customComponents, allowUserInfo: true),
+              urlOrigin == customOrigin,
+              AssistantEndpoint(trimmedCustom)?.isLoopback == true else {
+            return false
+        }
+        if urlComponents.user != nil || urlComponents.password != nil {
+            return urlComponents.user == customComponents.user
+                && urlComponents.password == customComponents.password
+        }
         return true
     }
 
@@ -194,10 +207,10 @@ public enum HAPlaintextConsent {
 
     private static func normalizedOrigin(
         from components: URLComponents,
-        allowWebSocketSchemes: Bool = false
+        allowWebSocketSchemes: Bool = false,
+        allowUserInfo: Bool = false
     ) -> (scheme: String, host: String, port: Int)? {
-        guard components.user == nil,
-              components.password == nil,
+        guard allowUserInfo || (components.user == nil && components.password == nil),
               let rawScheme = components.scheme?.lowercased(),
               var host = components.host?.lowercased() else {
             return nil
@@ -341,57 +354,54 @@ enum EndpointAddressClass: Equatable {
     }
 }
 
-/// Bounds concurrent blocking `getaddrinfo` lookups, deduplicates in-flight queries per host,
-/// and caches positive answers briefly so polling loops against unreachable hosts cannot exhaust GCD threads.
+/// Bounds concurrent blocking `getaddrinfo` lookups and deduplicates active in-flight queries per
+/// exact lowercased host so polling loops against unreachable hosts cannot exhaust GCD threads,
+/// while never caching DNS answers across sequential validations.
 final class BoundedHostLookup: @unchecked Sendable {
     private final class Waiter: @unchecked Sendable {
         enum State { case pending, waiting(CheckedContinuation<[String], Error>), completed(Result<[String], Error>), consumed }
         let id = UUID()
         var state: State = .pending
     }
-    private struct InFlightEntry { let host: String; var started: Bool; var waiters: [UUID: Waiter] }
+    private struct InFlightEntry {
+        let id: UUID
+        let host: String
+        var started: Bool
+        var waiters: [UUID: Waiter]
+    }
 
     private let lock = NSLock()
     private let workerQueue = DispatchQueue(label: "com.menubarhome.ha-dns-lookup", qos: .userInitiated, attributes: .concurrent)
     private let maxConcurrentLookups: Int
     private let timeout: Duration
-    private let positiveCacheTTL: Duration
-    private let maxCacheEntries: Int
-    private let now: @Sendable () -> ContinuousClock.Instant
     private let sleep: @Sendable (Duration) async throws -> Void
     private let resolve: @Sendable (String) throws -> [String]
     private var activeCount = 0
     private var inFlight: [String: InFlightEntry] = [:]
-    private var pendingKeys: [String] = []
-    private var positiveCache: [String: (addresses: [String], expiresAt: ContinuousClock.Instant)] = [:]
+    private var pendingQueue: [(id: UUID, key: String)] = []
 
     init(
         maxConcurrentLookups: Int = 4,
         timeout: Duration = HAPlaintextConsent.addressLookupTimeout,
-        positiveCacheTTL: Duration = .seconds(5),
-        maxCacheEntries: Int = 64,
-        now: @escaping @Sendable () -> ContinuousClock.Instant = { .now },
         sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
         resolve: @escaping @Sendable (String) throws -> [String]
     ) {
         self.maxConcurrentLookups = max(1, maxConcurrentLookups)
         self.timeout = timeout
-        self.positiveCacheTTL = positiveCacheTTL
-        self.maxCacheEntries = max(1, maxCacheEntries)
-        self.now = now; self.sleep = sleep; self.resolve = resolve
+        self.sleep = sleep
+        self.resolve = resolve
     }
 
     func lookup(_ host: String) async throws -> [String] {
         try Task.checkCancellation()
-        let key = host.lowercased().replacing(/\.+$/, with: "")
+        let key = host.lowercased()
         let waiter = Waiter()
-        let (cached, launchJob) = beginLookup(key: key, host: host, waiter: waiter)
-        if let cached { return cached }
-        if launchJob { dispatchLookup(key: key, host: host) }
+        let (entryID, launchJob) = beginLookup(key: key, host: host, waiter: waiter)
+        if launchJob { dispatchLookup(id: entryID, key: key, host: host) }
 
         let timeoutTask = Task { [weak self, sleep, timeout] in
             if (try? await sleep(timeout)) != nil {
-                self?.finishWaiter(waiter, key: key, result: .failure(URLError(.timedOut)))
+                self?.finishWaiter(waiter, entryID: entryID, key: key, result: .failure(URLError(.timedOut)))
             }
         }
         defer { timeoutTask.cancel() }
@@ -399,27 +409,28 @@ final class BoundedHostLookup: @unchecked Sendable {
         let addresses = try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { self.installContinuation($0, on: waiter) }
         } onCancel: {
-            self.finishWaiter(waiter, key: key, result: .failure(CancellationError()))
+            self.finishWaiter(waiter, entryID: entryID, key: key, result: .failure(CancellationError()))
         }
         try Task.checkCancellation()
         return addresses
     }
 
-    private func beginLookup(key: String, host: String, waiter: Waiter) -> ([String]?, Bool) {
+    private func beginLookup(key: String, host: String, waiter: Waiter) -> (UUID, Bool) {
         lock.lock(); defer { lock.unlock() }
-        let currentTime = now()
-        if let cached = positiveCache[key] {
-            if cached.expiresAt > currentTime { return (cached.addresses, false) }
-            positiveCache.removeValue(forKey: key)
+        if var existing = inFlight[key], !existing.waiters.isEmpty {
+            existing.waiters[waiter.id] = waiter
+            inFlight[key] = existing
+            return (existing.id, false)
         }
-        if var existing = inFlight[key] {
-            existing.waiters[waiter.id] = waiter; inFlight[key] = existing
-            return (nil, false)
-        }
+        let id = UUID()
         let canStart = activeCount < maxConcurrentLookups
-        if canStart { activeCount += 1 } else { pendingKeys.append(key) }
-        inFlight[key] = InFlightEntry(host: host, started: canStart, waiters: [waiter.id: waiter])
-        return (nil, canStart)
+        if canStart {
+            activeCount += 1
+        } else {
+            pendingQueue.append((id: id, key: key))
+        }
+        inFlight[key] = InFlightEntry(id: id, host: host, started: canStart, waiters: [waiter.id: waiter])
+        return (id, canStart)
     }
 
     private func installContinuation(_ continuation: CheckedContinuation<[String], Error>, on waiter: Waiter) {
@@ -434,7 +445,7 @@ final class BoundedHostLookup: @unchecked Sendable {
         if let immediate { continuation.resume(with: immediate) }
     }
 
-    private func finishWaiter(_ waiter: Waiter, key: String, result: Result<[String], Error>) {
+    private func finishWaiter(_ waiter: Waiter, entryID: UUID, key: String, result: Result<[String], Error>) {
         let cont: CheckedContinuation<[String], Error>? = {
             lock.lock(); defer { lock.unlock() }
             let active: CheckedContinuation<[String], Error>?
@@ -443,41 +454,35 @@ final class BoundedHostLookup: @unchecked Sendable {
             case .waiting(let existing): waiter.state = .consumed; active = existing
             case .completed, .consumed: return nil
             }
-            if var entry = inFlight[key] {
+            if var entry = inFlight[key], entry.id == entryID {
                 entry.waiters.removeValue(forKey: waiter.id)
-                if !entry.started && entry.waiters.isEmpty {
-                    inFlight.removeValue(forKey: key); pendingKeys.removeAll { $0 == key }
-                } else { inFlight[key] = entry }
+                if entry.waiters.isEmpty {
+                    inFlight.removeValue(forKey: key)
+                    if !entry.started {
+                        pendingQueue.removeAll { $0.id == entryID }
+                    }
+                } else {
+                    inFlight[key] = entry
+                }
             }
             return active
         }()
         cont?.resume(with: result)
     }
 
-    private func dispatchLookup(key: String, host: String) {
+    private func dispatchLookup(id: UUID, key: String, host: String) {
         let resolve = self.resolve
         workerQueue.async { [weak self] in
-            self?.completeLookup(key: key, result: Result { try resolve(host) })
+            self?.completeLookup(id: id, key: key, result: Result { try resolve(host) })
         }
     }
 
-    private func completeLookup(key: String, result: Result<[String], Error>) {
-        let (continuations, nextJobs): ([CheckedContinuation<[String], Error>], [(String, String)]) = {
+    private func completeLookup(id: UUID, key: String, result: Result<[String], Error>) {
+        let (continuations, nextJobs): ([CheckedContinuation<[String], Error>], [(UUID, String, String)]) = {
             lock.lock(); defer { lock.unlock() }
             activeCount = max(0, activeCount - 1)
-            if case .success(let addresses) = result, !addresses.isEmpty, positiveCacheTTL > .zero {
-                let currentTime = now()
-                positiveCache[key] = (addresses, currentTime + positiveCacheTTL)
-                if positiveCache.count > maxCacheEntries {
-                    positiveCache = positiveCache.filter { $0.value.expiresAt > currentTime }
-                    while positiveCache.count > maxCacheEntries,
-                          let oldest = positiveCache.min(by: { $0.value.expiresAt < $1.value.expiresAt })?.key {
-                        positiveCache.removeValue(forKey: oldest)
-                    }
-                }
-            }
             var waiting: [CheckedContinuation<[String], Error>] = []
-            if let entry = inFlight.removeValue(forKey: key) {
+            if inFlight[key]?.id == id, let entry = inFlight.removeValue(forKey: key) {
                 for waiter in entry.waiters.values {
                     switch waiter.state {
                     case .pending: waiter.state = .completed(result)
@@ -486,18 +491,25 @@ final class BoundedHostLookup: @unchecked Sendable {
                     }
                 }
             }
-            var launched: [(String, String)] = []
-            while activeCount < maxConcurrentLookups, !pendingKeys.isEmpty {
-                let nextKey = pendingKeys.removeFirst()
-                guard var entry = inFlight[nextKey], !entry.started else { continue }
-                if entry.waiters.isEmpty { inFlight.removeValue(forKey: nextKey); continue }
-                entry.started = true; inFlight[nextKey] = entry; activeCount += 1
-                launched.append((nextKey, entry.host))
+            var launched: [(UUID, String, String)] = []
+            while activeCount < maxConcurrentLookups, !pendingQueue.isEmpty {
+                let next = pendingQueue.removeFirst()
+                guard var entry = inFlight[next.key], entry.id == next.id, !entry.started else { continue }
+                if entry.waiters.isEmpty {
+                    inFlight.removeValue(forKey: next.key)
+                    continue
+                }
+                entry.started = true
+                inFlight[next.key] = entry
+                activeCount += 1
+                launched.append((next.id, next.key, entry.host))
             }
             return (waiting, launched)
         }()
         for cont in continuations { cont.resume(with: result) }
-        for (nextKey, nextHost) in nextJobs { dispatchLookup(key: nextKey, host: nextHost) }
+        for (nextID, nextKey, nextHost) in nextJobs {
+            dispatchLookup(id: nextID, key: nextKey, host: nextHost)
+        }
     }
 }
 

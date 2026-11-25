@@ -23,7 +23,7 @@ struct HAHomeSnapshot {
     private var devices: [HADeviceEntry] = []
     private var entities: [HAEntityEntry] = []
     private(set) var states: [String: HAEntityState] = [:]
-    private var stateCaptureEpochs: [String: ContinuousClock.Instant] = [:]
+    private(set) var stateCaptureEpochs: [String: ContinuousClock.Instant] = [:]
     private var pendingInitialResults: Set<Int> = [1, 2, 3, 4]
     private var rings: [DoorbellRing] = []
     /// Last valid press timestamp per doorbell entity. It survives `unavailable`, so a doorbell
@@ -117,6 +117,9 @@ struct HAHomeSnapshot {
                 if let pollCapturedEpoch {
                     for (entityId, epoch) in stateCaptureEpochs where epoch > pollCapturedEpoch {
                         nextStates[entityId] = states[entityId]
+                    }
+                    stateCaptureEpochs = stateCaptureEpochs.filter { entityId, recordedEpoch in
+                        nextStates[entityId] != nil || !(pollCapturedEpoch > recordedEpoch)
                     }
                 }
                 states = nextStates
@@ -264,7 +267,7 @@ struct HAHomeSnapshot {
         capturedEpoch: ContinuousClock.Instant? = nil
     ) -> Bool {
         let removed = states.removeValue(forKey: entityId)
-        if let capturedEpoch, removed != nil || Self.isSupportedSmartHomeDomain(entityId) {
+        if let capturedEpoch, removed != nil {
             stateCaptureEpochs[entityId] = capturedEpoch
         }
         guard removed != nil, Self.isSupportedSmartHomeDomain(entityId) else {

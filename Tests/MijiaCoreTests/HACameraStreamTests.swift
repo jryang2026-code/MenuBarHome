@@ -100,4 +100,19 @@ struct HACameraStreamTests {
             await provider.shutdown()
         }
     }
+
+    @Test("Custom loopback MJPEG URL with Basic Auth is permitted when configured and converted to Authorization header")
+    func customLoopbackBasicAuthMJPEGAndSnapshot() async throws {
+        let raw = "http://user:pass@127.0.0.1:8080/mjpeg"
+        let url = try #require(URL(string: raw))
+        #expect(await HAPlaintextConsent.isAllowedLoopbackStreamURL(url, customStreamURL: raw))
+        #expect(!(await HAPlaintextConsent.isAllowedLoopbackStreamURL(url, customStreamURL: nil)))
+        #expect(HAPlaintextConsent.allowsImmediatePlaybackURL(url, allowsLoopback: true))
+        #expect(!HAPlaintextConsent.allowsImmediatePlaybackURL(url, allowsLoopback: false))
+
+        let request = XiaomiCameraBridge.authorizedURLRequest(for: url)
+        #expect(request.url?.absoluteString == "http://127.0.0.1:8080/mjpeg")
+        let expectedToken = Data("user:pass".utf8).base64EncodedString()
+        #expect(request.value(forHTTPHeaderField: "Authorization") == "Basic \(expectedToken)")
+    }
 }

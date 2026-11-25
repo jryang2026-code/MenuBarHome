@@ -1689,17 +1689,13 @@ private final class MJPEGStreamDelegate: NSObject, URLSessionDataDelegate, @unch
         newRequest request: URLRequest,
         completionHandler: @escaping (URLRequest?) -> Void
     ) {
-        let originalURL = task.originalRequest?.url
-        let responseURL = response.url
-        nonisolated(unsafe) let complete = completionHandler
-        Task {
-            let allowed = await HARedirectPolicy.allowedRedirectRequest(
-                originalURL: originalURL,
-                responseURL: responseURL,
-                newRequest: request
-            )
-            complete(allowed)
-        }
+        HARedirectBlockingDelegate.shared.urlSession(
+            session,
+            task: task,
+            willPerformHTTPRedirection: response,
+            newRequest: request,
+            completionHandler: completionHandler
+        )
     }
 
     func urlSession(
@@ -1761,32 +1757,43 @@ struct CameraHLSPlayerView: NSViewRepresentable {
         view.allowsPictureInPicturePlayback = true
         view.videoGravity = .resizeAspect
         context.coordinator.currentURL = url
-        guard HAPlaintextConsent.allowsImmediatePlaybackURL(url, allowsLoopback: allowsLoopback) else {
+        context.coordinator.currentAllowsLoopback = allowsLoopback
+        guard let built = CameraHLSPlayerFactory.makePlayerItem(url: url, allowsLoopback: allowsLoopback) else {
             return view
         }
-        let item = AVPlayerItem(url: url)
-        let player = AVPlayer(playerItem: item)
+        let player = AVPlayer(playerItem: built.item)
         player.isMuted = isMuted
         view.player = player
-        context.coordinator.observe(item: item, onAudioAvailabilityChanged: onAudioAvailabilityChanged)
+        context.coordinator.observe(
+            item: built.item,
+            resourceLoader: built.loader,
+            onAudioAvailabilityChanged: onAudioAvailabilityChanged
+        )
         player.play()
         return view
     }
 
     func updateNSView(_ nsView: AVPlayerView, context: Context) {
         nsView.player?.isMuted = isMuted
-        guard context.coordinator.currentURL != url else { return }
+        guard context.coordinator.currentURL != url
+            || context.coordinator.currentAllowsLoopback != allowsLoopback else {
+            return
+        }
         context.coordinator.currentURL = url
+        context.coordinator.currentAllowsLoopback = allowsLoopback
         context.coordinator.clearObservations()
         nsView.player?.pause()
-        guard HAPlaintextConsent.allowsImmediatePlaybackURL(url, allowsLoopback: allowsLoopback) else {
+        guard let built = CameraHLSPlayerFactory.makePlayerItem(url: url, allowsLoopback: allowsLoopback) else {
             nsView.player = nil
             return
         }
-        let item = AVPlayerItem(url: url)
-        let player = AVPlayer(playerItem: item)
+        let player = AVPlayer(playerItem: built.item)
         player.isMuted = isMuted
-        context.coordinator.observe(item: item, onAudioAvailabilityChanged: onAudioAvailabilityChanged)
+        context.coordinator.observe(
+            item: built.item,
+            resourceLoader: built.loader,
+            onAudioAvailabilityChanged: onAudioAvailabilityChanged
+        )
         nsView.player = player
         player.play()
     }
@@ -1800,12 +1807,19 @@ struct CameraHLSPlayerView: NSViewRepresentable {
     @MainActor
     final class Coordinator {
         var currentURL: URL?
+        var currentAllowsLoopback: Bool?
+        private var resourceLoader: CameraHLSResourceLoader?
         private var statusObservation: NSKeyValueObservation?
         private var tracksObservation: NSKeyValueObservation?
         private var observationGeneration: UInt64 = 0
 
-        func observe(item: AVPlayerItem, onAudioAvailabilityChanged: (@MainActor (Bool?) -> Void)?) {
+        func observe(
+            item: AVPlayerItem,
+            resourceLoader: CameraHLSResourceLoader?,
+            onAudioAvailabilityChanged: (@MainActor (Bool?) -> Void)?
+        ) {
             clearObservations()
+            self.resourceLoader = resourceLoader
             observationGeneration &+= 1
             let generation = observationGeneration
             let report: @MainActor (AVPlayerItem?) -> Void = { [weak self] item in
@@ -1833,6 +1847,8 @@ struct CameraHLSPlayerView: NSViewRepresentable {
             statusObservation = nil
             tracksObservation?.invalidate()
             tracksObservation = nil
+            resourceLoader?.invalidate()
+            resourceLoader = nil
         }
     }
 }

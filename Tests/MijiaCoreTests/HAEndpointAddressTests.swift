@@ -95,41 +95,92 @@ struct HAEndpointAddressTests {
         #expect(!lookupCalled)
     }
 
-    @Test("BoundedHostLookup deduplicates in-flight hanging host, caps concurrency, and caches positive hits")
+    @Test("BoundedHostLookup deduplicates active in-flight hosts without stripping trailing dots or caching results")
     func boundedLookupBehavior() async throws {
-        // 1. In-flight deduplication across timeout
-        let (enteredStream, entered) = AsyncStream<Void>.makeStream()
+        // 1. Active in-flight deduplication (case-insensitive) + trailing dot kept distinct
+        let (enteredStream, entered) = AsyncStream<String>.makeStream()
         var enteredIt = enteredStream.makeAsyncIterator()
-        let release = DispatchSemaphore(value: 0)
-        let calls = LockedBox(0)
+        let releasePlain = DispatchSemaphore(value: 0)
+        let releaseFQDN = DispatchSemaphore(value: 0)
+        let callHosts = LockedBox([String]())
         let gate = TestTimeoutGate()
         let dedupResolver = BoundedHostLookup(
-            maxConcurrentLookups: 2, timeout: .seconds(2), positiveCacheTTL: .seconds(5),
+            maxConcurrentLookups: 3, timeout: .seconds(2),
             sleep: { _ in try await gate.waitNext() },
-            resolve: { _ in calls.withValue { $0 += 1 }; entered.yield(); release.wait(); return ["192.168.1.25"] }
+            resolve: { host in
+                callHosts.withValue { $0.append(host) }
+                entered.yield(host)
+                if host.hasSuffix(".") {
+                    releaseFQDN.wait()
+                    return ["192.168.1.26"]
+                }
+                releasePlain.wait()
+                return ["192.168.1.25"]
+            }
         )
         let first = Task { try await dedupResolver.lookup("slow.local") }
         _ = await enteredIt.next(); await gate.waitForSleepers(count: 1)
-        let second = Task { try await dedupResolver.lookup("SLOW.LOCAL.") }
+        let second = Task { try await dedupResolver.lookup("SLOW.LOCAL") }
         await gate.waitForSleepers(count: 2)
+        // Trailing-dot FQDN must not merge with search-domain hostname.
+        let fqdn = Task { try await dedupResolver.lookup("slow.local.") }
+        _ = await enteredIt.next(); await gate.waitForSleepers(count: 3)
         await gate.releaseOne()
         await #expect(throws: URLError(.timedOut)) { _ = try await first.value }
+        // `second` is still an active waiter on "slow.local", so `third` coalesces onto it.
         let third = Task { try await dedupResolver.lookup("slow.local") }
-        await gate.waitForSleepers(count: 2)
-        #expect(calls.value == 1)
-        release.signal()
+        await gate.waitForSleepers(count: 3)
+        #expect(callHosts.value == ["slow.local", "slow.local."])
+        releasePlain.signal()
+        releaseFQDN.signal()
         let secondIPs = try await second.value
         let thirdIPs = try await third.value
-        #expect(secondIPs == ["192.168.1.25"] && thirdIPs == ["192.168.1.25"] && calls.value == 1)
+        let fqdnIPs = try await fqdn.value
+        #expect(secondIPs == ["192.168.1.25"] && thirdIPs == ["192.168.1.25"] && fqdnIPs == ["192.168.1.26"])
+        #expect(callHosts.value.count == 2)
 
-        // 2. Bounded concurrency + eviction of cancelled queued host
+        // 2. Abandoned timed-out lookup with zero active waiters does not coalesce a subsequent lookup
+        let (abandonStream, abandonEntered) = AsyncStream<Int>.makeStream()
+        var abandonIt = abandonStream.makeAsyncIterator()
+        let releaseFirstAttempt = DispatchSemaphore(value: 0)
+        let releaseSecondAttempt = DispatchSemaphore(value: 0)
+        let attemptCount = LockedBox(0)
+        let abandonGate = TestTimeoutGate()
+        let abandonResolver = BoundedHostLookup(
+            maxConcurrentLookups: 2, timeout: .seconds(2),
+            sleep: { _ in try await abandonGate.waitNext() },
+            resolve: { _ in
+                let attempt = attemptCount.withValue { $0 += 1; return $0 }
+                abandonEntered.yield(attempt)
+                if attempt == 1 {
+                    releaseFirstAttempt.wait()
+                    return ["192.168.1.10"]
+                }
+                releaseSecondAttempt.wait()
+                return ["192.168.1.99"]
+            }
+        )
+        let timedOut = Task { try await abandonResolver.lookup("rebind.local") }
+        #expect(await abandonIt.next() == 1)
+        await abandonGate.waitForSleepers(count: 1)
+        await abandonGate.releaseOne()
+        await #expect(throws: URLError(.timedOut)) { _ = try await timedOut.value }
+        let fresh = Task { try await abandonResolver.lookup("rebind.local") }
+        #expect(await abandonIt.next() == 2)
+        // Late completion of attempt 1 must not deliver stale IPs to attempt 2.
+        releaseFirstAttempt.signal()
+        releaseSecondAttempt.signal()
+        #expect(try await fresh.value == ["192.168.1.99"])
+        #expect(attemptCount.value == 2)
+
+        // 3. Bounded concurrency + eviction of cancelled queued host
         let (capStream, capEntered) = AsyncStream<Void>.makeStream()
         var capIt = capStream.makeAsyncIterator()
         let capRelease = DispatchSemaphore(value: 0)
         let stats = LockedBox((active: 0, peak: 0, hosts: [String]()))
         let capGate = TestTimeoutGate()
         let capResolver = BoundedHostLookup(
-            maxConcurrentLookups: 2, timeout: .seconds(2), positiveCacheTTL: .zero,
+            maxConcurrentLookups: 2, timeout: .seconds(2),
             sleep: { _ in try await capGate.waitNext() },
             resolve: { host in
                 stats.withValue { $0.active += 1; $0.peak = max($0.peak, $0.active); $0.hosts.append(host) }
@@ -154,24 +205,67 @@ struct HAEndpointAddressTests {
         #expect(r1 == ["192.168.1.30"] && r2 == ["192.168.1.30"] && r4 == ["192.168.1.30"])
         #expect(stats.value.peak == 2 && !stats.value.hosts.contains("host-3.local") && stats.value.hosts.contains("host-4.local"))
 
-        // 3. Short-TTL positive cache (failures never cached)
-        let clock = LockedBox(ContinuousClock.now)
-        let cacheState = LockedBox((calls: 0, fail: true))
-        let cacheResolver = BoundedHostLookup(
-            maxConcurrentLookups: 2, timeout: .seconds(2), positiveCacheTTL: .seconds(5),
-            now: { clock.value }, sleep: { _ in try await Task.sleep(for: .seconds(60)) },
+        // 4. Fresh resolution on every sequential call (no positive cache -> immediate DNS rebinding rejection)
+        let rebindState = LockedBox((calls: 0, ips: ["192.168.1.40"]))
+        let freshResolver = BoundedHostLookup(
+            maxConcurrentLookups: 2, timeout: .seconds(2),
+            sleep: { _ in try await Task.sleep(for: .seconds(60)) },
             resolve: { _ in
-                if cacheState.withValue({ s -> Bool in s.calls += 1; return s.fail }) { throw URLError(.cannotFindHost) }
-                return ["192.168.1.40"]
+                rebindState.withValue { s -> [String] in
+                    s.calls += 1
+                    return s.ips
+                }
             }
         )
-        await #expect(throws: URLError(.cannotFindHost)) { _ = try await cacheResolver.lookup("ha.local") }
-        cacheState.withValue { $0.fail = false }
-        #expect(try await cacheResolver.lookup("ha.local") == ["192.168.1.40"])
-        clock.withValue { $0 = $0.advanced(by: .seconds(4)) }
-        #expect(try await cacheResolver.lookup("HA.LOCAL.") == ["192.168.1.40"] && cacheState.value.calls == 2)
-        clock.withValue { $0 = $0.advanced(by: .seconds(2)) }
-        #expect(try await cacheResolver.lookup("ha.local") == ["192.168.1.40"] && cacheState.value.calls == 3)
+        let targetURL = try #require(URL(string: "http://ha.local:8123/api/states"))
+        try await HAPlaintextConsent.validateConnectionAddress(targetURL, resolver: freshResolver)
+        #expect(rebindState.value.calls == 1)
+        // Next lookup immediately observes DNS change to loopback/IMDS without stale cache hit.
+        rebindState.withValue { $0.ips = ["127.0.0.1"] }
+        await #expect(throws: HAEndpointResolutionError.prohibitedAddress) {
+            try await HAPlaintextConsent.validateConnectionAddress(targetURL, resolver: freshResolver)
+        }
+        #expect(rebindState.value.calls == 2)
+        rebindState.withValue { $0.ips = ["169.254.169.254"] }
+        await #expect(throws: HAEndpointResolutionError.prohibitedAddress) {
+            try await HAPlaintextConsent.validateConnectionAddress(targetURL, resolver: freshResolver)
+        }
+        #expect(rebindState.value.calls == 3)
+        rebindState.withValue { $0.ips = ["192.168.1.41"] }
+        try await HAPlaintextConsent.validateConnectionAddress(targetURL, resolver: freshResolver)
+        #expect(rebindState.value.calls == 4)
+    }
+
+    @Test("isAllowedLoopbackStreamURL permits configured Basic Auth loopback URLs while keeping redirect origin checks strict")
+    func customLoopbackBasicAuthValidation() async throws {
+        let configured = "http://user:pass@127.0.0.1:8080/mjpeg"
+        let exact = try #require(URL(string: configured))
+        let snapshotWithCacheBust = try #require(URL(string: "http://user:pass@127.0.0.1:8080/snapshot.jpg?_t=12345"))
+        let strippedAuth = try #require(URL(string: "http://127.0.0.1:8080/mjpeg"))
+        let wrongCreds = try #require(URL(string: "http://attacker:secret@127.0.0.1:8080/mjpeg"))
+        let wrongPort = try #require(URL(string: "http://user:pass@127.0.0.1:9090/mjpeg"))
+        let nonLoopback = try #require(URL(string: "http://user:pass@192.168.1.10:8080/mjpeg"))
+
+        #expect(await HAPlaintextConsent.isAllowedLoopbackStreamURL(exact, customStreamURL: configured))
+        #expect(await HAPlaintextConsent.isAllowedLoopbackStreamURL(snapshotWithCacheBust, customStreamURL: configured))
+        #expect(await HAPlaintextConsent.isAllowedLoopbackStreamURL(strippedAuth, customStreamURL: configured))
+
+        // Unconfigured, credential-injected, mismatched-credential, wrong-port, or non-loopback must fail closed.
+        #expect(!(await HAPlaintextConsent.isAllowedLoopbackStreamURL(exact, customStreamURL: nil)))
+        #expect(!(await HAPlaintextConsent.isAllowedLoopbackStreamURL(exact, customStreamURL: "http://127.0.0.1:8080/mjpeg")))
+        #expect(!(await HAPlaintextConsent.isAllowedLoopbackStreamURL(wrongCreds, customStreamURL: configured)))
+        #expect(!(await HAPlaintextConsent.isAllowedLoopbackStreamURL(wrongPort, customStreamURL: configured)))
+        #expect(!(await HAPlaintextConsent.isAllowedLoopbackStreamURL(nonLoopback, customStreamURL: nonLoopback.absoluteString)))
+
+        // Redirect origin checks must stay strict and continue rejecting URLs with userinfo.
+        #expect(!HAPlaintextConsent.hasSameOrigin(exact, as: strippedAuth))
+        #expect(!HAPlaintextConsent.hasSameOrigin(exact, as: exact))
+        #expect(HARedirectPolicy.allowedRedirectRequest(
+            originalURL: strippedAuth,
+            responseURL: strippedAuth,
+            newRequest: URLRequest(url: exact),
+            resolve: { _ in ["192.168.1.10"] }
+        ) == nil)
     }
 
     @Test("HARedirectPolicy blocks cross-origin and prohibited redirects while permitting validated same-origin hops")

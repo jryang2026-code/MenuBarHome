@@ -1,8 +1,10 @@
 import AppKit
+import AVFoundation
 import Foundation
 import PreferencesTestSupport
 import StateTestSupport
 import Testing
+import UniformTypeIdentifiers
 @testable import MijiaCore
 @testable import MenuBarMijiaApp
 
@@ -683,6 +685,222 @@ struct CameraLiveLifecycleTests {
         }
     }
 
+    @Test("Custom loopback Basic Auth MJPEG URL is allowed when configured on the camera device")
+    func allowsConfiguredCustomLoopbackBasicAuthMJPEG() async throws {
+        let controller = CameraLivePanelController()
+        controller.presentsActively = false
+        defer {
+            controller.consumeMJPEGOverride = nil
+            controller.closePanel()
+        }
+        let cam = Self.makeCameraDevice(id: "cam-loopback-basic-\(UUID().uuidString)")
+        let provider = MockCameraLifecycleProvider(streamToReturn: .demo(deviceId: cam.id))
+        let store = HomeStore(provider: provider, defaults: InMemoryUserDefaults())
+        store.devices = [cam]
+        let customRaw = "http://user:pass@127.0.0.1:8080/mjpeg"
+        let customURL = try #require(URL(string: customRaw))
+        store.setCameraCustomStreamURL(customRaw, for: cam.id)
+        controller.install(with: store)
+        controller.activeDeviceId = cam.id
+
+        let (connectedStream, connectedCont) = AsyncStream<URL>.makeStream()
+        controller.consumeMJPEGOverride = { url, _ in
+            connectedCont.yield(url)
+            connectedCont.finish()
+        }
+
+        controller.reloadStream()
+        var receivedURL: URL?
+        for await url in connectedStream {
+            receivedURL = url
+            break
+        }
+        #expect(receivedURL == customURL)
+        #expect(controller.streamSource == .mjpeg(customURL))
+        #expect(controller.streamAllowsLoopback == true)
+    }
+
+    @Test("Non-managed HLS routes through CameraHLSResourceLoader, validates sub-requests, rewrites playlists, and blocks redirects")
+    func hardenedHLSResourceLoaderEnforcesNetworkBoundary() async throws {
+        let originURL = try #require(URL(string: "http://192.168.1.10:8123/api/hls/tok/master_playlist.m3u8"))
+        let loopbackURL = try #require(URL(string: "http://127.0.0.1:43123/api/stream.m3u8?src=cam"))
+
+        // 1. Factory routes remote/HA HLS through custom proxy scheme + delegate, leaving loopback direct.
+        let hardened = try #require(CameraHLSPlayerFactory.makePlayerItem(url: originURL, allowsLoopback: false))
+        let hardenedAsset = try #require(hardened.item.asset as? AVURLAsset)
+        #expect(hardenedAsset.url.scheme == HAHLSPlaylistPolicy.httpProxyScheme)
+        #expect(hardened.loader != nil)
+        #expect(hardenedAsset.resourceLoader.delegate === hardened.loader)
+        hardened.loader?.invalidate()
+
+        let managed = try #require(CameraHLSPlayerFactory.makePlayerItem(url: loopbackURL, allowsLoopback: true))
+        let managedAsset = try #require(managed.item.asset as? AVURLAsset)
+        #expect(managedAsset.url == loopbackURL)
+        #expect(managed.loader == nil)
+
+        // 2. End-to-end loader verification with real URLSession + HARedirectBlockingDelegate + stubbed URLProtocol.
+        let requestedPaths = LockedHLSTestBox([String]())
+        let validatedURLs = LockedHLSTestBox([URL]())
+        let blockedSecretFetched = LockedHLSTestBox(false)
+        let shouldFailDNS = LockedHLSTestBox(false)
+
+        StubHLSURLProtocol.setHandler { request in
+            let url = try #require(request.url)
+            requestedPaths.withValue { $0.append(url.path) }
+            if url.host == "127.0.0.1" || url.host == "169.254.169.254" {
+                blockedSecretFetched.withValue { $0 = true }
+                return .response(statusCode: 200, url: url, headers: [:], body: Data("SECRET".utf8))
+            }
+            switch url.path {
+            case "/api/hls/tok/master_playlist.m3u8":
+                let body = "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=800000\nplaylist.m3u8\n"
+                return .response(
+                    statusCode: 200,
+                    url: url,
+                    headers: ["Content-Type": "application/x-mpegurl"],
+                    body: Data(body.utf8)
+                )
+            case "/api/hls/tok/playlist.m3u8":
+                let body = "#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=key.bin\n#EXTINF:2.0,\nseg0.ts\n"
+                return .response(
+                    statusCode: 200,
+                    url: url,
+                    headers: ["Content-Type": "application/vnd.apple.mpegurl"],
+                    body: Data(body.utf8)
+                )
+            case "/api/hls/tok/key.bin":
+                return .response(
+                    statusCode: 200,
+                    url: url,
+                    headers: ["Content-Type": "application/octet-stream"],
+                    body: Data(repeating: 0xAB, count: 16)
+                )
+            case "/api/hls/tok/seg0.ts":
+                let full = Data([0x47, 0x40, 0x11, 0x10, 0x01, 0x02, 0x03, 0x04])
+                if request.value(forHTTPHeaderField: "Range") == "bytes=2-5" {
+                    return .response(
+                        statusCode: 206,
+                        url: url,
+                        headers: [
+                            "Content-Type": "video/mp2t",
+                            "Content-Range": "bytes 2-5/8",
+                        ],
+                        body: full.subdata(in: 2..<6)
+                    )
+                }
+                return .response(
+                    statusCode: 200,
+                    url: url,
+                    headers: ["Content-Type": "video/mp2t", "Accept-Ranges": "bytes"],
+                    body: full
+                )
+            case "/api/hls/tok/evil_playlist.m3u8":
+                let body = "#EXTM3U\n#EXTINF:2.0,\rhttp://169.254.169.254/latest/meta-data/\n"
+                return .response(
+                    statusCode: 200,
+                    url: url,
+                    headers: ["Content-Type": "application/vnd.apple.mpegurl"],
+                    body: Data(body.utf8)
+                )
+            case "/api/hls/tok/redirect_to_loopback.ts":
+                let target = try #require(URL(string: "http://127.0.0.1:8080/admin"))
+                return .redirect(from: url, to: target)
+            case "/api/hls/tok/redirect_same_origin.ts":
+                let target = try #require(URL(string: "http://192.168.1.10:8123/api/hls/tok/seg0.ts"))
+                return .redirect(from: url, to: target)
+            default:
+                return .response(statusCode: 404, url: url, headers: [:], body: Data())
+            }
+        }
+        defer { StubHLSURLProtocol.setHandler(nil) }
+
+        let cfg = URLSessionConfiguration.ephemeral
+        cfg.protocolClasses = [StubHLSURLProtocol.self]
+        let testSession = URLSession(configuration: cfg, delegate: HARedirectBlockingDelegate.shared, delegateQueue: nil)
+        defer { testSession.invalidateAndCancel() }
+
+        let loader = CameraHLSResourceLoader(
+            originURL: originURL,
+            session: testSession,
+            validateAddress: { url in
+                validatedURLs.withValue { $0.append(url) }
+                if shouldFailDNS.value {
+                    throw HAEndpointResolutionError.prohibitedAddress
+                }
+            }
+        )
+
+        // Same-origin master -> media -> key -> segment (including 206 byte range and Int.max length) all succeed.
+        let proxiedMaster = try #require(HAHLSPlaylistPolicy.proxiedURL(from: originURL))
+        let masterRes = try await loader.loadResource(proxiedURL: proxiedMaster)
+        #expect(masterRes.isPlaylist)
+        #expect(masterRes.contentType == UTType.m3uPlaylist.identifier)
+        #expect(String(decoding: masterRes.data, as: UTF8.self).contains("menubarhome-hls-http://192.168.1.10:8123/api/hls/tok/playlist.m3u8"))
+
+        let proxiedMedia = try #require(URL(string: "menubarhome-hls-http://192.168.1.10:8123/api/hls/tok/playlist.m3u8"))
+        let mediaRes = try await loader.loadResource(proxiedURL: proxiedMedia)
+        let mediaText = String(decoding: mediaRes.data, as: UTF8.self)
+        #expect(mediaText.contains("URI=\"menubarhome-hls-http://192.168.1.10:8123/api/hls/tok/key.bin\""))
+        #expect(mediaText.contains("\nmenubarhome-hls-http://192.168.1.10:8123/api/hls/tok/seg0.ts\n"))
+
+        let proxiedKey = try #require(URL(string: "menubarhome-hls-http://192.168.1.10:8123/api/hls/tok/key.bin"))
+        let keyRes = try await loader.loadResource(proxiedURL: proxiedKey)
+        #expect(!keyRes.isPlaylist && keyRes.data == Data(repeating: 0xAB, count: 16))
+
+        let proxiedSeg = try #require(URL(string: "menubarhome-hls-http://192.168.1.10:8123/api/hls/tok/seg0.ts"))
+        let rangeRes = try await loader.loadResource(
+            proxiedURL: proxiedSeg,
+            requestedOffset: 2,
+            requestedLength: 4,
+            requestsAllDataToEnd: false
+        )
+        #expect(rangeRes.contentType == UTType.mpeg2TransportStream.identifier)
+        #expect(rangeRes.contentLength == 8)
+        #expect(rangeRes.isByteRangeAccessSupported)
+        #expect(rangeRes.data == Data([0x11, 0x10, 0x01, 0x02]))
+
+        // AVFoundation passes Int.max requestedLength on some requests; offset + Int.max must never overflow.
+        let openRangeRes = try await loader.loadResource(
+            proxiedURL: proxiedSeg,
+            requestedOffset: 4,
+            requestedLength: Int.max,
+            requestsAllDataToEnd: false
+        )
+        #expect(openRangeRes.data == Data([0x01, 0x02, 0x03, 0x04]))
+
+        // Cross-origin sub-request directly to loader is rejected before hitting the network.
+        let evilSubURL = try #require(URL(string: "menubarhome-hls-http://169.254.169.254/latest/meta-data/"))
+        await #expect(throws: HAHLSPlaylistError.crossOriginURI) {
+            _ = try await loader.loadResource(proxiedURL: evilSubURL)
+        }
+
+        // Bare-CR smuggled cross-origin URI inside playlist fails closed.
+        let evilPlaylistURL = try #require(URL(string: "menubarhome-hls-http://192.168.1.10:8123/api/hls/tok/evil_playlist.m3u8"))
+        await #expect(throws: HAHLSPlaylistError.crossOriginURI) {
+            _ = try await loader.loadResource(proxiedURL: evilPlaylistURL)
+        }
+
+        // Validated same-origin 302 redirect is followed cleanly, while loopback 302 redirect is blocked.
+        let sameOriginRedirectURL = try #require(URL(string: "menubarhome-hls-http://192.168.1.10:8123/api/hls/tok/redirect_same_origin.ts"))
+        let redirectedSeg = try await loader.loadResource(proxiedURL: sameOriginRedirectURL)
+        #expect(redirectedSeg.data == Data([0x47, 0x40, 0x11, 0x10, 0x01, 0x02, 0x03, 0x04]))
+
+        let redirectURL = try #require(URL(string: "menubarhome-hls-http://192.168.1.10:8123/api/hls/tok/redirect_to_loopback.ts"))
+        await #expect(throws: URLError(.badServerResponse)) {
+            _ = try await loader.loadResource(proxiedURL: redirectURL)
+        }
+        #expect(blockedSecretFetched.value == false)
+
+        // Fresh DNS rebinding failure on a sub-request blocks before making the HTTP call.
+        shouldFailDNS.withValue { $0 = true }
+        let countBeforeRebind = requestedPaths.value.count
+        await #expect(throws: HAEndpointResolutionError.prohibitedAddress) {
+            _ = try await loader.loadResource(proxiedURL: proxiedSeg)
+        }
+        #expect(requestedPaths.value.count == countBeforeRebind)
+        #expect(validatedURLs.value.count == 9)
+    }
+
     @Test("Camera audio player and controller never touch microphone capture or input audio APIs")
     func cameraAudioNeverOpensMicrophoneInput() throws {
         let root = URL(fileURLWithPath: #filePath)
@@ -744,4 +962,78 @@ private actor TerminationSleepGate {
         continuation?.resume()
         continuation = nil
     }
+}
+
+private final class LockedHLSTestBox<T>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: T
+    init(_ initial: T) { storage = initial }
+    var value: T { lock.lock(); defer { lock.unlock() }; return storage }
+    @discardableResult
+    func withValue<R>(_ body: (inout T) -> R) -> R { lock.lock(); defer { lock.unlock() }; return body(&storage) }
+}
+
+private final class StubHLSURLProtocol: URLProtocol, @unchecked Sendable {
+    enum Action {
+        case response(statusCode: Int, url: URL, headers: [String: String], body: Data)
+        case redirect(from: URL, to: URL)
+    }
+
+    private static let handlerLock = NSLock()
+    nonisolated(unsafe) private static var handler: (@Sendable (URLRequest) throws -> Action)?
+
+    static func setHandler(_ newHandler: (@Sendable (URLRequest) throws -> Action)?) {
+        handlerLock.lock()
+        handler = newHandler
+        handlerLock.unlock()
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        Self.handlerLock.lock()
+        let current = Self.handler
+        Self.handlerLock.unlock()
+        guard let current else {
+            client?.urlProtocol(self, didFailWithError: URLError(.unknown))
+            return
+        }
+        do {
+            switch try current(request) {
+            case .response(let statusCode, let url, let headers, let body):
+                guard let response = HTTPURLResponse(
+                    url: url,
+                    statusCode: statusCode,
+                    httpVersion: "HTTP/1.1",
+                    headerFields: headers
+                ) else {
+                    client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
+                    return
+                }
+                client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+                if !body.isEmpty {
+                    client?.urlProtocol(self, didLoad: body)
+                }
+                client?.urlProtocolDidFinishLoading(self)
+            case .redirect(let from, let to):
+                guard let response = HTTPURLResponse(
+                    url: from,
+                    statusCode: 302,
+                    httpVersion: "HTTP/1.1",
+                    headerFields: ["Location": to.absoluteString]
+                ) else {
+                    client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
+                    return
+                }
+                client?.urlProtocol(self, wasRedirectedTo: URLRequest(url: to), redirectResponse: response)
+                client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+                client?.urlProtocolDidFinishLoading(self)
+            }
+        } catch {
+            client?.urlProtocol(self, didFailWithError: error)
+        }
+    }
+
+    override func stopLoading() {}
 }

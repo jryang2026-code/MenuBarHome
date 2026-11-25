@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 
 /// Redirect decision policy shared by Home Assistant `URLSession`s and MJPEG stream readers.
 /// Allows only same-origin HTTP(S) redirects without userinfo whose destination passes address validation.
@@ -40,6 +43,18 @@ public enum HARedirectPolicy {
     }
 }
 
+private struct SendableRedirectCompletion: @unchecked Sendable {
+    private let handler: (URLRequest?) -> Void
+
+    init(_ handler: @escaping (URLRequest?) -> Void) {
+        self.handler = handler
+    }
+
+    func call(_ request: URLRequest?) {
+        handler(request)
+    }
+}
+
 /// Reusable `URLSessionTaskDelegate` that blocks cross-origin and unvalidated HTTP 3xx redirects.
 public final class HARedirectBlockingDelegate: NSObject, URLSessionTaskDelegate, Sendable {
     public static let shared = HARedirectBlockingDelegate()
@@ -55,9 +70,9 @@ public final class HARedirectBlockingDelegate: NSObject, URLSessionTaskDelegate,
     ) {
         let originalURL = task.originalRequest?.url
         let responseURL = response.url
-        nonisolated(unsafe) let complete = completionHandler
+        let completion = SendableRedirectCompletion(completionHandler)
         Task {
-            complete(await HARedirectPolicy.allowedRedirectRequest(
+            completion.call(await HARedirectPolicy.allowedRedirectRequest(
                 originalURL: originalURL, responseURL: responseURL, newRequest: request
             ))
         }
