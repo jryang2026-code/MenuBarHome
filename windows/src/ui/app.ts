@@ -646,6 +646,11 @@ export class MenuMijiaWindowsApp {
   public isRecordingHotkey = false;
   public hotkeyNeedsHint = false;
   public hotkeyRegistrationError: string | null = null;
+  public isRecordingCustomHotkeyId: string | null = null;
+  public customHotkeyConflictError: string | null = null;
+  public customHotkeyRegistrationErrors: Record<string, string> = {};
+  public isAddingCustomHotkey = false;
+  public newCustomHotkeyTargetKey = "";
   /** Retryable diagnostic when settings or credential vault reads failed during legacy migration. */
   public identityMigrationDiagnostic: string | null = null;
 
