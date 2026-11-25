@@ -1108,6 +1108,137 @@ struct CameraLiveLifecycleTests {
         #expect(forbiddenHits.value == 0)
     }
 
+    @Test("CameraHLSLoopbackRelay enforces an overall header deadline against slow-trickle clients and stays safe across concurrent stop", .timeLimit(.minutes(1)))
+    func hlsLoopbackRelayEnforcesSlowlorisHeaderDeadlineAndConcurrentStopSafety() async throws {
+        // 1. Unit assertions on remainingReceiveTimeval helper (never emits 0/0 infinite timeout).
+        let base = ContinuousClock.now
+        let fiveSec = try #require(CameraHLSLoopbackRelay.remainingReceiveTimeval(until: base + .seconds(5), now: base))
+        #expect(fiveSec.tv_sec == 5 && fiveSec.tv_usec == 0)
+
+        let subSec = try #require(CameraHLSLoopbackRelay.remainingReceiveTimeval(until: base + .milliseconds(250), now: base))
+        #expect(subSec.tv_sec == 0 && subSec.tv_usec == 250_000)
+
+        let tiny = try #require(CameraHLSLoopbackRelay.remainingReceiveTimeval(until: base + .nanoseconds(1), now: base))
+        #expect(tiny.tv_sec == 0 && tiny.tv_usec == 1)
+
+        let carry = try #require(CameraHLSLoopbackRelay.remainingReceiveTimeval(until: base + .nanoseconds(999_999_999), now: base))
+        #expect(carry.tv_sec == 1 && carry.tv_usec == 0)
+
+        #expect(CameraHLSLoopbackRelay.remainingReceiveTimeval(until: base, now: base) == nil)
+        #expect(CameraHLSLoopbackRelay.remainingReceiveTimeval(until: base - .milliseconds(1), now: base) == nil)
+
+        // 2. Slowloris trickle (1 byte every 50ms < 250ms budget) is aborted once overall header deadline expires.
+        let originURL = try #require(URL(string: "http://192.168.1.10:8123/api/hls/tok/master_playlist.m3u8"))
+        let upstreamHits = LockedHLSTestBox(0)
+        StubHLSURLProtocol.setHandler { request in
+            let url = try #require(request.url)
+            upstreamHits.withValue { $0 += 1 }
+            return .response(
+                statusCode: 200,
+                url: url,
+                headers: ["Content-Type": "application/vnd.apple.mpegurl"],
+                body: Data("#EXTM3U\n#EXTINF:2.0,\nseg0.ts\n".utf8)
+            )
+        }
+        defer { StubHLSURLProtocol.setHandler(nil) }
+
+        let upstreamCfg = URLSessionConfiguration.ephemeral
+        upstreamCfg.protocolClasses = [StubHLSURLProtocol.self]
+        let createdRelay = CameraHLSLoopbackRelay(
+            originURL: originURL,
+            sessionConfiguration: upstreamCfg,
+            requestHeaderTimeout: .milliseconds(250),
+            validateAddress: { _ in }
+        )
+        let relay = try #require(createdRelay)
+        defer { relay.stop() }
+
+        let port = relay.port
+        let trickleResult: (closedByPeer: Bool, bytesSent: Int, responseBytes: Int) = await Task.detached {
+            let fd = Darwin.socket(AF_INET, SOCK_STREAM, 0)
+            guard fd >= 0 else { return (false, 0, -1) }
+            defer { Darwin.close(fd) }
+            var one: Int32 = 1
+            _ = Darwin.setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, socklen_t(MemoryLayout<Int32>.size))
+
+            var addr = sockaddr_in()
+            addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+            addr.sin_family = sa_family_t(AF_INET)
+            addr.sin_port = port.bigEndian
+            addr.sin_addr = in_addr(s_addr: UInt32(INADDR_LOOPBACK).bigEndian)
+            let connected = withUnsafePointer(to: &addr) { ptr in
+                ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                    Darwin.connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+                }
+            }
+            guard connected == 0 else { return (false, 0, -1) }
+
+            var sent = 0
+            var received = 0
+            var closed = false
+            var byte: UInt8 = 0x58 // 'X'
+            var readBuf = [UInt8](repeating: 0, count: 64)
+            for _ in 0..<80 {
+                let n = Darwin.write(fd, &byte, 1)
+                if n <= 0 {
+                    closed = true
+                    break
+                }
+                sent += 1
+                var pfd = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
+                let ready = Darwin.poll(&pfd, 1, 50)
+                if ready > 0 {
+                    let r = Darwin.read(fd, &readBuf, readBuf.count)
+                    if r <= 0 {
+                        closed = true
+                        break
+                    }
+                    received += r
+                }
+            }
+            return (closed, sent, received)
+        }.value
+
+        #expect(trickleResult.closedByPeer == true)
+        #expect(trickleResult.bytesSent < 60)
+        #expect(trickleResult.responseBytes == 0)
+        #expect(upstreamHits.value == 0)
+
+        // Relay remains healthy after aborting the slow client.
+        let clientCfg = URLSessionConfiguration.ephemeral
+        clientCfg.connectionProxyDictionary = [:]
+        let client = URLSession(configuration: clientCfg)
+        defer { client.invalidateAndCancel() }
+        let (_, okResp) = try await client.data(from: relay.entryURL)
+        #expect((okResp as? HTTPURLResponse)?.statusCode == 200)
+        #expect(upstreamHits.value == 1)
+
+        // 3. Concurrent in-flight requests raced against stop() never crash on URLSession invalidation or socket close.
+        for _ in 0..<8 {
+            let created = CameraHLSLoopbackRelay(
+                originURL: originURL,
+                sessionConfiguration: upstreamCfg,
+                validateAddress: { _ in await Task.yield() }
+            )
+            let racedRelay = try #require(created)
+            let entry = racedRelay.entryURL
+            await withTaskGroup(of: Void.self) { group in
+                for _ in 0..<4 {
+                    group.addTask {
+                        _ = try? await client.data(from: entry)
+                    }
+                }
+                group.addTask {
+                    await Task.yield()
+                    racedRelay.stop()
+                }
+                await group.waitForAll()
+            }
+            racedRelay.stop()
+            #expect(!HAPlaintextConsent.isInternalLoopbackPort(racedRelay.port))
+        }
+    }
+
     private static func waitForAVPlayerItemStatus(
         _ item: AVPlayerItem,
         timeout: Duration = .seconds(15)

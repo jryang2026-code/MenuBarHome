@@ -61,8 +61,10 @@ final class CameraHLSLoopbackRelay: @unchecked Sendable {
     private static let maxConcurrentConnections = 32
     private static let maxRequestHeaderBytes = 16 * 1024
     private static let maxSegmentBytes = 32 * 1024 * 1024
+    private static let defaultRequestHeaderTimeout: Duration = .seconds(5)
 
     private let relayBase: HAHLSPlaylistPolicy.RelayBase
+    private let requestHeaderTimeout: Duration
     private let acceptQueue = DispatchQueue(label: "com.menubarhome.camera-hls-relay.accept")
     private let ioQueue = DispatchQueue(label: "com.menubarhome.camera-hls-relay.io", attributes: .concurrent)
     private let sessionDelegate: RelayURLSessionDelegate
@@ -79,6 +81,7 @@ final class CameraHLSLoopbackRelay: @unchecked Sendable {
     init?(
         originURL: URL,
         sessionConfiguration: URLSessionConfiguration? = nil,
+        requestHeaderTimeout: Duration = CameraHLSLoopbackRelay.defaultRequestHeaderTimeout,
         validateAddress: @escaping @Sendable (URL) async throws -> Void = {
             try await HAPlaintextConsent.validateConnectionAddress($0)
         }
@@ -106,6 +109,7 @@ final class CameraHLSLoopbackRelay: @unchecked Sendable {
         self.port = boundPort
         self.token = token
         self.relayBase = relayBase
+        self.requestHeaderTimeout = requestHeaderTimeout
         self.entryURL = entryURL
         self.validateAddress = validateAddress
 
@@ -173,8 +177,7 @@ final class CameraHLSLoopbackRelay: @unchecked Sendable {
         for task in tasks {
             task.cancel()
         }
-        sessionDelegate.invalidate()
-        session.invalidateAndCancel()
+        sessionDelegate.invalidate(session: session)
         if shouldUnregister {
             HAPlaintextConsent.unregisterInternalLoopbackPort(port)
         }
@@ -194,7 +197,10 @@ final class CameraHLSLoopbackRelay: @unchecked Sendable {
                 break
             }
 
-            Self.configureClientSocket(clientFD)
+            let headerDeadline = ContinuousClock.now + requestHeaderTimeout
+            let initialTimeout = Self.remainingReceiveTimeval(until: headerDeadline)
+                ?? timeval(tv_sec: 0, tv_usec: 1)
+            Self.configureClientSocket(clientFD, receiveTimeout: initialTimeout)
             let managed = ManagedSocketFD(fd: clientFD)
             let connectionID = UUID()
 
@@ -218,7 +224,7 @@ final class CameraHLSLoopbackRelay: @unchecked Sendable {
                     self?.finishConnection(id: connectionID)
                 }
                 guard let self else { return }
-                await self.handleConnection(managed)
+                await self.handleConnection(managed, headerDeadline: headerDeadline)
             }
 
             let cancelledImmediately: Bool = {
@@ -242,8 +248,12 @@ final class CameraHLSLoopbackRelay: @unchecked Sendable {
         lock.unlock()
     }
 
-    private func handleConnection(_ socket: ManagedSocketFD) async {
-        let headerBytes = await readRequestHeaders(from: socket)
+    private func handleConnection(
+        _ socket: ManagedSocketFD,
+        headerDeadline: ContinuousClock.Instant
+    ) async {
+        guard !Task.isCancelled else { return }
+        let headerBytes = await readRequestHeaders(from: socket, deadline: headerDeadline)
         guard !Task.isCancelled, !headerBytes.isEmpty else { return }
 
         let responseData: Data
@@ -478,14 +488,48 @@ final class CameraHLSLoopbackRelay: @unchecked Sendable {
         return try await sessionDelegate.fetch(request: request, using: session, maxBytes: maxBytes)
     }
 
-    private func readRequestHeaders(from socket: ManagedSocketFD) async -> Data {
+    /// Computes the positive `SO_RCVTIMEO` `timeval` remaining until `deadline`, or `nil` once
+    /// expired. Sub-microsecond positive remainders round up to `1 µs` so `timeval(0, 0)` (which
+    /// POSIX treats as an infinite timeout) is never emitted.
+    static func remainingReceiveTimeval(
+        until deadline: ContinuousClock.Instant,
+        now: ContinuousClock.Instant = .now
+    ) -> timeval? {
+        let remaining = now.duration(to: deadline)
+        guard remaining > .zero else { return nil }
+        let (seconds, attoseconds) = remaining.components
+        let maxSeconds: Int64 = 86_400
+        if seconds >= maxSeconds {
+            return timeval(tv_sec: Int(maxSeconds), tv_usec: 0)
+        }
+        let attosecondsPerMicrosecond: Int64 = 1_000_000_000_000
+        var sec = seconds
+        var usec = (attoseconds + attosecondsPerMicrosecond - 1) / attosecondsPerMicrosecond
+        if usec >= 1_000_000 {
+            sec += 1
+            usec -= 1_000_000
+        }
+        return timeval(tv_sec: Int(sec), tv_usec: Int32(usec))
+    }
+
+    private func readRequestHeaders(
+        from socket: ManagedSocketFD,
+        deadline: ContinuousClock.Instant
+    ) async -> Data {
         await withCheckedContinuation { continuation in
             ioQueue.async {
                 var collected = Data()
                 var scratch = [UInt8](repeating: 0, count: 4096)
                 let delimiter = Data([0x0D, 0x0A, 0x0D, 0x0A])
                 while collected.count < Self.maxRequestHeaderBytes {
-                    let count = socket.read(into: &scratch, maxLength: min(scratch.count, Self.maxRequestHeaderBytes - collected.count))
+                    guard let remaining = Self.remainingReceiveTimeval(until: deadline),
+                          socket.setReceiveTimeout(remaining) else {
+                        break
+                    }
+                    let (count, readError) = socket.read(
+                        into: &scratch,
+                        maxLength: min(scratch.count, Self.maxRequestHeaderBytes - collected.count)
+                    )
                     if count > 0 {
                         collected.append(contentsOf: scratch[0..<count])
                         if let range = collected.range(of: delimiter) {
@@ -494,7 +538,7 @@ final class CameraHLSLoopbackRelay: @unchecked Sendable {
                         }
                     } else if count == 0 {
                         break
-                    } else if errno == EINTR {
+                    } else if readError == EINTR {
                         continue
                     } else {
                         break
@@ -512,10 +556,13 @@ final class CameraHLSLoopbackRelay: @unchecked Sendable {
                     guard let base = rawBuffer.baseAddress else { return }
                     var offset = 0
                     while offset < rawBuffer.count {
-                        let written = socket.write(base.advanced(by: offset), count: rawBuffer.count - offset)
+                        let (written, writeError) = socket.write(
+                            base.advanced(by: offset),
+                            count: rawBuffer.count - offset
+                        )
                         if written > 0 {
                             offset += written
-                        } else if written < 0 && errno == EINTR {
+                        } else if written < 0 && writeError == EINTR {
                             continue
                         } else {
                             break
@@ -714,7 +761,7 @@ final class CameraHLSLoopbackRelay: @unchecked Sendable {
         return (fd, port)
     }
 
-    private static func configureClientSocket(_ fd: Int32) {
+    private static func configureClientSocket(_ fd: Int32, receiveTimeout: timeval) {
         _ = Darwin.fcntl(fd, F_SETFD, FD_CLOEXEC)
         let flags = Darwin.fcntl(fd, F_GETFL, 0)
         if flags >= 0 {
@@ -722,7 +769,7 @@ final class CameraHLSLoopbackRelay: @unchecked Sendable {
         }
         var one: Int32 = 1
         _ = Darwin.setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, socklen_t(MemoryLayout<Int32>.size))
-        var rcvTimeout = timeval(tv_sec: 5, tv_usec: 0)
+        var rcvTimeout = receiveTimeout
         _ = Darwin.setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &rcvTimeout, socklen_t(MemoryLayout<timeval>.size))
         var sndTimeout = timeval(tv_sec: 15, tv_usec: 0)
         _ = Darwin.setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &sndTimeout, socklen_t(MemoryLayout<timeval>.size))
@@ -744,43 +791,48 @@ private final class ManagedSocketFD: @unchecked Sendable {
 
     func shutdown() {
         lock.lock()
-        let current = fd
-        lock.unlock()
-        if current >= 0 {
-            _ = Darwin.shutdown(current, SHUT_RDWR)
+        defer { lock.unlock() }
+        if fd >= 0 {
+            _ = Darwin.shutdown(fd, SHUT_RDWR)
         }
     }
 
     func closeIfNeeded() {
-        let toClose: Int32 = {
-            lock.lock()
-            defer { lock.unlock() }
-            let current = fd
-            fd = -1
-            return current
-        }()
-        if toClose >= 0 {
-            Darwin.close(toClose)
-        }
+        lock.lock()
+        defer { lock.unlock() }
+        guard fd >= 0 else { return }
+        let toClose = fd
+        fd = -1
+        Darwin.close(toClose)
     }
 
-    func read(into buffer: inout [UInt8], maxLength: Int) -> Int {
+    func setReceiveTimeout(_ timeout: timeval) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard fd >= 0 else { return false }
+        var tv = timeout
+        return Darwin.setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size)) == 0
+    }
+
+    func read(into buffer: inout [UInt8], maxLength: Int) -> (count: Int, error: Int32) {
         lock.lock()
         let current = fd
         lock.unlock()
-        guard current >= 0 else { return -1 }
+        guard current >= 0 else { return (-1, EBADF) }
         return buffer.withUnsafeMutableBytes { raw in
-            guard let ptr = raw.baseAddress else { return -1 }
-            return Darwin.read(current, ptr, maxLength)
+            guard let ptr = raw.baseAddress else { return (-1, EINVAL) }
+            let count = Darwin.read(current, ptr, maxLength)
+            return (count, count < 0 ? errno : 0)
         }
     }
 
-    func write(_ pointer: UnsafeRawPointer, count: Int) -> Int {
+    func write(_ pointer: UnsafeRawPointer, count: Int) -> (count: Int, error: Int32) {
         lock.lock()
         let current = fd
         lock.unlock()
-        guard current >= 0 else { return -1 }
-        return Darwin.write(current, pointer, count)
+        guard current >= 0 else { return (-1, EBADF) }
+        let written = Darwin.write(current, pointer, count)
+        return (written, written < 0 ? errno : 0)
     }
 }
 
@@ -803,10 +855,44 @@ private final class RelayURLSessionDelegate: NSObject, URLSessionDataDelegate, @
         }
     }
 
+    private final class CancellationSlot: @unchecked Sendable {
+        private let lock = NSLock()
+        private var cancelled = false
+        private var task: URLSessionDataTask?
+
+        var isCancelled: Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            return cancelled
+        }
+
+        func attach(_ task: URLSessionDataTask) -> Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            guard !cancelled else { return false }
+            self.task = task
+            return true
+        }
+
+        func cancel() {
+            let taskToCancel: URLSessionDataTask? = {
+                lock.lock()
+                defer { lock.unlock() }
+                cancelled = true
+                let current = task
+                task = nil
+                return current
+            }()
+            taskToCancel?.cancel()
+        }
+    }
+
     private let maxPlaylistBytes: Int
     private let maxSegmentBytes: Int
     private let lock = NSLock()
     private var isInvalidated = false
+    private var inFlightTaskStarts = 0
+    private var pendingInvalidationSession: URLSession?
     private var states: [Int: TaskState] = [:]
 
     init(maxPlaylistBytes: Int, maxSegmentBytes: Int) {
@@ -815,10 +901,19 @@ private final class RelayURLSessionDelegate: NSObject, URLSessionDataDelegate, @
         super.init()
     }
 
-    func invalidate() {
-        lock.lock()
-        isInvalidated = true
-        lock.unlock()
+    func invalidate(session: URLSession) {
+        let sessionToInvalidate: URLSession? = {
+            lock.lock()
+            defer { lock.unlock() }
+            guard !isInvalidated else { return nil }
+            isInvalidated = true
+            if inFlightTaskStarts == 0 {
+                return session
+            }
+            pendingInvalidationSession = session
+            return nil
+        }()
+        sessionToInvalidate?.invalidateAndCancel()
     }
 
     func fetch(
@@ -827,27 +922,73 @@ private final class RelayURLSessionDelegate: NSObject, URLSessionDataDelegate, @
         maxBytes: Int
     ) async throws -> (Data, HTTPURLResponse) {
         try Task.checkCancellation()
-        let task = session.dataTask(with: request)
+        let cancellationSlot = CancellationSlot()
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
-                let state = TaskState(maxBytes: min(maxBytes, maxSegmentBytes), continuation: continuation)
-                let rejected: Bool = {
+                let entered: Bool = {
                     lock.lock()
                     defer { lock.unlock() }
-                    if isInvalidated { return true }
-                    states[task.taskIdentifier] = state
-                    return false
+                    guard !isInvalidated else { return false }
+                    inFlightTaskStarts += 1
+                    return true
                 }()
-                if rejected {
-                    task.cancel()
+                guard entered else {
                     continuation.resume(throwing: CancellationError())
-                } else {
-                    task.resume()
+                    return
                 }
+
+                if cancellationSlot.isCancelled {
+                    let pending = finishTaskStart()
+                    pending?.invalidateAndCancel()
+                    continuation.resume(throwing: CancellationError())
+                    return
+                }
+
+                let task = session.dataTask(with: request)
+                let state = TaskState(maxBytes: min(maxBytes, maxSegmentBytes), continuation: continuation)
+
+                let (registered, pendingOnReject): (Bool, URLSession?) = {
+                    lock.lock()
+                    defer { lock.unlock() }
+                    if isInvalidated {
+                        inFlightTaskStarts -= 1
+                        let pending = (inFlightTaskStarts == 0) ? takePendingInvalidationLocked() : nil
+                        return (false, pending)
+                    }
+                    states[task.taskIdentifier] = state
+                    return (true, nil)
+                }()
+                guard registered else {
+                    task.cancel()
+                    pendingOnReject?.invalidateAndCancel()
+                    continuation.resume(throwing: CancellationError())
+                    return
+                }
+
+                task.resume()
+                if !cancellationSlot.attach(task) {
+                    task.cancel()
+                }
+
+                let pending = finishTaskStart()
+                pending?.invalidateAndCancel()
             }
         } onCancel: {
-            task.cancel()
+            cancellationSlot.cancel()
         }
+    }
+
+    private func finishTaskStart() -> URLSession? {
+        lock.lock()
+        defer { lock.unlock() }
+        inFlightTaskStarts -= 1
+        return (inFlightTaskStarts == 0) ? takePendingInvalidationLocked() : nil
+    }
+
+    private func takePendingInvalidationLocked() -> URLSession? {
+        let pending = pendingInvalidationSession
+        pendingInvalidationSession = nil
+        return pending
     }
 
     func urlSession(
@@ -933,6 +1074,21 @@ private final class RelayURLSessionDelegate: NSObject, URLSessionDataDelegate, @
             state.continuation.resume(returning: (state.data, response))
         } else {
             state.continuation.resume(throwing: URLError(.badServerResponse))
+        }
+    }
+
+    func urlSession(_ session: URLSession, didBecomeInvalidWithError error: Error?) {
+        let remaining: [TaskState] = {
+            lock.lock()
+            defer { lock.unlock() }
+            isInvalidated = true
+            let values = Array(states.values)
+            states.removeAll()
+            return values
+        }()
+        let failure: Error = error ?? CancellationError()
+        for state in remaining {
+            state.continuation.resume(throwing: state.customError ?? failure)
         }
     }
 

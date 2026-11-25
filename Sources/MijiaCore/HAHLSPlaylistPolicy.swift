@@ -47,6 +47,11 @@ public enum HAHLSPlaylistPolicy {
         "vnd.apple.mpegurl",
     ]
 
+    private static let disallowedTags: Set<String> = [
+        "#EXT-X-DEFINE",
+        "#EXT-X-CONTENT-STEERING",
+    ]
+
     private static let uriBearingTags: Set<String> = [
         "#EXT-X-KEY",
         "#EXT-X-SESSION-KEY",
@@ -57,7 +62,6 @@ public enum HAHLSPlaylistPolicy {
         "#EXT-X-PRELOAD-HINT",
         "#EXT-X-RENDITION-REPORT",
         "#EXT-X-SESSION-DATA",
-        "#EXT-X-CONTENT-STEERING",
     ]
 
     /// Maps a validated same-origin upstream URL onto `http://127.0.0.1:<port>/<token><path>[?<query>]`.
@@ -290,7 +294,8 @@ public enum HAHLSPlaylistPolicy {
 
     /// Validates and rewrites every URI reference in an M3U8 playlist fail-closed onto `relay`.
     /// Splits lines on `\r\n`, `\n`, and bare `\r` to match AVFoundation, handles both quoted and
-    /// unquoted `URI=` / `*-URI=` tag attributes, and rejects `#EXT-X-DEFINE` variable substitution.
+    /// unquoted `URI=` / `*-URI=` tag attributes, and rejects `#EXT-X-DEFINE`,
+    /// `#EXT-X-CONTENT-STEERING`, and `X-ASSET-LIST` interstitial asset lists.
     public static func rewritePlaylist(
         data: Data,
         playlistURL: URL,
@@ -418,13 +423,13 @@ public enum HAHLSPlaylistPolicy {
     ) throws -> String {
         guard let colon = line.firstIndex(of: ":") else {
             let upper = line.uppercased()
-            if upper == "#EXT-X-DEFINE" { throw HAHLSPlaylistError.disallowedTag }
+            if disallowedTags.contains(upper) { throw HAHLSPlaylistError.disallowedTag }
             if uriBearingTags.contains(upper) { throw HAHLSPlaylistError.malformedTag }
             return line
         }
         let tagName = String(line[..<colon])
-        let upperTag = tagName.uppercased()
-        if upperTag == "#EXT-X-DEFINE" {
+        let upperTag = trimASCIIWhitespace(tagName).uppercased()
+        if disallowedTags.contains(upperTag) {
             throw HAHLSPlaylistError.disallowedTag
         }
         if upperTag == "#EXTINF" {
@@ -521,6 +526,9 @@ public enum HAHLSPlaylistPolicy {
             }
 
             let upperKey = trimmedKey.uppercased()
+            if upperKey == "X-ASSET-LIST" {
+                throw HAHLSPlaylistError.disallowedTag
+            }
             if upperKey == "URI" || upperKey.hasSuffix("-URI") {
                 guard !value.isEmpty, !value.hasPrefix("'"), !value.hasSuffix("'") else {
                     throw HAHLSPlaylistError.invalidURI

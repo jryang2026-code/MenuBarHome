@@ -109,7 +109,6 @@ struct HAHLSPlaylistPolicyTests {
             "#EXTM3U\n#EXT-X-MAP:URI=\"http://127.0.0.1:8080/init.mp4\"\n",
             "#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"a\",NAME=\"a\",URI=\"https://evil.example/a.m3u8\"\n",
             "#EXTM3U\n#EXT-X-I-FRAME-STREAM-INF:BANDWIDTH=100,URI=\"http://127.0.0.1/iframe.m3u8\"\n",
-            "#EXTM3U\n#EXT-X-CONTENT-STEERING:SERVER-URI=\"https://evil.example/steer\"\n",
             "#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"ok.key\",URI=\"http://127.0.0.1/evil.key\"\n",
         ]
         for payload in crossOriginPayloads {
@@ -149,6 +148,25 @@ struct HAHLSPlaylistPolicyTests {
                 allowedOrigin: originURL,
                 relay: relay
             )
+        }
+        let disallowedPayloads = [
+            "#EXTM3U\n#EXT-X-CONTENT-STEERING:SERVER-URI=\"steer.json\"\n",
+            "#EXTM3U\n#EXT-X-CONTENT-STEERING:SERVER-URI=\"https://evil.example/steer\"\n",
+            "#EXTM3U\n#ext-x-content-steering:SERVER-URI=\"steer.json\"\n",
+            "#EXTM3U\n#EXT-X-CONTENT-STEERING\n",
+            "#EXTM3U\n#EXT-X-DATERANGE:ID=\"ad1\",CLASS=\"com.apple.hls.interstitial\",START-DATE=\"2026-01-01T00:00:00Z\",X-ASSET-LIST=\"assets.json\"\n",
+            "#EXTM3U\n#EXT-X-DATERANGE:ID=\"ad2\",START-DATE=\"2026-01-01T00:00:00Z\",X-ASSET-LIST=\"https://evil.example/assets.json\"\n",
+            "#EXTM3U\n#EXT-X-DATERANGE:ID=\"ad3\",START-DATE=\"2026-01-01T00:00:00Z\",x-asset-list=assets.json\n",
+        ]
+        for payload in disallowedPayloads {
+            #expect(throws: HAHLSPlaylistError.disallowedTag, "expected disallowedTag rejection for:\n\(payload)") {
+                _ = try HAHLSPlaylistPolicy.rewritePlaylist(
+                    data: Data(payload.utf8),
+                    playlistURL: mediaPlaylistURL,
+                    allowedOrigin: originURL,
+                    relay: relay
+                )
+            }
         }
         #expect(throws: HAHLSPlaylistError.malformedTag) {
             _ = try HAHLSPlaylistPolicy.rewritePlaylist(
