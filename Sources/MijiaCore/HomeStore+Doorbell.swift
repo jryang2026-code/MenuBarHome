@@ -123,7 +123,7 @@ extension HomeStore {
             timestamp: ring.firedAtDate ?? Date()
         )
         cameraEventRevision &+= 1
-        if let capture = onDoorbellSnapshot {
+        if let event, let capture = onDoorbellSnapshot {
             Task { @MainActor [weak self] in
                 guard let self, let data = await capture(ring.deviceId) else { return }
                 if self.cameraEventStore.attachSnapshot(data, to: event) != nil {

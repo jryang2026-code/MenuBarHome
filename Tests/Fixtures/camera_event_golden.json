@@ -38,7 +38,7 @@
     {
       "reason": "missing_camera_id",
       "record": {
-        "id": "bad-1",
+        "id": "aaaa1111-1111-4111-8111-111111111111",
         "kind": "doorbell",
         "timestamp": "2026-11-24T10:00:00Z"
       }
@@ -46,7 +46,7 @@
     {
       "reason": "url_in_camera_id",
       "record": {
-        "id": "bad-2",
+        "id": "aaaa2222-2222-4222-8222-222222222222",
         "cameraID": "rtsp://admin:secret@192.0.2.10/live",
         "kind": "doorbell",
         "timestamp": "2026-11-24T10:00:00Z"
@@ -55,7 +55,7 @@
     {
       "reason": "unknown_kind",
       "record": {
-        "id": "bad-3",
+        "id": "aaaa3333-3333-4333-8333-333333333333",
         "cameraID": "cam-front-door",
         "kind": "laser",
         "timestamp": "2026-11-24T10:00:00Z"
@@ -64,7 +64,7 @@
     {
       "reason": "invalid_timestamp",
       "record": {
-        "id": "bad-4",
+        "id": "aaaa4444-4444-4444-8444-444444444444",
         "cameraID": "cam-front-door",
         "kind": "motion",
         "timestamp": "not-a-date"

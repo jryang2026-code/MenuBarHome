@@ -3,12 +3,84 @@ import Testing
 @testable import MijiaCore
 
 struct AutomationContextStackTests {
+    private struct ContextStackGolden: Decodable {
+        let version: Int
+        let maxAgeHours: TimeInterval
+        let cases: [GoldenCase]
+
+        struct GoldenCase: Decodable {
+            let name: String
+            let enter: [GoldenEntry]
+            let exit: GoldenExit
+
+            private enum CodingKeys: String, CodingKey { case name, enter, exit }
+
+            init(from decoder: Decoder) throws {
+                let container = try decoder.container(keyedBy: CodingKeys.self)
+                name = try container.decode(String.self, forKey: .name)
+                if let single = try? container.decode(GoldenEntry.self, forKey: .enter) {
+                    enter = [single]
+                } else {
+                    enter = try container.decode([GoldenEntry].self, forKey: .enter)
+                }
+                exit = try container.decode(GoldenExit.self, forKey: .exit)
+            }
+        }
+
+        struct GoldenEntry: Decodable {
+            let device: String
+            let before: Bool
+            let applied: Bool
+        }
+
+        struct GoldenExit: Decodable {
+            let live: Bool
+            let restored: Bool?
+        }
+    }
+
     private func snapshot(_ id: String, baseline: Bool, applied: Bool) -> AutomationContextSnapshot {
         AutomationContextSnapshot(
             deviceID: id,
             baseline: AutomationContextValue(field: .power, boolValue: baseline),
             applied: AutomationContextValue(field: .power, boolValue: applied)
         )
+    }
+
+    @Test("Cross-platform context stack golden JSON corpus matches Swift AutomationContextStack")
+    func contextStackGoldenCorpusParity() throws {
+        let fixtureURL = try GoldenCorpusTests.locateGoldenFixture("Tests/Fixtures/context_stack_golden.json")
+        let golden = try JSONDecoder().decode(ContextStackGolden.self, from: Data(contentsOf: fixtureURL))
+        #expect(golden.version == 1)
+        #expect(AutomationContextStack.maximumAge == golden.maxAgeHours * 60 * 60)
+
+        let start = Date(timeIntervalSince1970: 100_000)
+        for testCase in golden.cases {
+            let stack = AutomationContextStack()
+            var ruleIDs: [UUID] = []
+            for (index, entry) in testCase.enter.enumerated() {
+                let ruleID = UUID()
+                ruleIDs.append(ruleID)
+                stack.push(
+                    ruleID: ruleID,
+                    snapshots: [snapshot(entry.device, baseline: entry.before, applied: entry.applied)],
+                    at: start.addingTimeInterval(TimeInterval(index))
+                )
+            }
+            guard let last = testCase.enter.last, let ruleID = ruleIDs.last else {
+                Issue.record("Golden case \(testCase.name) has no enter entry")
+                continue
+            }
+            let expected: [DeviceIntent] = testCase.exit.restored.map {
+                [DeviceIntent(targetId: last.device, operation: .power($0))]
+            } ?? []
+            let intents = stack.pop(
+                ruleID: ruleID,
+                liveValues: [last.device: AutomationContextValue(field: .power, boolValue: testCase.exit.live)],
+                at: start.addingTimeInterval(TimeInterval(testCase.enter.count))
+            )
+            #expect(intents == expected, "\(testCase.name)")
+        }
     }
 
     @Test("Context restore is LIFO and respects manual takeover")
