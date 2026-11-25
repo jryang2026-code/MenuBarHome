@@ -84,6 +84,7 @@ function armAllPending(app: MenuMijiaWindowsApp): void {
     confidencePercent: null,
     intents: [{ targetId: "p1", operation: { kind: "power", isOn: true } }],
   }];
+  app.pendingCloudConsent = { utterance: "把客厅空调调到24度", endpoint: "https://api.openai.com" };
 }
 
 interface DeferredTransport {
@@ -155,10 +156,11 @@ function setup(test: TestContext): { app: MenuMijiaWindowsApp; writes: DeviceCom
 }
 
 describe("pending confirmations cannot survive a home/source switch (§13)", () => {
-  it("switchHome clears pendingDiffPreview, pendingRoomGroupConfirm and pendingSuggestions", (test) => {
+  it("switchHome clears all pending confirmations including cloud consent", (test) => {
     const { app } = setup(test);
     armAllPending(app);
     assert.ok(app.pendingDiffPreview && app.pendingRoomGroupConfirm && app.pendingSuggestions.length > 0);
+    assert.ok(app.pendingCloudConsent);
 
     const homeBefore = app.homeRevision;
     switchHome(app);
@@ -166,6 +168,7 @@ describe("pending confirmations cannot survive a home/source switch (§13)", () 
     assert.equal(app.pendingDiffPreview, null, "the diff preview must not survive the home switch");
     assert.equal(app.pendingRoomGroupConfirm, null, "the room-group confirmation must not survive the home switch");
     assert.deepEqual(app.pendingSuggestions, [], "suggestions belong to the previous home's context");
+    assert.equal(app.pendingCloudConsent, null, "cloud consent must not survive the home switch");
     assert.ok(app.homeRevision > homeBefore, "switchHome advances the home level");
   });
 

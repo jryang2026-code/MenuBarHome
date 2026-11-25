@@ -47,6 +47,7 @@ export interface SwitchHomeHost {
   aiProactiveSignature: string | null;
   isRefreshingProactive: boolean;
   proactiveRetryAfterMs: number | null;
+  pendingCloudConsent: { utterance: string; endpoint: string } | null;
   pendingDiffPreview: MenuMijiaWindowsApp["pendingDiffPreview"];
   pendingRoomGroupConfirm: MenuMijiaWindowsApp["pendingRoomGroupConfirm"];
   pendingSuggestions: AssistantSuggestion[];
@@ -128,6 +129,7 @@ export function switchHome(host: SwitchHomeHost): void {
   // A confirmation armed for the previous home must not survive the switch (§13): its confirm
   // click resolves the pending promise with `false` instead of issuing device writes against a
   // device set that no longer exists in the newly selected home.
+  host.pendingCloudConsent = null;
   host.pendingDiffPreview = null;
   host.pendingRoomGroupConfirm = null;
   host.pendingSuggestions = [];
