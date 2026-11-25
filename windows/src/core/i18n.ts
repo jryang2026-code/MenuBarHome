@@ -1127,6 +1127,27 @@ const CATALOG: Readonly<Record<string, readonly [string, string]>> = {
     "Found {count} Home Assistant instances; click one to fill the URL",
   ],
   "已填入地址：{url}": ["已填入地址：{url}", "Filled URL: {url}"],
+  "已停止": ["已停止", "Stopped"],
+  "当前状态": ["当前状态", "Current state"],
+  "场景": ["场景", "Scene"],
+  "执行": ["执行", "Run"],
+  "确认群控「{name}」？（高风险：{devices}）": [
+    "确认群控「{name}」？（高风险：{devices}）",
+    "Control “{name}”? (High-risk: {devices})",
+  ],
+  "确认执行 {count} 项变更（含高风险设备）": [
+    "确认执行 {count} 项变更（含高风险设备）",
+    "Confirm {count} change(s) (includes high-risk)",
+  ],
+  "确认执行 {count} 项设备变更": [
+    "确认执行 {count} 项设备变更",
+    "Confirm {count} device changes",
+  ],
+  "屏幕已锁定，已阻止控制操作": [
+    "屏幕已锁定，已阻止控制操作",
+    "Screen is locked; control blocked",
+  ],
+  "房间群控": ["房间群控", "Room Group"],
 };
 
 /** Every catalog key, for tests and tooling. */

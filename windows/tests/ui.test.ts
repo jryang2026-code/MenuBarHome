@@ -1433,6 +1433,7 @@ describe("Bare category commands (#273)", () => {
   it("关灯 with every light off answers without sending a command", async () => {
     startDemo();
     await command("关掉所有灯");
+    await click("#btn-diff-confirm");
     assert.match(tile("light.living_ceiling"), /已关闭/);
     assert.match(tile("light.study_desk"), /已关闭/);
 
@@ -1575,6 +1576,7 @@ describe("Bare category opens (#274)", () => {
     ]);
     await click('[data-room-id="study"]');
     await command("开灯");
+    await click("#btn-diff-confirm");
     assert.match(tile("light.study_ceiling"), /已开启/);
     assert.match(tile("light.study_desk"), /已开启/);
     const bedroom = app.devices.find((device) => device.id === "light.bedroom_lamp");
@@ -3923,6 +3925,7 @@ describe("Manual habit learning and proactive Top-4 (#113)", () => {
     new MenuMijiaWindowsApp(element("#app"));
     await waitFor(() => !!document.querySelector('[data-body-device="light_ok"]'));
     await command("关闭所有灯");
+    await click("#btn-diff-confirm");
     await waitFor(() => habitEntries().length > 0);
     assert.deepEqual(
       habitEntries().map((e) => [e.targetId, e.operationKey]),

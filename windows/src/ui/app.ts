@@ -134,6 +134,8 @@ import {
 } from "./sensorHistoryView.js";
 import { applyGlobalHotkey, applyInterfaceLanguage, applyTemperatureSetting, bindGlobalKeys, bindLifecycleRecovery, checkForAppUpdate, disposeAppLifecycle, hasAnyConnectedOrSelectedDataSource, initializeCredentials, openSettingsSheet, openUpdatePage, restoreUpdateState, retryIdentityMigration, saveSettings, signOutXiaomiAccount, startTimerLoop, startUpdateInstall, submitServiceEndpoints, syncAutomationLifecycle, syncTimerLoopSchedule } from "./appLifecycle.js";
 import { handleNaturalCommand, runScheduledCommand } from "./naturalCommand.js";
+import type { AssistantDiffPreview } from "../core/assistantDiffPreview.js";
+import type { PendingRoomGroupConfirm } from "./roomGroupActions.js";
 import { currentProactiveSuggestions, maybeRefreshProactiveInBackground } from "./proactive.js";
 import { SourceEpoch } from "./sourceEpoch.js";
 import { switchHome, switchSource } from "./sourceSwitch.js";
@@ -501,6 +503,10 @@ export class MenuMijiaWindowsApp {
   public groupOwnerByMemberDid = new Map<string, string>();
   /** A command waiting for the user to allow sending it to a cloud AI service (#20). */
   public pendingCloudConsent: { utterance: string; endpoint: string } | null = null;
+  /** Inline omnibar diff preview awaiting Confirm/Cancel for multi-device or high-risk commands. */
+  public pendingDiffPreview: AssistantDiffPreview | null = null;
+  /** Single-batch high-risk confirmation for room auto-group actions. */
+  public pendingRoomGroupConfirm: PendingRoomGroupConfirm | null = null;
   /** AI guesses that wait for a tap instead of running by themselves (#21). */
   public pendingSuggestions: AssistantSuggestion[] = [];
   /** AI-ranked proactive suggestions for the current ambient signature (#113). */
@@ -558,6 +564,8 @@ export class MenuMijiaWindowsApp {
     this.aiProactiveSignature = null;
     this.aiProactiveSuggestions = null;
     this.pendingCloudConsent = null;
+    this.pendingDiffPreview = null;
+    this.pendingRoomGroupConfirm = null;
     this.pendingSuggestions = [];
   }
   /** Advances on every source switch; read widely, including by `core/` through structural hosts. */
@@ -1437,9 +1445,10 @@ export class MenuMijiaWindowsApp {
     );
   }
 
-  public async handleNaturalCommand(rawInput: string, fromScheduled = false): Promise<void> {
+  public async handleNaturalCommand(rawInput: string, fromScheduled = false, preferDiffPreview = false): Promise<void> {
     if (!isInsideScheduledTimerTick() && (await rejectIfControlBlockedWhileLocked(this))) return;
-    return handleNaturalCommand(this, rawInput, fromScheduled);
+    if (this.pendingRoomGroupConfirm) this.pendingRoomGroupConfirm = null;
+    return handleNaturalCommand(this, rawInput, fromScheduled, preferDiffPreview);
   }
 
   public async runScheduledCommand(item: ScheduledCommand, userInitiated = false): Promise<void> {
@@ -1752,7 +1761,7 @@ export class MenuMijiaWindowsApp {
     this.render();
   }
 
-  public get applyCommand(): (command: DeviceCommand, readBackPower?: boolean, userInitiated?: boolean) => Promise<boolean> {
+  public get applyCommand(): ReturnType<typeof getHostApplyCommand> {
     return getHostApplyCommand(this);
   }
 

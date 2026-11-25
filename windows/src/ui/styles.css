@@ -6962,3 +6962,81 @@ html.is-settings-window[data-native-backdrop="mica"] .cc-popover.scheme-light .c
   .cc-home-summary-pill,
   .cc-long-tail-pill, .cc-offline-drawer-toggle, .cc-offline-drawer-chevron { transition-duration: 0ms !important; }
 }
+
+/* Room auto-group capsules & inline omnibar diff preview (W2B-7 / P1-7) */
+.cc-room-group-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow-x: auto;
+  padding: 2px 0 6px;
+  scrollbar-width: none;
+}
+.cc-room-group-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.cc-room-group-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid var(--cc-border, rgba(128, 128, 128, 0.22));
+  background: var(--cc-surface-subtle, rgba(128, 128, 128, 0.08));
+  color: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.cc-room-group-pill.is-on {
+  border-color: var(--cc-accent, #0a84ff);
+  background: color-mix(in srgb, var(--cc-accent, #0a84ff) 14%, transparent);
+}
+.cc-room-group-meta {
+  font-weight: 500;
+  opacity: 0.85;
+  font-variant-numeric: tabular-nums;
+}
+.cc-room-group-slider {
+  width: 64px;
+  accent-color: var(--cc-accent, #0a84ff);
+}
+.cc-diff-preview-card {
+  margin-top: 6px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--cc-border, rgba(128, 128, 128, 0.22));
+  background: var(--cc-surface-subtle, rgba(128, 128, 128, 0.08));
+  font-size: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.cc-diff-preview-card.is-high-risk {
+  border-color: rgba(255, 149, 0, 0.55);
+}
+.cc-diff-preview-title {
+  font-weight: 600;
+}
+.cc-diff-preview-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.cc-diff-preview-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+.cc-diff-preview-row.is-high-risk .cc-diff-preview-change {
+  color: #ff9500;
+}
+.cc-diff-preview-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}

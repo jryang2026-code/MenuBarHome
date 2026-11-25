@@ -14,6 +14,7 @@ interface LightSpec {
   isOn: boolean;
   brightnessPercent: number | null;
   colorTempKelvin: number | null;
+  hueDegrees?: number | null;
   readonly minKelvin: number;
   readonly maxKelvin: number;
   currentEffect: string | null;

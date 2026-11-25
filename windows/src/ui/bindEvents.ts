@@ -1,4 +1,10 @@
 import { cancelScheduledCommands, confirmMissedScheduledCommand } from "./scheduledCommands.js";
+import {
+  cancelPendingDiffPreview,
+  confirmPendingDiffPreview,
+  executeRoomGroupAction,
+  visibleRoomAutoGroups,
+} from "./roomGroupActions.js";
 import { confirmDelayedSuggestion } from "./naturalCommand.js";
 import {
   IntentReply,
@@ -930,6 +936,40 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
       host.render();
     });
 
+    host.root.querySelector("#btn-diff-confirm")?.addEventListener("click", () => {
+      void confirmPendingDiffPreview(host);
+    });
+    host.root.querySelector("#btn-diff-cancel")?.addEventListener("click", () => {
+      cancelPendingDiffPreview(host);
+    });
+    host.root.querySelector("#btn-room-group-confirm")?.addEventListener("click", () => {
+      const pending = host.pendingRoomGroupConfirm;
+      if (!pending || pending.sourceRevision !== host.sourceRevision) {
+        host.pendingRoomGroupConfirm = null;
+        host.render();
+        return;
+      }
+      void executeRoomGroupAction(host, pending.group, pending.action, true);
+    });
+    host.root.querySelector("#btn-room-group-cancel")?.addEventListener("click", () => {
+      host.pendingRoomGroupConfirm = null;
+      host.render();
+    });
+    host.root.querySelectorAll<HTMLElement>("[data-room-group-toggle]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const groupId = btn.dataset.roomGroupToggle;
+        const group = visibleRoomAutoGroups(host).find((g) => g.id === groupId);
+        if (group) void executeRoomGroupAction(host, group, { kind: "toggle" });
+      });
+    });
+    host.root.querySelectorAll<HTMLInputElement>("[data-room-group-brightness]").forEach((slider) => {
+      slider.addEventListener("change", () => {
+        const groupId = slider.dataset.roomGroupBrightness;
+        const group = visibleRoomAutoGroups(host).find((g) => g.id === groupId);
+        if (group) void executeRoomGroupAction(host, group, { kind: "brightness", percent: Number(slider.value) });
+      });
+    });
+
     host.root.querySelector("#btn-empty-resync")?.addEventListener("click", () => {
       void host.refreshDevices(false, true);
     });
@@ -989,6 +1029,7 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
       btn.addEventListener("click", () => {
         const suggestion = host.pendingSuggestions.find((s) => s.id === btn.dataset.suggestionId);
         if (!suggestion) return;
+        host.pendingDiffPreview = null;
         host.pendingSuggestions = host.pendingSuggestions.filter((s) => s.id !== suggestion.id);
         if (host.settings.connectionMode !== "demo" || isDualSourceEnabled(host)) {
           const gateMsg = evaluateIntentsWriteGate({

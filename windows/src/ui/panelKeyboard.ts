@@ -4,6 +4,7 @@ import { collapseActivityStackOnHide, classicStackForcedExpanded } from "./activ
 import type { MenuMijiaWindowsApp } from "./app.js";
 import { closeConnectionsAndDiagModal, isConnectionsAndDiagModalOpen } from "./connectionsAndDiagView.js";
 import { handleSettingsSheetEscape } from "./settingsEvents.js";
+import { cancelPendingDiffPreview } from "./roomGroupActions.js";
 import {
   dismissPendingUrlConfirmation,
   hasPendingUrlConfirmation,
@@ -119,7 +120,7 @@ export function submitPanelInput(host: MenuMijiaWindowsApp, forceCommand = false
     const restoreFocus = document.activeElement === liveInput;
     if (input) input.value = "";
     if (liveInput) liveInput.value = "";
-    void host.handleNaturalCommand(query).finally(() => {
+    void host.handleNaturalCommand(query, false, true).finally(() => {
       if (!restoreFocus || document.activeElement !== null && document.activeElement !== document.body && document.activeElement !== liveInput) return;
       host.root.querySelector<HTMLInputElement>("#command-input")?.focus({ preventScroll: true });
     });
@@ -330,6 +331,17 @@ export function handlePanelKey(host: MenuMijiaWindowsApp, event: KeyboardEvent):
     if (host.isEditingLayout) {
       event.preventDefault();
       host.stopEditing();
+      return true;
+    }
+    if (host.pendingDiffPreview !== null) {
+      event.preventDefault();
+      cancelPendingDiffPreview(host);
+      return true;
+    }
+    if (host.pendingRoomGroupConfirm !== null) {
+      event.preventDefault();
+      host.pendingRoomGroupConfirm = null;
+      host.render();
       return true;
     }
     if (host.pendingHighRisk !== null) {
