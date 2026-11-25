@@ -2826,7 +2826,7 @@ struct MenuBarPanelControllerTests {
         controller.isApplicationActiveProvider = { simulatedActive }
         controller.activateApplicationForTextInput = { activations += 1 }
         controller.showPanel()
-        let panel = try #require(controller.panelWindow as? MenuBarPanel)
+        let panel = try #require(controller.panelWindow)
 
         // When `presentsActively` is false (headless test mode), activation stays suppressed.
         let textView = NSTextView(frame: NSRect(x: 0, y: 0, width: 120, height: 24))

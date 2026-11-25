@@ -365,6 +365,11 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
         } else {
             guard let store, store.enableGlobalHotkey else { return }
             toggleMenuBarExtraWindow()
+            let isVisible = MenuBarPanelController.shared.isPanelVisible
+            HotkeyHUDController.shared.show(
+                title: L10n.tr("控制中心", "Control Center"),
+                result: isVisible ? .on : .off
+            )
         }
     }
 
@@ -588,6 +593,7 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
 
     /// Performs a routed key; returns whether the panel consumed the event.
     private func perform(_ action: PanelKeyRouter.Action, store: HomeStore) -> Bool {
+        (NSApp.keyWindow as? MenuBarPanel)?.input.record(action)
         switch action {
         case .passThrough:
             return false

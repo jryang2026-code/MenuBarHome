@@ -73,7 +73,7 @@ final class MenuBarPanelController: NSObject {
     static let heightResizeDuration: TimeInterval = 0.2
 
     private(set) var statusItem: NSStatusItem?
-    private(set) var panelWindow: NSPanel?
+    private(set) var panelWindow: MenuBarPanel?
     /// Theme of the root view currently installed in `panelWindow`; nil until the first open.
     private(set) var hostedPanelTheme: PanelTheme?
     /// Owned by the readability-shadow code; the presentation extension reads it while animating.
@@ -1006,13 +1006,11 @@ final class MenuBarPanelController: NSObject {
     // MARK: - Panel Content
 
     /// Creates the window on demand and records it. Presentation only reads `panelWindow`.
-    func ensurePanelWindow(theme: PanelTheme) -> NSPanel {
+    func ensurePanelWindow(theme: PanelTheme) -> MenuBarPanel {
         if let panelWindow { return panelWindow }
         let panel = Self.makePanel(theme: theme)
-        if let menuBarPanel = panel as? MenuBarPanel {
-            menuBarPanel.onTextInputFocused = { [weak self] in
-                self?.activateForTextInputIfNeeded()
-            }
+        panel.onTextInputFocused = { [weak self] in
+            self?.activateForTextInputIfNeeded()
         }
         panelWindow = panel
         installPanelGeometryObservers(for: panel)
@@ -1055,6 +1053,7 @@ final class MenuBarPanelController: NSObject {
                 theme: theme,
                 adaptiveProbe: theme == .liquidGlass ? panelAdaptiveHeightProbe : nil
             )
+            .environment(\.panelInput, panel.input)
         )
         hosting.sizingOptions = []
         hosting.frame = NSRect(origin: .zero, size: panel.frame.size)

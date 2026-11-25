@@ -63,6 +63,7 @@ enum SettingsAnchor: String, CaseIterable, Hashable, Sendable {
     case climatePanelModule
 
     // 安全与提醒
+    case hideFromScreenSharing
     case blockControlWhileLocked
     case safetyAlerts
     case sensorAlerts
@@ -101,7 +102,7 @@ enum SettingsAnchor: String, CaseIterable, Hashable, Sendable {
         case .askWhenUnsure, .confidenceThreshold, .assistantEnable, .assistantProvider, .assistantRemoveProvider,
              .assistantAPIKey, .assistantTest, .proactiveSuggestions, .habitMemory:
             return .assistant
-        case .blockControlWhileLocked, .safetyAlerts, .sensorAlerts, .alertsOnlyWhenAway,
+        case .hideFromScreenSharing, .blockControlWhileLocked, .safetyAlerts, .sensorAlerts, .alertsOnlyWhenAway,
              .doorbellAutoView, .doorbellChime, .doorbellAutoCloseSeconds, .notificationPermission,
              .allOffScope, .advancedDeviceWrites, .allowURLControl, .spotlightIndex:
             return .privacy
@@ -409,6 +410,9 @@ enum SettingsSearch {
                   zhTitle: "空调使用整行面板模块", enTitle: "Full-Width Climate Panel",
                   synonyms: ["空调", "整行", "高级显示", "climate", "module", "full width", "panel module"]),
 
+            entry(.hideFromScreenSharing, section: safetySection,
+                  zhTitle: "投屏隐私", enTitle: "Screen sharing privacy",
+                  synonyms: ["共享屏幕", "隐藏面板", "hide from screen sharing"]),
             entry(.blockControlWhileLocked, section: safetySection,
                   zhTitle: "锁屏时禁止控制设备", enTitle: "Block Device Control While Locked",
                   synonyms: ["锁屏", "禁止控制", "安全", "lock", "locked", "block", "security"]),

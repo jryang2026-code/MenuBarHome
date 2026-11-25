@@ -1488,7 +1488,7 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
         return image
     }
 
-    private func makePanel() -> CameraFloatingPanel {
+    func makePanel(sharingPrivacy: ScreenSharingPrivacy = .shared) -> CameraFloatingPanel {
         let panel = CameraFloatingPanel(
             contentRect: NSRect(origin: .zero, size: Self.expandedSize),
             styleMask: [.borderless, .resizable, .nonactivatingPanel],
@@ -1504,6 +1504,7 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
         panel.backgroundColor = .clear
         panel.hasShadow = true
         panel.isMovableByWindowBackground = true
+        sharingPrivacy.register(panel)
         panel.minSize = NSSize(width: CameraLivePanelMetrics.compactWidth, height: 204)
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         panel.delegate = self
