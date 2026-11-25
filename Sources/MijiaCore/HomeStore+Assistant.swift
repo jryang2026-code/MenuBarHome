@@ -1499,9 +1499,11 @@ extension HomeStore {
             // Losing a timer to a crash mid-execution is the safer failure for hardware.
             self.finishScheduledTask(entry.id, token: token)
             guard self.commitScheduledCommands(waiting: self.scheduledCommands.filter { $0.id != entry.id }) else { return }
-            _ = await self.executeIntentPlan(
-                entry.plan, recordedUtterance: nil, origin: .scheduled, timerGeneration: generation
-            )
+            await MiCloudClient.$isBackgroundWrite.withValue(true) {
+                _ = await self.executeIntentPlan(
+                    entry.plan, recordedUtterance: nil, origin: .scheduled, timerGeneration: generation
+                )
+            }
         }
     }
 

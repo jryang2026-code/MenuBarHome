@@ -70,6 +70,7 @@ enum ControlFailure: Sendable {
         if error is ManualWriteNeedsCoverConfirmation { return .coverNeedsConfirmation }
         if error is ManualWriteNeedsFacetConfirmation { return .facetNeedsConfirmation }
         if let cloud = error as? MiCloudError {
+            if MiCloudClient.isRateLimitError(cloud) { return .rateLimited }
             switch cloud {
             case .notLoggedIn:
                 return .signedOut

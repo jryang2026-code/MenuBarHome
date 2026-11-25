@@ -59,6 +59,6 @@ extension MiCloudClient {
         _ = try await request("\(Self.sceneAPI)/NewRunScene", data: .object([
             "scene_id": .string(scene.id), "scene_type": .number(2), "phone_id": .string("null"),
             "home_id": .string(scene.homeId), "owner_uid": Self.miIdValue(scene.ownerUid),
-        ]))
+        ]), userWrite: true)
     }
 }
