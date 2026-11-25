@@ -193,6 +193,9 @@ extension HomeStore {
             task.cancel()
         }
         debounceTasks.removeAll()
+        for flight in activeSliderWrites.values { flight.task.cancel() }
+        activeSliderWrites.removeAll()
+        debouncedWrites.removeAll()
         undoTimerTask?.cancel()
         undoTimerTask = nil
         miSessionExpiryTimerTask?.cancel()

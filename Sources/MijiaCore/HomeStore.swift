@@ -1126,6 +1126,8 @@ public final class HomeStore {
     @ObservationIgnored var lastPanelInteractionAt = Date()
     var pollingContextSync: Task<Void, Never>?
     var debounceTasks: [String: Task<Void, Never>] = [:]
+    @ObservationIgnored var controlSliderNow: () -> ContinuousClock.Instant = { .now }
+    @ObservationIgnored var activeSliderWrites: [String: (token: UUID, context: UUID, task: Task<Void, Never>)] = [:]
     struct DebouncedWriteState {
         let token: UUID
         let deviceId: String
@@ -1134,6 +1136,7 @@ public final class HomeStore {
         /// longer be sent can put back exactly what it showed.
         let revision: UInt64
         let fields: Set<OptimisticField>
+        let send: @MainActor (DebouncedWriteState) async -> Void
     }
     var debouncedWrites: [String: DebouncedWriteState] = [:]
     struct ManualWritePatch {
