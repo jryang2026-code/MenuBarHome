@@ -2825,15 +2825,15 @@ private struct PrivacySettingsTab: View {
                         Button(L10n.tr("取消", "Cancel"), role: .cancel) {}
                     } message: {
                         Text(L10n.tr(
-                            "任何能打开链接的网页或 App 都可以直接开关灯、空调等普通设备。门锁、阀门、加热等高风险设备和锁屏拦截仍会照常确认。",
-                            "Any web page or app that can open a link will be able to switch lights, air conditioners and other standard devices. Locks, valves, heaters and the screen-lock block still ask as usual."
+                            "任何能打开链接的网页或 App 都可以直接执行：单个设备的开关里，门锁、阀门、加热等高风险设备仍会单独确认；场景和 Home Assistant 脚本会直接运行，不再逐次确认。开启「锁屏时禁止控制设备」时，锁屏期间的链接会被拦截。",
+                            "Any web page or app that can open a link will run it directly. Switching a single high-risk device (locks, valves, heaters) still asks; scenes and Home Assistant scripts run without asking. With “Block device control while locked” on, links are blocked while the screen is locked."
                         ))
                     }
 
                     Label(
                         L10n.tr(
-                            "外部链接可跳过列表确认直接控制普通设备；门锁、阀门等高风险设备与锁屏拦截始终生效",
-                            "External links skip the list confirmation for standard devices; locks, valves and other high-risk devices and the screen-lock block always still apply"
+                            "外部链接将跳过确认直接执行；单个高风险设备的开关仍会确认，场景与 HA 脚本不会",
+                            "External links run without confirmation; switching a single high-risk device still asks, scenes and HA scripts do not"
                         ),
                         systemImage: "exclamationmark.triangle.fill"
                     )

@@ -90,13 +90,13 @@ enum EmptyPanelDiagnosisPresenter {
     /// a Home Assistant-only user is never sent to the Mi Home app.
     @MainActor
     static func syncedButEmptyDetail(store: HomeStore) -> String {
-        if store.isDualSourceActive {
+        if store.hasEnabledHASource && store.hasEnabledMiSource {
             return L10n.tr(
                 "米家和 Home Assistant 都没有返回可显示的设备。请在手机米家 App 确认家庭里有设备，并检查 Home Assistant 实体是否已启用。仍然为空，请在设置里「复制诊断信息」反馈。",
                 "Neither Xiaomi Home nor Home Assistant returned devices to show. Check that your homes have devices in the Mi Home app and that the Home Assistant entities are enabled. If it is still empty, use Copy Diagnostics in Settings and report it."
             )
         }
-        if store.homeBackend == .homeAssistant {
+        if store.hasEnabledHASource {
             return L10n.tr(
                 "Home Assistant 没有返回可控制的设备。请确认令牌所属用户能看到这些实体，且实体已启用。仍然为空，请在设置里「复制诊断信息」反馈。",
                 "Home Assistant returned no controllable devices. Check that the token's user can see the entities and that they are enabled. If it is still empty, use Copy Diagnostics in Settings and report it."

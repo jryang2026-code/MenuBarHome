@@ -463,7 +463,7 @@ const CATALOG: Readonly<Record<string, readonly [string, string]>> = {
   "已允许发送到：{endpoints}": ["已允许发送到：{endpoints}", "Allowed to send to: {endpoints}"],
   "撤销授权（下次发往云端前再问）": ["撤销授权（下次发往云端前再问）", "Revoke (ask again before the next cloud request)"],
   "「全关」包含哪些设备（插座、扫地机默认不包含）": ["「全关」包含哪些设备（插座、扫地机默认不包含）", "Devices included in “All off” (plugs and vacuums are excluded by default)"],
-  "自动记住自然语言习惯（相同表达下次 0ms 本地直达）": ["自动记住自然语言习惯（相同表达下次 0ms 本地直达）", "Remember phrasing (the same words run locally in 0 ms next time)"],
+  "自动记住自然语言习惯（相同说法下次直接在本地执行）": ["自动记住自然语言习惯（相同说法下次直接在本地执行）", "Remember phrasing (the same words run locally next time)"],
   "发送习惯摘要（只包含这句话点名的设备）": ["发送习惯摘要（只包含这句话点名的设备）", "Share habit summary (only devices this command names)"],
   "预览这句话会发送的习惯摘要": ["预览这句话会发送的习惯摘要", "Preview the habit summary this sentence would send"],
   "不会发送习惯摘要": ["不会发送习惯摘要", "Nothing from your habits is sent."],

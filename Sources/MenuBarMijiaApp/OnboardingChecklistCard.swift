@@ -160,7 +160,9 @@ struct OnboardingChecklistCard: View {
             }
         }
         .themedPillButtonStyle(theme, isSelected: true, tintColor: .accentColor)
-        .accessibilityLabel(Text(L10n.tr("开启登录 Mac 时自动启动", "Turn on Launch at Login")))
+        .accessibilityLabel(Text(store.launchAtLoginPolicy.needsManualApproval
+            ? L10n.tr("去系统设置开启登录时自动启动", "Open System Settings to turn on Launch at Login")
+            : L10n.tr("开启登录 Mac 时自动启动", "Turn on Launch at Login")))
         .panelHelp(launchAtLoginDetail)
     }
 

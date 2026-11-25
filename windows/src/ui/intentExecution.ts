@@ -367,6 +367,9 @@ function isSequentialBulkSource(sourceLabel: string): boolean {
     normalized === "turn all off" ||
     normalized === "0ms 本地直达" ||
     normalized === "本地直达" ||
+    normalized === "本地直達" ||
+    normalized === "0ms 本地直達" ||
+    normalized === "0 ms local" ||
     normalized === "local" ||
     normalized === "instant local"
   );

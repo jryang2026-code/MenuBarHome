@@ -235,6 +235,7 @@ struct EnergySettingsSection: View {
                     Button(L10n.tr("清除", "Clear")) {
                         history.setPricePerKwh(nil)
                         seedPriceDraft()
+                        priceRejected = false
                     }
                     .buttonStyle(PillActionButtonStyle())
                 }
@@ -332,6 +333,7 @@ struct EnergySettingsSection: View {
             history.setPricePerKwh(nil)
         } else if let price = Double(normalized), price.isFinite, price > 0 {
             history.setPricePerKwh(price)
+            priceRejected = false
         } else {
             seedPriceDraft()
             priceRejected = true

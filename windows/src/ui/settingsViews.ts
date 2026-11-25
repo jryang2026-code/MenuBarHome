@@ -1176,7 +1176,7 @@ function renderAssistantPanel(ctx: SettingsViewContext): string {
     <div class="cc-field" data-settings-anchor="habitMemory">
       <label class="cc-checkbox">
         <input type="checkbox" id="settings-habit" ${ctx.settings.habitLearningEnabled ? "checked" : ""} />
-        <span>${t("自动记住自然语言习惯（相同表达下次 0ms 本地直达）")}</span>
+        <span>${t("自动记住自然语言习惯（相同说法下次直接在本地执行）")}</span>
       </label>
       <div data-settings-anchor="habitShare">
         <label class="cc-checkbox">
