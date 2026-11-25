@@ -73,6 +73,10 @@ export class LocalMiIO {
     }
   }
 
+  canRoute(did: string): boolean {
+    return this.endpoint(did) !== undefined;
+  }
+
   private endpoint(did: string): Endpoint | undefined {
     const endpoint = this.#endpoints.get(did);
     if (!endpoint) return undefined;

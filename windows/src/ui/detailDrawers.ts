@@ -11,7 +11,13 @@ import {
   type SpeakerTextMode,
 } from "../core/miCloud/speakerActions.js";
 import { facetValue, formatReading } from "../core/miotFacetText.js";
-import { renderLiquidGlassSlider, syncLiquidGlassSlider } from "./liquidGlassSlider.js";
+import {
+  consumeSliderLiveValue,
+  markSliderLiveValue,
+  renderLiquidGlassSlider,
+  syncLiquidGlassSlider,
+} from "./liquidGlassSlider.js";
+import { sliderIsHighRisk, sliderUsesLAN, submitSliderWrite } from "./commandDispatch.js";
 import {
   applianceFaultNotice,
   applianceModeStartsHeating,
@@ -676,7 +682,12 @@ export function bindDetailDrawerEvents(
         slider.value = String(Math.round(dev.kind.positionPercent ?? 0));
         return;
       }
-      void host.executeSingleCommand(dev, command, summary);
+      void submitSliderWrite(host, {
+        slotKey: `${dev.id}.coverpos`,
+        device: dev,
+        command,
+        summary,
+      });
     });
   });
 
@@ -935,6 +946,91 @@ function bindCollapsedInlineSliders(
       slider.addEventListener("click", (e) => {
         e.stopPropagation();
       });
+      const resolveInlineCommand = (): {
+        readonly slotKey: string;
+        readonly dev: SmartDevice;
+        readonly value: number;
+        readonly command: DeviceCommand;
+        readonly summary: string;
+        readonly intent?: DeviceIntent;
+        readonly isCover?: boolean;
+      } | null => {
+        const id = slider.dataset.inlineSlider ?? "";
+        const dev = host.devices.find((d) => d.id === id);
+        if (!dev || !dev.isOnline) return null;
+        if (
+          slider.dataset.inlineBrightness &&
+          dev.kind.kind === "light" &&
+          dev.kind.brightnessWritable !== false
+        ) {
+          const percent = Math.max(1, Math.min(100, Math.round(Number(slider.value))));
+          return {
+            slotKey: `${dev.id}.brightness`,
+            dev,
+            value: percent,
+            command: { kind: "setLightBrightness", entityId: dev.kind.entityId, percent },
+            summary: t("已将{name}亮度设为 {percent}%", { name: dev.name, percent }),
+            intent: { targetId: dev.id, operation: { kind: "brightness", percent } },
+          };
+        }
+        if (slider.dataset.inlineCoverpos && dev.kind.kind === "cover" && dev.kind.positionWritable) {
+          const clamped = Math.max(0, Math.min(100, Math.round(Number(slider.value))));
+          const displayed = snapCoverPosition(clamped);
+          return {
+            slotKey: `${dev.id}.coverpos`,
+            dev,
+            value: clamped,
+            command: { kind: "setNumberValue", entityId: dev.kind.entityId, value: clamped },
+            summary: t("已将{name}位置设为 {percent}%", { name: dev.name, percent: displayed }),
+            isCover: true,
+          };
+        }
+        if (
+          slider.dataset.inlineFanpercent &&
+          dev.kind.kind === "fan" &&
+          dev.kind.speedWritable !== false
+        ) {
+          const percent = Math.max(1, Math.min(100, Math.round(Number(slider.value))));
+          return {
+            slotKey: `${dev.id}.fanpercent`,
+            dev,
+            value: percent,
+            command: { kind: "setFanPercentage", entityId: dev.kind.entityId, percent },
+            summary: t("已将{name}风速设为 {speed}", { name: dev.name, speed: `${percent}%` }),
+          };
+        }
+        if (
+          slider.dataset.inlineHumidity &&
+          dev.kind.kind === "humidifier" &&
+          dev.kind.humidityWritable
+        ) {
+          const min = dev.kind.minHumidity;
+          const max = Math.max(min + 1, dev.kind.maxHumidity);
+          const percent = Math.max(min, Math.min(max, Math.round(Number(slider.value))));
+          return {
+            slotKey: `${dev.id}.humidity`,
+            dev,
+            value: percent,
+            command: { kind: "setHumidity", entityId: dev.kind.entityId, percent },
+            summary: t("已将{name}目标湿度设为 {percent}%", { name: dev.name, percent }),
+          };
+        }
+        if (
+          slider.dataset.inlineVolume &&
+          (dev.kind.kind === "speaker" || dev.kind.kind === "tv") &&
+          dev.kind.volumeWritable
+        ) {
+          const percent = Math.max(0, Math.min(100, Math.round(Number(slider.value))));
+          return {
+            slotKey: `${dev.id}.volume`,
+            dev,
+            value: percent,
+            command: { kind: "mediaSetVolume", entityId: dev.kind.mediaEntityId, level: percent / 100 },
+            summary: t("已将{name}音量设为 {percent}%", { name: dev.name, percent }),
+          };
+        }
+        return null;
+      };
       slider.addEventListener("input", () => {
         host.pointerIsDown = true;
         const min = Number(slider.min || "0");
@@ -954,6 +1050,23 @@ function bindCollapsedInlineSliders(
             fillEl.style.setProperty("--fill-scale", (pct / 100).toFixed(3));
           }
         }
+        const resolved = resolveInlineCommand();
+        if (
+          resolved &&
+          !resolved.isCover &&
+          !sliderIsHighRisk(host, resolved.dev) &&
+          sliderUsesLAN(host, resolved.command, resolved.dev)
+        ) {
+          markSliderLiveValue(slider, resolved.value);
+          void submitSliderWrite(host, {
+            slotKey: resolved.slotKey,
+            device: resolved.dev,
+            command: resolved.command,
+            summary: resolved.summary,
+            intent: resolved.intent,
+            isLiveInput: true,
+          });
+        }
       });
       slider.addEventListener("change", () => {
         host.pointerIsDown = false;
@@ -962,92 +1075,37 @@ function bindCollapsedInlineSliders(
             host.queueBackgroundRender();
           }
         });
-        const id = slider.dataset.inlineSlider ?? "";
-        const dev = host.devices.find((d) => d.id === id);
-        if (!dev || !dev.isOnline) return;
-        if (
-          slider.dataset.inlineBrightness &&
-          dev.kind.kind === "light" &&
-          dev.kind.brightnessWritable !== false
-        ) {
-          const percent = Math.max(1, Math.min(100, Math.round(Number(slider.value))));
-          void host.executeSingleCommand(
-            dev,
-            { kind: "setLightBrightness", entityId: dev.kind.entityId, percent },
-            t("已将{name}亮度设为 {percent}%", { name: dev.name, percent }),
-            { targetId: dev.id, operation: { kind: "brightness", percent } },
-          );
-          return;
-        }
-        if (slider.dataset.inlineCoverpos && dev.kind.kind === "cover" && dev.kind.positionWritable) {
-          const clamped = Math.max(0, Math.min(100, Math.round(Number(slider.value))));
-          const displayed = snapCoverPosition(clamped);
-          const command: DeviceCommand = {
-            kind: "setNumberValue",
-            entityId: dev.kind.entityId,
-            value: clamped,
-          };
-          const summary = t("已将{name}位置设为 {percent}%", {
-            name: dev.name,
-            percent: displayed,
-          });
+        const resolved = resolveInlineCommand();
+        if (!resolved) return;
+        if (resolved.isCover && resolved.dev.kind.kind === "cover") {
           // A garage door hides this inline slider; a window opener or airer shows it and asks the
           // same way its motor buttons do when the drag opens. The prompt names the value that will
           // be sent, not the snapped one the row shows.
           if (
-            coverPositionRequiresConfirmation(dev.kind.subtype, dev.kind.positionPercent, clamped) &&
+            coverPositionRequiresConfirmation(
+              resolved.dev.kind.subtype,
+              resolved.dev.kind.positionPercent,
+              resolved.value,
+            ) &&
             !confirmHighRisk(
-              dev.id,
-              command,
-              t("将{name}位置调到 {percent}%", { name: dev.name, percent: clamped }),
+              resolved.dev.id,
+              resolved.command,
+              t("将{name}位置调到 {percent}%", { name: resolved.dev.name, percent: resolved.value }),
             )
           ) {
-            slider.value = String(Math.round(dev.kind.positionPercent ?? 0));
+            slider.value = String(Math.round(resolved.dev.kind.positionPercent ?? 0));
             return;
           }
-          void host.executeSingleCommand(dev, command, summary);
+        } else if (consumeSliderLiveValue(slider, resolved.value)) {
           return;
         }
-        if (
-          slider.dataset.inlineFanpercent &&
-          dev.kind.kind === "fan" &&
-          dev.kind.speedWritable !== false
-        ) {
-          const percent = Math.max(1, Math.min(100, Math.round(Number(slider.value))));
-          void host.executeSingleCommand(
-            dev,
-            { kind: "setFanPercentage", entityId: dev.kind.entityId, percent },
-            t("已将{name}风速设为 {speed}", { name: dev.name, speed: `${percent}%` }),
-          );
-          return;
-        }
-        if (
-          slider.dataset.inlineHumidity &&
-          dev.kind.kind === "humidifier" &&
-          dev.kind.humidityWritable
-        ) {
-          const min = dev.kind.minHumidity;
-          const max = Math.max(min + 1, dev.kind.maxHumidity);
-          const percent = Math.max(min, Math.min(max, Math.round(Number(slider.value))));
-          void host.executeSingleCommand(
-            dev,
-            { kind: "setHumidity", entityId: dev.kind.entityId, percent },
-            t("已将{name}目标湿度设为 {percent}%", { name: dev.name, percent }),
-          );
-          return;
-        }
-        if (
-          slider.dataset.inlineVolume &&
-          (dev.kind.kind === "speaker" || dev.kind.kind === "tv") &&
-          dev.kind.volumeWritable
-        ) {
-          const percent = Math.max(0, Math.min(100, Math.round(Number(slider.value))));
-          void host.executeSingleCommand(
-            dev,
-            { kind: "mediaSetVolume", entityId: dev.kind.mediaEntityId, level: percent / 100 },
-            t("已将{name}音量设为 {percent}%", { name: dev.name, percent }),
-          );
-        }
+        void submitSliderWrite(host, {
+          slotKey: resolved.slotKey,
+          device: resolved.dev,
+          command: resolved.command,
+          summary: resolved.summary,
+          intent: resolved.intent,
+        });
       });
     });
 }
