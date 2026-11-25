@@ -1458,17 +1458,26 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
 
         var req = XiaomiCameraBridge.authorizedURLRequest(for: targetURL)
         req.cachePolicy = .reloadIgnoringLocalCacheData
-        if req.value(forHTTPHeaderField: "Authorization") == nil,
-           let store, store.deviceBackend(for: currentDevice?.id ?? "") == .homeAssistant,
-           targetURL.query?.contains("token=") != true,
-           HAPlaintextConsent.matchesServerOrigin(targetURL, serverBaseURL: store.serverURLString),
-           HAPlaintextConsent.allowsToken(to: targetURL.absoluteString, defaults: store.userDefaults) {
-            let token = store.loadHAToken().trimmingCharacters(in: .whitespacesAndNewlines)
-            if !token.isEmpty {
-                req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        let result: (Data, URLResponse)?
+        if let store, store.deviceBackend(for: currentDevice?.id ?? "") == .homeAssistant {
+            let baseURL = store.serverURLString
+            let plaintextAllowed = HAPlaintextConsent.allowsToken(to: baseURL, defaults: store.userDefaults)
+            if req.value(forHTTPHeaderField: "Authorization") == nil,
+               targetURL.query?.contains("token=") != true,
+               HAPlaintextConsent.matchesServerOrigin(targetURL, serverBaseURL: baseURL),
+               plaintextAllowed {
+                let token = store.loadHAToken().trimmingCharacters(in: .whitespacesAndNewlines)
+                if !token.isEmpty {
+                    req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+                }
             }
+            result = try? await HAPlaintextConsent.pinnedData(
+                for: req, serverBaseURL: baseURL, plaintextAllowed: plaintextAllowed
+            )
+        } else {
+            result = try? await snapshotSession.data(for: req)
         }
-        guard let (data, resp) = try? await snapshotSession.data(for: req),
+        guard let (data, resp) = result,
               let http = resp as? HTTPURLResponse,
               (200..<300).contains(http.statusCode),
               let image = NSImage(data: data) else {

@@ -221,35 +221,6 @@ protocol HAWebSocketConnection: AnyObject, Sendable {
     func cancel()
 }
 
-private final class URLSessionHAWebSocketConnection: HAWebSocketConnection, @unchecked Sendable {
-    private let task: URLSessionWebSocketTask
-
-    init(task: URLSessionWebSocketTask) {
-        self.task = task
-    }
-
-    func resume() {
-        task.resume()
-    }
-
-    func send(_ text: String) async throws {
-        try await task.send(.string(text))
-    }
-
-    func receive() async throws -> Data {
-        let msg = try await task.receive()
-        switch msg {
-        case .string(let s): return Data(s.utf8)
-        case .data(let d): return d
-        @unknown default: return Data()
-        }
-    }
-
-    func cancel() {
-        task.cancel(with: .goingAway, reason: nil)
-    }
-}
-
 public actor HAWebSocketProvider: HomeProvider {
     private static let compressedSubscriptionID = 4
 
@@ -260,7 +231,7 @@ public actor HAWebSocketProvider: HomeProvider {
     private let logger = Logger(subsystem: "com.jryang1997.MenuBarMijia", category: "HAWebSocket")
     private var baseURLString: String
     private var token: String
-    private var session: URLSession?
+    private var session: PinnedHTTPSession?
     private var isShutDown = false
 
     private var emitEvent: (@Sendable (HomeAdapterEvent) -> Void)?
@@ -367,28 +338,19 @@ public actor HAWebSocketProvider: HomeProvider {
         self.isNetworkSatisfied = isNetworkSatisfied
     }
 
-    private static func makeURLSession() -> URLSession {
-        // Bypass system proxies for direct LAN communication with NAS
-        let config = URLSessionConfiguration.ephemeral
-        config.connectionProxyDictionary = [:]
-        config.timeoutIntervalForRequest = 120
-        config.waitsForConnectivity = false
-        return URLSession(configuration: config)
-    }
-
-    private func ensureSession() -> URLSession? {
+    private func ensureSession() -> PinnedHTTPSession? {
         guard !isShutDown else { return nil }
         if let session { return session }
-        let created = Self.makeURLSession()
+        let created = PinnedHTTPSession(timeout: 120)
         self.session = created
         createdSessionCountForTesting += 1
         return created
     }
 
-    private func replaceSession() -> URLSession? {
+    private func replaceSession() -> PinnedHTTPSession? {
         guard !isShutDown else { return nil }
         let previous = self.session
-        let created = Self.makeURLSession()
+        let created = PinnedHTTPSession(timeout: 120)
         self.session = created
         createdSessionCountForTesting += 1
         if let previous {
@@ -398,7 +360,7 @@ public actor HAWebSocketProvider: HomeProvider {
         return created
     }
 
-    private func invalidateSession(ifMatching target: URLSession? = nil) {
+    private func invalidateSession(ifMatching target: PinnedHTTPSession? = nil) {
         if let target {
             guard self.session === target else { return }
             self.session = nil
@@ -736,17 +698,24 @@ public actor HAWebSocketProvider: HomeProvider {
         guard let wsURL = Self.makeWebSocketURL(from: baseURLString) else {
             throw HomeProviderError.invalidURL(baseURLString)
         }
-        let currentSession: URLSession?
+        let currentSession = webSocketFactoryOverride == nil ? replaceSession() : nil
+        defer {
+            if let currentSession {
+                invalidateSession(ifMatching: currentSession)
+            }
+        }
         let ws: any HAWebSocketConnection
         if let webSocketFactoryOverride {
-            currentSession = nil
             ws = webSocketFactoryOverride(wsURL)
         } else {
-            guard let createdSession = replaceSession() else { return }
-            currentSession = createdSession
-            let task = createdSession.webSocketTask(with: wsURL)
-            task.maximumMessageSize = 16 * 1024 * 1024
-            ws = URLSessionHAWebSocketConnection(task: task)
+            guard let currentSession else { return }
+            // The connection loop may be replaced while the transport resolves or handshakes.
+            let connected = try await PinnedHAWebSocket.connect(to: wsURL)
+            guard !Task.isCancelled, session === currentSession else {
+                connected.cancel()
+                throw CancellationError()
+            }
+            ws = connected
         }
         self.handshakingWebSocket = ws
         ws.resume()
@@ -766,9 +735,6 @@ public actor HAWebSocketProvider: HomeProvider {
                 receiveTask = nil
                 failPendingStartupReplies(with: CancellationError())
                 failPendingStreamRequests()
-            }
-            if let currentSession {
-                invalidateSession(ifMatching: currentSession)
             }
         }
 

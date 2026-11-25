@@ -22,6 +22,17 @@ public enum HAPlaintextConsent {
         !needsConsent(baseURL) || isApproved(baseURL, defaults: defaults)
     }
 
+    /// Fetches an HA REST resource with the same consent and address policy as the live connection.
+    public static func pinnedData(
+        for request: URLRequest, serverBaseURL: String, plaintextAllowed: Bool
+    ) async throws -> (Data, URLResponse) {
+        guard let url = request.url, matchesServerOrigin(url, serverBaseURL: serverBaseURL),
+              plaintextAllowed || url.scheme?.lowercased() == "https" else {
+            throw URLError(.userAuthenticationRequired)
+        }
+        return try await PinnedHTTPSession(timeout: request.timeoutInterval).data(for: request)
+    }
+
     public static func matchesServerOrigin(_ targetURL: URL, serverBaseURL: String) -> Bool {
         guard !serverBaseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return false

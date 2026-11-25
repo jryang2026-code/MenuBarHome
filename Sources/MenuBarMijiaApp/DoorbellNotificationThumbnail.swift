@@ -50,8 +50,11 @@ enum DoorbellNotificationThumbnail {
                 // One attempt on the card's own snapshot path; retrying a dead HA proxy inside the
                 // budget would only double the wait.
                 triedSnapshotProxy = true
+                let baseURL = store.serverURLString
+                let plaintextAllowed = HAPlaintextConsent.allowsToken(to: baseURL, defaults: store.userDefaults)
                 if let data = await fetchJPEGData(
                     with: snapshotProxyRequest(for: url, store: store),
+                    haEndpoint: (baseURL, plaintextAllowed),
                     until: deadline
                 ) {
                     return writePicture(from: data)
@@ -110,13 +113,22 @@ enum DoorbellNotificationThumbnail {
 
     /// The download is raced against the remaining budget, so a slow camera cannot push the
     /// notification past its deadline; a cancelled download simply yields no picture.
-    private static func fetchJPEGData(with request: URLRequest, until deadline: ContinuousClock.Instant) async -> Data? {
+    private static func fetchJPEGData(
+        with request: URLRequest,
+        haEndpoint: (baseURL: String, plaintextAllowed: Bool)? = nil,
+        until deadline: ContinuousClock.Instant
+    ) async -> Data? {
         let remaining = ContinuousClock.now.duration(to: deadline)
         guard remaining > .zero else { return nil }
         let session = self.session
         let response = await withTaskGroup(of: (Data, URLResponse)?.self) { group in
             group.addTask {
-                try? await session.data(for: request)
+                if let haEndpoint {
+                    return try? await HAPlaintextConsent.pinnedData(
+                        for: request, serverBaseURL: haEndpoint.baseURL, plaintextAllowed: haEndpoint.plaintextAllowed
+                    )
+                }
+                return try? await session.data(for: request)
             }
             group.addTask {
                 try? await Task.sleep(for: remaining)

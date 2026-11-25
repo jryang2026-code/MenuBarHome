@@ -15,8 +15,10 @@ let package = Package(
         .target(name: "StateTestSupport", path: "Tests/StateTestSupport"),
         .target(name: "PreferencesTestSupport", path: "Tests/PreferencesTestSupport"),
         .target(name: "KeychainTestSupport", dependencies: ["MijiaCore", "KeychainTestGuard"], path: "Tests/KeychainTestSupport"),
+        .target(name: "PinnedHTTP", linkerSettings: [.linkedLibrary("curl")]),
         .target(
             name: "MijiaCore",
+            dependencies: ["PinnedHTTP"],
             // Translation tables (#52): `Resources/Localizations/<language>.json`, copied into
             // `MenuBarMijia_MijiaCore.bundle/Contents/Resources/Localizations`. A new language is a
             // new file here — no Swift change, and `L10n.availableLanguages` picks it up.

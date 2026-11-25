@@ -282,36 +282,25 @@ final class UnsupportedDeviceScanner {
             throw UnsupportedDeviceScanError.invalidURL
         }
 
-        let configuration = URLSessionConfiguration.ephemeral
-        // Same as the live provider: talk to the LAN directly instead of through a system proxy.
-        configuration.connectionProxyDictionary = [:]
-        configuration.timeoutIntervalForRequest = 15
-        // Bounds the whole socket read so a half-open connection cannot leave Settings spinning.
-        configuration.timeoutIntervalForResource = 20
-        configuration.waitsForConnectivity = false
-        let session = URLSession(configuration: configuration)
-        let socket = session.webSocketTask(with: url)
-        socket.resume()
+        let socket = try await PinnedHAWebSocket.connect(to: url)
+        let watchdog = Task {
+            try await Task.sleep(for: .seconds(20))
+            socket.cancel()
+        }
         defer {
-            socket.cancel(with: .goingAway, reason: nil)
-            session.invalidateAndCancel()
+            watchdog.cancel()
+            socket.cancel()
         }
 
-        // Local closures keep the non-Sendable socket inside this one task.
         func send(_ object: [String: JSONValue]) async throws {
             let data = try JSONEncoder().encode(JSONValue.object(object))
-            try await socket.send(.string(String(decoding: data, as: UTF8.self)))
+            try await socket.send(String(decoding: data, as: UTF8.self))
         }
         func receive() async throws -> [String: JSONValue] {
-            let message = try await socket.receive()
-            let data: Data
-            switch message {
-            case .string(let text):
-                data = Data(text.utf8)
-            case .data(let payload):
-                data = payload
-            @unknown default:
-                throw UnsupportedDeviceScanError.invalidResponse
+            let data = try await withTaskCancellationHandler {
+                try await socket.receive()
+            } onCancel: {
+                socket.cancel()
             }
             let decoded = try JSONDecoder().decode(JSONValue.self, from: data)
             guard case .object(let object) = decoded else {
@@ -321,7 +310,9 @@ final class UnsupportedDeviceScanner {
         }
 
         // 1. auth_required, then the token.
-        _ = try await receive()
+        guard try await receive()["type"]?.stringValue == "auth_required" else {
+            throw UnsupportedDeviceScanError.invalidResponse
+        }
         try await send(["type": .string("auth"), "access_token": .string(token)])
         let auth = try await receive()
         guard auth["type"]?.stringValue == "auth_ok" else {

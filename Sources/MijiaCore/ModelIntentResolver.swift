@@ -104,25 +104,23 @@ public struct ModelIntentResolver: Sendable, AssistantCommandResolving {
     public let config: AssistantConfig
     private let transport: Transport
 
-    private static let session: URLSession = {
-        let cfg = URLSessionConfiguration.ephemeral
-        cfg.timeoutIntervalForRequest = 10
-        cfg.waitsForConnectivity = false
-        return URLSession(configuration: cfg)
-    }()
+    private static let session = PinnedHTTPSession(timeout: 10)
 
     public init(config: AssistantConfig, transport: Transport? = nil) {
         self.config = config
         self.transport = transport ?? Self.defaultTransport(for: config)
     }
 
-    /// The plain URLSession transport: refuses to send without a key unless the endpoint is
+    /// The default HTTP transport: refuses to send without a key unless the endpoint is
     /// local. Exposed so callers can wrap it in an enable/epoch gate without re-implementing
     /// the missing-key rule (P5a-M).
     static func defaultTransport(for config: AssistantConfig) -> Transport {
         return { request in
             guard config.hasAPIKey || config.isLoopbackEndpoint else {
                 throw AssistantError.missingAPIKey
+            }
+            guard let url = request.url, AssistantEndpoint(url.absoluteString)?.allowsSendingSecrets == true else {
+                throw EndpointResolutionError.plaintextConsentRequired
             }
             return try await Self.session.data(for: request)
         }
