@@ -62,19 +62,19 @@ impl Source {
     }
 
     fn rewrite_playlist(&self, url: &Url, text: &str) -> Option<String> {
-        let mut out = String::new();
-        for line in text.lines() {
-            let mut line = line.trim();
-            if line.starts_with('#') {
-                // HLS tags use quoted URI attributes for keys, maps, and alternate renditions.
-                while let Some((prefix, rest)) = line.split_once("URI=\"") {
-                    let (uri, rest) = rest.split_once('"')?;
-                    out.push_str(prefix);
-                    out.push_str("URI=\"");
-                    out.push_str(&self.rewrite_uri(url, uri)?);
-                    out.push('"');
-                    line = rest;
-                }
+        if text.bytes().any(|b| b < b' ' && !matches!(b, b'\r' | b'\n' | b'\t')) {
+            return None;
+        }
+        let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+        let mut out = String::with_capacity(normalized.len());
+        for line in normalized.lines().map(str::trim) {
+            if let Some((tag, attributes)) = line.split_once(':').filter(|(tag, value)| {
+                tag.starts_with("#EXT-X-") && value.contains('=')
+            }) {
+                out.push_str(tag);
+                out.push(':');
+                self.rewrite_attributes(url, attributes, &mut out)?;
+            } else if line.starts_with('#') {
                 out.push_str(line);
             } else if !line.is_empty() {
                 out.push_str(&self.rewrite_uri(url, line)?);
@@ -82,6 +82,55 @@ impl Source {
             out.push('\n');
         }
         Some(out)
+    }
+
+    fn rewrite_attributes(&self, url: &Url, mut attributes: &str, out: &mut String) -> Option<()> {
+        loop {
+            let (key, input) = attributes.split_once('=')?;
+            let key = key.trim_ascii();
+            if key.is_empty() || !key.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
+                return None;
+            }
+            let input = input.trim_ascii_start();
+            let (value, rest, quoted) = if let Some(input) = input.strip_prefix('"') {
+                let (value, rest) = input.split_once('"')?;
+                (value, rest.trim_ascii_start(), true)
+            } else {
+                let end = input.find(',').unwrap_or(input.len());
+                (input[..end].trim_ascii_end(), &input[end..], false)
+            };
+            if value.contains(['"', '\\'])
+                || (!quoted && (value.is_empty() || value.bytes().any(|b| b.is_ascii_whitespace())))
+            {
+                return None;
+            }
+
+            if key.rsplit('-').next().is_some_and(|part| part.eq_ignore_ascii_case("URI")) {
+                if value.is_empty() {
+                    return None;
+                }
+                let local = self.rewrite_uri(url, value)?;
+                if local.contains(['"', '\\']) {
+                    return None;
+                }
+                out.push_str(&key.to_ascii_uppercase());
+                out.push_str("=\"");
+                out.push_str(&local);
+                out.push('"');
+            } else {
+                out.push_str(key);
+                out.push('=');
+                if quoted { out.push('"'); }
+                out.push_str(value);
+                if quoted { out.push('"'); }
+            }
+
+            if rest.is_empty() {
+                return Some(());
+            }
+            attributes = rest.strip_prefix(',')?;
+            out.push(',');
+        }
     }
 }
 
@@ -132,7 +181,14 @@ async fn start_pinned_relay(url: Url, addresses: Vec<SocketAddr>) -> Result<(Hls
                         Either::Right(_) => continue,
                     }
                 };
-                let Ok((stream, _)) = incoming else { break };
+                let (stream, _) = match incoming {
+                    Ok(incoming) => incoming,
+                    Err(err) => {
+                        eprintln!("HLS relay accept failed: {err}");
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                        continue;
+                    }
+                };
                 let source = source.clone();
                 requests.spawn(async move {
                     let _ = serve(stream, &source).await;
@@ -151,8 +207,11 @@ async fn serve(mut stream: TcpStream, source: &Source) -> Option<()> {
     }
     let url = source.allowed_url(Url::parse(&format!("{}{}", source.origin, path)).ok()?)?;
     source.policy.check_loopback_port().ok()?;
+    let playlist_path = url.path().rsplit_once('.').is_some_and(|(_, ext)| {
+        ext.eq_ignore_ascii_case("m3u8") || ext.eq_ignore_ascii_case("m3u")
+    });
     let mut request = source.client.get(url.clone());
-    if let Some(range) = range {
+    if let Some(range) = range.filter(|_| !playlist_path) {
         request = request.header(header::RANGE, range);
     }
     let mut response = request.send().await.ok()?;
@@ -171,7 +230,18 @@ async fn serve(mut stream: TcpStream, source: &Source) -> Option<()> {
         let Some(chunk) = response.chunk().await.ok()? else { break };
         first.extend_from_slice(&chunk);
     }
-    if first.strip_prefix(b"\xef\xbb\xbf").unwrap_or(&first).starts_with(b"#EXTM3U") {
+    let has_playlist_header = first.strip_prefix(b"\xef\xbb\xbf").unwrap_or(&first).starts_with(b"#EXTM3U");
+    let playlist_content_type = response.headers().get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| {
+            let mime = value.split(';').next().unwrap_or_default().trim();
+            ["application/vnd.apple.mpegurl", "application/x-mpegurl", "audio/mpegurl", "audio/x-mpegurl"]
+                .iter().any(|kind| mime.eq_ignore_ascii_case(kind))
+        });
+    if has_playlist_header || (status.is_success() && (playlist_path || playlist_content_type)) {
+        if !has_playlist_header || !matches!(status, StatusCode::OK | StatusCode::PARTIAL_CONTENT) {
+            return None;
+        }
         while let Some(chunk) = response.chunk().await.ok()? {
             if first.len() + chunk.len() > MAX_PLAYLIST_BYTES {
                 return None;
@@ -181,9 +251,17 @@ async fn serve(mut stream: TcpStream, source: &Source) -> Option<()> {
         if first.len() > MAX_PLAYLIST_BYTES {
             return None;
         }
+        if status == StatusCode::PARTIAL_CONTENT {
+            // Rewrite only a complete playlist so no URI is parsed from a truncated line.
+            let content_range = response.headers().get(header::CONTENT_RANGE)?.to_str().ok()?;
+            let complete_range = format!("bytes 0-{}/{}", first.len() - 1, first.len());
+            if !content_range.eq_ignore_ascii_case(&complete_range) {
+                return None;
+            }
+        }
         let playlist = std::str::from_utf8(&first).ok()?.trim_start_matches('\u{feff}');
         let body = source.rewrite_playlist(&url, playlist)?;
-        head.push_str(&format!("Content-Type: application/vnd.apple.mpegurl\r\nContent-Length: {}\r\n\r\n", body.len()));
+        let head = format!("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: application/vnd.apple.mpegurl\r\nContent-Length: {}\r\n\r\n", body.len());
         write(&mut stream, head.as_bytes()).await?;
         return write(&mut stream, body.as_bytes()).await;
     }
@@ -235,6 +313,64 @@ async fn read_request(stream: &mut TcpStream) -> Option<(String, Option<String>)
 mod tests {
     use super::*;
 
+    fn playlist_source() -> (Source, Url) {
+        let url = Url::parse("https://camera.example/live/index.m3u8").unwrap();
+        let source = Source {
+            origin: url.origin().ascii_serialization(),
+            local_origin: "http://localhost:3000/".into(),
+            token: "test".into(),
+            policy: EndpointAddressPolicy::for_endpoint("camera.example", 443, "https"),
+            client: Client::new(),
+        };
+        (source, url)
+    }
+
+    #[test]
+    fn canonicalizes_playlist_line_endings_and_validates_segment_origins() {
+        let (source, url) = playlist_source();
+        let input = "#EXTM3U\r\n#EXTINF:4,\rsegment.ts\n#EXT-X-ENDLIST\r";
+        assert_eq!(
+            source.rewrite_playlist(&url, input).unwrap(),
+            "#EXTM3U\n#EXTINF:4,\nhttp://localhost:3000/test/live/segment.ts\n#EXT-X-ENDLIST\n",
+        );
+        assert!(source.rewrite_playlist(&url, "#EXTM3U\rhttps://other.invalid/segment.ts\r").is_none());
+        assert!(source.rewrite_playlist(&url, "#EXTM3U\n#note\x00\n").is_none());
+    }
+
+    #[test]
+    fn rewrites_unquoted_uri_attributes_without_consuming_neighbors() {
+        let (source, url) = playlist_source();
+        for (tag, prefix, path) in [
+            ("KEY", "METHOD=AES-128,", "key"),
+            ("MAP", "", "init.mp4"),
+            ("MEDIA", "TYPE=AUDIO,NAME=\"URI=label, audio\",", "audio.m3u8"),
+        ] {
+            for suffix in ["", ",IV=0x01"] {
+                let input = format!("#EXTM3U\n#EXT-X-{tag}:{prefix}uri = {path}{suffix}\n");
+                let expected = format!(
+                    "#EXTM3U\n#EXT-X-{tag}:{prefix}URI=\"http://localhost:3000/test/live/{path}\"{suffix}\n",
+                );
+                assert_eq!(source.rewrite_playlist(&url, &input).unwrap(), expected);
+                let input = format!("#EXTM3U\n#EXT-X-{tag}:{prefix}URI=https://other.invalid/{path}{suffix}\n");
+                assert!(source.rewrite_playlist(&url, &input).is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn rejects_malformed_attribute_lists() {
+        let (source, url) = playlist_source();
+        for attributes in [
+            "URI=\"audio.m3u8",
+            "NAME=\"URI=\"label\"\",URI=audio.m3u8",
+            "NAME=\"audio\\\" label\",URI=audio.m3u8",
+            "NAME=audio,URI=",
+        ] {
+            let input = format!("#EXTM3U\n#EXT-X-MEDIA:{attributes}\n");
+            assert!(source.rewrite_playlist(&url, &input).is_none(), "{attributes}");
+        }
+    }
+
     #[test]
     fn source_policy_rejects_prohibited_literals_and_dns_answers() {
         tauri::async_runtime::block_on(async {
@@ -258,9 +394,10 @@ mod tests {
             let url = Url::parse(&format!("http://localhost:{port}/api/hls/live.m3u8?fixture=1")).unwrap();
             let (_relay, local_url) = start_relay(url).await.unwrap();
             let server = tokio::spawn(async move {
-                for response in [
-                    "#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"/key\"\nsegment.ts\n",
-                    "#EXTM3U\nhttp://127.0.0.1:9/segment.ts\n",
+                for (response, range_start) in [
+                    ("#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"/key\"\nsegment.ts\n", Some(0)),
+                    ("#EXTM3U\nsegment.ts\n", Some(1)),
+                    ("#EXTM3U\nhttp://127.0.0.1:9/segment.ts\n", None),
                 ] {
                     let (mut peer, _) = upstream.accept().await.unwrap();
                     let mut reader = BufReader::new(&mut peer);
@@ -273,19 +410,32 @@ mod tests {
                         assert!(reader.read_line(&mut line).await.unwrap() > 0);
                         if line == "\r\n" { break; }
                         saw_host |= line.eq_ignore_ascii_case(&format!("Host: localhost:{port}\r\n"));
+                        assert!(!line.to_ascii_lowercase().starts_with("range:"));
                     }
                     assert!(saw_host);
+                    let (status, content_range) = if let Some(start) = range_start {
+                        let total = start + response.len();
+                        ("206 Partial Content", format!("Content-Range: bytes {start}-{}/{total}\r\n", total - 1))
+                    } else {
+                        ("200 OK", String::new())
+                    };
                     peer.write_all(format!(
-                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}",
+                        "HTTP/1.1 {status}\r\n{content_range}Content-Length: {}\r\nConnection: close\r\n\r\n{response}",
                         response.len(),
                     ).as_bytes()).await.unwrap();
                 }
             });
             let client = Client::builder().no_proxy().timeout(Duration::from_secs(5)).build().unwrap();
-            let body = client.get(&local_url).send().await.unwrap().text().await.unwrap();
+            let response = client.get(&local_url).header(header::RANGE, "bytes=0-").send().await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            assert!(!response.headers().contains_key(header::CONTENT_RANGE));
+            let length = response.content_length().unwrap();
+            let body = response.text().await.unwrap();
+            assert_eq!(length, body.len() as u64);
             let relay_base = local_url.split("/api/hls/").next().unwrap();
             assert!(body.contains(&format!("URI=\"{relay_base}/key\"")));
             assert!(body.contains(&format!("{relay_base}/api/hls/segment.ts")));
+            assert!(client.get(&local_url).header(header::RANGE, "bytes=1-").send().await.is_err());
             assert!(client.get(&local_url).send().await.is_err());
             server.await.unwrap();
         });

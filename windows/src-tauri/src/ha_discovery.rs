@@ -614,10 +614,15 @@ fn bind_reusable_mdns_socket(port: u16) -> io::Result<std::net::UdpSocket> {
     if set_reuse(0x0200) != 0 { // SO_REUSEPORT permits multiple wildcard mDNS listeners on Darwin.
         return Err(io::Error::last_os_error());
     }
-    let mut addr = [0u8; 16];
-    addr[..2].copy_from_slice(&family);
-    addr[2..4].copy_from_slice(&port.to_be_bytes());
-    if unsafe { bind(raw, addr.as_ptr().cast(), addr.len() as u32) } != 0 {
+    #[repr(C)]
+    struct SockAddrIn {
+        family: [u8; 2],
+        port: [u8; 2],
+        addr: u32,
+        zero: [u8; 8],
+    }
+    let addr = SockAddrIn { family, port: port.to_be_bytes(), addr: 0, zero: [0; 8] };
+    if unsafe { bind(raw, (&addr as *const SockAddrIn).cast(), size_of::<SockAddrIn>() as u32) } != 0 {
         return Err(io::Error::last_os_error());
     }
     Ok(owned.into())

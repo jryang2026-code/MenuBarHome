@@ -194,6 +194,8 @@ fn address_class(ip: IpAddr) -> AddressClass {
                 [0, 0, 0, 0, 0, 0, 0, 1] => AddressClass::Loopback,
                 [0, 0, 0, 0, 0, 0, ..] | [0xfec0..=0xffff, ..]
                 | [0xfd00, 0x0ec2, 0, 0, 0, 0, 0, 0x0254] => AddressClass::Prohibited,
+                // RFC 8215's local-use NAT64 prefix can encode non-public IPv4 targets.
+                [0x0064, 0xff9b, 1, ..] => AddressClass::Prohibited,
                 // The well-known NAT64 prefix is reserved for global IPv4 destinations.
                 [0x0064, 0xff9b, 0, 0, 0, 0, high, low] => {
                     let embedded = std::net::Ipv4Addr::from((u32::from(high) << 16) | u32::from(low));
@@ -783,6 +785,7 @@ mod address_policy_tests {
             ("64:ff9b::a00:1", AddressClass::Prohibited),
             ("64:ff9b::a9fe:a9fe", AddressClass::Prohibited),
             ("64:ff9b::808:808", AddressClass::Public),
+            ("64:ff9b:1::1", AddressClass::Prohibited),
             ("::ffff:192.168.1.2", AddressClass::Lan),
             ("fe80::1", AddressClass::Lan),
             ("febf::1", AddressClass::Lan),
