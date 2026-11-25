@@ -7,6 +7,7 @@ windows=false
 core=false
 raycast=false
 scripts=false
+website=false
 macos_build=false
 appintents=false
 windows_native=false
@@ -21,6 +22,7 @@ mark_all() {
     core=true
     raycast=true
     scripts=true
+    website=true
     macos_build=true
     appintents=true
     windows_native=true
@@ -42,6 +44,10 @@ while IFS= read -r path || [ -n "$path" ]; do
             code=true
             scripts=true
             go2rtc=true
+            ;;
+        website/*)
+            code=true
+            website=true
             ;;
         *.md|docs/*)
             code=true
@@ -190,5 +196,5 @@ if [ "$saw" -eq 0 ]; then
     mark_all
 fi
 
-printf 'code=%s\nmacos=%s\nwindows=%s\ncore=%s\nraycast=%s\nscripts=%s\nmacos_build=%s\nappintents=%s\nwindows_native=%s\nnas=%s\ngo2rtc=%s\n' \
-    "$code" "$macos" "$windows" "$core" "$raycast" "$scripts" "$macos_build" "$appintents" "$windows_native" "$nas" "$go2rtc"
+printf 'code=%s\nmacos=%s\nwindows=%s\ncore=%s\nraycast=%s\nscripts=%s\nwebsite=%s\nmacos_build=%s\nappintents=%s\nwindows_native=%s\nnas=%s\ngo2rtc=%s\n' \
+    "$code" "$macos" "$windows" "$core" "$raycast" "$scripts" "$website" "$macos_build" "$appintents" "$windows_native" "$nas" "$go2rtc"

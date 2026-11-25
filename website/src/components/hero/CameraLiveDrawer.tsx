@@ -1,4 +1,4 @@
-import { useRef, useState, type PointerEvent } from 'react';
+import { useId, useRef, useState, type PointerEvent } from 'react';
 import {
   Camera,
   ChevronDown,
@@ -264,6 +264,8 @@ function LiveFeedArtwork({
  * pinned quick switches synced with the 3D room, 2x2 still wall, 7d events, and Pin-to-PiP.
  */
 export function CameraLiveDrawer({ nativeCopy, reducedMotion }: CameraLiveDrawerProps) {
+  // Desktop and mobile drawers stay mounted at once: unique ids keep tabs/tabpanels paired.
+  const uid = useId().replace(/:/g, '');
   const camCopy = nativeCopy.cameraWindow;
   const cameraFeed = useHomeStore((s) => s.cameraFeed);
   const cameraLens = useHomeStore((s) => s.cameraLens);
@@ -435,8 +437,8 @@ export function CameraLiveDrawer({ nativeCopy, reducedMotion }: CameraLiveDrawer
                 key={tab.id}
                 type="button"
                 role="tab"
-                id={`camera-drawer-tab-${tab.id}`}
-                aria-controls="camera-drawer-panel"
+                id={`${uid}-camera-drawer-tab-${tab.id}`}
+                aria-controls={`${uid}-camera-drawer-panel`}
                 aria-selected={active}
                 tabIndex={active ? 0 : -1}
                 onClick={() => {
@@ -468,9 +470,9 @@ export function CameraLiveDrawer({ nativeCopy, reducedMotion }: CameraLiveDrawer
 
       {/* Main Viewport Area */}
       <div
-        id="camera-drawer-panel"
+        id={`${uid}-camera-drawer-panel`}
         role="tabpanel"
-        aria-labelledby={`camera-drawer-tab-${cameraViewTab}`}
+        aria-labelledby={`${uid}-camera-drawer-tab-${cameraViewTab}`}
         className="px-3 pb-3"
       >
         {cameraViewTab === 'live' && (

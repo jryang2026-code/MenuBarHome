@@ -25,6 +25,7 @@ jobs:
       core: ${{ steps.filter.outputs.core }}
       raycast: ${{ steps.filter.outputs.raycast }}
       scripts: ${{ steps.filter.outputs.scripts }}
+      website: ${{ steps.filter.outputs.website }}
       macos_build: ${{ steps.filter.outputs.macos_build }}
       appintents: ${{ steps.filter.outputs.appintents }}
       windows_native: ${{ steps.filter.outputs.windows_native }}
@@ -45,7 +46,7 @@ jobs:
         run: |
           set -euo pipefail
           full_ci() {
-            printf 'code=true\nmacos=true\nwindows=true\ncore=true\nraycast=true\nscripts=true\nmacos_build=true\nappintents=true\nwindows_native=true\nnas=true\ngo2rtc=true\n' >> "$GITHUB_OUTPUT"
+            printf 'code=true\nmacos=true\nwindows=true\ncore=true\nraycast=true\nscripts=true\nwebsite=true\nmacos_build=true\nappintents=true\nwindows_native=true\nnas=true\ngo2rtc=true\n' >> "$GITHUB_OUTPUT"
           }
           if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
             if [ "$REF_NAME" = "refs/heads/main" ]; then
@@ -85,7 +86,7 @@ jobs:
           fi
           git diff --name-only --no-renames "$base" "$head" > "$RUNNER_TEMP/changed.txt"
           scope="$(bash scripts/ci_relevant_paths.sh < "$RUNNER_TEMP/changed.txt")"
-          for key in code macos windows core raycast scripts macos_build appintents windows_native nas go2rtc; do
+          for key in code macos windows core raycast scripts website macos_build appintents windows_native nas go2rtc; do
             if ! printf '%s\n' "$scope" | grep -Eq "^${key}=(true|false)$"; then
               full_ci
               echo "unexpected scope output; running full CI"
@@ -182,6 +183,21 @@ jobs:
           cache-dependency-path: raycast/package-lock.json
       - name: Test and typecheck the Raycast extension
         run: npm ci --no-audit --no-fund && npm test && npm run typecheck
+
+  website:
+    needs: changes
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.website == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+      - name: Typecheck and build website
+        run: npm ci --prefix website && npm --prefix website run typecheck && npm --prefix website run build
 
   go2rtc-test:
     needs: changes
@@ -510,7 +526,7 @@ jobs:
           key: ${{ steps.swift-release-cache.outputs.cache-primary-key }}
 
   ci:
-    needs: [changes, nas-safety, linux-core, raycast, go2rtc-test, windows-core, windows-camera-bin, windows-rust-test, windows-installer, macos-test, macos-release, macos-appintents]
+    needs: [changes, nas-safety, linux-core, raycast, website, go2rtc-test, windows-core, windows-camera-bin, windows-rust-test, windows-installer, macos-test, macos-release, macos-appintents]
     if: always() && !cancelled()
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -523,10 +539,12 @@ jobs:
           WINDOWS: ${{ needs.changes.outputs.windows }}
           CORE: ${{ needs.changes.outputs.core }}
           RAYCAST: ${{ needs.changes.outputs.raycast }}
+          WEBSITE: ${{ needs.changes.outputs.website }}
           GO2RTC: ${{ needs.changes.outputs.go2rtc }}
           NAS: ${{ needs.nas-safety.result }}
           LINUX: ${{ needs.linux-core.result }}
           RAYCAST_RES: ${{ needs.raycast.result }}
+          WEBSITE_RES: ${{ needs.website.result }}
           GO2RTC_TEST: ${{ needs.go2rtc-test.result }}
           WINDOWS_CORE: ${{ needs.windows-core.result }}
           WINDOWS_CAMERA: ${{ needs.windows-camera-bin.result }}
@@ -568,6 +586,7 @@ jobs:
           check_job "nas-safety" "$NAS" "always"
           check_job "linux-core" "$LINUX" "$CORE"
           check_job "raycast" "$RAYCAST_RES" "$RAYCAST"
+          check_job "website" "$WEBSITE_RES" "$WEBSITE"
           check_job "go2rtc-test" "$GO2RTC_TEST" "$GO2RTC"
           check_job "windows-core" "$WINDOWS_CORE" "$WINDOWS"
           check_job "windows-camera-bin" "$WINDOWS_CAMERA" "$WINDOWS_NATIVE_ACTIVE"

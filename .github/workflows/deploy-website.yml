@@ -6,6 +6,9 @@ on:
     paths:
       - 'website/**'
       - '.github/workflows/deploy-website.yml'
+  workflow_run:
+    workflows: ['Finalize Release']
+    types: [completed]
   workflow_dispatch:
 
 permissions:
@@ -19,11 +22,14 @@ concurrency:
 
 jobs:
   build:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
 
       - name: Setup Node.js
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -34,7 +40,21 @@ jobs:
 
       - name: Install dependencies and build website
         working-directory: website
-        run: npm ci && npm run build
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # /releases/latest returns only the newest published, non-draft, non-prerelease
+          # release. Never fall back to VERSION: it may be an unpublished draft version.
+          release_tag="$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq .tag_name)"
+          if [[ ! "$release_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::/releases/latest 返回了非法 tag：${release_tag}" >&2
+            exit 1
+          fi
+          WEBSITE_RELEASE_VERSION="${release_tag#v}"
+          export WEBSITE_RELEASE_VERSION
+          echo "使用已发布版本 ${release_tag}（WEBSITE_RELEASE_VERSION=${WEBSITE_RELEASE_VERSION}）构建网站"
+          npm ci && npm run build
 
       - name: Configure GitHub Pages
         uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5

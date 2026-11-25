@@ -1,5 +1,6 @@
 import {
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -155,6 +156,8 @@ export function MenuBarPopover({
   searchInputRef,
 }: MenuBarPopoverProps) {
   const nativeCopy = NATIVE_POPOVER_COPY[locale];
+  // Desktop and mobile popovers stay mounted at once: unique ids keep tabs/panels/labels paired.
+  const uid = useId().replace(/:/g, '');
 
   const lampOn = useHomeStore((s) => s.lampOn);
   const lampBrightness = useHomeStore((s) => s.lampBrightness);
@@ -716,7 +719,7 @@ export function MenuBarPopover({
 
         {/* 2. Native Search + Click/Hold-to-Talk Voice Dictation Pill */}
         <div className="relative mb-2">
-          <label htmlFor="mbh-hero-search" className="visually-hidden">
+          <label htmlFor={`${uid}-mbh-hero-search`} className="visually-hidden">
             {nativeCopy.searchPlaceholder}
           </label>
 
@@ -754,7 +757,7 @@ export function MenuBarPopover({
               />
               <input
                 ref={searchInputRef}
-                id="mbh-hero-search"
+                id={`${uid}-mbh-hero-search`}
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
@@ -817,8 +820,8 @@ export function MenuBarPopover({
                   key={room}
                   role="tab"
                   type="button"
-                  id={`popover-room-tab-${room}`}
-                  aria-controls="popover-device-panel"
+                  id={`${uid}-popover-room-tab-${room}`}
+                  aria-controls={`${uid}-popover-device-panel`}
                   aria-selected={active}
                   tabIndex={room === roomFilter ? 0 : -1}
                   onClick={() => selectRoom(room)}
@@ -986,9 +989,9 @@ export function MenuBarPopover({
 
         {/* 4. Scroll-Safe Compact Native Bento Device Grid */}
         <div
-          id="popover-device-panel"
+          id={`${uid}-popover-device-panel`}
           role="tabpanel"
-          aria-labelledby={`popover-room-tab-${roomFilter}`}
+          aria-labelledby={`${uid}-popover-room-tab-${roomFilter}`}
           className="max-h-[calc(100svh-360px)] space-y-2 overflow-y-auto pr-0.5"
         >
           {/* Empty Search Fallback → LocalIntentParser hint (matches macos-hold-to-talk.png) */}
@@ -1131,7 +1134,7 @@ export function MenuBarPopover({
                     return (
                       <div className="space-y-2">
                         <div className="flex items-center justify-between text-[10.5px] font-medium tabular-nums">
-                          <label htmlFor="mbh-inline-brightness" className={textSecondary}>
+                          <label htmlFor={`${uid}-mbh-inline-brightness`} className={textSecondary}>
                             {isCeil ? copy.ceilingName : copy.lampName} · {copy.brightness}
                           </label>
                           <span className={`font-semibold ${textPrimary}`}>
@@ -1139,7 +1142,7 @@ export function MenuBarPopover({
                           </span>
                         </div>
                         <input
-                          id="mbh-inline-brightness"
+                          id={`${uid}-mbh-inline-brightness`}
                           type="range"
                           min={0}
                           max={100}
@@ -1160,7 +1163,7 @@ export function MenuBarPopover({
                         />
 
                         <div className="flex items-center justify-between text-[10.5px] font-medium tabular-nums">
-                          <label htmlFor="mbh-inline-kelvin" className={`flex items-center gap-1.5 ${textSecondary}`}>
+                          <label htmlFor={`${uid}-mbh-inline-kelvin`} className={`flex items-center gap-1.5 ${textSecondary}`}>
                             <span>{copy.kelvin}</span>
                             <span
                               className="inline-block size-2 rounded-full ring-1 ring-black/15"
@@ -1171,7 +1174,7 @@ export function MenuBarPopover({
                           <span className={`font-semibold ${textPrimary}`}>{kel}K</span>
                         </div>
                         <input
-                          id="mbh-inline-kelvin"
+                          id={`${uid}-mbh-inline-kelvin`}
                           type="range"
                           min={isCeil ? 2700 : 1900}
                           max={6500}
@@ -1416,13 +1419,13 @@ export function MenuBarPopover({
                   }`}
                 >
                   <div className="mb-1.5 flex items-center justify-between text-[10.5px] font-medium tabular-nums">
-                    <label htmlFor="mbh-inline-curtains" className={textSecondary}>
+                    <label htmlFor={`${uid}-mbh-inline-curtains`} className={textSecondary}>
                       {copy.curtainsName}
                     </label>
                     <span className={`font-semibold ${textPrimary}`}>{curtainOpen}%</span>
                   </div>
                   <input
-                    id="mbh-inline-curtains"
+                    id={`${uid}-mbh-inline-curtains`}
                     type="range"
                     min={0}
                     max={100}

@@ -94,17 +94,19 @@ class RepoIndex:
         if not rel_paths:
             return set()
         probes = [item for p in sorted(rel_paths) for item in (p.rstrip("/"), f"{p.rstrip('/')}/")]
+        # UTF-8 bytes + NUL delimiters: text=True would translate CRLF on Windows and corrupt
+        # paths (a literal \r inside a filename would be split into a separate probe).
+        payload = b"".join(part.encode("utf-8") + b"\0" for part in probes)
         res = subprocess.run(
-            ["git", "check-ignore", "--no-index", "--stdin"],
+            ["git", "check-ignore", "--no-index", "--stdin", "-z"],
             cwd=self.root,
             env=_clean_git_env(),
-            input="\n".join(probes) + "\n",
-            text=True,
+            input=payload,
             capture_output=True,
             check=False,
         )
         if res.returncode in (0, 1):
-            ignored = {line.rstrip("/") for line in res.stdout.splitlines() if line.strip()}
+            ignored = {part.decode("utf-8").rstrip("/") for part in res.stdout.split(b"\0") if part}
             return {
                 p for p in rel_paths
                 if any("/".join(p.rstrip("/").split("/")[: i + 1]) in ignored for i in range(len(p.rstrip("/").split("/"))))
@@ -424,7 +426,32 @@ def audit_doc_links(root: Path = ROOT) -> list[DocDiagnostic]:
     return scan_repo_docs(root)[3]
 
 
-def main() -> None:
+def _self_test() -> None:
+    """Ignore-list probes must survive CRLF translation and literal carriage returns."""
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        subprocess.run(["git", "init", "-q"], cwd=root, env=_clean_git_env(), check=True, capture_output=True)
+        (root / ".gitignore").write_text("ignored/\n", encoding="utf-8")
+        weird = "ignored/line\rbreak.txt"
+        normal = "ignored/normal.txt"
+        kept = "src/kept.txt"
+        index = RepoIndex(root, frozenset(), frozenset(), frozenset())
+        got = index.filter_gitignored({weird, normal, kept})
+        if got != {weird, normal}:
+            raise SystemExit(f"filter_gitignored 自测失败：期望 {{{weird!r}, {normal!r}}}，得到 {got!r}")
+    print("✅ check_doc_links filter_gitignored 自测通过")
+
+
+def main(argv: list[str] | None = None) -> None:
+    if argv is None:
+        argv = sys.argv[1:]
+    if argv == ["--self-test"]:
+        _self_test()
+        return
+    if argv:
+        raise SystemExit(f"用法：{Path(__file__).name} [--self-test]")
     doc_count, link_count, path_count, diags = scan_repo_docs(ROOT)
     if diags:
         print("❌ Markdown 文档链接与仓库路径引用检查未通过：", file=sys.stderr)
