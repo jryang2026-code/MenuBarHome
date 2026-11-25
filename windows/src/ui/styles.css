@@ -1216,6 +1216,55 @@ details.win-notif-card-ghost > :not(summary) {
   display: none;
 }
 
+.cc-mood-strip {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.cc-mood-strip::-webkit-scrollbar {
+  display: none;
+}
+
+.cc-mood-capture-pill {
+  flex: 0 0 auto;
+}
+
+.cc-mood-chip {
+  display: inline-flex;
+  align-items: stretch;
+  flex: 0 0 auto;
+}
+
+.cc-mood-apply {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+  border-right: none;
+  flex: 0 0 auto;
+}
+
+.cc-mood-del {
+  height: 27px;
+  padding: 0 6px;
+  border-top-right-radius: var(--r-control);
+  border-bottom-right-radius: var(--r-control);
+  border: 1px solid var(--win-control-stroke);
+  background: var(--win-control-bg);
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 16px;
+  cursor: pointer;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .cc-mood-del:hover {
+    background: var(--win-control-hover);
+    color: var(--text-primary);
+  }
+}
+
 /* W2A-9b / P1-3: the single 快捷 capsule folds the strip and the For You cards as one layer. */
 .cc-quick-drawer-toggle {
   height: 27px;

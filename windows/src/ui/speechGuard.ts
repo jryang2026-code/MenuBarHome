@@ -32,6 +32,7 @@ import { evaluateDeviceEntityWriteGate, evaluateQuickActionSourceWriteGate, plan
 import { resolveConnectionStatus } from "./connectionStatus.js";
 import { recordHabits } from "./intentExecution.js";
 import { filterByListCut } from "./listCut.js";
+import { bindMoodPromptEventsAfterRender } from "./moods.js";
 import { invokeTauriVoid, isWorkstationLockBlockingControl } from "./transport.js";
 
 export interface UpdateDownloadProgress {
@@ -176,6 +177,8 @@ export function shouldKeepPopoverPinned(host: MenuMijiaWindowsApp): boolean {
     isConnectionsAndDiagModalOpen(host) ||
     host.isEditingLayout ||
     host.prompt !== null ||
+    host.pendingMoodCapture !== null ||
+    host.pendingMoodConfirm !== null ||
     hasPendingUrlConfirmation(host) ||
     host.isListeningVoice ||
     host.isHomeMenuOpen ||
@@ -524,6 +527,7 @@ export function reconcileUndoBannerHoverAfterRender(host: MenuMijiaWindowsApp): 
     resumeUndoHoverPause(host);
   }
   bindUrlConfirmationEventsAfterRender(host);
+  bindMoodPromptEventsAfterRender(host);
   if (!host.isStandaloneSettingsWindow) {
     syncDynamicTrayTooltip(host);
     scheduleRaycastSnapshotExport(host);

@@ -31,6 +31,7 @@ import { bindLiquidGlassSliders } from "./liquidGlassSlider.js";
 import { syncSlidingTabIndicators } from "./reconciler.js";
 import { facetWriteEnabled, selectedPortionForControl } from "./facetViews.js";
 import { facetTitle, facetValue } from "../core/miotFacetText.js";
+import { applyMoodForHost, deleteMoodForHost, openMoodCapturePrompt } from "./moods.js";
 import type { MenuMijiaWindowsApp } from "./app.js";
 import { normalizeSearch } from "../core/panelSearch.js";
 import { markSwitchAsLight, unmarkSwitchAsLight } from "../core/switchLightMarks.js";
@@ -733,7 +734,9 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
         ? encodeHotkeyTargetKey({ kind: "devicePower", deviceId: firstDevice.id })
         : host.scenes[0]
           ? encodeHotkeyTargetKey({ kind: "scene", sceneId: host.scenes[0].id })
-          : encodeHotkeyTargetKey({ kind: "quickAction", actionId: "lightsOff" });
+          : host.moods[0]
+            ? encodeHotkeyTargetKey({ kind: "mood", moodId: host.moods[0].id })
+            : encodeHotkeyTargetKey({ kind: "quickAction", actionId: "lightsOff" });
       host.isAddingCustomHotkey = true;
       host.isRecordingHotkey = false;
       host.isRecordingCustomHotkeyId = null;
@@ -1024,6 +1027,24 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
       btn.addEventListener("click", () => {
         const cmd = btn.dataset.sceneCmd;
         if (cmd) void host.handleNaturalCommand(cmd);
+      });
+    });
+
+    host.root.querySelector("#btn-mood-capture")?.addEventListener("click", () => {
+      openMoodCapturePrompt(host);
+    });
+
+    host.root.querySelectorAll<HTMLElement>("[data-mood-apply]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const moodId = btn.dataset.moodApply;
+        if (moodId) void applyMoodForHost(host, moodId);
+      });
+    });
+
+    host.root.querySelectorAll<HTMLElement>("[data-mood-delete]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const moodId = btn.dataset.moodDelete;
+        if (moodId) deleteMoodForHost(host, moodId);
       });
     });
 
