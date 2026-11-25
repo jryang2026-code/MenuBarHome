@@ -1520,6 +1520,7 @@ export class MultiAccountMiCloudProvider implements HomeCommandProvider {
       if (!account || getAccountTokenStatus(account, Date.now(), this.dependencies.storage).kind === "expired") {
         throw new MiCloudError("sessionExpired", "Xiaomi scene requires an active session");
       }
+      if (options.beforeSendAsync) await options.beforeSendAsync();
       return executeMiScene(
         new MiCloudClient(account.session, this.dependencies.transport),
         this.dependencies.sceneForEntity?.(command.entityId),
@@ -1549,6 +1550,7 @@ export class MultiAccountMiCloudProvider implements HomeCommandProvider {
         specType: null,
       }));
     const write = MiotCommandMapper.map(command, spec);
+    if (options.beforeSendAsync) await options.beforeSendAsync();
     options.beforeSend?.();
 
     const mappedOwners = this.dependencies.deviceOwners[parsed.did] ?? [];

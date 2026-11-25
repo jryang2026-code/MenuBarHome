@@ -1477,7 +1477,8 @@ export class MenuMijiaWindowsApp {
   }
 
   public async runScheduledCommand(item: ScheduledCommand, userInitiated = false): Promise<void> {
-    return runScheduledCommandWithLockGuard(this, item, () => runScheduledCommand(this, item, userInitiated));
+    return runScheduledCommandWithLockGuard(this, item, (allowWhileLocked) =>
+      runScheduledCommand(this, item, userInitiated, allowWhileLocked));
   }
 
   public async executeIntents(
@@ -1500,8 +1501,8 @@ export class MenuMijiaWindowsApp {
         return false;
       }
     }
-    if (!isInsideScheduledTimerTick() && (await rejectIfControlBlockedWhileLocked(this))) return false;
-    if (!isInsideScheduledTimerTick()) {
+    if (options.allowWhileLocked !== true && (await rejectIfControlBlockedWhileLocked(this))) return false;
+    if (options.allowWhileLocked !== true) {
       markPanelSessionInteraction(this);
     }
     return executeIntents(this, intents, replyText, sourceLabel, options);
@@ -1513,6 +1514,7 @@ export class MenuMijiaWindowsApp {
     summary: string,
     intent?: DeviceIntent,
     readBackPower = false,
+    options: { readonly revalidateBeforeSend?: () => string | null } = {},
   ): Promise<void> {
     // A tap on a control owns the next command: an armed Mi scene confirmation must not stay
     // behind as a second, stale prompt (the batch entry clears it the same way).
@@ -1535,6 +1537,15 @@ export class MenuMijiaWindowsApp {
       }
     }
     if (await rejectIfControlBlockedWhileLocked(this)) return;
+    // Re-checked after the lock check's await and synchronously with the send: a refresh that
+    // landed meanwhile (a cover moved by something else) can turn a queued write into an
+    // unconfirmed opening one.
+    const refusal = options.revalidateBeforeSend?.() ?? null;
+    if (refusal !== null) {
+      this.replyBanner = { text: refusal, source: t("需要确认"), isError: true };
+      this.render();
+      return;
+    }
     markPanelSessionInteraction(this);
     return executeSingleCommand(this, device, command, summary, intent, readBackPower);
   }

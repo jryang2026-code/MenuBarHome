@@ -13,7 +13,8 @@ import type { MiotDeviceSpec } from "../src/core/miCloud/spec.js";
 import { claimDeviceWrite } from "../src/core/optimisticLock.js";
 import { miSessionFingerprint, storeCachedXiaomiTopology } from "../src/core/pollingPolicy.js";
 import { setChannelWriteBatcherForTesting, waitForSliderMailboxIdle } from "../src/ui/commandDispatch.js";
-import type { DeviceCommand, SmartDevice } from "../src/core/models.js";
+import { runWithScheduledTimerTickExemption } from "../src/ui/speechGuard.js";
+import type { DeviceCommand, ScheduledCommand, SmartDevice } from "../src/core/models.js";
 
 async function waitUntil(predicate: () => boolean, label: string, maxTicks = 300): Promise<void> {
   for (let i = 0; i < maxTicks; i += 1) {
@@ -288,6 +289,142 @@ describe("Windows control write safety gates (H-01 / H-10 / H-03 / H-04)", () =>
 
     assert.deepEqual(executed.map((c) => c.data.position), [80], "no unconfirmed opening write is sent");
     assert.match(app.replyBanner?.text ?? "", /会打开/);
+    app.dispose();
+  });
+  it("lock exemption: a timer tick keeps it across awaits; a manual missed run blocked late goes back to missed", async () => {
+    const executed: string[] = [];
+    let lockAnswers: boolean[] = [];
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      configurable: true,
+      value: {
+        invoke: async (cmd: string, args: Record<string, unknown> = {}): Promise<unknown> => {
+          if (cmd === "is_workstation_locked") return lockAnswers.length > 1 ? lockAnswers.shift()! : (lockAnswers[0] ?? false);
+          if (cmd === "ha_execute") {
+            executed.push((args.command as { entity_id: string }).entity_id);
+            return null;
+          }
+          return cmd === "ha_snapshot" ? { areas: [], devices: [], entities: [], states: [] } : null;
+        },
+      },
+    });
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      connectionMode: "homeAssistant", hasCompletedOnboarding: true, autoCheckUpdates: false,
+      haBaseURL: "https://ha.example.test", haToken: "tok", blockControlWhileLocked: true,
+    }));
+    const app = new MenuMijiaWindowsApp(document.querySelector<HTMLElement>("#app")!);
+    app.refreshDevices = async () => {};
+    app.refreshHADevices = async () => {};
+    app.devices = [mkLight("a", 90, 5000), mkLight("b", 90, 5000)];
+    const item: ScheduledCommand = {
+      id: "timer_two_lights", command: "关灯", reply: "关灯", delaySeconds: 60, fireTimestampMs: 1_000,
+      intents: [
+        { targetId: "a", operation: { kind: "power", isOn: false } },
+        { targetId: "b", operation: { kind: "power", isOn: false } },
+      ],
+    };
+
+    // Locked for the whole run: the tick-fired timer still sends every step.
+    lockAnswers = [true];
+    await runWithScheduledTimerTickExemption(() => app.runScheduledCommand(item));
+    await waitUntil(() => executed.length === 2, "both timer steps sent while locked");
+    assert.deepEqual([...executed].sort(), ["light.a", "light.b"]);
+    assert.equal(app.missedScheduledCommands.length, 0);
+
+    // "Run Now" on a missed timer: the entry check sees unlocked, the screen locks before the send.
+    executed.length = 0;
+    lockAnswers = [false, true];
+    app.missedScheduledCommands = [];
+    await app.runScheduledCommand(item, true);
+    await setImmediate();
+    assert.deepEqual(executed, [], "nothing is sent once the screen locked");
+    assert.deepEqual(app.missedScheduledCommands.map((entry) => entry.id), [item.id], "the missed timer is kept");
+    assert.match(app.replyBanner?.text ?? "", /屏幕已锁定/);
+    app.dispose();
+  });
+
+  it("H-04: a cover refresh landing during the async lock check still refuses an unconfirmed opening write", async () => {
+    const executed: Array<{ entity_id: string; data: Record<string, unknown> }> = [];
+    let moveDuringLockCheck: (() => void) | null = null;
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      configurable: true,
+      value: {
+        invoke: async (cmd: string, args: Record<string, unknown> = {}): Promise<unknown> => {
+          if (cmd === "is_workstation_locked") {
+            const move = moveDuringLockCheck;
+            moveDuringLockCheck = null;
+            move?.();
+            return false;
+          }
+          if (cmd === "ha_execute") {
+            executed.push(args.command as typeof executed[number]);
+            return null;
+          }
+          return cmd === "ha_snapshot" ? { areas: [], devices: [], entities: [], states: [] } : null;
+        },
+      },
+    });
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      connectionMode: "homeAssistant", hasCompletedOnboarding: true, autoCheckUpdates: false,
+      haBaseURL: "https://ha.example.test", haToken: "tok", blockControlWhileLocked: true,
+    }));
+    const app = new MenuMijiaWindowsApp(document.querySelector<HTMLElement>("#app")!);
+    app.refreshDevices = async () => {};
+    app.refreshHADevices = async () => {};
+    app.devices = [mkCover("win", 100, "window-opener")];
+    app.expandedDeviceId = "win";
+    app.render();
+    await setImmediate();
+
+    let revalidatedBeforeLockCheck = false;
+    const original = app.executeSingleCommand.bind(app);
+    app.executeSingleCommand = async (...args: Parameters<typeof original>) => {
+      // The drain's own pre-check already passed (100% -> 50% closes); the refresh lands now.
+      revalidatedBeforeLockCheck = true;
+      moveDuringLockCheck = () => {
+        const live = app.devices.find((d) => d.id === "win")!;
+        if (live.kind.kind === "cover") live.kind.positionPercent = 20;
+      };
+      await original(...args);
+    };
+
+    const slider = element<HTMLInputElement>('[data-coverpos="win"]');
+    slider.value = "50";
+    slider.dispatchEvent(new Event("change", { bubbles: true }));
+    await waitForSliderMailboxIdle(app, "win.coverpos");
+
+    assert.equal(revalidatedBeforeLockCheck, true);
+    assert.equal(moveDuringLockCheck, null, "the refresh landed during the lock check");
+    assert.deepEqual(executed, [], "no unconfirmed opening write is sent");
+    assert.match(app.replyBanner?.text ?? "", /会打开/);
+    app.dispose();
+  });
+
+  it("H-01: a light whose brightness lands but color temperature fails still undoes brightness", async () => {
+    const app = mountMoodApp([mkLight("a", 40, 3200)]);
+    assert.equal(app.captureMood("Read", "room"), true);
+    const moodId = app.moods[0]!.id;
+    app.devices = [mkLight("a", 90, 5000)];
+
+    const sent: DeviceCommand[] = [];
+    app.applyCommand = async (cmd) => {
+      sent.push(cmd);
+      return cmd.kind !== "setLightColorTemp"; // brightness lands, color temperature is rejected
+    };
+    await app.applyMood(moodId);
+    assert.ok(sent.some((c) => c.kind === "setLightColorTemp"), "color temperature was attempted");
+    const landed = sent.find((c) => c.kind === "setLightBrightness")!;
+    assert.ok(landed, "brightness was sent");
+
+    assert.ok(app.lastUndoAction, "the accepted sub-command keeps its undo");
+    assert.deepEqual(app.lastUndoAction!.steps.map((s) => s.deviceId), ["a"]);
+    const before = sent.length;
+    app.applyCommand = async (cmd) => { sent.push(cmd); return true; };
+    await app.performUndo();
+    const undo = sent.slice(before);
+    assert.ok(
+      undo.some((c) => c.kind === "setLightBrightness" && c.entityId === "light.a" && c.percent === 90),
+      "brightness is restored to its pre-mood value",
+    );
     app.dispose();
   });
 });

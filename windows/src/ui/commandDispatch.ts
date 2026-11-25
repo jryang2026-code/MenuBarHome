@@ -5,7 +5,7 @@ import { getCachedXiaomiTopology, miSessionFingerprint } from "../core/pollingPo
 import { miSceneAccount } from "../core/miCloud/scenes.js";
 import { requestMiSceneConfirmation } from "./sceneConfirmation.js";
 import { isWorkstationLockBlockingControl } from "./transport.js";
-import { isInsideScheduledTimerTick } from "./speechGuard.js";
+import { recordWorkstationLockBlock } from "./speechGuard.js";
 import type { MenuMijiaWindowsApp } from "./app.js";
 import type { UndoAction } from "./appTypes.js";
 import {
@@ -299,7 +299,9 @@ function startSliderDrain(
         try {
           await (current.execute
             ? current.execute()
-            : host.executeSingleCommand(current.device, current.command, current.summary, current.intent));
+            : host.executeSingleCommand(current.device, current.command, current.summary, current.intent, false, {
+                revalidateBeforeSend: current.revalidateBeforeSend,
+              }));
           const failed =
             (host.replyBanner !== prevBanner && host.replyBanner?.isError === true) ||
             (!current.execute && peekDeviceWriteSeq(host, current.device.id) === seqBefore);
@@ -359,6 +361,8 @@ export function submitSliderWrite(host: MenuMijiaWindowsApp, request: SliderWrit
 
 interface ApplyCommandOptions {
   readonly roomGroupCover?: boolean;
+  /** Set only for a scheduled timer fired by its own tick; every other write stays lock-guarded at send time. */
+  readonly allowWhileLocked?: boolean;
 }
 
 const customApplyCommandByHost = new WeakMap<
@@ -1148,9 +1152,7 @@ export async function applyCommand(
 ): Promise<boolean> {
   const sourceRevision = host.sourceRevision;
   const homeRevision = host.homeRevision;
-  // Only a scheduled timer tick may run while Windows is locked, and only when it reaches this
-  // call synchronously; every other write stays subject to the lock guard at send time.
-  const lockExempt = isInsideScheduledTimerTick();
+  const allowWhileLocked = options?.allowWhileLocked === true;
   const originalCommand = command;
   const wasUndoRestore = undoRestoreCommands.has(originalCommand);
   const capturedFacet = wasUndoRestore
@@ -1228,7 +1230,7 @@ export async function applyCommand(
     if (effectiveMode === "homeAssistant") {
       command = homeAssistantCommand(command, host.devices, host.deviceFacets);
     }
-    const readPower = await dispatchCloudCommand(host, command, readBackPower, originalCommand.entityId, userInitiated, lockExempt);
+    const readPower = await dispatchCloudCommand(host, command, readBackPower, originalCommand.entityId, userInitiated, allowWhileLocked);
     if (typeof readPower === "boolean") command = withReadPower(command, readPower);
   } catch (error) {
     if (sourceRevision !== host.sourceRevision) return false;
@@ -1511,7 +1513,7 @@ async function dispatchCloudCommand(
   readBackPower: boolean,
   originalEntityId: string,
   userInitiated: boolean,
-  lockExempt: boolean,
+  allowWhileLocked: boolean,
 ): Promise<boolean | null> {
   const sourceRevision = host.sourceRevision;
   const homeRevision = host.homeRevision;
@@ -1541,14 +1543,25 @@ async function dispatchCloudCommand(
       }
     }
   };
+  // The lock can engage while the command waits (spec lookup, HA connection, LAN attempt), so it
+  // is re-checked after those waits and right before the first request; a refusal is recorded so
+  // a manual run of a missed timer goes back to the missed list.
+  const lockedOut = async (): Promise<boolean> => {
+    if (allowWhileLocked || !(await isWorkstationLockBlockingControl(host))) return false;
+    recordWorkstationLockBlock(host);
+    return true;
+  };
+  const lockGate = async (): Promise<void> => {
+    if (await lockedOut()) {
+      throw new DOMException("Control blocked while workstation is locked", "AbortError");
+    }
+  };
   const stillAllowed = isMiotChannelSwitch
     ? async (): Promise<boolean> => {
         if (sourceRevision !== host.sourceRevision || homeRevision !== host.homeRevision) {
           return false;
         }
-        if (!lockExempt && (await isWorkstationLockBlockingControl(host))) {
-          return false;
-        }
+        if (await lockedOut()) return false;
         if (host.miSessionExpired && effectiveCommandBackend(host, command) === "xiaomiCloud") {
           return false;
         }
@@ -1566,10 +1579,10 @@ async function dispatchCloudCommand(
       userInitiated,
       beforeSend,
       stillAllowed,
+      // Attached only while the lock guard is on, so an unguarded send gains no extra awaits.
+      ...(!allowWhileLocked && host.settings?.blockControlWhileLocked ? { beforeSendAsync: lockGate } : {}),
       beforeFallback: async () => {
-        if (await isWorkstationLockBlockingControl(host)) {
-          throw new DOMException("Control blocked while workstation is locked", "AbortError");
-        }
+        await lockGate();
         beforeSend();
       },
     });

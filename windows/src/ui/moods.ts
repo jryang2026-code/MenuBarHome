@@ -301,8 +301,12 @@ export async function applyMoodForHost(host: MenuMijiaWindowsApp, id: string, op
         if (!entry) { entry = { commands: [], prior: step.priorDevice }; restoreMap.set(rechecked.deviceId, entry); restoreOrder.push(rechecked.deviceId); }
         entry.commands.unshift(...step.restore);
       }
-    } else if (!failedNames.includes(step.deviceName)) {
-      failedNames.push(step.deviceName);
+    } else {
+      // A failed sub-command still advanced the device's write seq. With no outside write since,
+      // the mood keeps the device: its accepted earlier restores (brightness before a failed
+      // color temperature) stay undoable and its later sub-commands may still run.
+      if (ownsDeviceWrite(host, writeClaim)) latestClaims.set(rechecked.deviceId, writeClaim);
+      if (!failedNames.includes(step.deviceName)) failedNames.push(step.deviceName);
     }
   }
 

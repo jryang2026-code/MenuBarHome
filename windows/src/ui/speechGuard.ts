@@ -817,11 +817,15 @@ export function getLockBlockCount(host: object): number {
   return hostState(host).lockBlockCount;
 }
 
-export async function rejectIfControlBlockedWhileLocked(
+/**
+ * Records a write refused because Windows is locked and shows why. Every lock refusal (the entry
+ * check and the late re-checks right before a send) goes through here, so a manual run of a missed
+ * timer that the lock stops is put back in the missed list.
+ */
+export function recordWorkstationLockBlock(
   host: LockGuardHost,
   options?: { readonly beforeRender?: () => void },
-): Promise<boolean> {
-  if (!(await isControlBlockedWhileLocked(host))) return false;
+): void {
   hostState(host).lockBlockCount += 1;
   host.replyBanner = {
     text: t("屏幕已锁定，已拦截设备控制指令"),
@@ -830,19 +834,29 @@ export async function rejectIfControlBlockedWhileLocked(
   };
   options?.beforeRender?.();
   host.render();
+}
+
+export async function rejectIfControlBlockedWhileLocked(
+  host: LockGuardHost,
+  options?: { readonly beforeRender?: () => void },
+): Promise<boolean> {
+  if (!(await isControlBlockedWhileLocked(host))) return false;
+  recordWorkstationLockBlock(host, options);
   return true;
 }
 
 export async function runScheduledCommandWithLockGuard(
   host: MenuMijiaWindowsApp,
   item: import("../core/models.js").ScheduledCommand,
-  runner: () => Promise<void>,
+  runner: (allowWhileLocked: boolean) => Promise<void>,
 ): Promise<void> {
   const state = hostState(host);
-  const exempt = isInsideScheduledTimerTick();
+  // Read once, synchronously, while the timer tick is still on the stack: the runner carries it
+  // as an explicit flag, because the tick depth is gone after the runner's first await.
+  const allowWhileLocked = isInsideScheduledTimerTick();
   const beforeBlockedCount = state.lockBlockCount;
-  await runner();
-  if (!exempt && state.lockBlockCount > beforeBlockedCount) {
+  await runner(allowWhileLocked);
+  if (!allowWhileLocked && state.lockBlockCount > beforeBlockedCount) {
     if (!host.missedScheduledCommands.some((entry) => entry.id === item.id)) {
       host.missedScheduledCommands = [...host.missedScheduledCommands, item];
       host.scheduledCommandStore.persist();
