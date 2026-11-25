@@ -14,7 +14,8 @@
   --dur-slow: 333ms;
 
   --ease-decelerate: cubic-bezier(0, 0, 0, 1);
-  --ease-accelerate: cubic-bezier(1, 0, 1, 1);
+  /* Fluent AccelerateMid: an exit starts moving at once instead of idling for half its run. */
+  --ease-accelerate: cubic-bezier(0.7, 0, 1, 0.5);
   --ease-point-to-point: cubic-bezier(0.55, 0.55, 0, 1);
   --ease-standard: cubic-bezier(0.33, 0, 0.67, 1);
   --ease-linear: cubic-bezier(0, 0, 1, 1);
@@ -3683,6 +3684,8 @@ button.cc-footer-label.is-action { color: var(--win-critical); text-decoration: 
   background: color-mix(in srgb, var(--win-accent) 32%, transparent);
   transform-origin: left;
   transform: scaleX(0);
+  /* Letting go early drains the fill back instead of blinking it to empty. */
+  transition: transform var(--dur-fast) var(--ease-decelerate);
 }
 
 .cc-all-off-pill.is-holding .cc-hold-fill {
@@ -5799,7 +5802,7 @@ html.is-settings-window[data-native-backdrop="mica"] .cc-popover.scheme-light .c
   height: 5px;
   border-radius: 50%;
   background: rgba(255, 255, 255, 0.18);
-  transition: background 180ms var(--ease-decelerate);
+  transition: background-color var(--dur-fast) var(--ease-decelerate);
 }
 
 .cc-tile.is-size-small.is-active .cc-small-tile-dot {
@@ -6491,12 +6494,6 @@ html.is-settings-window[data-native-backdrop="mica"] .cc-popover.scheme-light .c
 #app[data-panel-theme="classic"] .cc-popover.scheme-light .cc-tile:not(.is-capsule) > .cc-tile-fill {
   background: linear-gradient(90deg, color-mix(in srgb, var(--tile-family-color, #007aff) 20%, transparent) 0%, color-mix(in srgb, var(--tile-family-color, #007aff) 10%, transparent) 100%);
 }
-@keyframes cc-orb-spring-pop {
-  0% { transform: scale(0.92); }
-  42% { transform: scale(1.12); }
-  100% { transform: scale(1); }
-}
-#app[data-panel-theme="classic"] .cc-tile.is-popped .cc-tile-orb { animation: cc-orb-spring-pop 360ms var(--spring-bounce); }
 #app[data-panel-theme="classic"] .cc-popover.is-editing .cc-tile.is-dragging { transform: scale(1.04); box-shadow: 0 6px 16px rgba(0, 0, 0, 0.28); }
 #app[data-panel-theme="classic"] .cc-resize-handle { transition: transform 280ms var(--spring-control), color var(--dur-fast) var(--ease-standard); }
 @media (hover: hover) and (pointer: fine) {
@@ -6909,7 +6906,7 @@ html.is-settings-window[data-native-backdrop="mica"] .cc-popover.scheme-light .c
   font-size: 11.5px;
   font-weight: 500;
   cursor: pointer;
-  transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease;
+  transition: background-color var(--dur-fast) var(--ease-decelerate), border-color var(--dur-fast) var(--ease-decelerate), color var(--dur-fast) var(--ease-decelerate);
 }
 
 .cc-home-summary-pill:hover {
@@ -6955,7 +6952,6 @@ html.is-settings-window[data-native-backdrop="mica"] .cc-popover.scheme-light .c
     --spring-control: var(--ease-linear); --spring-reveal: var(--ease-linear);
     --spring-lens: var(--ease-linear); --spring-stack: var(--ease-linear); --spring-bounce: var(--ease-linear);
   }
-  #app[data-panel-theme="classic"] .cc-tile.is-popped .cc-tile-orb { animation: none !important; }
   .cc-tab-indicator, #app[data-panel-theme="classic"] .cc-tile, #app[data-panel-theme="classic"] .cc-expander-grid,
   #app[data-panel-theme="classic"] .cc-liquid-thumb, #app[data-panel-theme="classic"] .cc-resize-handle,
   .cc-stack-backplate, .cc-upper-stack [data-upper-card-id],
@@ -7039,4 +7035,19 @@ html.is-settings-window[data-native-backdrop="mica"] .cc-popover.scheme-light .c
   display: flex;
   justify-content: flex-end;
   gap: 6px;
+}
+
+/* Small surfaces grow out of the control that opened them instead of blinking in.
+   The duration tokens drop to 0 ms under Reduce Motion, so these appear at once there. */
+.cc-conn-popover,
+.cc-room-browse-menu,
+.cc-diff-preview-card {
+  transition: opacity var(--dur-fast) var(--ease-decelerate), transform var(--dur-fast) var(--ease-decelerate);
+}
+.cc-conn-popover { transform-origin: left bottom; }
+.cc-room-browse-menu { transform-origin: right top; }
+@starting-style {
+  .cc-conn-popover { opacity: 0; transform: translateY(4px) scale(0.98); }
+  .cc-room-browse-menu { opacity: 0; transform: translateY(-4px) scale(0.98); }
+  .cc-diff-preview-card { opacity: 0; transform: translateY(-4px); }
 }

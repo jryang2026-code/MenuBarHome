@@ -25,7 +25,7 @@ type ControlIdentityKey = string;
 
 const FLUENT_MOTION = {
   decelerateEasing: "cubic-bezier(0, 0, 0, 1)",
-  accelerateEasing: "cubic-bezier(1, 0, 1, 1)",
+  accelerateEasing: "cubic-bezier(0.7, 0, 1, 0.5)",
   linearEasing: "linear",
   enterDurationMs: 250,
   fastEnterDurationMs: 167,

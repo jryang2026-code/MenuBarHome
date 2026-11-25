@@ -2971,6 +2971,8 @@ export function bindUnifiedUpperStack(host: MenuMijiaWindowsApp): void {
       const tx = (isDismissible ? dx : StackedCardGeometry.rubberBand(dx, widthPx)).toFixed(2);
       cardEl.style.transform = `translate3d(${tx}px, 0px, 0px)`;
       cardEl.style.setProperty("--swipe-x", `${tx}px`);
+      // A dismissible card fades as it travels, so letting go past the threshold reads as "gone", not a blink.
+      if (isDismissible) cardEl.style.opacity = (1 - Math.min(0.6, Math.abs(dx) / widthPx)).toFixed(3);
     });
 
     const finishPointer = (e: PointerEvent, cancelled: boolean): void => {
@@ -2995,6 +2997,7 @@ export function bindUnifiedUpperStack(host: MenuMijiaWindowsApp): void {
       }
       cardEl.style.transform = "translate3d(0px, 0px, 0px)";
       cardEl.style.setProperty("--swipe-x", "0px");
+      cardEl.style.removeProperty("opacity");
     };
     cardEl.addEventListener("pointerup", (e: PointerEvent) => finishPointer(e, false));
     cardEl.addEventListener("pointercancel", (e: PointerEvent) => finishPointer(e, true));

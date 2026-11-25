@@ -215,13 +215,16 @@ struct SplitDeviceTileHeader<Orb: View, Badge: View, QuickBadge: View>: View {
                     Image(systemName: "chevron.right")
                         .font(.system(size: DesignTokens.TypeSize.footnote, weight: .semibold))
                         .foregroundStyle((isAdjustHovered || isExpanded) ? nameColor.opacity(0.88) : statusColor)
-                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                        .animation(AppleMotion.resolve(.control, reduceMotion: reduceMotion)) {
+                            $0.rotationEffect(.degrees(isExpanded ? 90 : 0))
+                        }
                 }
                 .padding(.leading, 7)
                 .padding(.trailing, max(8, trailingPadding - 2))
                 .frame(minWidth: 32, minHeight: DesignTokens.minHitTarget, maxHeight: isExpanded ? nil : .infinity)
                 .background(
                     Color.primary.opacity(isAdjustHovered && !isEditingLayout ? (colorScheme == .dark ? 0.09 : 0.05) : 0)
+                        .animation(AppleMotion.resolve(.hoverFade, reduceMotion: reduceMotion), value: isAdjustHovered)
                 )
                 .tahoeHoverHitTarget()
                 .contentShape(Rectangle())
@@ -501,6 +504,7 @@ struct PanelRoomBrowseOption: Identifiable, Equatable {
 }
 
 struct PanelLongTailBar: View {
+    @Environment(\.effectiveReduceMotion) private var reduceMotion
     let hiddenCount: Int
     let isExpanded: Bool
     let rooms: [PanelRoomBrowseOption]
@@ -512,8 +516,11 @@ struct PanelLongTailBar: View {
         HStack(spacing: 6) {
             Button(action: onToggleExpand) {
                 HStack(spacing: 5) {
-                    Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                    Image(systemName: "chevron.down")
                         .font(.system(size: DesignTokens.TypeSize.footnote, weight: .bold))
+                        .animation(AppleMotion.resolve(.control, reduceMotion: reduceMotion)) {
+                            $0.rotationEffect(.degrees(isExpanded ? 180 : 0))
+                        }
                     Text(isExpanded
                         ? PanelDeviceOrganizer.longTailCollapseTitle()
                         : PanelDeviceOrganizer.longTailExpandTitle(count: hiddenCount))
@@ -582,6 +589,7 @@ private struct PanelCapsuleSurface: ViewModifier {
 }
 
 struct ClassicOfflineDrawerHeader: View {
+    @Environment(\.effectiveReduceMotion) private var reduceMotion
     let count: Int
     let summary: String
     let isExpanded: Bool
@@ -622,7 +630,9 @@ struct ClassicOfflineDrawerHeader: View {
                 Image(systemName: "chevron.right")
                     .font(.system(size: DesignTokens.TypeSize.footnote, weight: .semibold))
                     .foregroundStyle(.secondary)
-                    .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                    .animation(AppleMotion.resolve(.control, reduceMotion: reduceMotion)) {
+                        $0.rotationEffect(.degrees(isExpanded ? 90 : 0))
+                    }
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 7)

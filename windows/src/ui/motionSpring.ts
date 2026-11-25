@@ -89,7 +89,7 @@ export function buildOrbBounceKeyframes(spec: SpringSpec = APPLE_SPRINGS.orbBoun
     if (idx === 0) return { transform: "scale(0.92)" };
     if (idx === count - 1) return { transform: "scale(1)" };
     const t = (totalSec * idx) / (count - 1);
-    const impulse = 0.22 * Math.exp(-zeta * omega0 * t) * Math.sin(omegaD * t);
+    const impulse = 0.12 * Math.exp(-zeta * omega0 * t) * Math.sin(omegaD * t);
     return { transform: `scale(${round4(0.92 + 0.08 * p + impulse)})` };
   });
 }

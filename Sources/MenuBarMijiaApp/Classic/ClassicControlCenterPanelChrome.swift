@@ -531,6 +531,7 @@ extension ClassicControlCenterPanel {
                     Capsule(style: .continuous)
                         .fill(surface.fill)
                         .shadow(color: .black.opacity(effectiveScheme == .dark ? 0.28 : 0.10), radius: 2, y: 1)
+                        .matchedGeometryEffect(id: "kindLens", in: filterLens)
                 }
             }
             .contentShape(Capsule(style: .continuous))
@@ -739,6 +740,7 @@ extension ClassicControlCenterPanel {
                     Capsule(style: .continuous)
                         .fill(surface.fill)
                         .shadow(color: .black.opacity(effectiveScheme == .dark ? 0.28 : 0.10), radius: 2, y: 1)
+                        .matchedGeometryEffect(id: "roomLens", in: filterLens)
                 }
             }
             .contentShape(Capsule(style: .continuous))

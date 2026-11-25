@@ -40,6 +40,8 @@ public struct ClassicControlCenterPanel: View {
     @State var quickDrawerState = PanelQuickDrawerState.shared
     @Bindable private var speech = SpeechInputController.shared
     @Environment(\.effectiveReduceMotion) var reduceMotion
+    /// Shared by the room and kind strips so one selection lens slides between pills.
+    @Namespace var filterLens
     @Environment(\.effectiveReduceTransparency) var reduceTransparency
     /// Opens the ⌘, Settings window; the popover no longer hosts the long form (#42).
     @Environment(\.openSettings) var openSettings

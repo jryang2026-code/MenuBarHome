@@ -409,8 +409,12 @@ public struct DeviceCardView: View {
                         DeviceTileActionLayout.performAdjust(for: device, store: store)
                     }
                 } label: {
-                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                    // One chevron that turns, like the split tile's, instead of swapping glyphs.
+                    Image(systemName: "chevron.right")
                         .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
+                        .animation(AppleMotion.resolve(.control, reduceMotion: reduceMotion)) {
+                            $0.rotationEffect(.degrees(isExpanded ? 90 : 0))
+                        }
                         .foregroundStyle(nameColor.opacity(0.68))
                         .frame(width: DesignTokens.minHitTarget, height: DesignTokens.minHitTarget)
                         .adaptiveGlass(in: Circle(), interactive: true)
