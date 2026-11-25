@@ -214,6 +214,8 @@ public final class HomeStore {
     public internal(set) var environmentReadings: [EnvironmentReading] = [] {
         didSet { scheduleRaycastSnapshotExport() }
     }
+    public internal(set) var moods: [MoodSnapshot]
+
     public internal(set) var scenes: [HomeScene] = [] {
         didSet {
             if !scenes.isEmpty {
@@ -1126,6 +1128,8 @@ public final class HomeStore {
     @ObservationIgnored var lastPanelInteractionAt = Date()
     var pollingContextSync: Task<Void, Never>?
     var debounceTasks: [String: Task<Void, Never>] = [:]
+    @ObservationIgnored var controlSliderNow: () -> ContinuousClock.Instant = { .now }
+    @ObservationIgnored var activeSliderWrites: [String: (token: UUID, context: UUID, task: Task<Void, Never>)] = [:]
     struct DebouncedWriteState {
         let token: UUID
         let deviceId: String
@@ -1134,6 +1138,7 @@ public final class HomeStore {
         /// longer be sent can put back exactly what it showed.
         let revision: UInt64
         let fields: Set<OptimisticField>
+        let send: @MainActor (DebouncedWriteState) async -> Void
     }
     var debouncedWrites: [String: DebouncedWriteState] = [:]
     struct ManualWritePatch {
@@ -1348,6 +1353,7 @@ public final class HomeStore {
         let ud = defaults ?? defaultsSuiteName.flatMap { UserDefaults(suiteName: $0) } ?? .standard
         let testEnvironment = (provider != nil || dualSource != nil || defaultsSuiteName != nil || defaults != nil)
         self.userDefaults = ud
+        self.moods = MoodPreferences.load(from: ud)
         self.cameraEventStore = CameraEventStore(
             directory: testEnvironment
                 ? FileManager.default.temporaryDirectory.appendingPathComponent("CameraEvents-\(UUID().uuidString)", isDirectory: true)
@@ -1770,6 +1776,10 @@ public final class HomeStore {
     public internal(set) var lastAssistantReceipt: AssistantExecutionReceipt?
     /// A command or suggestion request waiting for the user to allow sending it to a cloud AI service (#20).
     public internal(set) var pendingCloudConsent: PendingCloudConsent?
+    /// A multi-device or high-risk omnibar command waiting for user confirmation in the inline diff preview card.
+    public internal(set) var pendingDiffPreview: AssistantDiffPreview?
+    /// Per-cover deadlines during which intermediate motor updates are ignored after a room group command.
+    @ObservationIgnored var groupCoverIgnoreUntil: [String: Date] = [:]
     public internal(set) var assistantSuggestions: [AssistantSuggestion] = []
     /// Cached model proactive recommendations for `lastProactiveRefreshSignature` (#113).
     var aiProactiveSuggestions: [AssistantSuggestion]?

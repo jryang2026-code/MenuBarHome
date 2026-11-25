@@ -63,9 +63,10 @@ async function flushAsync(rounds = 6): Promise<void> {
 }
 
 async function waitFor(predicate: () => boolean, label: string): Promise<void> {
-  for (let i = 0; i < 200; i += 1) {
+  const deadline = performance.now() + 5_000;
+  while (performance.now() < deadline) {
     if (predicate()) return;
-    await setImmediate();
+    await new Promise((resolve) => setTimeout(resolve, 10));
   }
   assert.fail(`timed out waiting for ${label}`);
 }

@@ -51,7 +51,7 @@ import { homeAssistantIdentity } from "../core/homeAssistant.js";
 import { CredentialVault, sessionWithoutPassToken } from "../core/secureStore.js";
 import { MiAccountScope, MiAccountsStore, clearAccountRateLimitBackoff, formatAccountTokenNotice, getAccountTokenStatus, hasCorruptMiAccountIndex, hasSecondaryMiAccountsInIndex, makeMiAccount, mergeMiAccountSnapshots, miAccountId, type MiAccount, type MiAccountTokenStatus } from "../core/miAccountsStore.js";
 import { cancelDelayedReadBack, type OptimisticLockHost } from "../core/optimisticLock.js";
-import { clearCachedXiaomiTopology, clearXiaomiRateLimitBackoff, getXiaomiBackoffUntilMs } from "../core/pollingPolicy.js";
+import { clearCachedXiaomiTopology } from "../core/pollingPolicy.js";
 import { SCHEDULED_COMMANDS_STORAGE_KEY, ScheduledCommandStore } from "../core/scheduledCommands.js";
 import { DiagnosticsReportBuilder, FeedbackBackendOption, FeedbackDiagnosticsBuilder, UnsupportedDeviceScanner, appDiagnosticsLog, countFeedbackBackendDevices, deriveCameraDiagnostics, derivePollingBackoffDiagnostics, feedbackSignals, formatSpecSummaryText, summarizeModelCounts, type FeedbackBackendCount, type FeedbackDiagnosticsInput, type ScanUnsupportedOptions, type UnsupportedDevice } from "../core/diagnosticsAndScanner.js";
 import type { DeviceMergeRoute, DualSourceCoordinator } from "../core/dualSourceProvider.js";
@@ -968,14 +968,12 @@ export async function setMiAccountEnabledOnHost(
   }
 
   clearAccountRateLimitBackoff(accountId);
-  const targetAccount = allAccounts.find((acc) => acc.id === accountId);
   const enabledAfter = filterEnabledMiAccounts(allAccounts, resolveHostMiSelectionState(host, allAccounts));
   // Disabling an account drops the alert-only devices and hidden index entries it owned; with no
   // enabled account left there is nothing to evaluate, so the whole retained set goes (P3a-W).
   if (enabledAfter.length === 0) applyMiotTypePruneSnapshot(host, null);
   else dropMiotTypePruneSnapshotForAccount(host, accountId);
-  if (enabledAfter.length === 0 || (host.settings.miSession && miAccountId(host.settings.miSession) === accountId) || (targetAccount && getXiaomiBackoffUntilMs(host, targetAccount.session) !== null)) {
-    clearXiaomiRateLimitBackoff(host);
+  if (enabledAfter.length === 0 || (host.settings.miSession && miAccountId(host.settings.miSession) === accountId)) {
     clearCachedXiaomiTopology(host);
   }
   if (host.settings.selectedHomeId && MiAccountScope.isOwned(host.settings.selectedHomeId, accountId)) {
@@ -2111,7 +2109,6 @@ export function finishAllMiAccountsSignedOutOnHost(
   host.miSessionExpired = false;
   host.cloudValuesStale = false;
   clearCachedXiaomiTopology(host);
-  clearXiaomiRateLimitBackoff(host);
   clearAccountRateLimitBackoff();
   removeSignedOutMiAccountFromSelection(null);
   if (host.connDiagSession) {

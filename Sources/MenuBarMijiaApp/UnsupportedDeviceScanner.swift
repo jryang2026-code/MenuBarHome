@@ -281,6 +281,7 @@ final class UnsupportedDeviceScanner {
         guard let url = webSocketURL(from: baseURL) else {
             throw UnsupportedDeviceScanError.invalidURL
         }
+        try await HAPlaintextConsent.validateConnectionAddress(url)
 
         let configuration = URLSessionConfiguration.ephemeral
         // Same as the live provider: talk to the LAN directly instead of through a system proxy.

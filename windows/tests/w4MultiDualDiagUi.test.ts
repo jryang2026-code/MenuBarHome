@@ -1,3 +1,4 @@
+import { miCloudRateLimiter } from "../src/core/miCloud/rateLimiter.js";
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import type { Window } from "happy-dom";
@@ -64,8 +65,6 @@ import {
   getCachedXiaomiTopology,
   getXiaomiBackoffUntilMs,
   miSessionFingerprint,
-  recordXiaomiRateLimit,
-  shouldSkipSilentPollForBackoff,
   storeCachedXiaomiTopology,
 } from "../src/core/pollingPolicy.js";
 import type { SmartDevice } from "../src/core/models.js";
@@ -643,7 +642,6 @@ describe("W4 Multi-Account UI: account cards, token health badges, non-overwriti
     // Prevent post-signout refresh from mutating backoff/topology so this test observes the sign-out path itself.
     app.refreshDevices = async () => {};
 
-    const nowMs = Date.now();
     storeCachedXiaomiTopology(app, {
       sessionFingerprint: miSessionFingerprint(SESSION_SG_SECONDARY),
       sourceRevision: app.sourceRevision,
@@ -659,11 +657,10 @@ describe("W4 Multi-Account UI: account cards, token health badges, non-overwriti
       specs: {},
       membersByGroup: new Map(),
     });
-    recordXiaomiRateLimit(app, SESSION_SG_SECONDARY, nowMs);
+    await miCloudRateLimiter.recordLimit(makeMiAccount(SESSION_SG_SECONDARY).id, "60");
 
     assert.ok(getCachedXiaomiTopology(app));
-    assert.ok(getXiaomiBackoffUntilMs(app, SESSION_SG_SECONDARY) !== null);
-    assert.equal(shouldSkipSilentPollForBackoff(app, SESSION_SG_SECONDARY, nowMs + 1000), true);
+    assert.ok(getXiaomiBackoffUntilMs(SESSION_SG_SECONDARY) !== null);
 
     openConnectionsAndDiagModal(app, "accounts");
     await settleUi(4);
@@ -680,7 +677,7 @@ describe("W4 Multi-Account UI: account cards, token health badges, non-overwriti
       "removing one account while another remains must not clear the remaining account's topology cache",
     );
     assert.ok(
-      getXiaomiBackoffUntilMs(app, SESSION_SG_SECONDARY) !== null,
+      getXiaomiBackoffUntilMs(SESSION_SG_SECONDARY) !== null,
       "removing one account while another remains must not clear the remaining account's rate-limit backoff",
     );
 
@@ -694,11 +691,10 @@ describe("W4 Multi-Account UI: account cards, token health badges, non-overwriti
       "signing out the last Xiaomi account via multi-account modal must clear cached Xiaomi topology",
     );
     assert.equal(
-      getXiaomiBackoffUntilMs(app, SESSION_SG_SECONDARY),
+      getXiaomiBackoffUntilMs(SESSION_SG_SECONDARY),
       null,
       "signing out the last Xiaomi account via multi-account modal must clear Xiaomi rate-limit backoff",
     );
-    assert.equal(shouldSkipSilentPollForBackoff(app, SESSION_SG_SECONDARY, nowMs + 1000), false);
   });
 
   it("clears Xiaomi topology cache and rate-limit backoff on signOutXiaomiAccount without duplicate errors", async () => {
@@ -709,7 +705,6 @@ describe("W4 Multi-Account UI: account cards, token health badges, non-overwriti
 
     await addOrUpdateMiAccountOnHost(app, SESSION_CN_PRIMARY, { triggerRefresh: false });
 
-    const nowMs = Date.now();
     storeCachedXiaomiTopology(app, {
       sessionFingerprint: miSessionFingerprint(SESSION_CN_PRIMARY),
       sourceRevision: app.sourceRevision,
@@ -725,16 +720,16 @@ describe("W4 Multi-Account UI: account cards, token health badges, non-overwriti
       specs: {},
       membersByGroup: new Map(),
     });
-    recordXiaomiRateLimit(app, SESSION_CN_PRIMARY, nowMs);
+    await miCloudRateLimiter.recordLimit(makeMiAccount(SESSION_CN_PRIMARY).id, "60");
 
     assert.ok(getCachedXiaomiTopology(app));
-    assert.ok(getXiaomiBackoffUntilMs(app, SESSION_CN_PRIMARY) !== null);
+    assert.ok(getXiaomiBackoffUntilMs(SESSION_CN_PRIMARY) !== null);
 
     signOutXiaomiAccount(app);
     await settleUi(10);
 
     assert.equal(getCachedXiaomiTopology(app), null);
-    assert.equal(getXiaomiBackoffUntilMs(app, SESSION_CN_PRIMARY), null);
+    assert.equal(getXiaomiBackoffUntilMs(SESSION_CN_PRIMARY), null);
     assert.notEqual(app.replyBanner?.isError, true);
   });
 

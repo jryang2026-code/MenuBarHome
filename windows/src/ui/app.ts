@@ -134,6 +134,8 @@ import {
 } from "./sensorHistoryView.js";
 import { applyGlobalHotkey, applyInterfaceLanguage, applyTemperatureSetting, bindGlobalKeys, bindLifecycleRecovery, checkForAppUpdate, disposeAppLifecycle, hasAnyConnectedOrSelectedDataSource, initializeCredentials, openSettingsSheet, openUpdatePage, restoreUpdateState, retryIdentityMigration, saveSettings, signOutXiaomiAccount, startTimerLoop, startUpdateInstall, submitServiceEndpoints, syncAutomationLifecycle, syncTimerLoopSchedule } from "./appLifecycle.js";
 import { handleNaturalCommand, runScheduledCommand } from "./naturalCommand.js";
+import type { AssistantDiffPreview } from "../core/assistantDiffPreview.js";
+import type { PendingRoomGroupConfirm } from "./roomGroupActions.js";
 import { currentProactiveSuggestions, maybeRefreshProactiveInBackground } from "./proactive.js";
 import { SourceEpoch } from "./sourceEpoch.js";
 import { switchHome, switchSource } from "./sourceSwitch.js";
@@ -191,6 +193,17 @@ import {
   type CameraStillWallRenderState,
 } from "../core/cameraEventStore.js";
 import { scheduledCommandIdentity, setScheduledCommandsRunning } from "./scheduledCommands.js";
+import { loadMoodSnapshots, MOOD_SNAPSHOTS_STORAGE_KEY, type MoodSnapshot } from "../core/moodSnapshot.js";
+import {
+  applyMoodForHost,
+  captureMoodForHost,
+  deleteMoodForHost,
+  dismissPendingMoodPrompts,
+  renderMoodPrompt,
+  type PendingMoodCapturePrompt,
+  type PendingMoodConfirmationPrompt,
+} from "./moods.js";
+import type { HotkeyExecutionOutcome } from "./hotkeyBindings.js";
 
 export { undoBannerMs, undoDeviceCount } from "./undoTracker.js";
 
@@ -398,6 +411,29 @@ export class MenuMijiaWindowsApp {
     return activeRoomOptions(this);
   }
 
+  public moodAvailableRooms(): RoomOption[] {
+    return this.roomOptions;
+  }
+
+  public get activeRoomId(): string | null {
+    return this.listCut.kind === "room" ? this.listCut.roomId : null;
+  }
+
+  public captureMood(
+    name: string,
+    roomId: string | null = this.listCut.kind === "room" ? this.listCut.roomId : null,
+  ): boolean {
+    return captureMoodForHost(this, name, roomId);
+  }
+
+  public deleteMood(id: string): void {
+    deleteMoodForHost(this, id);
+  }
+
+  public applyMood(id: string): Promise<HotkeyExecutionOutcome> {
+    return applyMoodForHost(this, id);
+  }
+
   public selectRoom(roomId: string | null, roomName?: string): void {
     this.savedGridScrollTop = 0;
     this.isRoomBrowseMenuOpen = false;
@@ -467,6 +503,10 @@ export class MenuMijiaWindowsApp {
   public groupOwnerByMemberDid = new Map<string, string>();
   /** A command waiting for the user to allow sending it to a cloud AI service (#20). */
   public pendingCloudConsent: { utterance: string; endpoint: string } | null = null;
+  /** Inline omnibar diff preview awaiting Confirm/Cancel for multi-device or high-risk commands. */
+  public pendingDiffPreview: AssistantDiffPreview | null = null;
+  /** Single-batch high-risk confirmation for room auto-group actions. */
+  public pendingRoomGroupConfirm: PendingRoomGroupConfirm | null = null;
   /** AI guesses that wait for a tap instead of running by themselves (#21). */
   public pendingSuggestions: AssistantSuggestion[] = [];
   /** AI-ranked proactive suggestions for the current ambient signature (#113). */
@@ -524,6 +564,8 @@ export class MenuMijiaWindowsApp {
     this.aiProactiveSignature = null;
     this.aiProactiveSuggestions = null;
     this.pendingCloudConsent = null;
+    this.pendingDiffPreview = null;
+    this.pendingRoomGroupConfirm = null;
     this.pendingSuggestions = [];
   }
   /** Advances on every source switch; read widely, including by `core/` through structural hosts. */
@@ -646,6 +688,15 @@ export class MenuMijiaWindowsApp {
   public isRecordingHotkey = false;
   public hotkeyNeedsHint = false;
   public hotkeyRegistrationError: string | null = null;
+  public isRecordingCustomHotkeyId: string | null = null;
+  public customHotkeyConflictError: string | null = null;
+  public customHotkeyRegistrationErrors: Record<string, string> = {};
+  public isAddingCustomHotkey = false;
+  public newCustomHotkeyTargetKey = "";
+  public moods: MoodSnapshot[] = loadMoodSnapshots();
+  public lastCoverPositions: Record<string, number> = {};
+  public pendingMoodCapture: PendingMoodCapturePrompt | null = null;
+  public pendingMoodConfirm: PendingMoodConfirmationPrompt | null = null;
   /** Retryable diagnostic when settings or credential vault reads failed during legacy migration. */
   public identityMigrationDiagnostic: string | null = null;
 
@@ -780,6 +831,11 @@ export class MenuMijiaWindowsApp {
         this.render();
         return;
       }
+      if (storageKey === MOOD_SNAPSHOTS_STORAGE_KEY) {
+        this.moods = loadMoodSnapshots();
+        this.render();
+        return;
+      }
       if (storageKey && storageKey !== STORAGE_KEY) {
         return;
       }
@@ -789,14 +845,21 @@ export class MenuMijiaWindowsApp {
       if (!this.root.isConnected || !this.isStandaloneSettingsWindow) return;
       this.requestCloseSettingsSheet();
     };
+    const onCrossWindowMoodsSync = () => {
+      if (!this.root.isConnected) return;
+      this.moods = loadMoodSnapshots();
+      this.render();
+    };
     window.addEventListener("menumijia:select-settings-tab", onSelectSettingsTab);
     window.addEventListener("menumijia:settings-sync", onCrossWindowSettingsSync);
+    window.addEventListener("menumijia:moods-sync", onCrossWindowMoodsSync);
     window.addEventListener("menumijia:request-close-settings", onRequestCloseSettings);
     window.addEventListener("storage", onCrossWindowSettingsSync);
     this.appDisposers.push(
       () => window.removeEventListener("blur", onBlurCancelAllOff),
       () => window.removeEventListener("menumijia:select-settings-tab", onSelectSettingsTab),
       () => window.removeEventListener("menumijia:settings-sync", onCrossWindowSettingsSync),
+      () => window.removeEventListener("menumijia:moods-sync", onCrossWindowMoodsSync),
       () => window.removeEventListener("menumijia:request-close-settings", onRequestCloseSettings),
       () => window.removeEventListener("storage", onCrossWindowSettingsSync),
       unsubscribeHaLifecycle,
@@ -917,6 +980,7 @@ export class MenuMijiaWindowsApp {
     }
     this.loadedSettings = reloaded;
     this.settings = reloaded.settings;
+    this.moods = loadMoodSnapshots();
     // `writeSettingsForStorage` strips credential secrets from localStorage, so keep live
     // in-memory credentials intact across cross-window sync (unless sign-out/revocation
     // cleared them) while re-hydrating authoritatively from CredentialVault below.
@@ -1067,6 +1131,7 @@ export class MenuMijiaWindowsApp {
     this.pipeline.clearTransientState();
     this.pipeline.eventScope.abort();
     this.clearPendingHighRisk();
+    dismissPendingMoodPrompts(this);
     this.cancelAllOffHold();
     for (const stop of this.appDisposers.splice(0)) stop();
     if (this.cameraLive.activeLiveCameraId !== null || this.cameraLive.liveCameraKeepAliveTimer !== null) {
@@ -1093,7 +1158,9 @@ export class MenuMijiaWindowsApp {
       this.isEditingLayout ||
       this.isHomeMenuOpen ||
       this.ctxMenu !== null ||
-      this.prompt !== null
+      this.prompt !== null ||
+      this.pendingMoodCapture !== null ||
+      this.pendingMoodConfirm !== null
     );
   }
 
@@ -1378,9 +1445,10 @@ export class MenuMijiaWindowsApp {
     );
   }
 
-  public async handleNaturalCommand(rawInput: string, fromScheduled = false): Promise<void> {
+  public async handleNaturalCommand(rawInput: string, fromScheduled = false, preferDiffPreview = false): Promise<void> {
     if (!isInsideScheduledTimerTick() && (await rejectIfControlBlockedWhileLocked(this))) return;
-    return handleNaturalCommand(this, rawInput, fromScheduled);
+    if (this.pendingRoomGroupConfirm) this.pendingRoomGroupConfirm = null;
+    return handleNaturalCommand(this, rawInput, fromScheduled, preferDiffPreview);
   }
 
   public async runScheduledCommand(item: ScheduledCommand, userInitiated = false): Promise<void> {
@@ -1693,7 +1761,7 @@ export class MenuMijiaWindowsApp {
     this.render();
   }
 
-  public get applyCommand(): (command: DeviceCommand, readBackPower?: boolean, userInitiated?: boolean) => Promise<boolean> {
+  public get applyCommand(): ReturnType<typeof getHostApplyCommand> {
     return getHostApplyCommand(this);
   }
 
@@ -2338,7 +2406,7 @@ export class MenuMijiaWindowsApp {
   }
 
   public renderPrompt(): string {
-    return renderUrlConfirmationPrompt(this) || renderPrompt(this);
+    return renderUrlConfirmationPrompt(this) || renderMoodPrompt(this) || renderPrompt(this);
   }
 
   public renderOnboardingModal(): string {
@@ -2573,6 +2641,7 @@ export class MenuMijiaWindowsApp {
         this.isRoomBrowseMenuOpen ||
         this.expandedDeviceId !== null;
       this.clearPendingHighRisk({ syncPin: false });
+      dismissPendingMoodPrompts(this);
       resetPanelSplitTransientState(this);
       if (hadTransientSplit) {
         this.expandedDeviceId = null;

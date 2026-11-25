@@ -647,6 +647,7 @@ extension HomeStore {
                     clearOptimisticLockEntries(for: incoming.id)
                     clearOptimisticRevisions(for: incoming.id)
                     coverCommandOrigins.removeValue(forKey: incoming.id)
+                    groupCoverIgnoreUntil.removeValue(forKey: incoming.id)
                     lastCoverPositions.removeValue(forKey: incoming.id)
                     manualWriteSessions.removeValue(forKey: incoming.id)
                     optimisticLockRevision[incoming.id, default: 0] &+= 1
@@ -698,7 +699,11 @@ extension HomeStore {
                     }
                 }
                 var lockedFields = activeLockedFields(for: incoming.id, at: now)
-                if lockedFields.contains(.coverPosition), !staleFields.contains(.coverPosition),
+                let ignoringGroupCover = isIgnoringGroupCoverUpdates(for: incoming.id, at: now)
+                if ignoringGroupCover, case .cover = incoming.kind {
+                    lockedFields.insert(.coverPosition)
+                }
+                if !ignoringGroupCover, lockedFields.contains(.coverPosition), !staleFields.contains(.coverPosition),
                    let local = existingById[incoming.id],
                    coverTravelTakesOver(deviceId: incoming.id, local: local, incoming: incoming) {
                     // The motor has confirmed the command, so its own report is authoritative.
@@ -1136,10 +1141,24 @@ extension HomeStore {
     ) -> DualSourceHomeProvider {
         let box = UncheckedUserDefaults(defaults)
         let stored = defaults.dictionary(forKey: ViewPreferenceKeys.canonicalDeviceIds) as? [String: String] ?? [:]
+        let file = defaults === UserDefaults.standard ? CanonicalDeviceRegistryFile.live : nil
+        let (registry, save): (CanonicalDeviceRegistry, DualSourceHomeProvider.CanonicalIDPersistence)
+        if let file {
+            (registry, save) = file.open(legacy: stored)
+        } else {
+            let metadataKey = ViewPreferenceKeys.canonicalDeviceIds + ".registry"
+            registry = defaults.data(forKey: metadataKey)
+                .flatMap { try? JSONDecoder().decode(CanonicalDeviceRegistry.self, from: $0) }
+                ?? CanonicalDeviceRegistry(assignments: stored)
+            save = { registry in
+                box.defaults.set(try? JSONEncoder().encode(registry), forKey: metadataKey)
+                box.defaults.set(registry.assignments, forKey: ViewPreferenceKeys.canonicalDeviceIds)
+            }
+        }
         return DualSourceHomeProvider(
             homeAssistant: homeAssistant,
             xiaomiCloud: xiaomiCloud,
-            initialCanonicalIDs: stored,
+            initialRegistry: registry,
             knownPreferenceIDs: {
                 var ids = DevicePreferenceIndex.referencedIDs(defaults: box.defaults)
                 if let pinBox {
@@ -1153,9 +1172,9 @@ extension HomeStore {
                 }
                 return DeviceSourcePinStorage.load(defaults: box.defaults)
             },
-            persistCanonicalIDs: { assignments in
-                box.defaults.set(assignments, forKey: ViewPreferenceKeys.canonicalDeviceIds)
-            }
+            persistCanonicalIDs: save,
+            graceNow: { SuspendingClock.now },
+            fallbackRecheckTimer: DispatchFallbackRecheckTimer()
         )
     }
 

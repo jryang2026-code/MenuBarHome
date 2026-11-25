@@ -964,6 +964,10 @@ private struct GeneralSettingsTab: View {
                     .font(.system(size: DesignTokens.TypeSize.caption))
                     .foregroundStyle(DesignTokens.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
+
+                    Divider().overlay(Color.primary.opacity(0.06))
+
+                    CustomHotkeyBindingsSection(store: store)
                 }
                 .settingsRow(anchor: .globalHotkey)
             }
@@ -2473,6 +2477,7 @@ private struct PrivacySettingsTab: View {
     @State private var showNotificationRationale = false
     @State private var confirmsAdvancedFacetWrites = false
     @AppStorage(URLDirectControl.allowDirectControlKey) private var allowDirectControl = false
+    @AppStorage(ScreenSharingPrivacy.storageKey) private var hideFromScreenSharing = false
 
     private var notifications: NotificationPermissionState { .shared }
 
@@ -2482,6 +2487,23 @@ private struct PrivacySettingsTab: View {
         let includedCount = store.allOffIncludedDevices.count
 
         VStack(alignment: .leading, spacing: 16) {
+            SettingsSection(title: L10n.tr("投屏隐私", "Screen Sharing Privacy"), anchor: .hideFromScreenSharing) {
+                SettingsToggleRow(
+                    title: L10n.tr("共享屏幕时隐藏面板与摄像机窗口", "Hide from screen sharing"),
+                    isOn: Binding(
+                        get: { hideFromScreenSharing },
+                        set: { ScreenSharingPrivacy.shared.setHidden($0) }
+                    )
+                )
+                Text(L10n.tr(
+                    "尝试在兼容的共享工具中隐藏控制面板、摄像机浮窗和快捷键提示。系统画中画和部分截屏工具仍可捕获画面。",
+                    "Requests that compatible sharing tools hide the control panel, floating camera windows, and hotkey HUD. System Picture in Picture and some capture tools may still show them."
+                ))
+                .font(.system(size: DesignTokens.TypeSize.caption))
+                .foregroundStyle(DesignTokens.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+
             SettingsSection(title: L10n.tr("锁屏控制", "Lock-Screen Protection"), anchor: .blockControlWhileLocked) {
                 SettingsToggleRow(
                     title: L10n.tr("锁屏时禁止控制设备", "Block device control while locked"),

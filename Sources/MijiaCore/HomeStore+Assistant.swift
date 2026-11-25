@@ -337,6 +337,7 @@ extension HomeStore {
 
     public func dismissAssistantBar() {
         isShowingAssistantBar = false
+        pendingDiffPreview = nil
         if assistantState != .thinking {
             setAssistantState(.idle)
         }
@@ -827,7 +828,7 @@ extension HomeStore {
 
     /// Resolves a natural-language command (local parser first, model fallback) and applies it.
     @discardableResult
-    public func runAssistantCommand(_ text: String) async -> IntentPlan? {
+    public func runAssistantCommand(_ text: String, preferDiffPreview: Bool = false) async -> IntentPlan? {
         let companion = activeCompanionCommandGeneration
         if let companion, !companionCanExecute(generation: companion) { return nil }
         let controlContext = controlContextID
@@ -836,6 +837,7 @@ extension HomeStore {
         let assistantGeneration = assistantEpoch
         let spoken = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !spoken.isEmpty else { return nil }
+        pendingDiffPreview = nil
         let startedAt = Date()
         let delayed = DelayPhrase.extract(spoken)
         let utterance = delayed?.remainder ?? spoken
@@ -959,6 +961,32 @@ extension HomeStore {
                 setAssistantState(.failed(capabilityMsg))
                 return blocked
             }
+            if preferDiffPreview {
+                let marks = SwitchLightMarks.load(defaults: userDefaults)
+                if AssistantDiffPreview.requiresPreview(
+                    intents: originalIntents,
+                    devices: devices,
+                    scenes: scenes,
+                    markedLightIds: marks
+                ) {
+                    let preview = AssistantDiffPreview.build(
+                        plan: plan,
+                        devices: devices,
+                        scenes: scenes,
+                        markedLightIds: marks,
+                        utterance: utterance,
+                        delaySeconds: delayed?.delay,
+                        startedAt: startedAt,
+                        habitSummary: habitSummary,
+                        controlContextID: controlContext,
+                        capabilityGeneration: capabilityGeneration
+                    )
+                    pendingDiffPreview = preview
+                    isShowingAssistantBar = true
+                    setAssistantState(.awaitingChoice(preview.title))
+                    return plan
+                }
+            }
             let approved = hazardApprovedIntents(originalIntents)
             guard controlContext == controlContextID else { return nil }
             if let capabilityMsg = firstPlanCapabilityRejectionMessage(for: originalIntents) {
@@ -1057,6 +1085,55 @@ extension HomeStore {
             usedHabitContext: habitSummary != nil,
             habitSummary: habitSummary
         )
+    }
+
+    /// Executes the pending inline diff preview after the user explicitly confirms it.
+    @discardableResult
+    public func confirmPendingDiffPreview() async -> IntentPlan? {
+        guard let preview = pendingDiffPreview else { return nil }
+        pendingDiffPreview = nil
+        guard controlContextID == preview.controlContextID,
+              capabilityGeneration == preview.capabilityGeneration else {
+            setAssistantState(.done(L10n.tr("已取消", "Cancelled")))
+            return nil
+        }
+        if rejectControlWhileLocked() {
+            setAssistantState(.failed(screenLockBlockedMessage))
+            return nil
+        }
+        if let capabilityMsg = firstPlanCapabilityRejectionMessage(for: preview.plan.intents) {
+            showToast(capabilityMsg, isError: true)
+            setAssistantState(.failed(capabilityMsg))
+            return nil
+        }
+        for (deviceId, expectedProfile) in preview.hazardProfiles {
+            guard let live = devices.first(where: { $0.id == deviceId }),
+                  ManualControlHazardProfile(live) == expectedProfile else {
+                setAssistantState(.done(L10n.tr("设备状态已变化，已取消执行", "Device state changed; cancelled")))
+                return nil
+            }
+        }
+        if let delay = preview.delaySeconds {
+            var timerPlan = preview.plan
+            timerPlan.suggestions = []
+            return schedule(timerPlan, after: delay)
+        }
+        let origin: AssistantExecutionOrigin = preview.plan.source == .local ? .userInitiated : .aiAutomatic
+        return await executeIntentPlan(
+            preview.plan,
+            recordedUtterance: preview.utterance,
+            origin: origin,
+            receiptStartedAt: preview.startedAt,
+            usedHabitContext: preview.habitSummary != nil,
+            habitSummary: preview.habitSummary
+        )
+    }
+
+    /// Dismisses the pending inline diff preview without sending any commands.
+    public func cancelPendingDiffPreview() {
+        guard pendingDiffPreview != nil else { return }
+        pendingDiffPreview = nil
+        setAssistantState(.done(L10n.tr("已取消", "Cancelled")))
     }
 
     // MARK: - Voice Undo
@@ -1499,9 +1576,11 @@ extension HomeStore {
             // Losing a timer to a crash mid-execution is the safer failure for hardware.
             self.finishScheduledTask(entry.id, token: token)
             guard self.commitScheduledCommands(waiting: self.scheduledCommands.filter { $0.id != entry.id }) else { return }
-            _ = await self.executeIntentPlan(
-                entry.plan, recordedUtterance: nil, origin: .scheduled, timerGeneration: generation
-            )
+            await MiCloudClient.$isBackgroundWrite.withValue(true) {
+                _ = await self.executeIntentPlan(
+                    entry.plan, recordedUtterance: nil, origin: .scheduled, timerGeneration: generation
+                )
+            }
         }
     }
 

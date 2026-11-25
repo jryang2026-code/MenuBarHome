@@ -1,6 +1,63 @@
 import Carbon
 import Foundation
 import MijiaCore
+import SwiftUI
+
+enum PanelInputMode {
+    case mouse
+    case keyboard
+}
+
+@MainActor
+final class PanelInputState {
+    private(set) var mode: PanelInputMode = .mouse
+
+    func mouseMoved() {
+        mode = .mouse
+    }
+
+    func keyboardNavigated() {
+        mode = .keyboard
+    }
+
+    func record(_ action: PanelKeyRouter.Action) {
+        switch action {
+        case .moveFocus, .adjustFocusedDevice, .toggleFocusedDevice, .focusConnectionStatus,
+             .cycleRoom, .selectQuickIndex, .selectQuickIndexClearingStatusFocus:
+            keyboardNavigated()
+        default:
+            break
+        }
+    }
+
+    func selectHoveredCard(_ id: String, store: HomeStore, search: PanelSearchState?) {
+        guard mode == .mouse else { return }
+        if let search {
+            search.selectHoveredResult(id)
+        } else if let focused = store.focusedDeviceId, focused != id {
+            store.focusedDeviceId = id
+        }
+    }
+}
+
+extension EnvironmentValues {
+    @Entry var panelInput: PanelInputState? = nil
+}
+
+struct PanelCardHoverSelection: ViewModifier {
+    @Environment(\.panelInput) private var input
+    let deviceId: String
+    let store: HomeStore
+    let search: PanelSearchState?
+    let isEnabled: Bool
+
+    func body(content: Content) -> some View {
+        content.onContinuousHover { phase in
+            guard isEnabled, case .active = phase else { return }
+            input?.selectHoveredCard(deviceId, store: store, search: search)
+        }
+    }
+}
 
 /// Tracks transient panel interactions that live outside `HomeStore` — an active 0.6 s All-Off hold
 /// and expanded ordinary-reminder / offline drawers — without `@Observable` invalidations on hidden
@@ -213,6 +270,10 @@ enum PanelKeyRouter {
     /// Keys decided before search sees them. nil means search goes next.
     static func beforeSearch(_ key: Key, _ context: Context) -> Action? {
         if key.code == kVK_ANSI_Comma, key.command { return .openSettings }
+        // AppKit owns the Character Viewer shortcut, including when a device card has focus.
+        if key.code == kVK_Space, key.control, key.command, !key.shift, !key.option {
+            return .passThrough
+        }
         if key.code == kVK_ANSI_K,
            key.command, !key.shift, !key.option, !key.control,
            context.isPanelWindow,

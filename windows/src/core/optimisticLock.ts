@@ -66,6 +66,7 @@ interface DeviceLockEntry {
   expiresAtMs: number;
   revision: number;
   coverOriginPosition: number | null;
+  ignoreCoverMovement?: boolean;
   /** Kind fields this lock cycle wrote, so an equal-to-baseline value still needs confirmation. */
   dirtyFields: Set<string>;
   /** 更多设置 facet ids this lock cycle wrote, for the same reason. */
@@ -76,6 +77,7 @@ interface DeviceLockEntry {
 export interface OptimisticLockSnapshot {
   readonly expiresAtMs: number;
   readonly coverOriginPosition: number | null;
+  readonly ignoreCoverMovement?: boolean;
   readonly dirtyFields: readonly string[];
   readonly dirtyFacetIds: readonly string[];
 }
@@ -203,6 +205,7 @@ export function lockOptimistic(
     readonly nowMs?: number;
     readonly writeEpoch?: number;
     readonly coverOriginPosition?: number | null;
+    readonly ignoreCoverMovement?: boolean;
     readonly baselineDevice?: SmartDevice | null;
     readonly baselineFacets?: readonly FacetControl[];
   },
@@ -249,6 +252,7 @@ export function lockOptimistic(
     expiresAtMs: nowMs + durationMs,
     revision,
     coverOriginPosition,
+    ignoreCoverMovement: options?.ignoreCoverMovement ?? (prevActive ? prev.ignoreCoverMovement : undefined),
     dirtyFields,
     dirtyFacetIds,
   });
@@ -270,6 +274,7 @@ export function snapshotOptimisticLock(
   return {
     expiresAtMs: entry.expiresAtMs,
     coverOriginPosition: entry.coverOriginPosition,
+    ...(entry.ignoreCoverMovement ? { ignoreCoverMovement: true } : {}),
     dirtyFields: [...entry.dirtyFields],
     dirtyFacetIds: [...entry.dirtyFacetIds],
   };
@@ -293,6 +298,7 @@ export function restoreOptimisticLock(
     expiresAtMs: snapshot.expiresAtMs,
     revision: state.revisions.get(deviceId) ?? 0,
     coverOriginPosition: snapshot.coverOriginPosition,
+    ignoreCoverMovement: snapshot.ignoreCoverMovement,
     dirtyFields: new Set(snapshot.dirtyFields),
     dirtyFacetIds: new Set(snapshot.dirtyFacetIds),
   });
@@ -312,6 +318,27 @@ export function claimDeviceWrite(host: OptimisticLockHost, deviceId: string): De
 export function peekDeviceWriteSeq(host: OptimisticLockHost, deviceId: string): number {
   const state = ensureHostState(host);
   return state.writeSeqs.get(deviceId) ?? 0;
+}
+
+export function getFieldWriteEpoch(
+  host: OptimisticLockHost,
+  deviceId: string,
+  field: string,
+): number | undefined {
+  return ensureHostState(host).fieldWriteEpochs.get(deviceId)?.get(field);
+}
+
+export function recordFieldWriteEpoch(
+  host: OptimisticLockHost,
+  deviceId: string,
+  fields: readonly string[],
+  writeEpoch: number,
+): void {
+  if (fields.length === 0) return;
+  const state = ensureHostState(host);
+  const rowEpochs = state.fieldWriteEpochs.get(deviceId) ?? new Map<string, number>();
+  for (const field of fields) rowEpochs.set(field, writeEpoch);
+  state.fieldWriteEpochs.set(deviceId, rowEpochs);
 }
 
 export function currentDeviceWriteClaim(host: OptimisticLockHost, deviceId: string): DeviceWriteClaim {
@@ -763,7 +790,7 @@ export function mergeHomeSnapshotRespectingLocks(
       // A cover is write-only: only its own travel confirms the command, and a snapshot cannot
       // stand in for it (`standards-store-locks-timers.md` §14).
       state.readBackInFlight.delete(incoming.id);
-      if (staleFields.size === 0 && coverTravelTakesOver(lock.coverOriginPosition, local.kind, incoming.kind)) {
+      if (staleFields.size === 0 && !lock.ignoreCoverMovement && coverTravelTakesOver(lock.coverOriginPosition, local.kind, incoming.kind)) {
         state.locks.delete(incoming.id);
         mergedDevices.push(incoming);
         adoptReadyFacets();

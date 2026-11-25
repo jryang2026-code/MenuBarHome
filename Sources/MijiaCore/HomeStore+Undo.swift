@@ -61,6 +61,7 @@ extension HomeStore {
         lastAssistantUndo = nil
         setAssistantState(.idle)
         pendingCloudConsent = nil
+        pendingDiffPreview = nil
         assistantSuggestions = []
         aiProactiveSuggestions = nil
         proactiveRefreshTask?.cancel()
@@ -68,6 +69,7 @@ extension HomeStore {
         isProactiveRecommending = false
         proactiveRetryEarliest = nil
         clearOptimisticLocks()
+        groupCoverIgnoreUntil.removeAll()
         lastCoverPositions.removeAll()
         lastHistoryRecordAt = nil
         cancelFacetWrites(for: nil)
@@ -75,6 +77,8 @@ extension HomeStore {
         lastProactiveRefreshSignature = nil
         for task in debounceTasks.values { task.cancel() }
         debounceTasks.removeAll()
+        for flight in activeSliderWrites.values { flight.task.cancel() }
+        activeSliderWrites.removeAll()
         debouncedWrites.removeAll()
         manualWriteSessions.removeAll()
         // The cover drag answer and reported facet/device baselines belong to the connection that recorded them (§13).
@@ -587,7 +591,9 @@ extension HomeStore {
         let task = Task { () -> BulkWriteOutcome in
             // Every exit drops the registration, so a later undo never waits on a finished batch.
             defer { runningBatches[bannerId] = nil }
-            guard let outcome = await runBatchCommands(offCommands, context: context, batchId: bannerId, writes: writes) else { return .partial }
+            guard let outcome = await runBatchCommands(
+                offCommands, context: context, batchId: bannerId, writes: writes, coalesceSwitchChannels: true
+            ) else { return .partial }
             // Undo needs this report after this task ends: a device a newer write took before its
             // send keeps its own state and must not receive a restore command.
             if undoBanner?.id == bannerId { undoBanner?.attemptedDeviceIds = outcome.attemptedDeviceIds }
@@ -788,8 +794,17 @@ extension HomeStore {
         writes: [String: OptimisticWrite],
         automationGeneration: UInt64? = nil,
         companionGeneration: UInt64? = nil,
-        automationCanContinue: (() -> Bool)? = nil
+        automationCanContinue: (() -> Bool)? = nil,
+        coalesceSwitchChannels: Bool = false
     ) async -> BatchCommandOutcome? {
+        typealias Item = (deviceId: String, command: DeviceCommand)
+        let channelGroups: [String: [Item]] = coalesceSwitchChannels
+            ? Dictionary(grouping: commands.filter {
+                if case .setSwitch = $0.command { return MiotAddress.parse($0.command.targetEntityId) != nil }
+                return false
+            }, by: { MiotAddress.parse($0.command.targetEntityId)?.did ?? "" })
+            : [:]
+        var groupedDeviceIDs = Set<String>()
         var outcome = BatchCommandOutcome()
         for item in commands {
             guard context == controlContextID,
@@ -800,26 +815,63 @@ extension HomeStore {
                 outcome.generationInvalidated = true
                 break
             }
-            if outcome.failedDeviceIds.contains(item.deviceId) { continue }
-            // The batch's own write sets the revision once and nothing bumps it before a send, so
-            // this only fires for a newer write (the user, another action, an undo). A device's own
-            // report is adopted without bumping the revision, so it never counts as a takeover.
-            if let write = writes[item.deviceId], !ownsRow(write) {
-                batch.takenOverDeviceIds.insert(item.deviceId)
+
+            let members: [Item]
+            if case .setSwitch = item.command, let did = MiotAddress.parse(item.command.targetEntityId)?.did,
+               let siblings = channelGroups[did], siblings.count > 1 {
+                guard groupedDeviceIDs.insert(did).inserted else { continue }
+                members = siblings
+            } else {
+                members = [item]
+            }
+            let eligible = members.filter {
+                if outcome.failedDeviceIds.contains($0.deviceId) { return false }
+                if let write = writes[$0.deviceId], !ownsRow(write) {
+                    batch.takenOverDeviceIds.insert($0.deviceId)
+                    return false
+                }
+                batch.attemptedDeviceIds.insert($0.deviceId)
+                return true
+            }
+            let results: [(String, Result<Void, any Error>)]
+            if eligible.count > 1 {
+                results = await withTaskGroup(of: (String, Result<Void, any Error>).self) { group in
+                    for member in eligible {
+                        let write = writes[member.deviceId]
+                        group.addTask { [self] in
+                            do {
+                                try await MiCloudProvider.$channelWriteStillAllowed.withValue({ [weak self] in
+                                    await self?.batchChannelIsCurrent(batchId: batchId, write: write) == true
+                                }) {
+                                    try await self.executeDeviceCommand(member.command)
+                                }
+                                return (member.deviceId, .success(()))
+                            } catch {
+                                return (member.deviceId, .failure(error))
+                            }
+                        }
+                    }
+                    var results: [(String, Result<Void, any Error>)] = []
+                    for await result in group { results.append(result) }
+                    return results
+                }
+            } else if let member = eligible.first {
+                do {
+                    try await executeDeviceCommand(member.command)
+                    results = [(member.deviceId, .success(()))]
+                } catch {
+                    results = [(member.deviceId, .failure(error))]
+                }
+            } else {
                 continue
             }
-            batch.attemptedDeviceIds.insert(item.deviceId)
-            do {
-                try await executeDeviceCommand(item.command)
-                outcome.acceptedByDevice[item.deviceId, default: 0] += 1
-            } catch is MiSessionWriteBlocked {
-                // This device is refused like any other; later devices still run, so a batch that
-                // mixes LAN targets and Mi targets keeps sending the LAN ones. The catch continues
-                // the loop instead of breaking.
-                outcome.sessionRefusedDeviceIds.insert(item.deviceId)
-                outcome.failedDeviceIds.insert(item.deviceId)
-            } catch {
-                outcome.failedDeviceIds.insert(item.deviceId)
+            for (id, result) in results {
+                switch result {
+                case .success: outcome.acceptedByDevice[id, default: 0] += 1
+                case .failure(let error):
+                    if error is MiSessionWriteBlocked { outcome.sessionRefusedDeviceIds.insert(id) }
+                    outcome.failedDeviceIds.insert(id)
+                }
             }
         }
         guard context == controlContextID,
@@ -834,6 +886,11 @@ extension HomeStore {
             }
         }
         return outcome
+    }
+
+    private func batchChannelIsCurrent(batchId: UUID, write: OptimisticWrite?) -> Bool {
+        guard let batch = runningBatches[batchId], !batch.isStopped else { return false }
+        return write.map(ownsRow) ?? true
     }
 
     /// Names for the failure toast, in the order the action sent the devices: those that refused
@@ -1354,6 +1411,35 @@ extension HomeStore {
                     }
                     continue
                 }
+                if let original = previousDevices.first(where: { Self.moodCoverRestore(command, on: $0) != nil }) {
+                    guard let live = devices.first(where: { $0.id == original.id }), live.isOnline,
+                          !excludingDeviceIds.contains(live.id), !declinedDeviceIds.contains(live.id),
+                          !contextInvalidatedDeviceIds.contains(live.id),
+                          Self.moodCoverRestore(command, on: live) != nil else {
+                        contextInvalidatedDeviceIds.insert(original.id)
+                        continue
+                    }
+                    let operation = IntentOperation.power(true)
+                    if settle(
+                        live,
+                        requiresConfirmation: ManualControlPolicy.requiresConfirmation(operation, for: live),
+                        postModalValid: { current, captured in
+                            Self.moodCoverRestore(command, on: current) != nil
+                                && postModalAllowsOperation(operation, on: current, captured: captured, didPresentModal: true)
+                        },
+                        ask: {
+                            manualControlConfirmationHandler?(ManualControlConfirmation(
+                                title: L10n.tr("确认恢复位置？", "Restore cover position?"),
+                                message: live.name,
+                                confirmTitle: L10n.tr("确认执行", "Confirm"),
+                                cancelTitle: L10n.tr("取消", "Cancel")
+                            )) == true
+                        }
+                    ) {
+                        didPresentModalInPass = true
+                    }
+                    continue
+                }
                 if let target = Self.facetTarget(for: command),
                    let device = devices.first(where: {
                        deviceFacets[$0.id]?.contains { $0.target == target } == true && !excludingDeviceIds.contains($0.id)
@@ -1428,7 +1514,12 @@ extension HomeStore {
                 guard let (device, restored) = resolved,
                       !declinedDeviceIds.contains(device.id),
                       !contextInvalidatedDeviceIds.contains(device.id) else { continue }
-                let restoreOperation = IntentOperation.power(restored.isActiveOn)
+                let restoreOperation: IntentOperation
+                if case .setClimateTemperature(_, let temperature) = command {
+                    restoreOperation = .targetTemperature(temperature)
+                } else {
+                    restoreOperation = .power(restored.isActiveOn)
+                }
                 let markedLightIds = SwitchLightMarks.load(defaults: userDefaults)
                 if settle(
                     device,
@@ -1607,6 +1698,18 @@ extension HomeStore {
         var applicable: [UndoApplicableCommand] = []
         for command in commands {
             guard capabilityUndoRejectionReason(for: command) == nil else { continue }
+            if let original = previousDevices.first(where: { Self.moodCoverRestore(command, on: $0) != nil }) {
+                guard !excludingDeviceIds.contains(original.id),
+                      let live = devices.first(where: { $0.id == original.id && $0.isOnline }),
+                      let effect = Self.moodCoverRestore(command, on: live, reportedStart: lastCoverPositions[live.id]) else { continue }
+                let write = beginOptimisticWrite(from: live, to: effect.updated, lock: .seconds(3))
+                guard let revision = write.revision else { continue }
+                applicable.append(UndoApplicableCommand(
+                    command: command, deviceId: live.id, deviceName: live.name, lockRevision: revision,
+                    lockedFields: Set(write.fieldRevisions.keys), lockedFacetControlIds: []
+                ))
+                continue
+            }
             // A 更多设置 write has no card-state effect; undo restores the facet value it carries.
             if let target = Self.facetTarget(for: command),
                let device = devices.first(where: { device in

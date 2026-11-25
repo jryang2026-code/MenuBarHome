@@ -61,11 +61,17 @@ public enum LocalNetworkPermissionClassifier {
     }
 }
 
+public struct OfflineLANReachability: Codable, Equatable, Sendable {
+    public let rttMs: Int
+    public let expiresAt: Date
+}
+
 public struct DeviceTransportDiagnostics: Codable, Equatable, Sendable {
     public var route: DeviceTransportRoute
     public var rttMs: Int?
     public var consecutiveFailures: Int
     public var usedBroadcastRecovery: Bool
+    public var offlineLANReachability: OfflineLANReachability?
 
     public init(route: DeviceTransportRoute, rttMs: Int? = nil, consecutiveFailures: Int = 0, usedBroadcastRecovery: Bool = false) {
         self.route = route; self.rttMs = rttMs; self.consecutiveFailures = consecutiveFailures; self.usedBroadcastRecovery = usedBroadcastRecovery

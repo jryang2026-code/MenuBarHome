@@ -659,6 +659,7 @@ public struct ControlCenterPanel: View {
         VStack(alignment: .leading, spacing: 7) {
             if store.showQuickActionsBar {
                 quickActionsAndScenesBar
+                MoodActionsRow(store: store)
             }
             if store.proactiveSuggestionsEnabled || !store.assistantSuggestions.isEmpty {
                 AssistantSuggestionsRow(store: store)
@@ -959,6 +960,12 @@ final class PanelSearchState {
         return results.first
     }
 
+    func selectHoveredResult(_ id: String) {
+        if isExplicitSelection, selectionId != id {
+            selectionId = id
+        }
+    }
+
     /// ↑/↓ through the results, wrapping at both ends.
     func moveSelection(_ delta: Int, in results: [SmartDevice]) {
         guard !results.isEmpty else { return }
@@ -1061,6 +1068,7 @@ enum PanelSearchKeyboard {
             return true
 
         case .moveSelection(let delta):
+            (NSApp.keyWindow as? MenuBarPanel)?.input.keyboardNavigated()
             state.moveSelection(delta, in: results)
             return true
 
@@ -1089,7 +1097,7 @@ enum PanelSearchKeyboard {
         state.end()
         store.presentAssistantBar()
         Task { @MainActor in
-            await store.runAssistantCommand(utterance)
+            await store.runAssistantCommand(utterance, preferDiffPreview: true)
         }
     }
 }

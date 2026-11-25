@@ -3,6 +3,7 @@ import type { CameraStreamQuality } from "../core/cameraQuality.js";
 import type { LanguagePreference } from "../core/i18n.js";
 import type { MiSession } from "../core/miCloudClient.js";
 import type { DeviceCommand, DeviceIntent, SmartDevice, SynthesizedHome } from "../core/models.js";
+import type { HotkeyBinding } from "./hotkeyBindings.js";
 import type {
   AppAppearance,
   LayoutPrefs,
@@ -14,6 +15,7 @@ import type { TemperatureUnitPreference } from "../core/temperature.js";
 declare global {
   interface Window {
     __TAURI_INTERNALS__?: {
+      metadata?: unknown;
       invoke: <T>(cmd: string, args?: Record<string, unknown>) => Promise<T>;
     };
     webkitSpeechRecognition?: new () => SpeechRecognitionInstance;
@@ -124,6 +126,8 @@ export interface PersistedSettings {
   enableGlobalHotkey: boolean;
   /** Canonical global shortcut string (default `"Alt+M"`, #43). */
   globalHotkey: string;
+  /** Per-device / per-scene global hotkey bindings (P1-6, up to 8). */
+  customHotkeyBindings?: HotkeyBinding[];
   /** Registers `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\MenuBarHome` when on. */
   launchAtLogin: boolean;
   /** Blocks manual & external URL device control while the Windows workstation is locked. */

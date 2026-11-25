@@ -712,6 +712,12 @@ extension ControlCenterPanel {
                     .frame(minHeight: isHero ? 124 : nil)
                     .frame(maxHeight: .infinity, alignment: .top)
                     .modifier(OptionalModifier(allowsLayoutEditing ? editable(dev) : nil))
+                    .modifier(PanelCardHoverSelection(
+                        deviceId: dev.id,
+                        store: store,
+                        search: highlightId == nil ? nil : search,
+                        isEnabled: !isEditingLayout
+                    ))
                     .overlay {
                         if highlightId == dev.id {
                             RoundedRectangle(

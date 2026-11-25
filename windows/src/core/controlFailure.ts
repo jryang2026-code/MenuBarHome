@@ -2,6 +2,7 @@ import { controlTargetRejectionMessage } from "./capabilityReferenceVerdict.js";
 import { isHaBlockedRequestError } from "./haTransportGate.js";
 import type { LanguagePreference } from "./i18n.js";
 import { isCapabilityGateError } from "./miAccountControl.js";
+import { isCloudRateLimitError } from "./miCloud/client.js";
 import { MiCloudError } from "./miCloud/session.js";
 import { trText } from "./quickActions.js";
 
@@ -147,6 +148,7 @@ function classifyRawError(error: unknown, shape: ExtractedErrorShape): Classifie
   }
 
   if (error instanceof MiCloudError) {
+    if (isCloudRateLimitError(error)) return { kind: "rateLimited", isCancellation: false };
     switch (error.kind) {
       case "notLoggedIn":
         return { kind: "signedOut", isCancellation: false };

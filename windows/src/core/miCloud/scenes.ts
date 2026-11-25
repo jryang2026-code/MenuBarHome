@@ -100,12 +100,13 @@ export async function executeMiScene(
   client: Pick<MiCloudClient, "runManualScene">,
   scene: HomeScene | undefined,
   beforeSend?: () => void,
+  userInitiated = true,
 ): Promise<null> {
   if (!scene?.miScene || runningScenes.has(scene.id)) throw new Error("Xiaomi scene unavailable");
   runningScenes.add(scene.id);
   try {
     beforeSend?.();
-    await client.runManualScene(scene.miScene);
+    await client.runManualScene(scene.miScene, userInitiated, beforeSend);
     return null;
   } finally {
     runningScenes.delete(scene.id);

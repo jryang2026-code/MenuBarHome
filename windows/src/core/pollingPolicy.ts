@@ -1,12 +1,8 @@
 import { sha256 } from "./miCloudCrypto.js";
-import {
-  MiCloudError,
-  normalizeMiCloudRegion,
-  type MiDeviceRecord,
-  type MiRoom,
-  type MiSession,
-  type MiotDeviceSpec,
-} from "./miCloudClient.js";
+import { MiCloudError, normalizeMiCloudRegion, type MiSession } from "./miCloud/session.js";
+import type { MiDeviceRecord, MiRoom } from "./miCloud/client.js";
+import type { MiotDeviceSpec } from "./miCloud/spec.js";
+import { miCloudRateLimiter, RATE_LIMIT_BACKOFF_MS } from "./miCloud/rateLimiter.js";
 
 /**
  * Current panel and workstation activity context. Mirrors `Sources/MijiaCore/PollingPolicy.swift:4-44`.
@@ -47,7 +43,6 @@ const IDLE_INTERVAL_MS = 120_000;
 const LONG_IDLE_THRESHOLD_MS = 2 * 60 * 60_000;
 const LONG_IDLE_INTERVAL_MS = 300_000;
 const DEVICE_REFRESH_EVERY_POLLS = 20;
-const RATE_LIMIT_BACKOFF_SCHEDULE_MS = [60_000, 120_000, 240_000, 480_000, 900_000] as const;
 
 /**
  * The closed-panel interval after idle stretching, before Low Power Mode. Off while a poll still
@@ -94,7 +89,7 @@ export const PollingPolicy = {
   /** Full topology discovery (`deviceList + homeRooms + sharedHomes + lightGroupMembers`) runs once every 20 polls. */
   deviceRefreshEveryPolls: DEVICE_REFRESH_EVERY_POLLS,
   /** Exponential backoff steps on HTTP 429 / Xiaomi rate limit, capped at 900 s (15 min). */
-  rateLimitBackoffScheduleMs: RATE_LIMIT_BACKOFF_SCHEDULE_MS,
+  rateLimitBackoffScheduleMs: RATE_LIMIT_BACKOFF_MS,
 
   /**
    * Returns the wait in milliseconds between polls, or `null` when polling must pause (locked/asleep).
@@ -120,9 +115,9 @@ export const PollingPolicy = {
   rateLimitBackoffMs(consecutiveHits: number): number {
     const clampedIndex = Math.max(
       0,
-      Math.min(RATE_LIMIT_BACKOFF_SCHEDULE_MS.length - 1, Math.trunc(consecutiveHits) - 1),
+      Math.min(RATE_LIMIT_BACKOFF_MS.length - 1, Math.trunc(consecutiveHits) - 1),
     );
-    return RATE_LIMIT_BACKOFF_SCHEDULE_MS[clampedIndex] ?? 900_000;
+    return RATE_LIMIT_BACKOFF_MS[clampedIndex] ?? 900_000;
   },
 } as const;
 
@@ -189,6 +184,7 @@ const RATE_LIMIT_MARKERS: readonly string[] = [
   "request limit",
   "请求过于频繁",
   "访问过于频繁",
+  "请求太频繁",
 ];
 
 export function isXiaomiRateLimitError(err: unknown): boolean {
@@ -274,9 +270,6 @@ interface CachedXiaomiTopology {
 interface HostXiaomiPollState {
   topology: CachedXiaomiTopology | null;
   silentPollsSinceTopology: number;
-  backoffSessionFingerprint: string | null;
-  consecutiveRateLimits: number;
-  backoffUntilMs: number | null;
 }
 
 const hostPollStates = new WeakMap<object, HostXiaomiPollState>();
@@ -287,9 +280,6 @@ function ensureHostPollState(host: object): HostXiaomiPollState {
     state = {
       topology: null,
       silentPollsSinceTopology: 0,
-      backoffSessionFingerprint: null,
-      consecutiveRateLimits: 0,
-      backoffUntilMs: null,
     };
     hostPollStates.set(host, state);
   }
@@ -313,11 +303,12 @@ export function takeCachedXiaomiTopologyForPoll(
   lightGroupMembersNeeded = true,
   everyPolls: number = PollingPolicy.deviceRefreshEveryPolls,
 ): CachedXiaomiTopology | null {
-  if (!silent) return null;
+  const cloudPaused = miCloudRateLimiter.readCooldownMs(miAccountId(session)) > 0;
+  if (!silent && !cloudPaused) return null;
   const state = hostPollStates.get(host);
   if (!state || !state.topology) return null;
   const cached = state.topology;
-  if (cached.skippedLightGroupMembers === true && lightGroupMembersNeeded) return null;
+  if (cached.skippedLightGroupMembers === true && lightGroupMembersNeeded && !cloudPaused) return null;
   if (
     cached.allDevices.length === 0 ||
     cached.rawDevices.length === 0 ||
@@ -327,6 +318,7 @@ export function takeCachedXiaomiTopologyForPoll(
   ) {
     return null;
   }
+  if (cloudPaused) return cached;
   const threshold = Math.max(1, Math.trunc(everyPolls));
   const nextRound = state.silentPollsSinceTopology + 1;
   if (nextRound >= threshold) {
@@ -356,52 +348,9 @@ export function clearCachedXiaomiTopology(host: object): void {
   state.silentPollsSinceTopology = 0;
 }
 
-export function shouldSkipSilentPollForBackoff(
-  host: object,
-  session: MiSession,
-  nowMs: number = Date.now(),
-): boolean {
-  const state = hostPollStates.get(host);
-  if (!state || state.backoffUntilMs === null) return false;
-  if (state.backoffSessionFingerprint !== miSessionFingerprint(session)) {
-    state.backoffSessionFingerprint = null;
-    state.consecutiveRateLimits = 0;
-    state.backoffUntilMs = null;
-    return false;
-  }
-  return nowMs < state.backoffUntilMs;
-}
-
-export function recordXiaomiRateLimit(
-  host: object,
-  session: MiSession,
-  nowMs: number = Date.now(),
-): number {
-  const state = ensureHostPollState(host);
-  const fp = miSessionFingerprint(session);
-  if (state.backoffSessionFingerprint !== fp) {
-    state.backoffSessionFingerprint = fp;
-    state.consecutiveRateLimits = 0;
-  }
-  state.consecutiveRateLimits += 1;
-  const delayMs = PollingPolicy.rateLimitBackoffMs(state.consecutiveRateLimits);
-  state.backoffUntilMs = nowMs + delayMs;
-  return delayMs;
-}
-
-export function clearXiaomiRateLimitBackoff(host: object): void {
-  const state = hostPollStates.get(host);
-  if (!state) return;
-  state.backoffSessionFingerprint = null;
-  state.consecutiveRateLimits = 0;
-  state.backoffUntilMs = null;
-}
-
-export function getXiaomiBackoffUntilMs(host: object, session: MiSession): number | null {
-  const state = hostPollStates.get(host);
-  if (!state || state.backoffUntilMs === null) return null;
-  if (state.backoffSessionFingerprint !== miSessionFingerprint(session)) return null;
-  return state.backoffUntilMs;
+export function getXiaomiBackoffUntilMs(session: MiSession): number | null {
+  const remaining = miCloudRateLimiter.readCooldownMs(miAccountId(session));
+  return remaining > 0 ? Date.now() + remaining : null;
 }
 
 export const MI_SESSION_EXPIRED_STORAGE_KEY = "menumijia.windows.miSessionExpired.v1";

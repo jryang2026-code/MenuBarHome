@@ -15,6 +15,7 @@ import {
   isTriggerSupportedOnWindows,
   isWiFiConditionSupportedOnWindows,
   normalizeWiFiSSIDs,
+  pairedContextTrigger,
   summarizeAutomationAction,
   WINDOWS_SUPPORTED_TRIGGERS,
   WINDOWS_WIFI_CONDITION_SUPPORTED,
@@ -122,6 +123,7 @@ export interface NewRuleDraftState {
   devicesPowerOn: boolean;
   selectedDeviceIds: Set<string>;
   selectedSceneId: string;
+  restoreWhenContextEnds: boolean;
 }
 
 export interface HostAutoSafetySession {
@@ -130,7 +132,7 @@ export interface HostAutoSafetySession {
   lastScopeKey: string | null;
   lastSourceRevision: number | null;
   pendingHighRiskConfirm?: {
-    readonly kind: "add" | "enable";
+    readonly kind: "add" | "enable" | "restore";
     readonly rule: AutomationRule;
     readonly confirmation: AutomationHighRiskConfirmation;
   } | null;
@@ -246,6 +248,7 @@ function createDefaultDraft(): NewRuleDraftState {
     devicesPowerOn: false,
     selectedDeviceIds: new Set<string>(),
     selectedSceneId: "",
+    restoreWhenContextEnds: false,
   };
 }
 
@@ -936,6 +939,11 @@ export function renderAutomationAndSafetySettingsSections(ctx: SettingsViewConte
                 <div style="font-size: 12.5px; font-weight: 600; opacity: ${rule.isEnabled ? "1" : "0.55"}; word-break: break-word;">${esc(titleText)}</div>
                 ${unsupportedBadge}
                 ${details ? `<div class="cc-field-hint" style="margin: 2px 0 0 0;">${esc(details)}</div>` : ""}
+                ${
+                  rule.action.kind === "devices" && pairedContextTrigger(rule.trigger) !== null
+                    ? `<label class="cc-checkbox" style="margin-top: 3px; font-size: 11.5px;"><input type="checkbox" data-auto-rule-restore="${esc(rule.id)}" ${rule.restoreWhenContextEnds ? "checked" : ""} /><span>${esc(uiText(lang, "情境结束后还原", "情境結束後還原", "Restore when the context ends"))}</span></label>`
+                    : ""
+                }
                 <details class="cc-field-hint">
                   <summary>${esc(uiText(lang, "最近运行", "最近執行", "Recent runs"))}</summary>
                   ${runRows ? `<ul>${runRows}</ul>` : esc(uiText(lang, "暂无运行记录", "暫無執行記錄", "No runs yet"))}
@@ -1120,6 +1128,24 @@ export function renderAutomationAndSafetySettingsSections(ctx: SettingsViewConte
           </select>
         </div>
         ${actionControlsHtml}
+        ${
+          draft.actionKind === "devices" && pairedContextTrigger(draft.trigger) !== null
+            ? (() => {
+                const exitTrigger = pairedContextTrigger(draft.trigger)!;
+                return `<div style="margin-top: 8px;">
+                  <label class="cc-checkbox" for="settings-auto-restore-context">
+                    <input id="settings-auto-restore-context" type="checkbox" ${draft.restoreWhenContextEnds ? "checked" : ""} />
+                    <span>${esc(uiText(lang, "情境结束后还原", "情境結束後還原", "Restore when the context ends"))}</span>
+                  </label>
+                  <p class="cc-field-hint" id="settings-auto-restore-hint" style="margin: 2px 0 0 0;">${esc(
+                    uiText(lang, "结束触发：{trigger}", "結束觸發：{trigger}", "End trigger: {trigger}", {
+                      trigger: automationTriggerTitle(exitTrigger, lang),
+                    }),
+                  )}</p>
+                </div>`;
+              })()
+            : ""
+        }
         <div style="display: flex; justify-content: flex-end; gap: 6px; margin-top: 10px;">
           <button type="button" class="cc-btn-primary" id="btn-add-auto-rule" ${canAddRule ? "" : "disabled"}>${esc(uiText(lang, "保存自动化规则", "儲存自動化規則", "Save Automation Rule"))}</button>
         </div>
@@ -1246,6 +1272,7 @@ export function bindAutomationSettingsEvents(host: AutoSafetySettingsHost): void
   const commitRuleAdd = (created: AutomationRule): void => {
     ruleStore.save([...ruleStore.load(), { ...created, highRiskApproved: true }]);
     draft.selectedDeviceIds.clear();
+    draft.restoreWhenContextEnds = false;
     session.pendingHighRiskConfirm = null;
     host.replyBanner = {
       text: uiText(lang, "已保存自动化规则：{summary}", "已儲存自動化規則：{summary}", "Saved automation rule: {summary}", {
@@ -1258,6 +1285,18 @@ export function bindAutomationSettingsEvents(host: AutoSafetySettingsHost): void
 
   const commitRuleEnable = (ruleId: string): void => {
     ruleStore.save(ruleStore.load().map((r) => (r.id === ruleId ? { ...r, isEnabled: true, highRiskApproved: true, pausedByCapabilities: [] } : r)));
+    session.pendingHighRiskConfirm = null;
+    host.render();
+  };
+
+  const commitRuleRestore = (ruleId: string, exitTrigger: AutomationTrigger): void => {
+    ruleStore.save(
+      ruleStore.load().map((r) =>
+        r.id === ruleId
+          ? { ...r, restoreWhenContextEnds: true, restoreTrigger: exitTrigger, highRiskApproved: true }
+          : r,
+      ),
+    );
     session.pendingHighRiskConfirm = null;
     host.render();
   };
@@ -1279,7 +1318,7 @@ export function bindAutomationSettingsEvents(host: AutoSafetySettingsHost): void
     host.render();
   };
 
-  const armHighRiskRule = (kind: "add" | "enable", rule: AutomationRule, confirmation: AutomationHighRiskConfirmation): void => {
+  const armHighRiskRule = (kind: "add" | "enable" | "restore", rule: AutomationRule, confirmation: AutomationHighRiskConfirmation): void => {
     session.pendingHighRiskConfirm = { kind, rule, confirmation };
     host.replyBanner = {
       text: `${confirmation.title} ${confirmation.message}`,
@@ -1296,6 +1335,54 @@ export function bindAutomationSettingsEvents(host: AutoSafetySettingsHost): void
     if (isSelectEl(target) && target.dataset.autoRuleMode) {
       const mode = target.value === "restart" ? "restart" : "single";
       ruleStore.save(ruleStore.load().map((r) => r.id === target.dataset.autoRuleMode ? { ...r, mode } : r));
+      return;
+    }
+    if (isInputEl(target) && target.dataset.autoRuleRestore) {
+      const ruleId = target.dataset.autoRuleRestore;
+      const existing = ruleStore.load().find((r) => r.id === ruleId);
+      const exitTrigger = existing ? pairedContextTrigger(existing.trigger) : null;
+      if (!existing || existing.action.kind !== "devices" || !exitTrigger) return;
+      const enabled = target.checked;
+      if (enabled && !existing.restoreWhenContextEnds) {
+        const confirmation = automationRuleHighRiskConfirmation(
+          existing.action,
+          aliasedDevices,
+          host.settings.interfaceLanguage,
+          true,
+        );
+        if (confirmation) {
+          if (typeof host.manualControlConfirmationHandler === "function") {
+            if (!host.manualControlConfirmationHandler(confirmation)) {
+              target.checked = false;
+              rejectHighRiskRule();
+              return;
+            }
+          } else if (session.pendingHighRiskConfirm?.kind === "restore" && session.pendingHighRiskConfirm.rule.id === ruleId) {
+            commitRuleRestore(ruleId, exitTrigger);
+            return;
+          } else {
+            target.checked = false;
+            armHighRiskRule("restore", { ...existing, restoreWhenContextEnds: true, restoreTrigger: exitTrigger }, confirmation);
+            return;
+          }
+        }
+      }
+      if (!enabled && session.pendingHighRiskConfirm?.kind === "restore" && session.pendingHighRiskConfirm.rule.id === ruleId) {
+        session.pendingHighRiskConfirm = null;
+      }
+      ruleStore.save(
+        ruleStore.load().map((r) =>
+          r.id === ruleId
+            ? {
+                ...r,
+                restoreWhenContextEnds: enabled ? true : undefined,
+                restoreTrigger: enabled ? exitTrigger : undefined,
+                ...(enabled ? { highRiskApproved: true } : {}),
+              }
+            : r,
+        ),
+      );
+      host.render();
       return;
     }
     if (isInputEl(target) && target.dataset.autoRuleToggle) {
@@ -1320,7 +1407,12 @@ export function bindAutomationSettingsEvents(host: AutoSafetySettingsHost): void
             return;
           }
         }
-        const confirmation = automationRuleHighRiskConfirmation(existing.action, aliasedDevices, host.settings.interfaceLanguage);
+        const confirmation = automationRuleHighRiskConfirmation(
+          existing.action,
+          aliasedDevices,
+          host.settings.interfaceLanguage,
+          existing.restoreWhenContextEnds,
+        );
         if (confirmation) {
           if (typeof host.manualControlConfirmationHandler === "function") {
             if (!host.manualControlConfirmationHandler(confirmation)) {
@@ -1348,6 +1440,7 @@ export function bindAutomationSettingsEvents(host: AutoSafetySettingsHost): void
     clearPendingAddConfirm();
     if (target.id === "settings-auto-trigger" && isSelectEl(target) && isAutomationTrigger(target.value)) {
       draft.trigger = target.value;
+      if (pairedContextTrigger(draft.trigger) === null) draft.restoreWhenContextEnds = false;
       host.render();
       return;
     }
@@ -1385,7 +1478,10 @@ export function bindAutomationSettingsEvents(host: AutoSafetySettingsHost): void
       host.render();
     } else if (target.id === "settings-auto-action-kind" && isSelectEl(target)) {
       draft.actionKind = target.value as "quickAction" | "devices" | "scene";
+      if (draft.actionKind !== "devices") draft.restoreWhenContextEnds = false;
       host.render();
+    } else if (target.id === "settings-auto-restore-context" && isInputEl(target)) {
+      draft.restoreWhenContextEnds = target.checked;
     } else if (target.id === "settings-auto-quick-action" && isSelectEl(target)) {
       draft.quickAction = target.value as QuickActionId;
     } else if (target.id === "settings-auto-devices-power" && isSelectEl(target)) {
@@ -1522,6 +1618,7 @@ export function bindAutomationSettingsEvents(host: AutoSafetySettingsHost): void
       const pending = session.pendingHighRiskConfirm;
       if (!pending) return;
       if (pending.kind === "add") commitRuleAdd(pending.rule);
+      else if (pending.kind === "restore" && pending.rule.restoreTrigger) commitRuleRestore(pending.rule.id, pending.rule.restoreTrigger);
       else commitRuleEnable(pending.rule.id);
       return;
     }
@@ -1548,6 +1645,8 @@ export function bindAutomationSettingsEvents(host: AutoSafetySettingsHost): void
                 : {}),
             }
           : null;
+      const exitTrigger = action.kind === "devices" ? pairedContextTrigger(draft.trigger) : null;
+      const restoreWhenContextEnds = Boolean(draft.restoreWhenContextEnds && exitTrigger);
       const created = createAutomationRule({
         trigger: draft.trigger,
         action,
@@ -1569,8 +1668,15 @@ export function bindAutomationSettingsEvents(host: AutoSafetySettingsHost): void
           startMinute: draft.timeWindowStartHour * 60,
           endMinute: draft.timeWindowEndHour * 60,
         }),
+        restoreWhenContextEnds,
+        restoreTrigger: restoreWhenContextEnds ? exitTrigger : null,
       });
-      const confirmation = automationRuleHighRiskConfirmation(created.action, aliasedDevices, host.settings.interfaceLanguage);
+      const confirmation = automationRuleHighRiskConfirmation(
+        created.action,
+        aliasedDevices,
+        host.settings.interfaceLanguage,
+        created.restoreWhenContextEnds,
+      );
       if (confirmation) {
         if (typeof host.manualControlConfirmationHandler === "function") {
           if (!host.manualControlConfirmationHandler(confirmation)) {

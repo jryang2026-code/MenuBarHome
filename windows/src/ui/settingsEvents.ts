@@ -37,7 +37,6 @@ import {
 import {
   clearCachedXiaomiTopology,
   clearPersistedMiSessionExpired,
-  clearXiaomiRateLimitBackoff,
 } from "../core/pollingPolicy.js";
 import { withAliases, type HomeOption, type LayoutPrefs } from "./panelPrefs.js";
 import { normalizePanelTheme } from "./panelTheme.js";
@@ -78,6 +77,14 @@ import { bindEnergySettingsEvents } from "./energySettingsView.js";
 import { bindDeviceTypeSelectionEvents, clearDeviceTypeSelectionSession } from "./deviceTypeSelectionView.js";
 import { getSettingsTabSpec, normalizeSettingsTab, type SettingsTab } from "./settingsViews.js";
 import { normalizeHaEndpoint } from "./haEndpoint.js";
+import {
+  cancelHomeAssistantDiscovery,
+  discoverHomeAssistantOnLan,
+  haDiscoveryFailureStatus,
+  renderHaDiscoveredCandidates,
+  resolveHaDiscoveryOutcome,
+  type HaDiscoveredInstance,
+} from "./haDiscovery.js";
 import type { GitHubRelease } from "../core/updateChecker.js";
 
 export interface SettingsEventsHost extends SourceSwitchHost {
@@ -162,6 +169,10 @@ interface SettingsUiSessionState {
   searchSelectedIndex: number | null;
   aiTestStatus: { text: string; state: "idle" | "testing" | "ok" | "error" } | null;
   envImportStatus: { text: string; isError: boolean } | null;
+  haDiscovering: boolean;
+  haDiscoverGeneration: number;
+  haDiscoverResults: readonly HaDiscoveredInstance[];
+  haDiscoverStatus: { text: string; isError: boolean } | null;
 }
 
 const settingsSessionByHost = new WeakMap<object, SettingsUiSessionState>();
@@ -176,10 +187,71 @@ function getSettingsSession(host: object): SettingsUiSessionState {
       searchSelectedIndex: null,
       aiTestStatus: null,
       envImportStatus: null,
+      haDiscovering: false,
+      haDiscoverGeneration: 0,
+      haDiscoverResults: [],
+      haDiscoverStatus: null,
     };
     settingsSessionByHost.set(host, state);
   }
   return state;
+}
+
+function cancelSettingsHaDiscovery(session: SettingsUiSessionState, clearResults: boolean): void {
+  session.haDiscoverGeneration += 1;
+  if (session.haDiscovering) {
+    session.haDiscovering = false;
+    cancelHomeAssistantDiscovery();
+  }
+  if (clearResults) {
+    session.haDiscoverResults = [];
+    session.haDiscoverStatus = null;
+  }
+}
+
+function escapeSettingsHtml(host: SettingsEventsHost, raw: string): string {
+  const hostEscape = (host as { escapeHtml?: (value: string) => string }).escapeHtml;
+  if (typeof hostEscape === "function") return hostEscape(raw);
+  return raw
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function syncSettingsHaDiscoveryUi(host: SettingsEventsHost, session: SettingsUiSessionState): void {
+  const discoverBtn = host.root.querySelector<HTMLButtonElement>("#btn-settings-discover-ha");
+  if (discoverBtn) {
+    discoverBtn.disabled = session.haDiscovering;
+    discoverBtn.textContent = session.haDiscovering ? t("正在查找…") : t("在局域网中查找");
+  }
+  const statusEl = host.root.querySelector<HTMLElement>("#settings-ha-discover-status");
+  if (statusEl) {
+    if (session.haDiscoverStatus) {
+      statusEl.hidden = false;
+      statusEl.textContent = session.haDiscoverStatus.text;
+      statusEl.classList.toggle("is-error", session.haDiscoverStatus.isError);
+    } else {
+      statusEl.hidden = true;
+      statusEl.textContent = "";
+      statusEl.classList.remove("is-error");
+    }
+  }
+  const candidatesEl = host.root.querySelector<HTMLElement>("#settings-ha-candidates");
+  if (candidatesEl) {
+    if (session.haDiscoverResults.length > 0) {
+      candidatesEl.hidden = false;
+      candidatesEl.innerHTML = renderHaDiscoveredCandidates(
+        session.haDiscoverResults,
+        (value) => escapeSettingsHtml(host, value),
+        "data-settings-ha-candidate",
+      );
+    } else {
+      candidatesEl.hidden = true;
+      candidatesEl.innerHTML = "";
+    }
+  }
 }
 
 function escapeHtmlFallback(raw: string): string {
@@ -547,7 +619,6 @@ export async function signOutAndRevokeAll(host: SettingsEventsHost): Promise<voi
   (host as { miSessionExpired?: boolean }).miSessionExpired = false;
   clearPersistedMiSessionExpired();
   clearCachedXiaomiTopology(host);
-  clearXiaomiRateLimitBackoff(host);
   host.cloudValuesStale = false;
   (host as { expandedDeviceId?: string | null }).expandedDeviceId = null;
   (host as { waitingDeviceIds?: Set<string> }).waitingDeviceIds?.clear();
@@ -578,6 +649,7 @@ export async function signOutAndRevokeAll(host: SettingsEventsHost): Promise<voi
   const session = getSettingsSession(host);
   session.aiTestStatus = null;
   session.envImportStatus = null;
+  cancelSettingsHaDiscovery(session, true);
 
   host.settings.connectionMode = "demo";
   host.devices = host.demoDevicesForEnabledTypes?.() ?? demoDevices();
@@ -652,6 +724,7 @@ export async function signOutAndRevokeAll(host: SettingsEventsHost): Promise<voi
 }
 
 function closeSettingsSheetImmediate(host: SettingsEventsHost): void {
+  cancelSettingsHaDiscovery(getSettingsSession(host), true);
   syncSettingsSaveHint(host, "reset");
   clearSettingsHighlight(host.root);
   const hasRealTauriWindow =
@@ -906,6 +979,7 @@ export function bindSettingsEvents(host: SettingsEventsHost): void {
     session.searchSelectedIndex = null;
     session.aiTestStatus = null;
     session.envImportStatus = null;
+    cancelSettingsHaDiscovery(session, true);
     clearSettingsHighlight(host.root);
   } else if (!session.launchAtLoginSynced) {
     session.launchAtLoginSynced = true;
@@ -1812,6 +1886,62 @@ export function bindSettingsEvents(host: SettingsEventsHost): void {
   bindAutomationSettingsEvents(host);
   bindConnectionsAndDiagEvents(host);
   bindDeviceTypeSelectionEvents(host);
+
+  syncSettingsHaDiscoveryUi(host, session);
+
+  host.root.querySelector<HTMLButtonElement>("#btn-settings-discover-ha")?.addEventListener("click", () => {
+    if (session.haDiscovering) return;
+    const gen = ++session.haDiscoverGeneration;
+    session.haDiscovering = true;
+    session.haDiscoverResults = [];
+    session.haDiscoverStatus = { text: t("正在查找…"), isError: false };
+    syncSettingsHaDiscoveryUi(host, session);
+    const capturedToken = host.sourceEpoch.capture();
+    void discoverHomeAssistantOnLan()
+      .then((found) => {
+        if (
+          getSettingsSession(host) !== session ||
+          host.activeSheet !== "settings" ||
+          session.haDiscoverGeneration !== gen ||
+          !capturedToken.isCurrent()
+        ) {
+          return;
+        }
+        session.haDiscovering = false;
+        const outcome = resolveHaDiscoveryOutcome(found);
+        session.haDiscoverResults = outcome.results;
+        session.haDiscoverStatus = outcome.status;
+        syncSettingsHaDiscoveryUi(host, session);
+      })
+      .catch(() => {
+        if (
+          getSettingsSession(host) !== session ||
+          host.activeSheet !== "settings" ||
+          session.haDiscoverGeneration !== gen ||
+          !capturedToken.isCurrent()
+        ) {
+          return;
+        }
+        session.haDiscovering = false;
+        session.haDiscoverResults = [];
+        session.haDiscoverStatus = haDiscoveryFailureStatus();
+        syncSettingsHaDiscoveryUi(host, session);
+      });
+  });
+
+  host.root.querySelector<HTMLElement>("#settings-ha-candidates")?.addEventListener("click", (event) => {
+    const target = event.target as HTMLElement | null;
+    const btn = target?.closest<HTMLButtonElement>("[data-settings-ha-candidate]");
+    const pickedUrl = btn?.dataset.settingsHaCandidate?.trim();
+    if (!pickedUrl) return;
+    const haInput = host.root.querySelector<HTMLInputElement>("#settings-ha-url");
+    if (!haInput) return;
+    haInput.value = pickedUrl;
+    haInput.dispatchEvent(new Event("input", { bubbles: true }));
+    session.haDiscoverStatus = { text: t("已填入地址：{url}", { url: pickedUrl }), isError: false };
+    syncSettingsHaDiscoveryUi(host, session);
+    haInput.focus({ preventScroll: true });
+  });
 
   host.root.querySelector("#btn-save-settings")?.addEventListener("click", () => {
     commitSettingsSave(host);

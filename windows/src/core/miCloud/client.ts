@@ -1,3 +1,5 @@
+import { MiCloudRateLimiter, miCloudRateLimiter } from "./rateLimiter.js";
+import { miAccountId } from "../pollingPolicy.js";
 import { LocalMiIO, rememberMiIODeviceToken } from "./localMiIO.js";
 import { decodeMiScenes, type MiCloudScene } from "./scenes.js";
 import { t } from "../i18n.js";
@@ -121,10 +123,12 @@ function looksRateLimited(text: string): boolean {
 
 export function shouldRethrowWithoutFallback(err: unknown): boolean {
   if (!(err instanceof MiCloudError)) return false;
-  if (err.kind === "sessionExpired") return true;
-  if (err.code === 429 || err.code === -429) return true;
-  if (err.kind === "api" && looksRateLimited(err.message)) return true;
-  return false;
+  return err.kind === "sessionExpired" || isCloudRateLimitError(err);
+}
+
+export function isCloudRateLimitError(err: unknown): boolean {
+  return err instanceof MiCloudError &&
+    (err.code === 429 || err.code === -429 || (err.kind === "api" && looksRateLimited(err.message)));
 }
 
 export interface MiotPropKey {
@@ -163,10 +167,16 @@ export class MiCloudClient {
   private readonly transport: HttpTransport;
   private readonly userAgent: string;
   private local: LocalMiIO | undefined;
+  private readonly rateLimitAccount: string;
 
-  constructor(session: MiSession, transport: HttpTransport) {
+  constructor(
+    session: MiSession,
+    transport: HttpTransport,
+    private readonly rateLimiter: MiCloudRateLimiter = miCloudRateLimiter,
+  ) {
     this.session = session;
     this.transport = transport;
+    this.rateLimitAccount = miAccountId(session);
     this.userAgent = "abcdefghijklmnoqrs-ABCDEABCDEABC APP/com.xiaomi.mihome APPV/10.5.201";
   }
 
@@ -179,7 +189,28 @@ export class MiCloudClient {
     return this;
   }
 
-  async request(api: string, data: unknown): Promise<unknown> {
+  get readCooldownMs(): number {
+    return this.rateLimiter.readCooldownMs(this.rateLimitAccount);
+  }
+
+  hasLANRoute(did: string): boolean {
+    return this.local?.canRoute(did) === true;
+  }
+
+  async request(
+    api: string,
+    data: unknown,
+    write?: { userInitiated: boolean; beforeSend?: (() => void) | undefined },
+  ): Promise<unknown> {
+    let permit = await this.rateLimiter.admit(this.rateLimitAccount, write?.userInitiated === true);
+    while (permit.kind === "wait" && !write) {
+      const { delayMs } = permit;
+      await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
+      permit = await this.rateLimiter.admit(this.rateLimitAccount, false);
+    }
+    if (permit.kind !== "admitted") {
+      throw new MiCloudError("http", t("米家云服务 HTTP {status}", { status: 429 }), 429);
+    }
     const cleanPath = "/" + api.replace(/^\/+|\/+$/g, "");
     const url = `${miApiBaseURL(this.session.region)}${cleanPath}`;
     const nonce = MiCloudCrypto.makeNonce();
@@ -187,6 +218,7 @@ export class MiCloudClient {
     const dataStr = MiCloudCrypto.compactJSONString(data);
     const fields = MiCloudCrypto.encryptParams(cleanPath, dataStr, this.session.ssecurity, nonce);
 
+    write?.beforeSend?.();
     const resp = await this.transport({
       url,
       method: "POST",
@@ -211,7 +243,17 @@ export class MiCloudClient {
       body: MiCloudCrypto.formURLEncode(fields),
     });
 
-    return MiCloudClient.decodeResponse(resp.body, resp.status, signed);
+    try {
+      const result = MiCloudClient.decodeResponse(resp.body, resp.status, signed);
+      if (!write) await this.rateLimiter.recordReadSuccess(this.rateLimitAccount, permit.generation);
+      return result;
+    } catch (error) {
+      if (isCloudRateLimitError(error)) {
+        const retryAfter = Object.entries(resp.headers).find(([name]) => name.toLowerCase() === "retry-after")?.[1];
+        await this.rateLimiter.recordLimit(this.rateLimitAccount, retryAfter);
+      }
+      throw error;
+    }
   }
 
   static decodeResponse(body: string, statusCode: number, signedNonce: string): unknown {
@@ -443,11 +485,11 @@ export class MiCloudClient {
     return decodeMiScenes(result, homeId, ownerUid);
   }
 
-  async runManualScene(scene: MiCloudScene): Promise<void> {
+  async runManualScene(scene: MiCloudScene, userInitiated = true, beforeSend?: () => void): Promise<void> {
     await this.request(`${sceneAPI}/NewRunScene`, {
       scene_id: scene.id, scene_type: 2, phone_id: "null",
       home_id: scene.homeId, owner_uid: numericMiId(scene.ownerUid),
-    });
+    }, { userInitiated, beforeSend });
   }
 
   async deviceList(): Promise<MiDeviceRecord[]> {
@@ -719,7 +761,10 @@ export class MiCloudClient {
     return values;
   }
 
-  async getProps(keys: readonly MiotPropKey[]): Promise<Map<string, unknown>> {
+  async getProps(
+    keys: readonly MiotPropKey[],
+    options?: { readonly lanOnly?: boolean },
+  ): Promise<Map<string, unknown>> {
     const values = new Map<string, unknown>();
     const local = this.local;
     if (local) {
@@ -738,6 +783,8 @@ export class MiCloudClient {
       }));
       keys = keys.filter((key) => !values.has(propKeyString(key)));
     }
+    if (options?.lanOnly) return values;
+
     const chunkSize = 100;
     for (let start = 0; start < keys.length; start += chunkSize) {
       const chunk = keys.slice(start, start + chunkSize);
@@ -750,7 +797,12 @@ export class MiCloudClient {
     return values;
   }
 
-  async setProps(writes: readonly MiotPropWrite[], beforeFallback?: () => void | Promise<void>): Promise<void> {
+  async setProps(
+    writes: readonly MiotPropWrite[],
+    beforeFallback?: () => void | Promise<void>,
+    userInitiated = true,
+    beforeSend?: () => void,
+  ): Promise<void> {
     const first = writes[0];
     if (!first) return;
     if (this.local && writes.every((write) => write.did === first.did)) {
@@ -760,13 +812,7 @@ export class MiCloudClient {
         await beforeFallback?.();
       }
     }
-    const params = writes.map((w) => ({
-      did: w.did,
-      siid: w.siid,
-      piid: w.piid,
-      value: w.value,
-    }));
-    const result = await this.request("miotspec/prop/set", { params });
+    const result = await this.writeProperties(writes, userInitiated, beforeSend);
     // One row per write is the cloud's acknowledgement; no rows means nothing was decided, and
     // the old loop reported that as a success.
     if (!Array.isArray(result) || result.length === 0) {
@@ -775,11 +821,85 @@ export class MiCloudClient {
     for (const item of result) MiCloudClient.checkWriteCode(item);
   }
 
-  async action(call: MiotActionCall, beforeFallback?: () => void | Promise<void>): Promise<void> {
-    await this.callAction(call, beforeFallback);
+  async action(
+    call: MiotActionCall,
+    beforeFallback?: () => void | Promise<void>,
+    userInitiated = true,
+    beforeSend?: () => void,
+  ): Promise<void> {
+    await this.callAction(call, beforeFallback, userInitiated, beforeSend);
   }
 
-  async callAction(call: MiotActionCall, beforeFallback?: () => void | Promise<void>): Promise<unknown> {
+  async setPropVerdicts(
+    writes: readonly MiotPropWrite[],
+    beforeFallback?: () => void | Promise<void>,
+    userInitiated = true,
+    beforeSend?: () => void,
+  ): Promise<Array<MiCloudError | null>> {
+    const first = writes[0];
+    if (!first) return [];
+    if (this.local && writes.every((write) => write.did === first.did)) {
+      const pending = this.local.write(first.did, "miio_set_props", { writes });
+      if (pending) {
+        const local = await pending;
+        if (local.sent) {
+          return Array.isArray(local.result)
+            ? MiCloudClient.propertyVerdicts(local.result, writes)
+            : writes.map(() => null);
+        }
+        await beforeFallback?.();
+      }
+    }
+    const result = await this.writeProperties(writes, userInitiated, beforeSend);
+    return MiCloudClient.propertyVerdicts(result, writes);
+  }
+
+  private async writeProperties(
+    writes: readonly MiotPropWrite[],
+    userInitiated: boolean,
+    beforeSend?: () => void,
+  ): Promise<unknown> {
+    const params = writes.map((w) => ({
+      did: w.did,
+      siid: w.siid,
+      piid: w.piid,
+      value: w.value,
+    }));
+    return this.request("miotspec/prop/set", { params }, { userInitiated, beforeSend });
+  }
+
+  static propertyVerdicts(result: unknown, writes: readonly MiotPropWrite[]): Array<MiCloudError | null> {
+    const items = Array.isArray(result) ? result : [];
+    return writes.map((write) => {
+      const matches = items.filter((item) => {
+        if (!item || typeof item !== "object" || Array.isArray(item)) return false;
+        const obj = item as Record<string, unknown>;
+        const did = asIdString(obj["did"]);
+        const rawSiid = obj["siid"];
+        const rawPiid = obj["piid"];
+        const siid = typeof rawSiid === "number" && Number.isFinite(rawSiid) ? Math.trunc(rawSiid) : NaN;
+        const piid = typeof rawPiid === "number" && Number.isFinite(rawPiid) ? Math.trunc(rawPiid) : NaN;
+        return did === write.did && siid === write.siid && piid === write.piid;
+      });
+      if (matches.length !== 1) {
+        return new MiCloudError("badResponse", t("设备未返回执行结果"));
+      }
+      const rawCode = (matches[0] as Record<string, unknown>)["code"];
+      if (typeof rawCode !== "number" || !Number.isFinite(rawCode)) {
+        return new MiCloudError("badResponse", t("设备未返回执行结果"));
+      }
+      const code = Math.trunc(rawCode);
+      if (code >= 0) return null;
+      return new MiCloudError("api", t("设备未响应或离线"), code);
+    });
+  }
+
+  async callAction(
+    call: MiotActionCall,
+    beforeFallback?: () => void | Promise<void>,
+    userInitiated = true,
+    beforeSend?: () => void,
+  ): Promise<unknown> {
     const pending = this.local?.write(call.did, "miio_call_action", { call });
     if (pending) {
       const local = await pending;
@@ -793,7 +913,7 @@ export class MiCloudClient {
         aiid: call.aiid,
         in: call.inputs,
       },
-    });
+    }, { userInitiated, beforeSend });
     MiCloudClient.checkActionResult(result);
     return result;
   }

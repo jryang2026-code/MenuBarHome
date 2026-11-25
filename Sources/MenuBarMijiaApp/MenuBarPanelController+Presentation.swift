@@ -416,7 +416,9 @@ extension MenuBarPanelController {
         } while hasPendingGeometryPass && iterations < 4
     }
 
-    static func makePanel(theme: PanelTheme) -> NSPanel {
+    static func makePanel(
+        theme: PanelTheme, sharingPrivacy: ScreenSharingPrivacy = .shared
+    ) -> MenuBarPanel {
         let panel = MenuBarPanel(
             contentRect: NSRect(origin: .zero, size: preferredContentSize(screen: nil, theme: theme)),
             styleMask: [.borderless, .nonactivatingPanel],
@@ -433,11 +435,13 @@ extension MenuBarPanelController {
         panel.backgroundColor = .clear
         panel.hasShadow = theme == .classic
         panel.animationBehavior = .none
+        panel.acceptsMouseMovedEvents = true
         panel.isMovable = false
         panel.isMovableByWindowBackground = false
         panel.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
         panel.appearance = preferredAppearance()
         panel.contentView = nil
+        sharingPrivacy.register(panel)
         return panel
     }
 
@@ -688,7 +692,9 @@ extension MenuBarPanelController {
         return x
     }
 
-    static func makeBackdropWindow(frame: NSRect) -> NSPanel {
+    static func makeBackdropWindow(
+        frame: NSRect, sharingPrivacy: ScreenSharingPrivacy = .shared
+    ) -> NSPanel {
         let w = NSPanel(
             contentRect: frame,
             styleMask: [.borderless, .nonactivatingPanel],
@@ -710,6 +716,7 @@ extension MenuBarPanelController {
         hosting.frame = NSRect(origin: .zero, size: frame.size)
         hosting.autoresizingMask = [.width, .height]
         w.contentView = hosting
+        sharingPrivacy.register(w)
         return w
     }
 }
@@ -718,6 +725,7 @@ extension MenuBarPanelController {
 /// and text fields. Mirrors `CameraFloatingPanel`'s first-click `makeKey()` guard and escalates
 /// app activation only when a text input responder takes focus (for CJK IME / Emoji / ⌘C/⌘V).
 final class MenuBarPanel: NSPanel {
+    let input = PanelInputState()
     var onTextInputFocused: (() -> Void)?
 
     override var canBecomeKey: Bool { true }
@@ -726,6 +734,9 @@ final class MenuBarPanel: NSPanel {
     /// A nonactivating panel can otherwise swallow the first click that makes it key before
     /// SwiftUI controls receive the action (same precedent as `CameraFloatingPanel`).
     override func sendEvent(_ event: NSEvent) {
+        if event.type == .mouseMoved {
+            input.mouseMoved()
+        }
         if event.type == .leftMouseDown, !isKeyWindow {
             makeKey()
         }

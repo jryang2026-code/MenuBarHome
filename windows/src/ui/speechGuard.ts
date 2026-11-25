@@ -32,7 +32,9 @@ import { evaluateDeviceEntityWriteGate, evaluateQuickActionSourceWriteGate, plan
 import { resolveConnectionStatus } from "./connectionStatus.js";
 import { recordHabits } from "./intentExecution.js";
 import { filterByListCut } from "./listCut.js";
+import { bindMoodPromptEventsAfterRender } from "./moods.js";
 import { invokeTauriVoid, isWorkstationLockBlockingControl } from "./transport.js";
+import { executeNotificationActionToken } from "./activityStackView.js";
 
 export interface UpdateDownloadProgress {
   readonly downloadedBytes: number;
@@ -176,6 +178,8 @@ export function shouldKeepPopoverPinned(host: MenuMijiaWindowsApp): boolean {
     isConnectionsAndDiagModalOpen(host) ||
     host.isEditingLayout ||
     host.prompt !== null ||
+    host.pendingMoodCapture !== null ||
+    host.pendingMoodConfirm !== null ||
     hasPendingUrlConfirmation(host) ||
     host.isListeningVoice ||
     host.isHomeMenuOpen ||
@@ -524,6 +528,7 @@ export function reconcileUndoBannerHoverAfterRender(host: MenuMijiaWindowsApp): 
     resumeUndoHoverPause(host);
   }
   bindUrlConfirmationEventsAfterRender(host);
+  bindMoodPromptEventsAfterRender(host);
   if (!host.isStandaloneSettingsWindow) {
     syncDynamicTrayTooltip(host);
     scheduleRaycastSnapshotExport(host);
@@ -1576,18 +1581,38 @@ export function enqueueIncomingOpenUrl(
             const item = state.urlQueue.shift()!;
             try {
               if (item.url.startsWith("menumijia://notification/")) {
-                // Toast links are external input and can only navigate to an existing card.
-                const match = /^menumijia:\/\/notification\/(?:safety|doorbell|leak|smoke|gas)\/([a-zA-Z0-9_.:@-]{1,128})$/.exec(item.url);
-                const deviceId = match?.[1];
-                if (match?.[0] !== item.url || !deviceId || deviceId === "." || deviceId === "..") continue;
                 if (item.sourceRevision !== host.sourceRevision) continue;
+                const actionMatch = /^menumijia:\/\/notification\/action\/([a-zA-Z0-9_-]{16,128})$/.exec(item.url);
+                if (actionMatch?.[0] === item.url && actionMatch[1]) {
+                  if (!host.timerCredentialsReady) {
+                    await host.initialCredentialsReady;
+                    if (item.sourceRevision !== host.sourceRevision || !host.root.isConnected) continue;
+                  }
+                  const outcome = await executeNotificationActionToken(host, actionMatch[1]);
+                  if (outcome === "stale") {
+                    await createUrlCommandHostAdapter(host, item.sourceRevision).revealPanelForExternalUrl();
+                  }
+                  continue;
+                }
+                // Toast view links can only navigate to an existing card (and doorbell live view) while unlocked.
+                const match = /^menumijia:\/\/notification\/(safety|doorbell|leak|smoke|gas)\/([a-zA-Z0-9_.:@-]{1,128})$/.exec(item.url);
+                const kind = match?.[1];
+                const deviceId = match?.[2];
+                if (match?.[0] !== item.url || !kind || !deviceId || deviceId === "." || deviceId === "..") continue;
                 const adapter = createUrlCommandHostAdapter(host, item.sourceRevision);
                 if (!host.timerCredentialsReady && !adapter.isDeviceVisibleInPanel?.(deviceId)) {
                   await host.initialCredentialsReady;
                   if (item.sourceRevision !== host.sourceRevision || !host.root.isConnected) continue;
                 }
+                if (await rejectIfControlBlockedWhileLocked(host)) continue;
                 if (adapter.isDeviceVisibleInPanel?.(deviceId)) {
                   adapter.focusDeviceFromUrl(deviceId);
+                  if (kind === "doorbell") {
+                    const cam = host.devices.find((d) => d.id === deviceId);
+                    if (cam && cam.kind.kind === "camera" && cam.isOnline) {
+                      host.cameraLive.openCameraLiveView(deviceId);
+                    }
+                  }
                 }
                 await adapter.revealPanelForExternalUrl();
                 continue;

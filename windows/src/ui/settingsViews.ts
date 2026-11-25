@@ -8,7 +8,15 @@ import {
 } from "../core/assistant.js";
 import { speechLocale, t, tr3 } from "../core/i18n.js";
 import { miSessionExpiryState } from "../core/miCloud/session.js";
-import { trText } from "../core/quickActions.js";
+import { quickActionTitle, trText } from "../core/quickActions.js";
+import {
+  MAX_CUSTOM_HOTKEY_BINDINGS,
+  allQuickActionIds,
+  encodeHotkeyTargetKey,
+  isHotkeyBindingTargetAvailable,
+  normalizeCustomHotkeyBindings,
+  resolvedHotkeyBindingLabel,
+} from "./hotkeyBindings.js";
 import {
   getUpdateProgressForSettings,
   hasPendingMiVaultDeletion,
@@ -19,6 +27,7 @@ import {
 } from "./speechGuard.js";
 import { isPlainHttpRemoteEndpoint } from "./haEndpoint.js";
 import type { GitHubRelease } from "../core/updateChecker.js";
+import type { MoodSnapshot } from "../core/moodSnapshot.js";
 import type { QRLoginTicket } from "../core/miCloudClient.js";
 import {
   MI_CLOUD_REGIONS,
@@ -26,7 +35,7 @@ import {
   miCloudRegionLabel,
   normalizeMiCloudRegion,
 } from "../core/miCloudClient.js";
-import { joinsAllOff, type HomeScene, type SmartDevice } from "../core/models.js";
+import { deviceCanTogglePower, joinsAllOff, type HomeScene, type SmartDevice } from "../core/models.js";
 import { isScheduledCommandsEnabled } from "../core/scheduledCommands.js";
 import {
   APPEARANCES,
@@ -257,6 +266,7 @@ export interface SettingsViewContext {
   readonly settings: PersistedSettings;
   readonly devices: readonly SmartDevice[];
   readonly scenes?: readonly HomeScene[];
+  readonly moods?: readonly MoodSnapshot[];
   readonly availableUpdate: GitHubRelease | null;
   readonly activeTab: SettingsTab;
   readonly apiKeyFor: (baseURL: string) => string;
@@ -265,6 +275,11 @@ export interface SettingsViewContext {
   readonly hotkeyRegistrationError: string | null;
   readonly isPollingQR: boolean;
   readonly isRecordingHotkey: boolean;
+  readonly isRecordingCustomHotkeyId?: string | null;
+  readonly customHotkeyConflictError?: string | null;
+  readonly customHotkeyRegistrationErrors?: Readonly<Record<string, string>>;
+  readonly isAddingCustomHotkey?: boolean;
+  readonly newCustomHotkeyTargetKey?: string;
   readonly panelAnchor: PanelAnchor;
   readonly qrStatusText: string;
   readonly qrTicket: QRLoginTicket | null;
@@ -413,6 +428,9 @@ export function buildInactiveTabCacheKey(ctx: SettingsViewContext, tabId: Settin
       ctx.settings.isCompactGridMode, ctx.settings.hideOfflineDevices, ctx.settings.hideGroupedLights, ctx.settings.showQuickActionsBar, ctx.settings.showHomeSummaryRow,
       ctx.deviceTypes?.key,
       ctx.settings.launchAtLogin, ctx.settings.enableGlobalHotkey, ctx.settings.globalHotkey,
+      ctx.settings.customHotkeyBindings, ctx.isRecordingCustomHotkeyId, ctx.customHotkeyConflictError,
+      ctx.customHotkeyRegistrationErrors, ctx.isAddingCustomHotkey, ctx.newCustomHotkeyTargetKey,
+      (ctx.moods ?? []).map((m) => [m.id, m.name]),
       ctx.isRecordingHotkey, ctx.hotkeyNeedsHint, ctx.hotkeyRegistrationError,
       readCustomHomeTitle(ctx.settings), ctx.connDiagHost?.connDiagSession?.titleDraft,
       ctx.connDiagHost?.homeTitle, ctx.settings.selectedHomeId, ctx.connDiagHost?.homes.map((h) => [h.id, h.name]),
@@ -450,6 +468,97 @@ function renderSettingsTabPanel(
     inactiveTabHtmlCache.set(tabId, { key: cacheKey, html: innerHtml });
   }
   return `<div class="cc-settings-tab-panel" role="tabpanel" data-settings-panel="${tabId}" ${hidden}>${innerHtml}</div>`;
+}
+
+function renderCustomHotkeyBindingsSection(ctx: SettingsViewContext): string {
+  const bindings = normalizeCustomHotkeyBindings(ctx.settings.customHotkeyBindings);
+  const scenes = ctx.scenes ?? [];
+  const moods = ctx.moods ?? [];
+  const toggleableDevices = ctx.devices.filter((d) => deviceCanTogglePower(d));
+  const regErrors = ctx.customHotkeyRegistrationErrors ?? {};
+  const recordingId = ctx.isRecordingCustomHotkeyId ?? null;
+  const isAdding = Boolean(ctx.isAddingCustomHotkey);
+
+  const rowsHtml = bindings
+    .map((binding) => {
+      const available = isHotkeyBindingTargetAvailable(binding, ctx.devices, scenes, moods);
+      const label = resolvedHotkeyBindingLabel(binding, ctx.devices, scenes, moods);
+      const isRec = recordingId === binding.id;
+      const err = regErrors[binding.id];
+      return `<div class="cc-custom-hotkey-row" style="margin-top: 6px;">
+        <div class="cc-update-row">
+          <span style="display:flex;align-items:center;gap:6px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
+            <span${available ? "" : ' style="opacity:0.65;"'}>${ctx.escapeHtml(label)}</span>
+            ${available ? "" : `<span class="cc-field-hint" style="color:#e67e22;margin:0;">${ctx.escapeHtml(tr3("已失效", "已失效", "Unavailable"))}</span>`}
+          </span>
+          <div style="display:flex;gap:6px;align-items:center;flex-shrink:0;">
+            <button type="button" class="cc-seg-pill ${isRec ? "is-active" : ""}" data-custom-hotkey-record="${ctx.escapeHtml(binding.id)}" aria-pressed="${isRec}">${isRec ? t("按下组合…") : ctx.escapeHtml(binding.shortcut)}</button>
+            <button type="button" class="cc-btn-secondary" data-custom-hotkey-remove="${ctx.escapeHtml(binding.id)}" title="${ctx.escapeHtml(tr3("移除此热键", "移除此熱鍵", "Remove hotkey"))}">×</button>
+          </div>
+        </div>
+        ${err ? `<p class="cc-field-hint" style="color:#e67e22;margin:2px 0 0;">${ctx.escapeHtml(err)}</p>` : ""}
+      </div>`;
+    })
+    .join("");
+
+  let addHtml = "";
+  if (isAdding) {
+    const selectedKey =
+      ctx.newCustomHotkeyTargetKey ||
+      (toggleableDevices[0]
+        ? encodeHotkeyTargetKey({ kind: "devicePower", deviceId: toggleableDevices[0].id })
+        : scenes[0]
+          ? encodeHotkeyTargetKey({ kind: "scene", sceneId: scenes[0].id })
+          : moods[0]
+            ? encodeHotkeyTargetKey({ kind: "mood", moodId: moods[0].id })
+            : encodeHotkeyTargetKey({ kind: "quickAction", actionId: "lightsOff" }));
+    const deviceOpts = toggleableDevices
+      .map((d) => {
+        const val = encodeHotkeyTargetKey({ kind: "devicePower", deviceId: d.id });
+        return `<option value="${ctx.escapeHtml(val)}" ${val === selectedKey ? "selected" : ""}>${ctx.escapeHtml(d.name)}</option>`;
+      })
+      .join("");
+    const sceneOpts = scenes
+      .map((s) => {
+        const val = encodeHotkeyTargetKey({ kind: "scene", sceneId: s.id });
+        return `<option value="${ctx.escapeHtml(val)}" ${val === selectedKey ? "selected" : ""}>${ctx.escapeHtml(s.name)}</option>`;
+      })
+      .join("");
+    const moodOpts = moods
+      .map((m) => {
+        const val = encodeHotkeyTargetKey({ kind: "mood", moodId: m.id });
+        return `<option value="${ctx.escapeHtml(val)}" ${val === selectedKey ? "selected" : ""}>${ctx.escapeHtml(m.name)}</option>`;
+      })
+      .join("");
+    const quickOpts = allQuickActionIds()
+      .map((id) => {
+        const val = encodeHotkeyTargetKey({ kind: "quickAction", actionId: id });
+        return `<option value="${ctx.escapeHtml(val)}" ${val === selectedKey ? "selected" : ""}>${ctx.escapeHtml(quickActionTitle(id))}</option>`;
+      })
+      .join("");
+    const isRecNew = recordingId === "__new__";
+    addHtml = `<div class="cc-update-row" style="margin-top:8px;gap:6px;">
+      <select id="select-custom-hotkey-target" class="cc-input" style="flex:1;min-width:0;">
+        ${deviceOpts ? `<optgroup label="${ctx.escapeHtml(tr3("设备开关", "裝置開關", "Device Power"))}">${deviceOpts}</optgroup>` : ""}
+        ${sceneOpts ? `<optgroup label="${ctx.escapeHtml(tr3("场景", "場景", "Scenes"))}">${sceneOpts}</optgroup>` : ""}
+        ${moodOpts ? `<optgroup label="${ctx.escapeHtml(tr3("氛围", "氛圍", "Moods"))}">${moodOpts}</optgroup>` : ""}
+        <optgroup label="${ctx.escapeHtml(tr3("快捷操作", "快捷操作", "Quick Actions"))}">${quickOpts}</optgroup>
+      </select>
+      <button type="button" class="cc-seg-pill ${isRecNew ? "is-active" : ""}" id="btn-record-new-custom-hotkey" aria-pressed="${isRecNew}">${isRecNew ? t("按下组合…") : ctx.escapeHtml(tr3("录制快捷键", "錄製快捷鍵", "Record Key"))}</button>
+      <button type="button" class="cc-btn-secondary" id="btn-cancel-new-custom-hotkey">${t("取消")}</button>
+    </div>`;
+  }
+
+  return `<div style="margin-top:10px;padding-top:10px;border-top:1px solid rgba(128,128,128,0.16);">
+    <div class="cc-update-row">
+      <span>${ctx.escapeHtml(tr3("单设备 / 场景全局热键", "單裝置 / 場景全域快捷鍵", "Device & Scene Global Hotkeys"))} <span class="cc-field-hint" style="margin:0;">${bindings.length}/${MAX_CUSTOM_HOTKEY_BINDINGS}</span></span>
+      ${!isAdding && bindings.length < MAX_CUSTOM_HOTKEY_BINDINGS ? `<button type="button" class="cc-btn-secondary" id="btn-add-custom-hotkey">${ctx.escapeHtml(tr3("+ 添加热键", "+ 新增熱鍵", "+ Add Hotkey"))}</button>` : ""}
+    </div>
+    <p class="cc-field-hint" style="margin:4px 0 0;">${ctx.escapeHtml(tr3("一步开关常用设备或触发场景；沿用锁屏阻止与高危二次确认。", "一步開關常用裝置或觸發場景；沿用鎖屏阻止與高危二次確認。", "Toggle a device or run a scene in one keystroke; screen-lock and high-risk confirmations still apply."))}</p>
+    ${rowsHtml}
+    ${addHtml}
+    ${ctx.customHotkeyConflictError ? `<p class="cc-field-hint" id="custom-hotkey-conflict-msg" style="color:#e67e22;margin:6px 0 0;">${ctx.escapeHtml(ctx.customHotkeyConflictError)}</p>` : ""}
+  </div>`;
 }
 
 function renderGeneralHiddenDevicesRestore(ctx: SettingsViewContext): string {
@@ -626,6 +735,7 @@ function renderGeneralPanel(ctx: SettingsViewContext): string {
                  </div>`
               : ""
           }
+          ${renderCustomHotkeyBindingsSection(ctx)}
         </div>
       </div>
     </section>
@@ -738,11 +848,18 @@ function renderHomeAssistantCredentialsBlock(ctx: SettingsViewContext): string {
           <label for="settings-ha-url" style="margin: 0;">${ctx.escapeHtml(
             tr3("Home Assistant 地址 (URL)", "Home Assistant 位址 (URL)", "Home Assistant URL"),
           )}</label>
-          <button type="button" class="cc-inline-pill" id="btn-fill-default-ha" ${hasHaUrl ? "disabled" : ""}>${ctx.escapeHtml(
-            tr3("填入常用地址", "填入常用位址", "Fill Default Address"),
-          )}</button>
+          <div class="cc-ha-url-actions">
+            <button type="button" class="cc-inline-pill" id="btn-settings-discover-ha">${ctx.escapeHtml(
+              t("在局域网中查找"),
+            )}</button>
+            <button type="button" class="cc-inline-pill" id="btn-fill-default-ha" ${hasHaUrl ? "disabled" : ""}>${ctx.escapeHtml(
+              tr3("填入常用地址", "填入常用位址", "Fill Default Address"),
+            )}</button>
+          </div>
         </div>
         <input id="settings-ha-url" class="cc-input" type="url" value="${ctx.escapeHtml(ctx.settings.haBaseURL)}" placeholder="http://homeassistant.local:8123" />
+        <p class="cc-ha-discover-status" id="settings-ha-discover-status" role="status" hidden></p>
+        <div class="cc-ha-candidates" id="settings-ha-candidates" hidden></div>
         <p class="cc-field-hint" style="margin: 4px 0 0;">${ctx.escapeHtml(
           tr3(
             "不确定地址？可在 Home Assistant 网页设置里查看。",

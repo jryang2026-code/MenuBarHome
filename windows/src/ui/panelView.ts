@@ -29,8 +29,10 @@ import { effectivePanelHomeTitle, getCachedUnsupportedDeviceCountOnHost } from "
 import { syncEnergyHostOnRender } from "./energySettingsView.js";
 import { syncSensorHistoryHost } from "./sensorHistoryView.js";
 import { getPanelThemeProfile } from "./panelTheme.js";
+import { renderMoodActionsRow } from "./moods.js";
 import { renderPersistentUndoPill, tr3 } from "./undoTracker.js";
 import { ManualControlPolicy } from "../core/assistant.js";
+import { renderDiffPreviewCard, renderRoomAutoGroupBar } from "./roomGroupActions.js";
 
 /** A full-width status row costs two footer lines; footer actions need more headroom than a bare label. */
 const FULL_WIDTH_STATUS_COLUMNS = 20;
@@ -215,9 +217,11 @@ export function renderPanel(host: MenuMijiaWindowsApp): void {
               </button>
               ${isClassic ? micButtonHtml(true) : ""}
             </div>
+            ${renderDiffPreviewCard(host)}
           </div>
 
           ${quickStrip(host)}
+          ${renderMoodActionsRow(host)}
 
           <div class="cc-room-bar">
             <div class="cc-room-track">
@@ -248,6 +252,7 @@ export function renderPanel(host: MenuMijiaWindowsApp): void {
             </div>
           </div>
           ${isClassic && kindBarHtml ? `<div class="cc-kind-bar" role="toolbar" aria-label="${host.escapeHtml(tr3("设备类型筛选", "設備類型篩選", "Filter by device type"))}"><div class="cc-room-scroll cc-kind-scroll"><span class="cc-tab-indicator" aria-hidden="true"></span>${kindBarHtml}</div></div>` : ""}
+          ${renderRoomAutoGroupBar(host)}
           ${renderHomeSummaryRow(host)}`;
   const scrollAreaHtml = `
         <main class="cc-scroll-area" aria-label="${t("设备列表")}">

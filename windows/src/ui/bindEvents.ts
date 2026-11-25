@@ -1,4 +1,10 @@
 import { cancelScheduledCommands, confirmMissedScheduledCommand } from "./scheduledCommands.js";
+import {
+  cancelPendingDiffPreview,
+  confirmPendingDiffPreview,
+  executeRoomGroupAction,
+  visibleRoomAutoGroups,
+} from "./roomGroupActions.js";
 import { confirmDelayedSuggestion } from "./naturalCommand.js";
 import {
   IntentReply,
@@ -27,10 +33,16 @@ import { finishMiSceneConfirmation } from "./sceneConfirmation.js";
 import { invokeTauriVoid } from "./transport.js";
 import { facetActionArguments, feedingConfirmationBannerText } from "../core/miCloud/feedAction.js";
 import { bindDetailDrawerEvents, coverMotorRequiresConfirmation, ensureDrawerLifecycleListeners } from "./detailDrawers.js";
-import { bindLiquidGlassSliders } from "./liquidGlassSlider.js";
+import {
+  bindLiquidGlassSliders,
+  clearSliderLiveValue,
+  consumeSliderLiveValue,
+  markSliderLiveValue,
+} from "./liquidGlassSlider.js";
 import { syncSlidingTabIndicators } from "./reconciler.js";
 import { facetWriteEnabled, selectedPortionForControl } from "./facetViews.js";
 import { facetTitle, facetValue } from "../core/miotFacetText.js";
+import { applyMoodForHost, deleteMoodForHost, openMoodCapturePrompt } from "./moods.js";
 import type { MenuMijiaWindowsApp } from "./app.js";
 import { normalizeSearch } from "../core/panelSearch.js";
 import { markSwitchAsLight, unmarkSwitchAsLight } from "../core/switchLightMarks.js";
@@ -51,14 +63,43 @@ import {
 } from "./speechGuard.js";
 import { buildHostCapabilityContext, isDualSourceEnabled } from "./cloudRefresh.js";
 import { evaluateDeviceEntityWriteGate, evaluateIntentsWriteGate } from "../core/miAccountControl.js";
-import { getUnsupportedLightEffects } from "./commandDispatch.js";
+import {
+  getUnsupportedLightEffects,
+  sliderIsHighRisk,
+  sliderUsesLAN,
+  submitSliderWrite,
+} from "./commandDispatch.js";
 import {
   positionRoomBrowseMenu,
   resetPanelSplitTransientState,
   resolveDeviceTileActionLayout,
 } from "./panelSplitTiles.js";
-import { hasAnyConnectedOrSelectedDataSource } from "./appLifecycle.js";
+import { applyCustomGlobalHotkeys, hasAnyConnectedOrSelectedDataSource } from "./appLifecycle.js";
+import { encodeHotkeyTargetKey, normalizeCustomHotkeyBindings } from "./hotkeyBindings.js";
 import { leaveDemoHome } from "./onboardingGuide.js";
+
+function dispatchLiveLanSlider(
+  host: MenuMijiaWindowsApp,
+  slider: HTMLInputElement,
+  value: number,
+  slotKey: string,
+  dev: SmartDevice,
+  command: DeviceCommand,
+  summary: string,
+  intent?: DeviceIntent,
+): void {
+  if (sliderIsHighRisk(host, dev) || !sliderUsesLAN(host, command, dev)) return;
+  markSliderLiveValue(slider, value);
+  void submitSliderWrite(host, {
+    slotKey,
+    device: dev,
+    command,
+    summary,
+    intent,
+    isLiveInput: true,
+    onFailure: () => clearSliderLiveValue(slider),
+  });
+}
 
 function confirmHighRiskForHost(
   host: MenuMijiaWindowsApp,
@@ -726,6 +767,69 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
       void host.applyGlobalHotkey();
     });
 
+    host.root.querySelector("#btn-add-custom-hotkey")?.addEventListener("click", () => {
+      const firstDevice = host.devices.find((d) => deviceCanTogglePower(d));
+      host.newCustomHotkeyTargetKey = firstDevice
+        ? encodeHotkeyTargetKey({ kind: "devicePower", deviceId: firstDevice.id })
+        : host.scenes[0]
+          ? encodeHotkeyTargetKey({ kind: "scene", sceneId: host.scenes[0].id })
+          : host.moods[0]
+            ? encodeHotkeyTargetKey({ kind: "mood", moodId: host.moods[0].id })
+            : encodeHotkeyTargetKey({ kind: "quickAction", actionId: "lightsOff" });
+      host.isAddingCustomHotkey = true;
+      host.isRecordingHotkey = false;
+      host.isRecordingCustomHotkeyId = null;
+      host.customHotkeyConflictError = null;
+      host.render();
+    });
+
+    host.root.querySelector<HTMLSelectElement>("#select-custom-hotkey-target")?.addEventListener("change", (e) => {
+      host.newCustomHotkeyTargetKey = (e.target as HTMLSelectElement).value;
+    });
+
+    host.root.querySelector("#btn-record-new-custom-hotkey")?.addEventListener("click", () => {
+      const sel = host.root.querySelector<HTMLSelectElement>("#select-custom-hotkey-target");
+      if (sel?.value) host.newCustomHotkeyTargetKey = sel.value;
+      host.isRecordingHotkey = false;
+      host.isRecordingCustomHotkeyId = host.isRecordingCustomHotkeyId === "__new__" ? null : "__new__";
+      host.customHotkeyConflictError = null;
+      host.render();
+    });
+
+    host.root.querySelector("#btn-cancel-new-custom-hotkey")?.addEventListener("click", () => {
+      host.isAddingCustomHotkey = false;
+      host.isRecordingCustomHotkeyId = null;
+      host.customHotkeyConflictError = null;
+      host.render();
+    });
+
+    host.root.querySelectorAll<HTMLElement>("[data-custom-hotkey-record]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const id = btn.dataset.customHotkeyRecord;
+        if (!id) return;
+        host.isRecordingHotkey = false;
+        host.isRecordingCustomHotkeyId = host.isRecordingCustomHotkeyId === id ? null : id;
+        host.customHotkeyConflictError = null;
+        host.render();
+      });
+    });
+
+    host.root.querySelectorAll<HTMLElement>("[data-custom-hotkey-remove]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const id = btn.dataset.customHotkeyRemove;
+        if (!id) return;
+        if (host.isRecordingCustomHotkeyId === id) host.isRecordingCustomHotkeyId = null;
+        host.settings.customHotkeyBindings = normalizeCustomHotkeyBindings(
+          host.settings.customHotkeyBindings,
+        ).filter((b) => b.id !== id);
+        host.customHotkeyConflictError = null;
+        syncSettingsSaveHint(host, "auto-saved");
+        host.saveSettings();
+        void applyCustomGlobalHotkeys(host);
+        host.render();
+      });
+    });
+
     host.root.querySelector("#btn-hide-panel")?.addEventListener("click", () => {
       host.isHomeMenuOpen = false;
       host.ctxMenu = null;
@@ -832,6 +936,40 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
       host.render();
     });
 
+    host.root.querySelector("#btn-diff-confirm")?.addEventListener("click", () => {
+      void confirmPendingDiffPreview(host);
+    });
+    host.root.querySelector("#btn-diff-cancel")?.addEventListener("click", () => {
+      cancelPendingDiffPreview(host);
+    });
+    host.root.querySelector("#btn-room-group-confirm")?.addEventListener("click", () => {
+      const pending = host.pendingRoomGroupConfirm;
+      if (!pending || pending.sourceRevision !== host.sourceRevision) {
+        host.pendingRoomGroupConfirm = null;
+        host.render();
+        return;
+      }
+      void executeRoomGroupAction(host, pending.group, pending.action, true);
+    });
+    host.root.querySelector("#btn-room-group-cancel")?.addEventListener("click", () => {
+      host.pendingRoomGroupConfirm = null;
+      host.render();
+    });
+    host.root.querySelectorAll<HTMLElement>("[data-room-group-toggle]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const groupId = btn.dataset.roomGroupToggle;
+        const group = visibleRoomAutoGroups(host).find((g) => g.id === groupId);
+        if (group) void executeRoomGroupAction(host, group, { kind: "toggle" });
+      });
+    });
+    host.root.querySelectorAll<HTMLInputElement>("[data-room-group-brightness]").forEach((slider) => {
+      slider.addEventListener("change", () => {
+        const groupId = slider.dataset.roomGroupBrightness;
+        const group = visibleRoomAutoGroups(host).find((g) => g.id === groupId);
+        if (group) void executeRoomGroupAction(host, group, { kind: "brightness", percent: Number(slider.value) });
+      });
+    });
+
     host.root.querySelector("#btn-empty-resync")?.addEventListener("click", () => {
       void host.refreshDevices(false, true);
     });
@@ -891,6 +1029,7 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
       btn.addEventListener("click", () => {
         const suggestion = host.pendingSuggestions.find((s) => s.id === btn.dataset.suggestionId);
         if (!suggestion) return;
+        host.pendingDiffPreview = null;
         host.pendingSuggestions = host.pendingSuggestions.filter((s) => s.id !== suggestion.id);
         if (host.settings.connectionMode !== "demo" || isDualSourceEnabled(host)) {
           const gateMsg = evaluateIntentsWriteGate({
@@ -962,6 +1101,24 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
       btn.addEventListener("click", () => {
         const cmd = btn.dataset.sceneCmd;
         if (cmd) void host.handleNaturalCommand(cmd);
+      });
+    });
+
+    host.root.querySelector("#btn-mood-capture")?.addEventListener("click", () => {
+      openMoodCapturePrompt(host);
+    });
+
+    host.root.querySelectorAll<HTMLElement>("[data-mood-apply]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const moodId = btn.dataset.moodApply;
+        if (moodId) void applyMoodForHost(host, moodId);
+      });
+    });
+
+    host.root.querySelectorAll<HTMLElement>("[data-mood-delete]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const moodId = btn.dataset.moodDelete;
+        if (moodId) deleteMoodForHost(host, moodId);
       });
     });
 
@@ -1472,34 +1629,62 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
     });
 
     host.root.querySelectorAll<HTMLInputElement>("[data-brightness]").forEach((slider) => {
-      slider.addEventListener("change", () => {
+      const readBrightness = () => {
         const id = slider.dataset.brightness;
-        if (!id) return;
+        if (!id) return null;
         const dev = host.devices.find((d) => d.id === id);
-        if (!dev || dev.kind.kind !== "light") return;
+        if (!dev || dev.kind.kind !== "light") return null;
         const percent = Number(slider.value);
-        void host.executeSingleCommand(
-          dev,
-          { kind: "setLightBrightness", entityId: dev.kind.entityId, percent },
-          t("已将{name}亮度设为 {percent}%", { name: dev.name, percent: percent }),
-          { targetId: dev.id, operation: { kind: "brightness", percent } },
-        );
+        const command: DeviceCommand = { kind: "setLightBrightness", entityId: dev.kind.entityId, percent };
+        const summary = t("已将{name}亮度设为 {percent}%", { name: dev.name, percent });
+        const intent: DeviceIntent = { targetId: dev.id, operation: { kind: "brightness", percent } };
+        return { dev, percent, command, summary, intent };
+      };
+      slider.addEventListener("input", () => {
+        const next = readBrightness();
+        if (!next) return;
+        dispatchLiveLanSlider(host, slider, next.percent, `${next.dev.id}.brightness`, next.dev, next.command, next.summary, next.intent);
+      });
+      slider.addEventListener("change", () => {
+        const next = readBrightness();
+        if (!next || consumeSliderLiveValue(slider, next.percent)) return;
+        void submitSliderWrite(host, {
+          slotKey: `${next.dev.id}.brightness`,
+          device: next.dev,
+          command: next.command,
+          summary: next.summary,
+          intent: next.intent,
+        });
       });
     });
 
     host.root.querySelectorAll<HTMLInputElement>("[data-colortemp]").forEach((slider) => {
-      slider.addEventListener("change", () => {
+      const readColorTemp = () => {
         const id = slider.dataset.colortemp;
-        if (!id) return;
+        if (!id) return null;
         const dev = host.devices.find((d) => d.id === id);
-        if (!dev || dev.kind.kind !== "light") return;
+        if (!dev || dev.kind.kind !== "light") return null;
         const kelvin = Number(slider.value);
-        void host.executeSingleCommand(
-          dev,
-          { kind: "setLightColorTemp", entityId: dev.kind.entityId, kelvin },
-          t("已将{name}色温设为 {kelvin}K", { name: dev.name, kelvin: kelvin }),
-          { targetId: dev.id, operation: { kind: "colorTemperature", kelvin } },
-        );
+        const command: DeviceCommand = { kind: "setLightColorTemp", entityId: dev.kind.entityId, kelvin };
+        const summary = t("已将{name}色温设为 {kelvin}K", { name: dev.name, kelvin });
+        const intent: DeviceIntent = { targetId: dev.id, operation: { kind: "colorTemperature", kelvin } };
+        return { dev, kelvin, command, summary, intent };
+      };
+      slider.addEventListener("input", () => {
+        const next = readColorTemp();
+        if (!next) return;
+        dispatchLiveLanSlider(host, slider, next.kelvin, `${next.dev.id}.colortemp`, next.dev, next.command, next.summary, next.intent);
+      });
+      slider.addEventListener("change", () => {
+        const next = readColorTemp();
+        if (!next || consumeSliderLiveValue(slider, next.kelvin)) return;
+        void submitSliderWrite(host, {
+          slotKey: `${next.dev.id}.colortemp`,
+          device: next.dev,
+          command: next.command,
+          summary: next.summary,
+          intent: next.intent,
+        });
       });
     });
 
@@ -1523,7 +1708,13 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
         ) {
           return;
         }
-        void host.executeSingleCommand(dev, command, summary, intent);
+        void submitSliderWrite(host, {
+          slotKey: `${dev.id}.actemp`,
+          device: dev,
+          command,
+          summary,
+          intent,
+        });
       });
     });
 
@@ -1566,17 +1757,30 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
     });
 
     host.root.querySelectorAll<HTMLInputElement>("[data-fanpercent]").forEach((slider) => {
-      slider.addEventListener("change", () => {
+      const readFanPercent = () => {
         const id = slider.dataset.fanpercent;
-        if (!id) return;
+        if (!id) return null;
         const dev = host.devices.find((d) => d.id === id);
-        if (!dev || dev.kind.kind !== "fan") return;
+        if (!dev || dev.kind.kind !== "fan") return null;
         const percent = Math.max(1, Math.min(100, Math.round(Number(slider.value))));
-        void host.executeSingleCommand(
-          dev,
-          { kind: "setFanPercentage", entityId: dev.kind.entityId, percent },
-          t("已将{name}风速设为 {speed}", { name: dev.name, speed: `${percent}%` }),
-        );
+        const command: DeviceCommand = { kind: "setFanPercentage", entityId: dev.kind.entityId, percent };
+        const summary = t("已将{name}风速设为 {speed}", { name: dev.name, speed: `${percent}%` });
+        return { dev, percent, command, summary };
+      };
+      slider.addEventListener("input", () => {
+        const next = readFanPercent();
+        if (!next) return;
+        dispatchLiveLanSlider(host, slider, next.percent, `${next.dev.id}.fanpercent`, next.dev, next.command, next.summary);
+      });
+      slider.addEventListener("change", () => {
+        const next = readFanPercent();
+        if (!next || consumeSliderLiveValue(slider, next.percent)) return;
+        void submitSliderWrite(host, {
+          slotKey: `${next.dev.id}.fanpercent`,
+          device: next.dev,
+          command: next.command,
+          summary: next.summary,
+        });
       });
     });
 
@@ -1605,15 +1809,28 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
     });
 
     host.root.querySelectorAll<HTMLInputElement>("[data-volume]").forEach((slider) => {
-      slider.addEventListener("change", () => {
+      const readVolume = () => {
         const dev = host.devices.find((d) => d.id === slider.dataset.volume);
-        if (!dev || (dev.kind.kind !== "speaker" && dev.kind.kind !== "tv") || !dev.kind.volumeWritable) return;
+        if (!dev || (dev.kind.kind !== "speaker" && dev.kind.kind !== "tv") || !dev.kind.volumeWritable) return null;
         const percent = Math.max(0, Math.min(100, Math.round(Number(slider.value))));
-        void host.executeSingleCommand(
-          dev,
-          { kind: "mediaSetVolume", entityId: dev.kind.mediaEntityId, level: percent / 100 },
-          t("已将{name}音量设为 {percent}%", { name: dev.name, percent }),
-        );
+        const command: DeviceCommand = { kind: "mediaSetVolume", entityId: dev.kind.mediaEntityId, level: percent / 100 };
+        const summary = t("已将{name}音量设为 {percent}%", { name: dev.name, percent });
+        return { dev, percent, command, summary };
+      };
+      slider.addEventListener("input", () => {
+        const next = readVolume();
+        if (!next) return;
+        dispatchLiveLanSlider(host, slider, next.percent, `${next.dev.id}.volume`, next.dev, next.command, next.summary);
+      });
+      slider.addEventListener("change", () => {
+        const next = readVolume();
+        if (!next || consumeSliderLiveValue(slider, next.percent)) return;
+        void submitSliderWrite(host, {
+          slotKey: `${next.dev.id}.volume`,
+          device: next.dev,
+          command: next.command,
+          summary: next.summary,
+        });
       });
     });
 
@@ -2036,33 +2253,60 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
     });
 
     deck.querySelectorAll<HTMLInputElement>("[data-deck-brightness]").forEach((slider) => {
-      slider.addEventListener("change", () => {
+      const readDeckBrightness = () => {
         const id = slider.dataset.deckBrightness;
-        if (!id) return;
+        if (!id) return null;
         const dev = host.devices.find((d) => d.id === id);
-        if (!dev || dev.kind.kind !== "light" || dev.kind.brightnessWritable === false) return;
+        if (!dev || dev.kind.kind !== "light" || dev.kind.brightnessWritable === false) return null;
         const percent = Math.max(1, Math.min(100, Math.round(Number(slider.value))));
-        void host.executeSingleCommand(
-          dev,
-          { kind: "setLightBrightness", entityId: dev.kind.entityId, percent },
-          t("已将{name}亮度设为 {percent}%", { name: dev.name, percent }),
-          { targetId: dev.id, operation: { kind: "brightness", percent } },
-        );
+        const command: DeviceCommand = { kind: "setLightBrightness", entityId: dev.kind.entityId, percent };
+        const summary = t("已将{name}亮度设为 {percent}%", { name: dev.name, percent });
+        const intent: DeviceIntent = { targetId: dev.id, operation: { kind: "brightness", percent } };
+        return { dev, percent, command, summary, intent };
+      };
+      slider.addEventListener("input", () => {
+        const next = readDeckBrightness();
+        if (!next) return;
+        dispatchLiveLanSlider(host, slider, next.percent, `${next.dev.id}.brightness`, next.dev, next.command, next.summary, next.intent);
+      });
+      slider.addEventListener("change", () => {
+        const next = readDeckBrightness();
+        if (!next || consumeSliderLiveValue(slider, next.percent)) return;
+        void submitSliderWrite(host, {
+          slotKey: `${next.dev.id}.brightness`,
+          device: next.dev,
+          command: next.command,
+          summary: next.summary,
+          intent: next.intent,
+        });
       });
     });
 
     deck.querySelectorAll<HTMLInputElement>("[data-deck-volume]").forEach((slider) => {
-      slider.addEventListener("change", () => {
+      const readDeckVolume = () => {
         const id = slider.dataset.deckVolume;
-        if (!id) return;
+        if (!id) return null;
         const dev = host.devices.find((d) => d.id === id);
-        if (!dev || dev.kind.kind !== "speaker" || !dev.kind.volumeWritable) return;
+        if (!dev || dev.kind.kind !== "speaker" || !dev.kind.volumeWritable) return null;
         const percent = Math.max(0, Math.min(100, Math.round(Number(slider.value))));
-        void host.executeSingleCommand(
-          dev,
-          { kind: "mediaSetVolume", entityId: dev.kind.mediaEntityId, level: percent / 100 },
-          t("已将{name}音量设为 {percent}%", { name: dev.name, percent }),
-        );
+        const command: DeviceCommand = { kind: "mediaSetVolume", entityId: dev.kind.mediaEntityId, level: percent / 100 };
+        const summary = t("已将{name}音量设为 {percent}%", { name: dev.name, percent });
+        return { dev, percent, command, summary };
+      };
+      slider.addEventListener("input", () => {
+        const next = readDeckVolume();
+        if (!next) return;
+        dispatchLiveLanSlider(host, slider, next.percent, `${next.dev.id}.volume`, next.dev, next.command, next.summary);
+      });
+      slider.addEventListener("change", () => {
+        const next = readDeckVolume();
+        if (!next || consumeSliderLiveValue(slider, next.percent)) return;
+        void submitSliderWrite(host, {
+          slotKey: `${next.dev.id}.volume`,
+          device: next.dev,
+          command: next.command,
+          summary: next.summary,
+        });
       });
     });
 

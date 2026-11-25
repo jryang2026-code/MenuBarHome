@@ -1108,6 +1108,46 @@ const CATALOG: Readonly<Record<string, readonly [string, string]>> = {
   "1 处门窗开着": ["1 处门窗开着", "1 door/window open"],
   "{count} 处门窗开着": ["{count} 处门窗开着", "{count} doors/windows open"],
   "室内 {temp}°": ["室内 {temp}°", "Indoor {temp}°"],
+  "在局域网中查找": ["在局域网中查找", "Find on my network"],
+  "正在查找…": ["正在查找…", "Searching…"],
+  "未在局域网发现 Home Assistant，请手动填写地址": [
+    "未在局域网发现 Home Assistant，请手动填写地址",
+    "No Home Assistant found on your network; enter the address manually",
+  ],
+  "局域网查找失败，请检查网络连接或手动填写地址": [
+    "局域网查找失败，请检查网络连接或手动填写地址",
+    "Network discovery failed; check your connection or enter the address manually",
+  ],
+  "当前环境不支持局域网发现，请手动输入地址": [
+    "当前环境不支持局域网发现，请手动输入地址",
+    "LAN discovery is unavailable here; enter the address manually",
+  ],
+  "已发现 {count} 个 Home Assistant，点击填入地址": [
+    "已发现 {count} 个 Home Assistant，点击填入地址",
+    "Found {count} Home Assistant instances; click one to fill the URL",
+  ],
+  "已填入地址：{url}": ["已填入地址：{url}", "Filled URL: {url}"],
+  "已停止": ["已停止", "Stopped"],
+  "当前状态": ["当前状态", "Current state"],
+  "场景": ["场景", "Scene"],
+  "执行": ["执行", "Run"],
+  "确认群控「{name}」？（高风险：{devices}）": [
+    "确认群控「{name}」？（高风险：{devices}）",
+    "Control “{name}”? (High-risk: {devices})",
+  ],
+  "确认执行 {count} 项变更（含高风险设备）": [
+    "确认执行 {count} 项变更（含高风险设备）",
+    "Confirm {count} change(s) (includes high-risk)",
+  ],
+  "确认执行 {count} 项设备变更": [
+    "确认执行 {count} 项设备变更",
+    "Confirm {count} device changes",
+  ],
+  "屏幕已锁定，已阻止控制操作": [
+    "屏幕已锁定，已阻止控制操作",
+    "Screen is locked; control blocked",
+  ],
+  "房间群控": ["房间群控", "Room Group"],
 };
 
 /** Every catalog key, for tests and tooling. */

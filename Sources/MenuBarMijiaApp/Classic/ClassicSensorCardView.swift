@@ -21,6 +21,7 @@ struct ClassicSensorCardView: View {
     @State private var selectedWindow: SensorHistoryWindow = .last24Hours
     @State private var selectedMetric: SensorMetricKind = .temperature
     @State private var hoveredSlotIndex: Int? = nil
+    @State private var hoveredReadingMetric: SensorMetricKind? = nil
 
     private var isStale: Bool {
         store?.deviceValuesAreStale == true || device.telemetryStale
@@ -94,9 +95,38 @@ struct ClassicSensorCardView: View {
         // Display-only card when collapsed and fresh: VoiceOver reads one sentence instead of five
         // loose labels (#41); expanded and stale states keep child controls reachable.
         .sensorCardAccessibility(isExpanded: isExpanded, isStale: isStale, summary: accessibilitySummary)
+        .sensorReadingHoverSparkline(
+            store: store,
+            device: device,
+            hoveredMetric: hoveredReadingMetric,
+            isActive: !isExpanded && !isStale && device.isOnline && !isEditingLayout,
+            isCompact: isCompact,
+            tempColor: tempColor,
+            humidityColor: humidityColor,
+            reduceMotion: reduceMotion
+        )
+        .onChange(of: isExpanded) { _, expanded in
+            if expanded { hoveredReadingMetric = nil }
+        }
+        .onChange(of: isEditingLayout) { _, editing in
+            if editing { hoveredReadingMetric = nil }
+        }
+        .onDisappear { hoveredReadingMetric = nil }
         .panelHelp(isExpanded
             ? L10n.tr("点击卡片顶部收起折线图", "Click header to collapse chart")
             : L10n.tr("点击展开温湿度分时段折线", "Click to expand temperature & humidity chart"))
+    }
+
+    private func updateReadingHover(metric: SensorMetricKind, hovering: Bool) {
+        guard !isExpanded, !isStale, device.isOnline, !isEditingLayout else {
+            if hoveredReadingMetric != nil { hoveredReadingMetric = nil }
+            return
+        }
+        if hovering {
+            hoveredReadingMetric = metric
+        } else if hoveredReadingMetric == metric {
+            hoveredReadingMetric = nil
+        }
     }
 
     private var accessibilitySummary: String {
@@ -120,6 +150,10 @@ struct ClassicSensorCardView: View {
             }
             HStack(alignment: .firstTextBaseline, spacing: 5) {
                 temperatureText(size: DesignTokens.TypeSize.reading)
+                    .tahoeHoverHitTarget()
+                    .onHover { hovering in
+                        updateReadingHover(metric: .temperature, hovering: hovering)
+                    }
                 if let h = spec.humidity {
                     HStack(alignment: .firstTextBaseline, spacing: 2) {
                         Image(systemName: "drop.fill")
@@ -129,6 +163,10 @@ struct ClassicSensorCardView: View {
                             .monospacedDigit()
                     }
                     .foregroundStyle(humidityColor)
+                    .tahoeHoverHitTarget()
+                    .onHover { hovering in
+                        updateReadingHover(metric: .humidity, hovering: hovering)
+                    }
                 }
             }
             humidityBar
@@ -168,6 +206,10 @@ struct ClassicSensorCardView: View {
                         .foregroundStyle(muted)
                 } else {
                     temperatureText(size: DesignTokens.TypeSize.reading)
+                        .tahoeHoverHitTarget()
+                        .onHover { hovering in
+                            updateReadingHover(metric: .temperature, hovering: hovering)
+                        }
                     HStack(spacing: 6) {
                         comfortChip
                         if let b = spec.battery {
@@ -180,7 +222,13 @@ struct ClassicSensorCardView: View {
                 }
             }
             Spacer(minLength: 0)
-            if !isStale, let h = spec.humidity { humidityRing(h) }
+            if !isStale, let h = spec.humidity {
+                humidityRing(h)
+                    .tahoeHoverHitTarget()
+                    .onHover { hovering in
+                        updateReadingHover(metric: .humidity, hovering: hovering)
+                    }
+            }
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 12)

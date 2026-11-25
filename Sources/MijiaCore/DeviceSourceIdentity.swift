@@ -84,22 +84,83 @@ public enum DeviceIdentityNormalizer {
 
 /// Pairing-key → canonical device id. Keys stay stable when a source is temporarily absent, so a
 /// paired card keeps the same id (and therefore the same favorites, tile size, order, group, alias).
-public struct CanonicalDeviceRegistry: Equatable, Sendable {
+public struct CanonicalDeviceRegistry: Equatable, Sendable, Codable {
+    static let orphanRetention: TimeInterval = 30 * 24 * 60 * 60
+
+    // Preferences keep their original ID and storage owner. The tombstone keeps
+    // the identity mapping that makes those preferences reachable again.
+    private var orphanedAt: [String: Date]?
+    private(set) var explicitlyDeleted: Set<String>
     public private(set) var assignments: [String: String]
 
     public init(assignments: [String: String] = [:]) {
         self.assignments = assignments
+        self.orphanedAt = nil
+        self.explicitlyDeleted = []
     }
 
-    public func canonicalID(forKeys keys: [String]) -> String? {
+    private enum CodingKeys: String, CodingKey {
+        case assignments
+        case orphanedAt
+        case explicitlyDeleted
+    }
+
+    public init(from decoder: Decoder) throws {
+        if let values = try? decoder.singleValueContainer(),
+           let legacy = try? values.decode([String: String].self) {
+            assignments = legacy
+            orphanedAt = nil
+            explicitlyDeleted = []
+            return
+        }
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        assignments = try container.decode([String: String].self, forKey: .assignments)
+        orphanedAt = try container.decodeIfPresent([String: Date].self, forKey: .orphanedAt)
+        explicitlyDeleted = Set(try container.decodeIfPresent([String].self, forKey: .explicitlyDeleted) ?? [])
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(assignments, forKey: .assignments)
+        try container.encodeIfPresent(orphanedAt, forKey: .orphanedAt)
+        if !explicitlyDeleted.isEmpty { try container.encode(Array(explicitlyDeleted).sorted(), forKey: .explicitlyDeleted) }
+    }
+
+    public func canonicalID(forKeys keys: [String], allowOrphans: Bool = true) -> String? {
         for key in keys {
-            if let id = assignments[key], !id.isEmpty { return id }
+            if let id = assignments[key], !id.isEmpty, !explicitlyDeleted.contains(id), allowOrphans || orphanedAt?[id] == nil { return id }
         }
         return nil
     }
 
-    public mutating func assign(_ canonicalID: String, toKeys keys: [String]) {
+    mutating func forget(_ canonicalID: String) {
         guard !canonicalID.isEmpty else { return }
+        explicitlyDeleted.insert(canonicalID)
+        assignments = assignments.filter { $0.value != canonicalID }
+        orphanedAt?.removeValue(forKey: canonicalID)
+    }
+
+    mutating func purgeExpired(at now: Date) {
+        guard let orphanedAt else { return }
+        let expired = Set(orphanedAt.filter { now.timeIntervalSince($0.value) >= Self.orphanRetention }.keys)
+        guard !expired.isEmpty else { return }
+        assignments = assignments.filter { !expired.contains($0.value) }
+        self.orphanedAt = orphanedAt.filter { !expired.contains($0.key) }
+        if self.orphanedAt?.isEmpty == true { self.orphanedAt = nil }
+    }
+
+    mutating func reconcile(presentIDs: Set<String>, at now: Date) {
+        var next = orphanedAt ?? [:]
+        let assignedIDs = Set(assignments.values)
+        next = next.filter { assignedIDs.contains($0.key) && !presentIDs.contains($0.key) }
+        for id in assignedIDs.subtracting(presentIDs) where next[id] == nil {
+            next[id] = now
+        }
+        orphanedAt = next.isEmpty ? nil : next
+    }
+
+    public mutating func assign(_ canonicalID: String, toKeys keys: [String]) {
+        guard !canonicalID.isEmpty, !explicitlyDeleted.contains(canonicalID) else { return }
         for key in keys where !key.isEmpty {
             assignments[key] = canonicalID
         }
