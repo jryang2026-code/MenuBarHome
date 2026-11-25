@@ -1409,6 +1409,35 @@ extension HomeStore {
                     }
                     continue
                 }
+                if let original = previousDevices.first(where: { Self.moodCoverRestore(command, on: $0) != nil }) {
+                    guard let live = devices.first(where: { $0.id == original.id }), live.isOnline,
+                          !excludingDeviceIds.contains(live.id), !declinedDeviceIds.contains(live.id),
+                          !contextInvalidatedDeviceIds.contains(live.id),
+                          Self.moodCoverRestore(command, on: live) != nil else {
+                        contextInvalidatedDeviceIds.insert(original.id)
+                        continue
+                    }
+                    let operation = IntentOperation.power(true)
+                    if settle(
+                        live,
+                        requiresConfirmation: ManualControlPolicy.requiresConfirmation(operation, for: live),
+                        postModalValid: { current, captured in
+                            Self.moodCoverRestore(command, on: current) != nil
+                                && postModalAllowsOperation(operation, on: current, captured: captured, didPresentModal: true)
+                        },
+                        ask: {
+                            manualControlConfirmationHandler?(ManualControlConfirmation(
+                                title: L10n.tr("确认恢复位置？", "Restore cover position?"),
+                                message: live.name,
+                                confirmTitle: L10n.tr("确认执行", "Confirm"),
+                                cancelTitle: L10n.tr("取消", "Cancel")
+                            )) == true
+                        }
+                    ) {
+                        didPresentModalInPass = true
+                    }
+                    continue
+                }
                 if let target = Self.facetTarget(for: command),
                    let device = devices.first(where: {
                        deviceFacets[$0.id]?.contains { $0.target == target } == true && !excludingDeviceIds.contains($0.id)
@@ -1483,7 +1512,12 @@ extension HomeStore {
                 guard let (device, restored) = resolved,
                       !declinedDeviceIds.contains(device.id),
                       !contextInvalidatedDeviceIds.contains(device.id) else { continue }
-                let restoreOperation = IntentOperation.power(restored.isActiveOn)
+                let restoreOperation: IntentOperation
+                if case .setClimateTemperature(_, let temperature) = command {
+                    restoreOperation = .targetTemperature(temperature)
+                } else {
+                    restoreOperation = .power(restored.isActiveOn)
+                }
                 let markedLightIds = SwitchLightMarks.load(defaults: userDefaults)
                 if settle(
                     device,
@@ -1662,6 +1696,18 @@ extension HomeStore {
         var applicable: [UndoApplicableCommand] = []
         for command in commands {
             guard capabilityUndoRejectionReason(for: command) == nil else { continue }
+            if let original = previousDevices.first(where: { Self.moodCoverRestore(command, on: $0) != nil }) {
+                guard !excludingDeviceIds.contains(original.id),
+                      let live = devices.first(where: { $0.id == original.id && $0.isOnline }),
+                      let effect = Self.moodCoverRestore(command, on: live, reportedStart: lastCoverPositions[live.id]) else { continue }
+                let write = beginOptimisticWrite(from: live, to: effect.updated, lock: .seconds(3))
+                guard let revision = write.revision else { continue }
+                applicable.append(UndoApplicableCommand(
+                    command: command, deviceId: live.id, deviceName: live.name, lockRevision: revision,
+                    lockedFields: Set(write.fieldRevisions.keys), lockedFacetControlIds: []
+                ))
+                continue
+            }
             // A 更多设置 write has no card-state effect; undo restores the facet value it carries.
             if let target = Self.facetTarget(for: command),
                let device = devices.first(where: { device in
