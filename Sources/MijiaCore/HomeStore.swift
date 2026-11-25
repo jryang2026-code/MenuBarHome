@@ -1776,6 +1776,10 @@ public final class HomeStore {
     public internal(set) var lastAssistantReceipt: AssistantExecutionReceipt?
     /// A command or suggestion request waiting for the user to allow sending it to a cloud AI service (#20).
     public internal(set) var pendingCloudConsent: PendingCloudConsent?
+    /// A multi-device or high-risk omnibar command waiting for user confirmation in the inline diff preview card.
+    public internal(set) var pendingDiffPreview: AssistantDiffPreview?
+    /// Per-cover deadlines during which intermediate motor updates are ignored after a room group command.
+    @ObservationIgnored var groupCoverIgnoreUntil: [String: Date] = [:]
     public internal(set) var assistantSuggestions: [AssistantSuggestion] = []
     /// Cached model proactive recommendations for `lastProactiveRefreshSignature` (#113).
     var aiProactiveSuggestions: [AssistantSuggestion]?

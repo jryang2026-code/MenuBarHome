@@ -565,6 +565,12 @@ public struct ClassicControlCenterPanel: View {
                             } else if store.visibleDevices.isEmpty {
                                 emptyStateView
                             } else {
+                                if let roomId = store.selectedRoomId, !isEditingLayout {
+                                    let autoGroups = store.roomAutoGroups(for: roomId)
+                                    if !autoGroups.isEmpty {
+                                        RoomAutoGroupCapsulesRow(groups: autoGroups, store: store, theme: .classic)
+                                    }
+                                }
                                 ForEach(layoutState.sections) { section in
                                     if section.title != nil {
                                         groupHeader(section)

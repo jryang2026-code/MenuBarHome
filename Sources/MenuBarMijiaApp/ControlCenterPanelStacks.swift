@@ -532,6 +532,13 @@ extension ControlCenterPanel {
                     stackHeader(stack)
                         .transition(.opacity)
                 }
+                if case .room(let roomId?) = stack.source, !isEditingLayout {
+                    let autoGroups = store.roomAutoGroups(for: roomId, roomName: stack.title)
+                    if !autoGroups.isEmpty {
+                        RoomAutoGroupCapsulesRow(groups: autoGroups, store: store, theme: .liquidGlass)
+                            .transition(.opacity)
+                    }
+                }
                 deviceCollectionView(
                     devices: stack.devices,
                     showRoomBadge: showRoomBadge,

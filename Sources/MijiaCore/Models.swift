@@ -46,6 +46,7 @@ public struct LightSpec: Equatable, Sendable {
     public var isOn: Bool
     public var brightnessPercent: Int?
     public var colorTempKelvin: Int?
+    public var hueDegrees: Double?
     public var minKelvin: Int
     public var maxKelvin: Int
     public var currentEffect: String?
@@ -59,6 +60,7 @@ public struct LightSpec: Equatable, Sendable {
         isOn: Bool,
         brightnessPercent: Int? = nil,
         colorTempKelvin: Int? = nil,
+        hueDegrees: Double? = nil,
         minKelvin: Int = 2700,
         maxKelvin: Int = 6500,
         currentEffect: String? = nil,
@@ -71,6 +73,7 @@ public struct LightSpec: Equatable, Sendable {
         self.isOn = isOn
         self.brightnessPercent = brightnessPercent
         self.colorTempKelvin = colorTempKelvin
+        self.hueDegrees = hueDegrees
         self.minKelvin = minKelvin
         self.maxKelvin = maxKelvin
         self.currentEffect = currentEffect
