@@ -288,7 +288,7 @@ const CATALOG: Readonly<Record<string, readonly [string, string]>> = {
 
   // Reply banner sources
   "一键全关": ["一键全关", "All off"],
-  "0ms 本地直达": ["0ms 本地直达", "0 ms local"],
+  "本地直达": ["本地直达", "Local"],
   "习惯记忆 0ms": ["习惯记忆 0ms", "Learned habit, 0 ms"],
   "定时任务": ["定时任务", "Scheduled"],
   "定时指令需要明确的设备和操作，未设定定时": ["定时指令需要明确的设备和操作，未设定定时", "A scheduled command needs a clear device and action. No timer was set"],
@@ -297,7 +297,7 @@ const CATALOG: Readonly<Record<string, readonly [string, string]>> = {
   "地址不安全": ["地址不安全", "Insecure address"],
   "需要 API Key": ["需要 API Key", "API key needed"],
   "需要确认": ["需要确认", "Confirmation needed"],
-  "「{action}」属于高风险设备，再点一次确认执行": ["「{action}」属于高风险设备，再点一次确认执行", "「{action}」is a high-risk device. Tap again to confirm."],
+  "「{action}」属于高风险设备，再点一次确认执行": ["「{action}」属于高风险设备，再点一次确认执行", "\"{action}\" affects a high-risk device. Click again to confirm."],
   "如果这个开关实际控制的是普通照明灯，可在米家改名或在这里设置别名，名称里加上「灯」，以后就不会再弹出这个确认。": [
     "如果这个开关实际控制的是普通照明灯，可在米家改名或在这里设置别名，名称里加上「灯」，以后就不会再弹出这个确认。",
     "If this switch actually controls an ordinary light, rename it in Xiaomi Home or set an alias here and include “light”. This confirmation will stop appearing.",
@@ -1066,7 +1066,7 @@ const CATALOG: Readonly<Record<string, readonly [string, string]>> = {
     "令牌将以明文在网络上传输，远程访问建议使用 HTTPS 或 Nabu Casa 地址。",
     "Your token will travel unencrypted. Prefer HTTPS or a Nabu Casa URL for remote access.",
   ],
-  "开机自启与可选 AI 助手": ["开机自启与可选 AI 助手", "Launch at Login & Optional AI Assistant"],
+  "可选：AI 一句话控制": ["可选：AI 一句话控制", "Optional: Control with Natural Language (AI)"],
   "米家登录状态已失效": ["米家登录状态已失效", "Xiaomi Home sign-in expired"],
   "升级或改名迁移后旧会话可能已失效，重新扫码登录即可恢复设备列表。": [
     "升级或改名迁移后旧会话可能已失效，重新扫码登录即可恢复设备列表。",
@@ -1089,7 +1089,7 @@ const CATALOG: Readonly<Record<string, readonly [string, string]>> = {
     "请先在手机「米家」App 中确认已创建或接受共享家庭，再回来重新同步。",
     "Check the Mi Home app on your phone to confirm a home or shared home exists for this account, then sync again.",
   ],
-  "打开米家确认家庭": ["打开米家确认家庭", "Check Homes in Mi Home"],
+  "查看米家账号": ["查看米家账号", "Open Xiaomi Account"],
   "已找到家庭，但没有可显示的设备": ["已找到家庭，但没有可显示的设备", "Homes found, but no displayable devices"],
   "请确认手机米家 App 里这些家庭下有设备（含被共享家庭）。若设备仍不显示，请复制诊断信息反馈。": [
     "请确认手机米家 App 里这些家庭下有设备（含被共享家庭）。若设备仍不显示，请复制诊断信息反馈。",

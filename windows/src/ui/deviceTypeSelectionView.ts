@@ -297,7 +297,8 @@ export function renderDeviceTypeSelectionSection(
             .join("")}
         </div>
         <p class="cc-field-hint" style="margin: 4px 0 0 0;">${esc(host, modeHints[draft.mode])}</p>
-        <p data-device-type-safety-note role="note" style="margin: 6px 0 0 0; font-size: 12px; line-height: 16px; color: var(--text-primary);">
+        ${draft.mode === "allSupportedTypes" ? "" : `
+        <p data-device-type-safety-note role="note" style="margin: 6px 0 0 0; font-size: 12px; line-height: 16px; color: var(--text-secondary);">
           ${esc(
             host,
             tr3(
@@ -308,6 +309,7 @@ export function renderDeviceTypeSelectionSection(
             ),
           )}
         </p>
+        `}
       </div>
       ${
         draft.isCustomOpen

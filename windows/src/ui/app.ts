@@ -2298,7 +2298,7 @@ export class MenuMijiaWindowsApp {
         title = t("当前米家账号下没有家庭");
         subtitle = t("请先在手机「米家」App 中确认已创建或接受共享家庭，再回来重新同步。");
         actionId = "btn-empty-confirm-mi-home";
-        actionLabel = t("打开米家确认家庭");
+        actionLabel = t("查看米家账号");
         break;
       case "homesWithoutDevices":
         title = t("已找到家庭，但没有可显示的设备");

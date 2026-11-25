@@ -811,7 +811,7 @@ public struct ClassicControlCenterPanel: View {
                     : L10n.tr("语音输入", "Voice input")))
                 .panelHelp(listening
                     ? L10n.tr("停止聆听并执行", "Stop listening and run")
-                    : L10n.tr("语音输入（快捷键 V，或长按 ⌥M / 菜单栏图标）", "Voice input (Shortcut V, or hold ⌥M / menu bar icon)"))
+                    : L10n.tr("语音输入（快捷键 V，或长按 \(HotkeySettingsState.shared.shortcut.displayString) / 菜单栏图标）", "Voice input (Shortcut V, or hold \(HotkeySettingsState.shared.shortcut.displayString) / menu bar icon)"))
             }
         }
         .padding(.leading, 10)

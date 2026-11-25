@@ -169,7 +169,7 @@ export async function applyMoodForHost(host: MenuMijiaWindowsApp, id: string, op
   const sep = pref === "en" ? ", " : "、";
   const moodLabel = tr3("氛围", "氛圍", "Mood", undefined, pref);
   const blockedLabel = tr3("已阻止", "已阻止", "Blocked", undefined, pref);
-  const lockMsg = tr3("Windows 已锁定，已阻止设备控制。可在设置 → 隐私中关闭此限制。", "Windows 已鎖定，已阻止裝置控制。可在設定 → 隱私中關閉此限制。", "Windows is locked, so device control is blocked. Turn this off in Settings → Privacy.", undefined, pref);
+  const lockMsg = tr3("Windows 已锁定，已阻止设备控制。可在「设置 → 安全与提醒」中关闭此限制。", "Windows 已鎖定，已阻止裝置控制。可在「設定 → 安全與提醒」中關閉此限制。", "Windows is locked, so device control is blocked. Turn this off in Settings → Safety & Alerts.", undefined, pref);
   const miMsg = tr3("米家登录已过期，请先重新扫码登录", "米家登入已過期，請先重新掃碼登入", "Xiaomi Home session expired. Please sign in again.", undefined, pref);
 
   if (await isWorkstationLockBlockingControl(host)) return failOutcome(host, "blocked", lockMsg, blockedLabel);

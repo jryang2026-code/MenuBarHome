@@ -669,8 +669,8 @@ public struct MiAccountSection: View {
         // #146 & WP3a: the risk is always visible (>= 12pt), never buried in fine print or advanced disclosure.
         Label {
             Text(L10n.tr(
-                "直连使用非官方接口，小米可能限制请求或风控账号；介意的话请改用官方的 Home Assistant (xiaomi_home)。登录会过期，到期需重新扫码。",
-                "Direct mode uses an unofficial API, so Xiaomi may rate-limit or flag accounts. If that worries you, use Home Assistant (xiaomi_home) instead. Sign-in expires; you will need to scan again."
+                "直连使用非官方接口，小米可能限制请求或风控账号；介意的话请改用官方的 Home Assistant (xiaomi_home)。登录凭证只存在本机钥匙串，会过期，到期需重新扫码。",
+                "Direct mode uses an unofficial API, so Xiaomi may rate-limit or flag accounts. If that worries you, use Home Assistant (xiaomi_home) instead. Sign-in stays in your local Keychain and expires; you will need to scan again."
             ))
             .fixedSize(horizontal: false, vertical: true)
         } icon: {

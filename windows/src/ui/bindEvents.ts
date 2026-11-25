@@ -844,10 +844,6 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
       })();
     });
 
-    host.root.querySelector("#btn-quit-app")?.addEventListener("click", () => {
-      invokeTauriVoid("quit_app");
-    });
-
     host.root.querySelector("#btn-settings-quit")?.addEventListener("click", () => {
       invokeTauriVoid("quit_app");
     });
@@ -1145,7 +1141,7 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
           return;
         }
         const intents: DeviceIntent[] = [{targetId:scene.id,operation:{kind:"activateScene"}}];
-        void host.executeIntents(intents, IntentReply.describe(intents, host.devices, host.scenes), t("0ms 本地直达"), {recordHabits:true});
+        void host.executeIntents(intents, IntentReply.describe(intents, host.devices, host.scenes), t("本地直达"), {recordHabits:true});
       });
     });
 

@@ -5,7 +5,7 @@ import MijiaCore
 /// Localized copy for the companion integration block (Raycast / CLI / MCP, P6a-M).
 enum CompanionSettingsCopy {
     static var toggleTitle: String { L10n.tr("外部快捷工具与伴生集成（Raycast / CLI / MCP）", "External Tools & Companion Integration (Raycast / CLI / MCP)") }
-    static var statusEnabled: String { L10n.tr("已开启 · 仅本机可访问（0600 本地快照，不共享家居连接凭据）", "Enabled · Local access only (0600 snapshot, no home connection credentials shared)") }
+    static var statusEnabled: String { L10n.tr("已开启 · 仅本机可访问，不共享米家或 Home Assistant 登录凭据", "Enabled · Local access only; your Xiaomi Home and Home Assistant sign-ins are never shared") }
     static var statusDisabled: String { L10n.tr("已关闭 · 停止快照导出并拒绝伴生命令（普通外部链接仍按安全与提醒设置执行）", "Off · Snapshot export stopped and companion commands rejected (ordinary links still follow Safety & Alerts)") }
     static var scopeHint: String {
         L10n.tr(
@@ -275,24 +275,29 @@ struct AutomationSettingsSection: View {
                     .fixedSize(horizontal: false, vertical: true)
 
                 HStack(spacing: 8) {
+                    // Copy and Disconnect only mean something while the integration is on; Check stays to explain why it is off.
+                    if store.companionIntegrationEnabled {
                     Button {
                         NSPasteboard.general.clearContents()
                         NSPasteboard.general.setString(store.companionMCPConfigurationJSON(), forType: .string)
                         store.showToast(CompanionSettingsCopy.copiedToast)
                     } label: { Label(CompanionSettingsCopy.copyConfigButton, systemImage: "doc.on.doc").font(.system(size: DesignTokens.TypeSize.caption, weight: .medium)) }
                         .buttonStyle(PillActionButtonStyle()).help(CompanionSettingsCopy.copyConfigHelp)
+                    }
 
                     Button { companionCheckReport = store.checkCompanionIntegrationStatus() } label: {
                         Label(CompanionSettingsCopy.checkButton, systemImage: "checkmark.shield").font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
                     }
                     .buttonStyle(PillActionButtonStyle()).help(CompanionSettingsCopy.checkHelp)
 
+                    if store.companionIntegrationEnabled {
                     Button {
                         store.disconnectCompanionIntegration()
                         companionCheckReport = store.checkCompanionIntegrationStatus()
                     } label: { Label(CompanionSettingsCopy.disconnectButton, systemImage: "link.badge.minus").font(.system(size: DesignTokens.TypeSize.caption, weight: .medium)) }
                         .buttonStyle(PillActionButtonStyle())
                         .help(CompanionSettingsCopy.disconnectHelp)
+                    }
                 }
 
                 if let report = companionCheckReport {
@@ -358,6 +363,14 @@ struct AutomationSettingsSection: View {
                                 guard var current = store.automationRuleStore.load().first(where: { $0.id == rule.id }) else { return }
                                 current.restoreWhenContextEnds = enabled
                                 current.restoreTrigger = enabled ? exitTrigger : nil
+                                // Restoring a turn-off rule turns devices back on, so it asks the same
+                                // high-risk question as the editor's copy of this switch.
+                                if current.isEnabled, enabled,
+                                   let confirmation = current.highRiskConfirmation(devices: store.devices),
+                                   !current.highRiskApproved {
+                                    guard confirmHighRiskRule(confirmation) else { return }
+                                    current.highRiskApproved = true
+                                }
                                 update(current)
                             }
                         )
@@ -400,9 +413,11 @@ struct AutomationSettingsSection: View {
                         if case .devices(let ids, let isOn) = rule.action {
                             ruleDevicesEditor(rule: rule, selectedIDs: Set(ids), isOn: isOn)
                         }
-                        if let defaultRestore = rule.trigger.defaultRestoreTrigger,
+                        // The row above already shows this switch when the trigger has a paired exit.
+                        if rule.trigger.pairedContextTrigger == nil,
+                           let defaultRestore = rule.trigger.defaultRestoreTrigger,
                            case .devices = rule.action {
-                            Toggle(L10n.tr("情境结束时还原状态", "Restore state when context ends"), isOn: Binding(
+                            Toggle(L10n.tr("情境结束后还原", "Restore when the context ends"), isOn: Binding(
                                 get: { rule.restoreWhenContextEnds },
                                 set: { enabled in
                                     guard var current = store.automationRuleStore.load().first(where: { $0.id == rule.id }) else { return }
@@ -1050,7 +1065,7 @@ struct AutomationSettingsSection: View {
         }
 
         if newTrigger.defaultRestoreTrigger != nil && newActionKind == .devices {
-            Toggle(L10n.tr("情境结束时还原状态", "Restore state when context ends"), isOn: $newRestoreWhenContextEnds)
+            Toggle(L10n.tr("情境结束后还原", "Restore when the context ends"), isOn: $newRestoreWhenContextEnds)
                 .toggleStyle(.checkbox)
                 .font(.system(size: DesignTokens.TypeSize.caption))
         }

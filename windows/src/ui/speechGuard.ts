@@ -719,7 +719,7 @@ export async function executeBuiltInQuickAction(
   if (planned.targets.length === 0) {
     host.replyBanner = {
       text: tr3(`当前无需执行「${planned.title}」`, `目前無需執行「${planned.title}」`, `No devices need "${planned.title}"`),
-      source: t("0ms 本地直达"),
+      source: t("本地直达"),
     };
     host.render();
     return;
@@ -802,7 +802,7 @@ export async function executeBuiltInQuickAction(
         }
       : {
           text: tr3(`已执行「${planned.title}」`, `已執行「${planned.title}」`, `Executed "${planned.title}"`),
-          source: t("0ms 本地直达"),
+          source: t("本地直达"),
         };
   host.render();
 }

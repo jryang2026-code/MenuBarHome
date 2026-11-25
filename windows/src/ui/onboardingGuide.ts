@@ -896,7 +896,7 @@ export function mountOnboardingGuide(host: OnboardingRenderViewHost): void {
       </div>
 
       <div class="cc-field" data-onboarding-ai-section>
-        <label class="cc-onboarding-label">${esc(t("开机自启与可选 AI 助手"))}</label>
+        <label class="cc-onboarding-label">${esc(t("可选：AI 一句话控制"))}</label>
         <div class="cc-segmented-pills cc-onboarding-preset-pills">
           ${ASSISTANT_PROVIDER_PRESETS.map((preset) => {
             const isSelected = draft.selectedPreset === preset.id;

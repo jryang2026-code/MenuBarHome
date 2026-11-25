@@ -11,6 +11,8 @@ struct EnergySettingsSection: View {
     let store: HomeStore
 
     @State private var priceDraft = ""
+    /// Set when a typed price was rejected, so the field's snap-back is explained instead of silent.
+    @State private var priceRejected = false
     @State private var isConfirmingClear = false
 
     private var history: EnergyHistory { store.energyHistory }
@@ -222,6 +224,10 @@ struct EnergySettingsSection: View {
                     .textFieldStyle(.roundedBorder)
                     .frame(width: 92)
                     .onSubmit { applyPrice() }
+                    // The snap-back itself restores the saved text; only fresh typing clears the warning.
+                    .onChange(of: priceDraft) { _, draft in
+                        if draft != Self.priceDraftText(history.pricePerKwh) { priceRejected = false }
+                    }
                 Button(L10n.tr("保存", "Save")) { applyPrice() }
                     .buttonStyle(PillActionButtonStyle(isSelected: priceDraft != Self.priceDraftText(history.pricePerKwh)))
                     .disabled(priceDraft == Self.priceDraftText(history.pricePerKwh))
@@ -232,6 +238,15 @@ struct EnergySettingsSection: View {
                     }
                     .buttonStyle(PillActionButtonStyle())
                 }
+            }
+            if priceRejected {
+                Text(L10n.tr(
+                    "请输入大于 0 的数字（例如 0.65），已保留原电价。",
+                    "Enter a number above 0 (for example 0.65); the previous price is kept."
+                ))
+                .font(.system(size: DesignTokens.TypeSize.caption))
+                .foregroundStyle(.orange)
+                .fixedSize(horizontal: false, vertical: true)
             }
             Text(history.pricePerKwh == nil
                 ? L10n.tr(
@@ -317,6 +332,10 @@ struct EnergySettingsSection: View {
             history.setPricePerKwh(nil)
         } else if let price = Double(normalized), price.isFinite, price > 0 {
             history.setPricePerKwh(price)
+        } else {
+            seedPriceDraft()
+            priceRejected = true
+            return
         }
         seedPriceDraft()
     }

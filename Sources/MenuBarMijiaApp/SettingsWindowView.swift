@@ -1398,16 +1398,16 @@ enum CorruptRemovalRecoveryGuidance {
         switch failure.kind {
         case .fullFsyncUnsupported:
             let title = failure.usedAlternateDirectory
-                ? L10n.tr("所选文件夹所在卷不支持所需同步（F_FULLFSYNC）", "Selected folder's volume does not support required sync (F_FULLFSYNC)")
-                : L10n.tr("当前存储卷不支持所需同步（F_FULLFSYNC）", "Current volume does not support required sync (F_FULLFSYNC)")
+                ? L10n.tr("所选文件夹无法安全保存数据", "The selected folder cannot save data safely")
+                : L10n.tr("当前位置无法安全保存数据", "This location cannot save data safely")
             let detail = L10n.tr(
-                "放弃损坏记录前必须在私有目录完成 F_FULLFSYNC 落盘同步与逐字节回读校验。目标位置\(locationSuffix)不支持该同步（常见于网络主目录、SMB/NAS 挂载或部分外置磁盘）。为避免丢失原始损坏数据，原记录已保留，重复操作同一卷仍会失败。",
-                "Before discarding a damaged record, a private backup must pass F_FULLFSYNC disk flushing and byte-for-byte read-back. The target location\(locationSuffixEn) does not support F_FULLFSYNC (common on network homes, SMB/NAS mounts, or some external drives). The original record was kept untouched; retrying the same volume will keep failing."
+                "清理损坏记录前，要先在一个私有文件夹里留一份确认写入成功的备份。目标位置\(locationSuffix)做不到这一点（常见于网络主目录、NAS 挂载或部分外置磁盘）。原记录已原样保留，换到 Mac 内置磁盘上的文件夹再试即可。",
+                "Before clearing a damaged record, a verified backup must be written to a private folder. The target location\(locationSuffixEn) cannot guarantee that (common on network home folders, NAS mounts or some external drives). The original record was kept untouched; try again with a folder on your Mac's internal disk."
             )
             let steps = [
                 L10n.tr(
-                    "1. 点击下方「选择本地文件夹并重试…」，改用本机内置磁盘（APFS / HFS+）上的个人文件夹作为备用隔离位置。",
-                    "1. Click \"Choose Local Folder & Retry…\" below and pick a folder on your Mac's internal APFS/HFS+ volume as an alternate quarantine location."
+                    "1. 点击下方「选择本地文件夹并重试…」，选一个 Mac 内置磁盘上的个人文件夹。",
+                    "1. Click \"Choose Local Folder & Retry…\" below and pick a folder on your Mac's internal disk."
                 ),
                 L10n.tr(
                     "2. 或将用户目录 / Application Support 迁回支持 F_FULLFSYNC 的本地卷后，再点击「重试原位置」。",
@@ -2224,7 +2224,7 @@ private struct ConnectionSettingsTab: View {
                         }
                     }
                 }
-                TextField("https://your-home.ui.nabu.casa", text: $urlDraft)
+                TextField("http://homeassistant.local:8123", text: $urlDraft)
                     .textFieldStyle(.roundedBorder)
                     .controlSize(.regular)
                     .font(.system(size: DesignTokens.TypeSize.body, design: .monospaced))
@@ -2341,7 +2341,6 @@ private struct ConnectionSettingsTab: View {
 
 private struct AssistantSettingsTab: View {
     let store: HomeStore
-    @State private var showsThresholdDetail = false
 
     var body: some View {
         let _ = store.effectiveLanguage
@@ -2367,20 +2366,14 @@ private struct AssistantSettingsTab: View {
                 .foregroundStyle(DesignTokens.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
 
-                DisclosureGroup(isExpanded: $showsThresholdDetail) {
-                    Text(L10n.tr(
-                        "把握度低于 \(Int(ModelActionPolicy.autoRunThreshold * 100))% 时算「不确定」，AI 会先问你。这个阈值是固定的，用来避免误操作。",
-                        "Below \(Int(ModelActionPolicy.autoRunThreshold * 100))% confidence counts as unsure, so the AI asks first. The threshold is fixed to prevent accidental control."
-                    ))
-                    .font(.system(size: DesignTokens.TypeSize.caption))
-                    .foregroundStyle(DesignTokens.secondaryText)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.top, 4)
-                } label: {
-                    Text(L10n.tr("高级：把握度阈值", "Advanced: confidence threshold"))
-                        .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
-                        .foregroundStyle(DesignTokens.secondaryText)
-                }
+                // One sentence needs no disclosure triangle: the fixed threshold reads inline.
+                Text(L10n.tr(
+                    "把握度低于 \(Int(ModelActionPolicy.autoRunThreshold * 100))% 时算「不确定」，这个阈值固定不变，用来避免误操作。",
+                    "Below \(Int(ModelActionPolicy.autoRunThreshold * 100))% confidence counts as unsure; the threshold is fixed to prevent accidental control."
+                ))
+                .font(.system(size: DesignTokens.TypeSize.caption))
+                .foregroundStyle(DesignTokens.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
                 .settingsRow(anchor: .confidenceThreshold)
             }
         }
@@ -2479,6 +2472,7 @@ private struct PrivacySettingsTab: View {
     @Environment(\.settingsSearchFocus) private var searchFocus
     @State private var showNotificationRationale = false
     @State private var confirmsAdvancedFacetWrites = false
+    @State private var confirmsDirectControl = false
     @AppStorage(URLDirectControl.allowDirectControlKey) private var allowDirectControl = false
     @AppStorage(ScreenSharingPrivacy.storageKey) private var hideFromScreenSharing = false
 
@@ -2809,13 +2803,37 @@ private struct PrivacySettingsTab: View {
                 VStack(alignment: .leading, spacing: 6) {
                     SettingsToggleRow(
                         title: L10n.tr("允许外部链接直控（跳过确认）", "Allow external URL control without confirmation"),
-                        isOn: $allowDirectControl
+                        isOn: Binding(
+                            get: { allowDirectControl },
+                            set: { newValue in
+                                if newValue && !allowDirectControl {
+                                    confirmsDirectControl = true
+                                } else {
+                                    allowDirectControl = newValue
+                                }
+                            }
+                        )
                     )
+                    .confirmationDialog(
+                        L10n.tr("允许外部链接直接控制设备？", "Let external links control devices directly?"),
+                        isPresented: $confirmsDirectControl,
+                        titleVisibility: .visible
+                    ) {
+                        Button(L10n.tr("允许直控", "Allow"), role: .destructive) {
+                            allowDirectControl = true
+                        }
+                        Button(L10n.tr("取消", "Cancel"), role: .cancel) {}
+                    } message: {
+                        Text(L10n.tr(
+                            "任何能打开链接的网页或 App 都可以直接开关灯、空调等普通设备。门锁、阀门、加热等高风险设备和锁屏拦截仍会照常确认。",
+                            "Any web page or app that can open a link will be able to switch lights, air conditioners and other standard devices. Locks, valves, heaters and the screen-lock block still ask as usual."
+                        ))
+                    }
 
                     Label(
                         L10n.tr(
-                            "允许外部链接直接控制设备（跳过所有二次确认，含门锁、阀门）",
-                            "Allow external links to control devices directly (skips all secondary confirmations, including locks and valves)"
+                            "外部链接可跳过列表确认直接控制普通设备；门锁、阀门等高风险设备与锁屏拦截始终生效",
+                            "External links skip the list confirmation for standard devices; locks, valves and other high-risk devices and the screen-lock block always still apply"
                         ),
                         systemImage: "exclamationmark.triangle.fill"
                     )

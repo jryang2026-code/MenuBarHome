@@ -326,18 +326,7 @@ public struct OnboardingGuideView: View {
                 }
             }
 
-            Label(
-                L10n.tr(
-                    "非米家官方客户端；扫码登录凭证仅保存在本机钥匙串，随时可在设置中退出并吊销。",
-                    "Unofficial client; sign-in credentials stay in your local Keychain and can be revoked anytime in Settings."
-                ),
-                systemImage: "exclamationmark.triangle.fill"
-            )
-            .font(.system(size: DesignTokens.TypeSize.caption))
-            .foregroundStyle(.orange)
-            .fixedSize(horizontal: false, vertical: true)
-            .accessibilityLabel(Text(L10n.tr("风险提示：非米家官方客户端；扫码登录凭证仅保存在本机钥匙串。", "Notice: unofficial client; sign-in credentials stay in your local Keychain.")))
-
+            // MiAccountSection carries the one unofficial-API notice; a second orange strip above it read as an error.
             MiAccountSection(store: store)
         }
         .padding(11)
@@ -381,7 +370,7 @@ public struct OnboardingGuideView: View {
             .foregroundStyle(DesignTokens.secondaryText)
             .fixedSize(horizontal: false, vertical: true)
 
-            TextField("https://your-home.ui.nabu.casa", text: $haURLDraft)
+            TextField("http://homeassistant.local:8123", text: $haURLDraft)
                 .textFieldStyle(.roundedBorder)
                 .controlSize(.small)
                 .font(.system(size: 11.5, design: .monospaced))
@@ -650,7 +639,7 @@ public struct OnboardingGuideView: View {
                     icon: "gearshape.2",
                     title: L10n.tr("自动化与 URL 直控", "Automation & URL Control"),
                     detail: L10n.tr(
-                        "设置 → 通用 → 自动化与外部控制；URL 直控默认每次先确认。",
+                        "设置 → 常规 → 自动化与外部控制；URL 直控默认每次先确认。",
                         "Settings → General → Automation & External Control. URL control asks first by default."
                     ),
                     actionTitle: L10n.tr("打开设置", "Open Settings")
@@ -939,7 +928,7 @@ public struct OnboardingGuideView: View {
 
     private var bottomActionRow: some View {
         HStack {
-            Text(L10n.tr("随时可在「设置 → 通用 → 首次设置」重新打开", "Reopen anytime in Settings → General → Setup"))
+            Text(L10n.tr("随时可在设置里搜索「初始设置引导」重新打开", "Reopen anytime: search Settings for “Setup Guide”"))
                 .font(.system(size: 11.5))
                 .foregroundStyle(DesignTokens.secondaryText)
 

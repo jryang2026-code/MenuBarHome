@@ -145,12 +145,12 @@ describe("macOS v1.4.0 UI parity, 5-tab Settings sidebar & standalone window rou
     assert.deepEqual(toolIds, ["btn-quick-drawer-toggle", "btn-room-order-editor", "btn-toggle-grid", "btn-toggle-hide-offline"]);
     assert.equal(element("#btn-toggle-grid").classList.contains("is-active"), true);
 
-    // Classic footer has 3 icon buttons (refresh, settings, quit) and omits #btn-toggle-appearance.
+    // Classic footer has 2 icon buttons (refresh, settings); quit lives in the tray menu and Settings.
     assertMissing(document.querySelector("#btn-toggle-appearance"));
     const footerIcons = [...document.querySelectorAll<HTMLElement>(".cc-footer-actions > .cc-footer-icon-btn")].map(
       (b) => b.id,
     );
-    assert.deepEqual(footerIcons, ["btn-refresh", "btn-settings", "btn-quit-app"]);
+    assert.deepEqual(footerIcons, ["btn-refresh", "btn-settings"]);
   });
 
   it("renders 5-category Settings sidebar, normalizes legacy 'system' tab, and routes anchors to safety/about", () => {

@@ -350,7 +350,8 @@ function startDemo(): MenuMijiaWindowsApp {
     assert.match(block.textContent ?? "", /全部已支持类型/);
     assert.match(block.textContent ?? "", /只用灯和开关/);
     assert.match(block.textContent ?? "", /自己选/);
-    assert.match(block.textContent ?? "", /仍会读取部分隐藏设备/);
+    // Showing every type hides nothing, so the hidden-device note stays out of the way until a type is hidden.
+    assert.doesNotMatch(block.textContent ?? "", /仍会读取部分隐藏设备/);
   });
 
   it("previews the change before writing and masks only the unselected types", async () => {

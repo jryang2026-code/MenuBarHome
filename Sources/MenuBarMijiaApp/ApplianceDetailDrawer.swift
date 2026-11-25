@@ -11,6 +11,7 @@ struct ApplianceDetailDrawer: View {
     let accent: Color
     let statusColor: Color
     var theme: PanelTheme = .liquidGlass
+    @State private var copiedFaultCode = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -114,7 +115,7 @@ struct ApplianceDetailDrawer: View {
             Text(notice.message)
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 8)
-            Button(L10n.tr("复制代码", "Copy code")) {
+            Button(copiedFaultCode ? L10n.tr("已复制", "Copied") : L10n.tr("复制代码", "Copy code")) {
                 copyFaultCode(notice.copyText)
             }
             .buttonStyle(.plain)
@@ -136,6 +137,12 @@ struct ApplianceDetailDrawer: View {
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.setString(text, forType: .string)
+        // The label answers the click, then returns so a second copy reads the same way.
+        copiedFaultCode = true
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(1.5))
+            copiedFaultCode = false
+        }
     }
 
     private var modeMenu: some View {
