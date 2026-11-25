@@ -402,7 +402,7 @@ public actor MiCloudProvider: HomeProvider {
             return
         }
 
-        if (lastCloudError as? MiCloudError) != .http(429) {
+        if let lastCloudError, !MiCloudClient.isRateLimitError(lastCloudError) {
             cloudRetryNotBefore = nil
         }
         try await discover(api)
@@ -424,7 +424,7 @@ public actor MiCloudProvider: HomeProvider {
     }
 
     private func performImmediatePoll(_ api: any MiCloudAPI) async {
-        if (lastCloudError as? MiCloudError) != .http(429) {
+        if let lastCloudError, !MiCloudClient.isRateLimitError(lastCloudError) {
             cloudRetryNotBefore = nil
         }
         do {
@@ -532,12 +532,17 @@ public actor MiCloudProvider: HomeProvider {
                 if Task.isCancelled || isShutDown { return }
                 wakePollPending = false
                 report(error)
-                // Xiaomi throttles busy clients; back off for minutes instead of seconds (#26).
-                let throttled = (error as? MiCloudError) == .http(429)
-                if throttled { backoff = max(backoff, 60) }
-                try? await Task.sleep(for: .seconds(backoff))
+                let throttled = MiCloudClient.isRateLimitError(error)
+                let delay: TimeInterval
+                if throttled, let client = api as? MiCloudClient {
+                    delay = max(2, min(client.readCooldown, 900))
+                } else {
+                    if throttled { backoff = max(backoff, 60) }
+                    delay = backoff
+                    backoff = min(backoff * 2, throttled ? 900 : 60)
+                }
+                try? await Task.sleep(for: .seconds(delay))
                 await waitWhilePaused()
-                backoff = min(backoff * 2, throttled ? 900 : 60)
             }
         }
     }
@@ -744,7 +749,12 @@ public actor MiCloudProvider: HomeProvider {
     }
 
     private func scheduleCloudBackoff(for error: any Error) {
-        let throttled = (error as? MiCloudError) == .http(429)
+        let throttled = MiCloudClient.isRateLimitError(error)
+        if throttled, let client = api as? MiCloudClient {
+            cloudRetryNotBefore = now().addingTimeInterval(client.readCooldown)
+            lastCloudError = error
+            return
+        }
         if throttled {
             cloudBackoffSeconds = max(cloudBackoffSeconds, 60)
         }
@@ -2021,6 +2031,7 @@ public actor MiCloudProvider: HomeProvider {
         let command: DeviceCommand
         let property: MiotPropWrite
         let reportCloudWriteDenial: Bool
+        let isBackgroundWrite: Bool
         let stillAllowed: (@Sendable () async -> Bool)?
         let reply: CheckedContinuation<Void, any Error>
     }
@@ -2045,6 +2056,7 @@ public actor MiCloudProvider: HomeProvider {
             try await withCheckedThrowingContinuation { continuation in
                 let entry = ChannelWrite(
                     id: id, command: command, property: property, reportCloudWriteDenial: reportCloudWriteDenial,
+                    isBackgroundWrite: MiCloudClient.isBackgroundWrite,
                     stillAllowed: Self.channelWriteStillAllowed, reply: continuation
                 )
                 if let earlier = pendingChannelWrites[did]?.first(where: {
@@ -2088,7 +2100,9 @@ public actor MiCloudProvider: HomeProvider {
             guard !batch.isEmpty else { continue }
             do {
                 if batch.count == 1, let entry = batch.first {
-                    try await execute(entry.command, reportCloudWriteDenial: entry.reportCloudWriteDenial, allowChannelBatch: false)
+                    try await MiCloudClient.$isBackgroundWrite.withValue(entry.isBackgroundWrite) {
+                        try await execute(entry.command, reportCloudWriteDenial: entry.reportCloudWriteDenial, allowChannelBatch: false)
+                    }
                     entry.reply.resume()
                 } else {
                     let (outcomes, viaCloud) = try await sendChannelBatch(batch, did: did)
@@ -2148,7 +2162,9 @@ public actor MiCloudProvider: HomeProvider {
             guard !isShutDown else { throw MiIOError.shutDown }
         }
         do {
-            let result = try await performCloudCall { try await api.setPropVerdicts(writes) }
+            let result = try await MiCloudClient.$isBackgroundWrite.withValue(batch.allSatisfy(\.isBackgroundWrite)) {
+                try await performCloudCall { try await api.setPropVerdicts(writes) }
+            }
             guard result.count == writes.count else { throw MiCloudError.badResponse("Incomplete channel write verdicts") }
             return (result, true)
         } catch MiCloudError.sessionExpired {

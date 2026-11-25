@@ -187,11 +187,13 @@ extension HomeStore {
         }
         var executed = (attempted: 0, succeeded: 0, failed: 0, offline: false)
         setAssistantState(.idle)
-        let resultPlan = await executeIntentPlan(
-            plan, recordedUtterance: nil, origin: .automation, automationGeneration: generation,
-            automationCanContinue: canContinue
-        ) { attempted, succeeded, failed, offline in
-            executed = (attempted, succeeded, failed, offline)
+        let resultPlan = await MiCloudClient.$isBackgroundWrite.withValue(true) {
+            await executeIntentPlan(
+                plan, recordedUtterance: nil, origin: .automation, automationGeneration: generation,
+                automationCanContinue: canContinue
+            ) { attempted, succeeded, failed, offline in
+                executed = (attempted, succeeded, failed, offline)
+            }
         }
         let errorMessage = if case .failed(let message) = assistantState { message } else { nil as String? }
         let skipReason: AutomationSkipReason?

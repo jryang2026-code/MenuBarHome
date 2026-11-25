@@ -229,6 +229,35 @@ struct MiAccountLoginTests {
         #expect(apiRateLimitRooms.requests.count == 1)
         #expect(apiRateLimitRooms.requests.first?.url?.path == "/app/v2/homeroom/gethome_merged")
     }
+
+    @Test(arguments: [429, 200])
+    func accountCooldownSpansClientsAndControlGetsOneAttempt(_ status: Int) async throws {
+        let session = MiSession(userId: "100", cUserId: "c", ssecurity: Vectors.ssecurity, serviceToken: "tok")
+        let limiter = MiCloudRateLimiter(uptime: { 0 }, jitter: { 0 })
+        let server = ScriptedTransport { _ in
+            (status, ["rEtRy-AfTeR": "30"], #"{"code":-429,"message":"busy"}"#)
+        }
+        let poll = MiCloudClient(session: session, transport: server, rateLimiter: limiter)
+        let controls = MiCloudClient(session: session, transport: server, rateLimiter: limiter)
+        let serverError: MiCloudError = status == 429 ? .http(429) : .api(code: -429, message: "busy")
+
+        await #expect(throws: serverError) { _ = try await poll.deviceList() }
+        #expect(controls.readCooldown == 30)
+        await #expect(throws: MiCloudError.http(429)) { _ = try await controls.homeRooms() }
+        #expect(server.requests.count == 1)
+        let write = MiotPropWrite(did: "1", siid: 2, piid: 1, value: .bool(true))
+        await MiCloudClient.$isBackgroundWrite.withValue(true) {
+            await #expect(throws: MiCloudError.http(429)) { try await controls.setProps([write]) }
+        }
+        await #expect(throws: serverError) { try await controls.setProps([write]) }
+        guard case .rateLimited? = ControlFailure.classify(serverError) else {
+            Issue.record("Expected a user-visible rate-limit failure")
+            return
+        }
+        #expect(server.requests.map { $0.url?.path } == [
+            "/app/v2/home/device_list_page", "/app/miotspec/prop/set",
+        ])
+    }
 }
 
 // MARK: - Test Doubles
