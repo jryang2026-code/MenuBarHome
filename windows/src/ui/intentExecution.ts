@@ -868,6 +868,7 @@ export async function executeSingleCommand(
   summary: string,
   intent?: DeviceIntent,
   readBackPower = false,
+  options: { readonly revalidateBeforeSend?: () => string | null } = {},
 ): Promise<void> {
   if (host.settings?.connectionMode !== "demo" || isDualSourceEnabled(host)) {
     const activeId = host.devices.some((d) => d.id === device.id) ? device.id : null;
@@ -898,7 +899,9 @@ export async function executeSingleCommand(
   let applied = false;
   try {
     const seqBefore = peekDeviceWriteSeq(host, device.id);
-    const sendPromise = host.applyCommand(command, readBackPower);
+    const sendPromise = options.revalidateBeforeSend
+      ? host.applyCommand(command, readBackPower, true, { revalidateBeforeSend: options.revalidateBeforeSend })
+      : host.applyCommand(command, readBackPower);
     if (peekDeviceWriteSeq(host, device.id) === seqBefore) {
       claimDeviceWrite(host, device.id);
     }

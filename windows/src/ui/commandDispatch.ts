@@ -363,7 +363,12 @@ interface ApplyCommandOptions {
   readonly roomGroupCover?: boolean;
   /** Set only for a scheduled timer fired by its own tick; every other write stays lock-guarded at send time. */
   readonly allowWhileLocked?: boolean;
+  /** Re-checked synchronously right before the request leaves; a message refuses the write. */
+  readonly revalidateBeforeSend?: () => string | null;
 }
+
+/** A write refused by its live-state re-check right before the send; carries the user-facing reason. */
+class BeforeSendRefusalError extends Error {}
 
 const customApplyCommandByHost = new WeakMap<
   object,
@@ -1184,10 +1189,13 @@ export async function applyCommand(
     if (
       !scene ||
       !miSceneBelongsToSelectedHome(host, scene) ||
-      await isWorkstationLockBlockingControl(host) ||
       sourceRevision !== host.sourceRevision ||
       homeRevision !== host.homeRevision
     ) {
+      return false;
+    }
+    if (await isWorkstationLockBlockingControl(host)) {
+      recordWorkstationLockBlock(host);
       return false;
     }
     if (!(await requestMiSceneConfirmation(host, scene, command))) {
@@ -1201,7 +1209,11 @@ export async function applyCommand(
       };
       return false;
     }
-    if (await isWorkstationLockBlockingControl(host) || sourceRevision !== host.sourceRevision ||
+    if (await isWorkstationLockBlockingControl(host)) {
+      recordWorkstationLockBlock(host);
+      return false;
+    }
+    if (sourceRevision !== host.sourceRevision ||
         homeRevision !== host.homeRevision || !miSceneBelongsToSelectedHome(host, scene) ||
         !host.scenes.some((row) => row.entityId === scene.entityId && row.miScene &&
           row.miScene.ownerUid === scene.miScene?.ownerUid)) return false;
@@ -1230,12 +1242,20 @@ export async function applyCommand(
     if (effectiveMode === "homeAssistant") {
       command = homeAssistantCommand(command, host.devices, host.deviceFacets);
     }
-    const readPower = await dispatchCloudCommand(host, command, readBackPower, originalCommand.entityId, userInitiated, allowWhileLocked);
+    const readPower = await dispatchCloudCommand(
+      host, command, readBackPower, originalCommand.entityId, userInitiated, allowWhileLocked,
+      options?.revalidateBeforeSend,
+    );
     if (typeof readPower === "boolean") command = withReadPower(command, readPower);
   } catch (error) {
     if (sourceRevision !== host.sourceRevision) return false;
     const revertedCover = Boolean(coverWrite && stillOwnsWrite(host, claim));
     if (coverWrite && revertedCover) revertCoverOptimisticWrite(host, coverWrite);
+    if (error instanceof BeforeSendRefusalError) {
+      host.replyBanner = { text: error.message, source: t("需要确认"), isError: true };
+      host.render();
+      return false;
+    }
     if (error instanceof MiIOUnconfirmedWriteError && targetDeviceId !== null && stillOwnsWrite(host, claim)) {
       scheduleDelayedReadBack(host, targetDeviceId, READ_BACK_DELAY_MS);
     }
@@ -1514,6 +1534,7 @@ async function dispatchCloudCommand(
   originalEntityId: string,
   userInitiated: boolean,
   allowWhileLocked: boolean,
+  revalidateBeforeSend?: () => string | null,
 ): Promise<boolean | null> {
   const sourceRevision = host.sourceRevision;
   const homeRevision = host.homeRevision;
@@ -1542,6 +1563,8 @@ async function dispatchCloudCommand(
         throw new CapabilityGateError(gateFailure.reason, host.settings?.interfaceLanguage);
       }
     }
+    const refusal = revalidateBeforeSend?.() ?? null;
+    if (refusal !== null) throw new BeforeSendRefusalError(refusal);
   };
   // The lock can engage while the command waits (spec lookup, HA connection, LAN attempt), so it
   // is re-checked after those waits and right before the first request; a refusal is recorded so

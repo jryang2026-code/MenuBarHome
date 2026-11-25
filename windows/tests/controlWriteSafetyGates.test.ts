@@ -10,10 +10,11 @@ import { setLanguage } from "../src/core/i18n.js";
 import { MiCloudChannelWriteBatcher } from "../src/core/miCloud/channelWriteBatcher.js";
 import { MiCloudClient, type MiotPropWrite } from "../src/core/miCloud/client.js";
 import type { MiotDeviceSpec } from "../src/core/miCloud/spec.js";
+import { makeMiAccount, miAccountId } from "../src/core/miAccountsStore.js";
 import { claimDeviceWrite } from "../src/core/optimisticLock.js";
 import { miSessionFingerprint, storeCachedXiaomiTopology } from "../src/core/pollingPolicy.js";
 import { setChannelWriteBatcherForTesting, waitForSliderMailboxIdle } from "../src/ui/commandDispatch.js";
-import { runWithScheduledTimerTickExemption } from "../src/ui/speechGuard.js";
+import { getLockBlockCount, runWithScheduledTimerTickExemption } from "../src/ui/speechGuard.js";
 import type { DeviceCommand, ScheduledCommand, SmartDevice } from "../src/core/models.js";
 
 async function waitUntil(predicate: () => boolean, label: string, maxTicks = 300): Promise<void> {
@@ -394,6 +395,104 @@ describe("Windows control write safety gates (H-01 / H-10 / H-03 / H-04)", () =>
 
     assert.equal(revalidatedBeforeLockCheck, true);
     assert.equal(moveDuringLockCheck, null, "the refresh landed during the lock check");
+    assert.deepEqual(executed, [], "no unconfirmed opening write is sent");
+    assert.match(app.replyBanner?.text ?? "", /会打开/);
+    app.dispose();
+  });
+
+  it("lock exemption: a manual missed run of a Mi scene blocked by the screen lock stays missed", async () => {
+    let lockAnswers: boolean[] = [];
+    const sceneRuns: string[] = [];
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      configurable: true,
+      value: {
+        invoke: async (cmd: string): Promise<unknown> => {
+          if (cmd === "is_workstation_locked") return lockAnswers.length > 1 ? lockAnswers.shift()! : (lockAnswers[0] ?? false);
+          return null;
+        },
+      },
+    });
+    const session = { userId: "test", cUserId: "test", region: "cn", ssecurity: "test", serviceToken: "test", passToken: "test" };
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      connectionMode: "xiaomiCloud", hasCompletedOnboarding: true, autoCheckUpdates: false,
+      blockControlWhileLocked: true, miSession: session,
+    }));
+    const app = new MenuMijiaWindowsApp(document.querySelector<HTMLElement>("#app")!);
+    app.refreshDevices = async () => {};
+    app.miAccountsOverride = [makeMiAccount(session)];
+    const accountId = miAccountId(session);
+    const sceneEntityId = `${accountId}/mi-scene:home-a:s1`;
+    app.scenes = [{
+      id: sceneEntityId, name: "回家", entityId: sceneEntityId, accountId, sourceBackend: "xiaomiCloud",
+      miScene: { id: "s1", name: "回家", homeId: "home-a", ownerUid: "test" },
+    }];
+    const origRun = MiCloudClient.prototype.runManualScene;
+    MiCloudClient.prototype.runManualScene = async function (scene) {
+      sceneRuns.push(scene.id);
+    };
+    const item: ScheduledCommand = {
+      id: "timer_mi_scene", command: "回家", reply: "回家", delaySeconds: 60, fireTimestampMs: 1_000,
+      intents: [{ targetId: sceneEntityId, operation: { kind: "activateScene" } }],
+    };
+    try {
+      lockAnswers = [false, true];
+      app.missedScheduledCommands = [];
+      const blockedBefore = getLockBlockCount(app);
+      await app.runScheduledCommand(item, true);
+      await waitUntil(() => lockAnswers.length === 1, "the Mi scene's own lock check ran");
+      await setImmediate();
+      assert.deepEqual(sceneRuns, [], "the Mi scene is not run once the screen locked");
+      assert.deepEqual(app.missedScheduledCommands.map((entry) => entry.id), [item.id], "the missed timer is kept");
+      assert.equal(getLockBlockCount(app), blockedBefore + 1, "the refusal is recorded as a lock block");
+    } finally {
+      MiCloudClient.prototype.runManualScene = origRun;
+      app.dispose();
+    }
+  });
+
+  it("H-04: a cover refresh landing during the send-time lock check refuses the opening write at beforeSend", async () => {
+    const executed: Array<{ entity_id: string; data: Record<string, unknown> }> = [];
+    let lockChecks = 0;
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      configurable: true,
+      value: {
+        invoke: async (cmd: string, args: Record<string, unknown> = {}): Promise<unknown> => {
+          if (cmd === "is_workstation_locked") {
+            lockChecks += 1;
+            if (lockChecks === 2) {
+              // The entry checks passed (100% -> 50% closes); the refresh lands during the
+              // provider's send-time lock check, after the entry-side revalidation.
+              const live = app.devices.find((d) => d.id === "win")!;
+              if (live.kind.kind === "cover") live.kind.positionPercent = 20;
+            }
+            return false;
+          }
+          if (cmd === "ha_execute") {
+            executed.push(args.command as typeof executed[number]);
+            return null;
+          }
+          return cmd === "ha_snapshot" ? { areas: [], devices: [], entities: [], states: [] } : null;
+        },
+      },
+    });
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      connectionMode: "homeAssistant", hasCompletedOnboarding: true, autoCheckUpdates: false,
+      haBaseURL: "https://ha.example.test", haToken: "tok", blockControlWhileLocked: true,
+    }));
+    const app = new MenuMijiaWindowsApp(document.querySelector<HTMLElement>("#app")!);
+    app.refreshDevices = async () => {};
+    app.refreshHADevices = async () => {};
+    app.devices = [mkCover("win", 100, "window-opener")];
+    app.expandedDeviceId = "win";
+    app.render();
+    await setImmediate();
+
+    const slider = element<HTMLInputElement>('[data-coverpos="win"]');
+    slider.value = "50";
+    slider.dispatchEvent(new Event("change", { bubbles: true }));
+    await waitForSliderMailboxIdle(app, "win.coverpos");
+
+    assert.ok(lockChecks >= 2, "the provider re-checked the lock right before the send");
     assert.deepEqual(executed, [], "no unconfirmed opening write is sent");
     assert.match(app.replyBanner?.text ?? "", /会打开/);
     app.dispose();

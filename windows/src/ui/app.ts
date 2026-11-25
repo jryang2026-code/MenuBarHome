@@ -1547,7 +1547,7 @@ export class MenuMijiaWindowsApp {
       return;
     }
     markPanelSessionInteraction(this);
-    return executeSingleCommand(this, device, command, summary, intent, readBackPower);
+    return executeSingleCommand(this, device, command, summary, intent, readBackPower, options);
   }
 
 
