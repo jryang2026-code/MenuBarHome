@@ -40,6 +40,7 @@ import { recordUndoKindSnapshots } from "./speechGuard.js";
 import { tr3 } from "./undoTracker.js";
 import { buildHostCapabilityContext, isDualSourceEnabled } from "./cloudRefresh.js";
 import { evaluateDeviceEntityWriteGate, evaluateIntentsWriteGate } from "../core/miAccountControl.js";
+import { parseMiotAddress } from "../core/miCloud/spec.js";
 
 export type BatchStopReason = "undo" | "preempted" | "sourceChanged" | "cancelled" | "disabled";
 
@@ -491,6 +492,7 @@ export async function executeIntents(
 
   interface TargetBatch {
     readonly key: string;
+    readonly concurrent?: boolean;
     readonly items: Array<{ readonly deviceId: string; readonly command: DeviceCommand; readonly intentIndex: number }>;
   }
   const phases: TargetBatch[][] = [];
@@ -520,9 +522,49 @@ export async function executeIntents(
     phases.push(currentPhase);
   }
 
+  // Coalesce sibling single-command `setSwitch` writes targeting the same multi-key MIoT parent
+  // did into a concurrent channel group so they land in the 100 ms MiCloudChannelWriteBatcher
+  // window (mirroring macOS `HomeStore+Undo.swift` `coalesceSwitchChannels`, #506).
+  const coalesceSwitchChannels = isSequentialBulkSource(sourceLabel);
+  if (coalesceSwitchChannels) {
+    for (let p = 0; p < phases.length; p += 1) {
+      const phase = phases[p]!;
+      const byParentDid = new Map<string, TargetBatch[]>();
+      for (const batch of phase) {
+        if (batch.items.length !== 1) continue;
+        const only = batch.items[0]!;
+        if (only.command.kind !== "setSwitch") continue;
+        const parsed = parseMiotAddress(only.command.entityId);
+        if (!parsed) continue;
+        const group = byParentDid.get(parsed.did) ?? [];
+        group.push(batch);
+        byParentDid.set(parsed.did, group);
+      }
+      const mergedKeys = new Set<string>();
+      const nextPhase: TargetBatch[] = [];
+      for (const batch of phase) {
+        if (mergedKeys.has(batch.key)) continue;
+        const only = batch.items.length === 1 ? batch.items[0] : undefined;
+        const did = only && only.command.kind === "setSwitch" ? parseMiotAddress(only.command.entityId)?.did : undefined;
+        const siblings = did ? byParentDid.get(did) : undefined;
+        if (did && siblings && siblings.length > 1) {
+          for (const sibling of siblings) mergedKeys.add(sibling.key);
+          nextPhase.push({
+            key: `miot-channels:${did}`,
+            concurrent: true,
+            items: siblings.flatMap((sibling) => sibling.items),
+          });
+        } else {
+          nextPhase.push(batch);
+        }
+      }
+      phases[p] = nextPhase;
+    }
+  }
+
   const maxConcurrency = Math.max(
     1,
-    Math.trunc(options.concurrency ?? (isSequentialBulkSource(sourceLabel) ? 1 : 2)),
+    Math.trunc(options.concurrency ?? (coalesceSwitchChannels ? 1 : 2)),
   );
 
   try {
@@ -534,8 +576,9 @@ export async function executeIntents(
       }
 
       let nextIndex = 0;
-      const runTargetBatch = async (targetBatch: TargetBatch): Promise<void> => {
-        for (const { deviceId, command, intentIndex } of targetBatch.items) {
+      const runBatchItem = async (
+        { deviceId, command, intentIndex }: { readonly deviceId: string; readonly command: DeviceCommand; readonly intentIndex: number },
+      ): Promise<void> => {
           if (runningBatch.isStopped) return;
           if (options.canContinue?.() === false) {
             runningBatch.stop("disabled");
@@ -589,14 +632,14 @@ export async function executeIntents(
                 );
               }
             }
-            continue;
+            return;
           }
 
           const device = host.devices.find((d) => d.id === deviceId);
           if (!device) {
             failed += 1;
             failureMessage = t("设备列表已更新，请重新执行");
-            continue;
+            return;
           }
 
           const isMomentaryButton =
@@ -686,6 +729,15 @@ export async function executeIntents(
               }
             }
           });
+      };
+      const runTargetBatch = async (targetBatch: TargetBatch): Promise<void> => {
+        if (targetBatch.concurrent && targetBatch.items.length > 1) {
+          await Promise.allSettled(targetBatch.items.map((item) => runBatchItem(item)));
+          return;
+        }
+        for (const item of targetBatch.items) {
+          if (runningBatch.isStopped) return;
+          await runBatchItem(item);
         }
       };
 

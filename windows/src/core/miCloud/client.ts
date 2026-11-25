@@ -179,6 +179,10 @@ export class MiCloudClient {
     return this;
   }
 
+  hasLANRoute(did: string): boolean {
+    return this.local?.canRoute(did) === true;
+  }
+
   async request(api: string, data: unknown): Promise<unknown> {
     const cleanPath = "/" + api.replace(/^\/+|\/+$/g, "");
     const url = `${miApiBaseURL(this.session.region)}${cleanPath}`;
@@ -760,19 +764,71 @@ export class MiCloudClient {
         await beforeFallback?.();
       }
     }
-    const params = writes.map((w) => ({
-      did: w.did,
-      siid: w.siid,
-      piid: w.piid,
-      value: w.value,
-    }));
-    const result = await this.request("miotspec/prop/set", { params });
+    const result = await this.writeProperties(writes);
     // One row per write is the cloud's acknowledgement; no rows means nothing was decided, and
     // the old loop reported that as a success.
     if (!Array.isArray(result) || result.length === 0) {
       throw new MiCloudError("badResponse", t("设备未返回执行结果"));
     }
     for (const item of result) MiCloudClient.checkWriteCode(item);
+  }
+
+  async setPropVerdicts(
+    writes: readonly MiotPropWrite[],
+    beforeFallback?: () => void | Promise<void>,
+  ): Promise<Array<MiCloudError | null>> {
+    const first = writes[0];
+    if (!first) return [];
+    if (this.local && writes.every((write) => write.did === first.did)) {
+      const pending = this.local.write(first.did, "miio_set_props", { writes });
+      if (pending) {
+        const local = await pending;
+        if (local.sent) {
+          return Array.isArray(local.result)
+            ? MiCloudClient.propertyVerdicts(local.result, writes)
+            : writes.map(() => null);
+        }
+        await beforeFallback?.();
+      }
+    }
+    const result = await this.writeProperties(writes);
+    return MiCloudClient.propertyVerdicts(result, writes);
+  }
+
+  private async writeProperties(writes: readonly MiotPropWrite[]): Promise<unknown> {
+    const params = writes.map((w) => ({
+      did: w.did,
+      siid: w.siid,
+      piid: w.piid,
+      value: w.value,
+    }));
+    return this.request("miotspec/prop/set", { params });
+  }
+
+  static propertyVerdicts(result: unknown, writes: readonly MiotPropWrite[]): Array<MiCloudError | null> {
+    const items = Array.isArray(result) ? result : [];
+    return writes.map((write) => {
+      const matches = items.filter((item) => {
+        if (!item || typeof item !== "object" || Array.isArray(item)) return false;
+        const obj = item as Record<string, unknown>;
+        const did = asIdString(obj["did"]);
+        const rawSiid = obj["siid"];
+        const rawPiid = obj["piid"];
+        const siid = typeof rawSiid === "number" && Number.isFinite(rawSiid) ? Math.trunc(rawSiid) : NaN;
+        const piid = typeof rawPiid === "number" && Number.isFinite(rawPiid) ? Math.trunc(rawPiid) : NaN;
+        return did === write.did && siid === write.siid && piid === write.piid;
+      });
+      if (matches.length !== 1) {
+        return new MiCloudError("badResponse", t("设备未返回执行结果"));
+      }
+      const rawCode = (matches[0] as Record<string, unknown>)["code"];
+      if (typeof rawCode !== "number" || !Number.isFinite(rawCode)) {
+        return new MiCloudError("badResponse", t("设备未返回执行结果"));
+      }
+      const code = Math.trunc(rawCode);
+      if (code >= 0) return null;
+      return new MiCloudError("api", t("设备未响应或离线"), code);
+    });
   }
 
   async action(call: MiotActionCall, beforeFallback?: () => void | Promise<void>): Promise<void> {
