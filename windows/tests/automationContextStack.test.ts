@@ -272,4 +272,31 @@ describe("Automation settings UI context restore toggle", () => {
     assert.equal(updated[0]!.restoreWhenContextEnds, undefined);
     assert.equal(updated[0]!.restoreTrigger, undefined);
   });
+
+  it("requires confirmation before enabling context restore on a rule turning off a high-risk device", () => {
+    const rule = createAutomationRule({
+      id: "heater-off",
+      trigger: "focusModeEnabled",
+      action: { kind: "devices", deviceIds: ["heater-1"], isOn: false },
+    });
+    new AutomationRuleStore().save([rule]);
+
+    const app = new MenuMijiaWindowsApp(element<HTMLElement>("#app"));
+    app.devices = [makeHighRiskPlug("heater-1", true, "电暖器插座")];
+    app.activeSheet = "settings";
+    app.render();
+
+    const rowToggle = element<HTMLInputElement>('[data-auto-rule-restore="heater-off"]');
+    rowToggle.checked = true;
+    rowToggle.dispatchEvent(new Event("change", { bubbles: true }));
+
+    // Must arm confirmation dialog and NOT save restoreWhenContextEnds yet
+    assert.ok(document.querySelector("#settings-auto-high-risk-confirm"));
+    assert.equal(new AutomationRuleStore().load()[0]!.restoreWhenContextEnds, undefined);
+
+    element<HTMLButtonElement>("#btn-confirm-auto-high-risk").click();
+    const confirmed = new AutomationRuleStore().load()[0]!;
+    assert.equal(confirmed.restoreWhenContextEnds, true);
+    assert.equal(confirmed.restoreTrigger, "focusModeDisabled");
+  });
 });

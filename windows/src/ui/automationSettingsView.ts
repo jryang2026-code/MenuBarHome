@@ -132,7 +132,7 @@ export interface HostAutoSafetySession {
   lastScopeKey: string | null;
   lastSourceRevision: number | null;
   pendingHighRiskConfirm?: {
-    readonly kind: "add" | "enable";
+    readonly kind: "add" | "enable" | "restore";
     readonly rule: AutomationRule;
     readonly confirmation: AutomationHighRiskConfirmation;
   } | null;
@@ -1289,6 +1289,18 @@ export function bindAutomationSettingsEvents(host: AutoSafetySettingsHost): void
     host.render();
   };
 
+  const commitRuleRestore = (ruleId: string, exitTrigger: AutomationTrigger): void => {
+    ruleStore.save(
+      ruleStore.load().map((r) =>
+        r.id === ruleId
+          ? { ...r, restoreWhenContextEnds: true, restoreTrigger: exitTrigger, highRiskApproved: true }
+          : r,
+      ),
+    );
+    session.pendingHighRiskConfirm = null;
+    host.render();
+  };
+
   const clearPendingAddConfirm = (): void => {
     if (session.pendingHighRiskConfirm?.kind === "add") {
       session.pendingHighRiskConfirm = null;
@@ -1306,7 +1318,7 @@ export function bindAutomationSettingsEvents(host: AutoSafetySettingsHost): void
     host.render();
   };
 
-  const armHighRiskRule = (kind: "add" | "enable", rule: AutomationRule, confirmation: AutomationHighRiskConfirmation): void => {
+  const armHighRiskRule = (kind: "add" | "enable" | "restore", rule: AutomationRule, confirmation: AutomationHighRiskConfirmation): void => {
     session.pendingHighRiskConfirm = { kind, rule, confirmation };
     host.replyBanner = {
       text: `${confirmation.title} ${confirmation.message}`,
@@ -1331,6 +1343,33 @@ export function bindAutomationSettingsEvents(host: AutoSafetySettingsHost): void
       const exitTrigger = existing ? pairedContextTrigger(existing.trigger) : null;
       if (!existing || existing.action.kind !== "devices" || !exitTrigger) return;
       const enabled = target.checked;
+      if (enabled && !existing.restoreWhenContextEnds) {
+        const confirmation = automationRuleHighRiskConfirmation(
+          existing.action,
+          aliasedDevices,
+          host.settings.interfaceLanguage,
+          true,
+        );
+        if (confirmation) {
+          if (typeof host.manualControlConfirmationHandler === "function") {
+            if (!host.manualControlConfirmationHandler(confirmation)) {
+              target.checked = false;
+              rejectHighRiskRule();
+              return;
+            }
+          } else if (session.pendingHighRiskConfirm?.kind === "restore" && session.pendingHighRiskConfirm.rule.id === ruleId) {
+            commitRuleRestore(ruleId, exitTrigger);
+            return;
+          } else {
+            target.checked = false;
+            armHighRiskRule("restore", { ...existing, restoreWhenContextEnds: true, restoreTrigger: exitTrigger }, confirmation);
+            return;
+          }
+        }
+      }
+      if (!enabled && session.pendingHighRiskConfirm?.kind === "restore" && session.pendingHighRiskConfirm.rule.id === ruleId) {
+        session.pendingHighRiskConfirm = null;
+      }
       ruleStore.save(
         ruleStore.load().map((r) =>
           r.id === ruleId
@@ -1338,6 +1377,7 @@ export function bindAutomationSettingsEvents(host: AutoSafetySettingsHost): void
                 ...r,
                 restoreWhenContextEnds: enabled ? true : undefined,
                 restoreTrigger: enabled ? exitTrigger : undefined,
+                ...(enabled ? { highRiskApproved: true } : {}),
               }
             : r,
         ),
@@ -1578,6 +1618,7 @@ export function bindAutomationSettingsEvents(host: AutoSafetySettingsHost): void
       const pending = session.pendingHighRiskConfirm;
       if (!pending) return;
       if (pending.kind === "add") commitRuleAdd(pending.rule);
+      else if (pending.kind === "restore" && pending.rule.restoreTrigger) commitRuleRestore(pending.rule.id, pending.rule.restoreTrigger);
       else commitRuleEnable(pending.rule.id);
       return;
     }
