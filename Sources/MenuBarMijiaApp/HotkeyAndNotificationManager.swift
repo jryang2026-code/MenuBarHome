@@ -45,12 +45,27 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
     /// otherwise accumulate for the whole run; only the recent ones can still be acted on.
     private static let pendingAlertLimit = 32
 
-    private static let turnOffActionId = "TURN_OFF_ACTION"
-    private static let safetyCategoryId = "MIJIA_SAFETY_ALERT"
-    private static let runMissedTimerActionId = "RUN_MISSED_TIMER_ACTION"
-    private static let missedTimerCategoryId = "MIJIA_MISSED_TIMER"
+    static let turnOffActionId = "TURN_OFF_ACTION"
+    static let viewActionId = "VIEW_DEVICE_ACTION"
+    static let viewCameraActionId = "VIEW_CAMERA_ACTION"
+    static let safetyCategoryId = "MIJIA_SAFETY_ALERT"
+    static let alertViewCategoryId = "MIJIA_ALERT_VIEW"
+    static let doorbellCategoryId = "MIJIA_DOORBELL_ALERT"
+    static let runMissedTimerActionId = "RUN_MISSED_TIMER_ACTION"
+    static let missedTimerCategoryId = "MIJIA_MISSED_TIMER"
     /// Ties a banner back to the camera card it was about, so a tap can open that camera (#10).
     static let doorbellDeviceIdKey = "doorbell_device_id"
+    static let alertDeviceIdKey = "alert_device_id"
+
+    enum NotificationActionOutcome: Equatable, Sendable {
+        case ignored
+        case blockedByScreenLock
+        case staleHome
+        case executedTurnOff
+        case focusedDevice(String)
+        case openedDoorbellCamera(String)
+        case ranMissedTimer(UUID)
+    }
 
     private override init() {
         super.init()
@@ -706,36 +721,61 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
 
     // MARK: - 4. Native macOS Safety Alerts (UNUserNotificationCenter)
 
-    private func setupNotificationsIfBundled() {
-        guard Bundle.main.bundleURL.pathExtension == "app" else { return }
-        let center = UNUserNotificationCenter.current()
-        center.delegate = self
-
+    static func makeNotificationCategories() -> Set<UNNotificationCategory> {
         let turnOffAction = UNNotificationAction(
-            identifier: Self.turnOffActionId,
+            identifier: turnOffActionId,
             title: L10n.tr("立即关闭", "Turn Off Now"),
             // A device control from the lock screen still needs the Mac unlocked.
             options: [.destructive, .authenticationRequired]
         )
-        let category = UNNotificationCategory(
-            identifier: Self.safetyCategoryId,
-            actions: [turnOffAction],
+        let viewAction = UNNotificationAction(
+            identifier: viewActionId,
+            title: L10n.tr("查看", "View"),
+            options: [.foreground, .authenticationRequired]
+        )
+        let safetyCategory = UNNotificationCategory(
+            identifier: safetyCategoryId,
+            actions: [turnOffAction, viewAction],
             intentIdentifiers: [],
             // Report a dismissal too, so the alert can be forgotten instead of kept for the whole run.
             options: [.customDismissAction]
         )
+        let alertViewCategory = UNNotificationCategory(
+            identifier: alertViewCategoryId,
+            actions: [viewAction],
+            intentIdentifiers: [],
+            options: [.customDismissAction]
+        )
+        let viewCameraAction = UNNotificationAction(
+            identifier: viewCameraActionId,
+            title: L10n.tr("查看画面", "View Live"),
+            options: [.foreground, .authenticationRequired]
+        )
+        let doorbellCategory = UNNotificationCategory(
+            identifier: doorbellCategoryId,
+            actions: [viewCameraAction],
+            intentIdentifiers: [],
+            options: []
+        )
         let runMissedAction = UNNotificationAction(
-            identifier: Self.runMissedTimerActionId,
+            identifier: runMissedTimerActionId,
             title: L10n.tr("立即补执行", "Run Now"),
             options: [.authenticationRequired]
         )
         let missedCategory = UNNotificationCategory(
-            identifier: Self.missedTimerCategoryId,
+            identifier: missedTimerCategoryId,
             actions: [runMissedAction],
             intentIdentifiers: [],
             options: []
         )
-        center.setNotificationCategories([category, missedCategory])
+        return [safetyCategory, alertViewCategory, doorbellCategory, missedCategory]
+    }
+
+    private func setupNotificationsIfBundled() {
+        guard Bundle.main.bundleURL.pathExtension == "app" else { return }
+        let center = UNUserNotificationCenter.current()
+        center.delegate = self
+        center.setNotificationCategories(Self.makeNotificationCategories())
 
         // Permission is requested on demand (#55): first time 守护提醒 is enabled or a timer is set,
         // after an in-app explanation. Nothing is asked at launch.
@@ -913,20 +953,25 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
         }
     }
 
+    func configuredSafetyNotificationContent(for alert: SafetyAlert) -> UNMutableNotificationContent? {
+        guard let content = notificationContent(for: .safetyAlert(alert)) else { return nil }
+        content.title = alert.title
+        content.body = alert.body
+        content.userInfo = [Self.alertDeviceIdKey: alert.deviceId]
+        if content.interruptionLevel != .passive {
+            content.sound = .default
+        }
+        content.categoryIdentifier = alert.turnOffCommand != nil
+            ? Self.safetyCategoryId
+            : Self.alertViewCategoryId
+        return content
+    }
+
     private func deliverNotification(for alert: SafetyAlert) {
         // Remember which home this alert belongs to at delivery time; the tap may come much later.
         rememberPendingAlert(alert, scope: store?.connectionScopeIdentifier)
         guard Bundle.main.bundleURL.pathExtension == "app" else { return }
-
-        guard let content = notificationContent(for: .safetyAlert(alert)) else { return }
-        content.title = alert.title
-        content.body = alert.body
-        if content.interruptionLevel != .passive {
-            content.sound = .default
-        }
-        if alert.turnOffCommand != nil {
-            content.categoryIdentifier = Self.safetyCategoryId
-        }
+        guard let content = configuredSafetyNotificationContent(for: alert) else { return }
 
         let request = UNNotificationRequest(
             identifier: alert.id,
@@ -998,6 +1043,7 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
             content.title = event.title
             content.body = event.body
             content.threadIdentifier = "doorbell"
+            content.categoryIdentifier = Self.doorbellCategoryId
             content.userInfo = [Self.doorbellDeviceIdKey: event.deviceId]
             // The chime switch already plays its own sound for this press; the banner does not
             // need to double it. Every other ring gets the system sound.
@@ -1109,7 +1155,7 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
         return content
     }
 
-    private func rememberPendingAlert(_ alert: SafetyAlert, scope: String?) {
+    func rememberPendingAlert(_ alert: SafetyAlert, scope: String?) {
         let record = PendingAlert(alert: alert, scope: scope)
         if pendingAlertsById.updateValue(record, forKey: alert.id) == nil {
             pendingAlertOrder.append(alert.id)
@@ -1124,6 +1170,10 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
         }
     }
 
+    func hasPendingAlert(id: String) -> Bool {
+        pendingAlertsById[id] != nil
+    }
+
     private func forgetPendingAlert(_ id: String) {
         pendingAlertsById.removeValue(forKey: id)
         pendingAlertOrder.removeAll { $0 == id }
@@ -1136,50 +1186,115 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
         store.setScreenLocked(ScreenLockPolicy.isLocked(session: CGSessionCopyCurrentDictionary() as? [String: Any]))
     }
 
+    @discardableResult
+    func handleNotificationResponse(
+        identifier: String,
+        actionIdentifier: String,
+        userInfo: [AnyHashable: Any],
+        refreshScreenLock: Bool = true
+    ) -> NotificationActionOutcome {
+        // A doorbell banner is not a pending alert: its tap or "查看画面" opens the camera card (#10).
+        if let deviceId = userInfo[Self.doorbellDeviceIdKey] as? String {
+            guard actionIdentifier == UNNotificationDefaultActionIdentifier
+                || actionIdentifier == Self.viewCameraActionId else {
+                return .ignored
+            }
+            if refreshScreenLock {
+                refreshScreenLockState()
+            }
+            guard let store else { return .ignored }
+            if store.isControlBlockedByScreenLock {
+                _ = store.focusRaycastDevice(deviceId: deviceId)
+                return .blockedByScreenLock
+            }
+            openDoorbellCamera(deviceId: deviceId)
+            return .openedDoorbellCamera(deviceId)
+        }
+
+        if actionIdentifier == Self.turnOffActionId {
+            guard let pending = pendingAlertsById[identifier] else {
+                if let store {
+                    store.showToast(store.staleSafetyAlertMessage, isError: true)
+                }
+                return .staleHome
+            }
+            if refreshScreenLock {
+                refreshScreenLockState()
+            }
+            guard let store else { return .ignored }
+            if store.isControlBlockedByScreenLock {
+                _ = store.executeSafetyAlertAction(pending.alert, deliveredInScope: pending.scope)
+                return .blockedByScreenLock
+            }
+            let task = store.executeSafetyAlertAction(pending.alert, deliveredInScope: pending.scope)
+            // A refusal (locked, or another home now) has not consumed the notification: keep the
+            // record so a later tap after unlocking still works.
+            if task != nil {
+                forgetPendingAlert(identifier)
+                return .executedTurnOff
+            }
+            return .staleHome
+        }
+
+        if actionIdentifier == Self.viewActionId {
+            let pending = pendingAlertsById[identifier]
+            guard let deviceId = pending?.alert.deviceId ?? (userInfo[Self.alertDeviceIdKey] as? String) else {
+                if let store {
+                    store.showToast(store.staleSafetyAlertMessage, isError: true)
+                }
+                return .staleHome
+            }
+            guard let store else { return .ignored }
+            if let deliveredScope = pending?.scope, deliveredScope != store.connectionScopeIdentifier {
+                store.showToast(store.staleSafetyAlertMessage, isError: true)
+                return .staleHome
+            }
+            if refreshScreenLock {
+                refreshScreenLockState()
+            }
+            if store.isControlBlockedByScreenLock {
+                _ = store.focusRaycastDevice(deviceId: deviceId)
+                return .blockedByScreenLock
+            }
+            let result = store.focusRaycastDevice(deviceId: deviceId)
+            if result.isError {
+                store.showToast(result.message, isError: true)
+                return .staleHome
+            }
+            forgetPendingAlert(identifier)
+            if Bundle.main.bundleURL.pathExtension == "app" {
+                ensureMenuBarExtraWindowVisible()
+            }
+            return .focusedDevice(deviceId)
+        }
+
+        // The default tap, a dismissal and the missed-timer action all consume the notification.
+        forgetPendingAlert(identifier)
+        if actionIdentifier == Self.runMissedTimerActionId,
+           let missedId = MissedTimerNotificationIdentifier(rawValue: identifier) {
+            if refreshScreenLock {
+                refreshScreenLockState()
+            }
+            let blocked = store?.isControlBlockedByScreenLock == true
+            Task { @MainActor [weak self] in
+                _ = await self?.store?.runMissedScheduledCommand(id: missedId.commandId)
+            }
+            return blocked ? .blockedByScreenLock : .ranMissedTimer(missedId.commandId)
+        }
+        return .ignored
+    }
+
     public func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         didReceive response: UNNotificationResponse,
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
-        let alertId = response.notification.request.identifier
-        // A doorbell banner is not a pending alert: its tap opens the camera card (#10).
-        if let deviceId = response.notification.request.content.userInfo[Self.doorbellDeviceIdKey] as? String {
-            completionHandler()
-            if response.actionIdentifier == UNNotificationDefaultActionIdentifier {
-                openDoorbellCamera(deviceId: deviceId)
-            }
-            return
-        }
-        if response.actionIdentifier == Self.turnOffActionId {
-            defer { completionHandler() }
-            guard let pending = pendingAlertsById[alertId] else {
-                if let store {
-                    store.showToast(store.staleSafetyAlertMessage, isError: true)
-                }
-                return
-            }
-            refreshScreenLockState()
-            let task = store?.executeSafetyAlertAction(pending.alert, deliveredInScope: pending.scope)
-            // A refusal (locked, or another home now) has not consumed the notification: keep the
-            // record so a later tap after unlocking still works.
-            if task != nil {
-                forgetPendingAlert(alertId)
-            }
-            return
-        }
-        // The default tap, a dismissal and the missed-timer action all consume the notification.
-        defer {
-            forgetPendingAlert(alertId)
-            completionHandler()
-        }
-        if response.actionIdentifier == Self.runMissedTimerActionId,
-           let missedId = MissedTimerNotificationIdentifier(rawValue: alertId) {
-            refreshScreenLockState()
-            Task { @MainActor [weak self] in
-                _ = await self?.store?.runMissedScheduledCommand(id: missedId.commandId)
-            }
-        }
-        // The default tap only opens the app; nothing else to do here.
+        _ = handleNotificationResponse(
+            identifier: response.notification.request.identifier,
+            actionIdentifier: response.actionIdentifier,
+            userInfo: response.notification.request.content.userInfo
+        )
+        completionHandler()
     }
 
     public func userNotificationCenter(
