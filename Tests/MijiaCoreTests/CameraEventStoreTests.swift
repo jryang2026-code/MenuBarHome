@@ -241,6 +241,66 @@ struct CameraEventStoreTests {
         #expect(event.snapshotFile?.contains("/") == false)
     }
 
+    @Test("JSONEncoder.cameraEvent output round-trips through CameraEventStore.load")
+    func cameraEventEncoderRoundTrip() throws {
+        let root = Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let now = try #require(Self.date("2026-11-26T00:00:00Z"))
+        let whole = try #require(Self.date("2026-11-24T10:00:00Z"))
+        let later = try #require(Self.date("2026-11-24T09:00:00Z"))
+        let events = [
+            CameraEvent(
+                id: UUID(uuidString: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")!,
+                cameraID: "cam-front", kind: .doorbell, timestamp: whole
+            ),
+            CameraEvent(
+                id: UUID(uuidString: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")!,
+                cameraID: "cam-back", kind: .motion, timestamp: later,
+                snapshotFile: "snapshot-bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb.jpeg"
+            ),
+        ]
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try JSONEncoder.cameraEvent.encode(events).write(to: root.appendingPathComponent("events.json"))
+        let store = CameraEventStore(directory: root, clock: { now })
+        #expect(store.allEvents() == events)
+    }
+
+    @Test("A timestamp with trailing junk is rejected by sanitize")
+    func rejectsTrailingJunkTimestamp() throws {
+        let root = Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let now = try #require(Self.date("2026-11-26T00:00:00Z"))
+        let raw = [
+            Self.recordJSON(
+                id: UUID().uuidString,
+                cameraID: "cam-front",
+                kind: "doorbell",
+                timestamp: "2026-11-24T10:00:00Zjunk"
+            ),
+        ]
+        let store = try Self.store(
+            root: root,
+            eventsJSON: try JSONSerialization.data(withJSONObject: raw),
+            clock: { now }
+        )
+        #expect(store.allEvents().isEmpty)
+    }
+
+    @Test("Camera IDs over 256 UTF-16 units or containing BOM/DEL are rejected")
+    func rejectsUnsafeCameraIDsByUTF16LengthAndBOM() throws {
+        let root = Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = CameraEventStore(directory: root, clock: { Date(timeIntervalSince1970: 100) })
+
+        let emojiID = String(repeating: "😀", count: 129) // 258 UTF-16 code units
+        #expect(emojiID.utf16.count > 256)
+        #expect(!CameraEventStore.isSafeCameraId(emojiID))
+        #expect(store.record(cameraID: emojiID, kind: .motion) == nil)
+        #expect(!CameraEventStore.isSafeCameraId("\u{FEFF}cam-front"))
+        #expect(!CameraEventStore.isSafeCameraId("cam\u{7F}front"))
+        #expect(store.allEvents().isEmpty)
+    }
+
     private static func camera(_ id: String) -> SmartDevice {
         SmartDevice(
             id: id, name: id, roomId: "door", roomName: "门口",

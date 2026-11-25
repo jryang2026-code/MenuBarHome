@@ -67,7 +67,10 @@ struct AutomationContextStackTests {
                     at: start.addingTimeInterval(TimeInterval(index))
                 )
             }
-            guard let last = testCase.enter.last, let ruleID = ruleIDs.last else { continue }
+            guard let last = testCase.enter.last, let ruleID = ruleIDs.last else {
+                Issue.record("Golden case \(testCase.name) has no enter entry")
+                continue
+            }
             let expected: [DeviceIntent] = testCase.exit.restored.map {
                 [DeviceIntent(targetId: last.device, operation: .power($0))]
             } ?? []

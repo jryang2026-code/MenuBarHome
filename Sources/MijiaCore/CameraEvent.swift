@@ -170,6 +170,13 @@ public final class CameraEventStore: @unchecked Sendable {
 
     private static func parseTimestamp(_ raw: String) -> Date? {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        // ISO8601DateFormatter accepts trailing junk (e.g. "…Zjunk"); pin the shape first so
+        // sanitize never promotes a malformed timestamp into the in-memory history.
+        guard let regex = try? NSRegularExpression(
+            pattern: #"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?(Z|[+-]\d{2}:?\d{2})$"#
+        ), regex.firstMatch(in: trimmed, range: NSRange(trimmed.startIndex..., in: trimmed)) != nil else {
+            return nil
+        }
         let fractional = ISO8601DateFormatter()
         fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         fractional.timeZone = TimeZone(secondsFromGMT: 0)
@@ -192,13 +199,17 @@ public final class CameraEventStore: @unchecked Sendable {
         }
     }
 
-    /// Windows `isSafeCameraId`: no blanks, URLs, whitespace, or control characters.
+    /// Windows `isSafeCameraId`: no blanks, URLs, whitespace, BOM or control characters. The
+    /// 256-unit cap is UTF-16 so it matches JS `.length <= 256` (129 emoji = 258 units).
     static func isSafeCameraId(_ cameraID: String) -> Bool {
         let trimmed = cameraID.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, trimmed.count <= 256, trimmed == cameraID,
+        guard !trimmed.isEmpty, trimmed.utf16.count <= 256, trimmed == cameraID,
               !trimmed.contains("://") else { return false }
         return trimmed.unicodeScalars.allSatisfy { scalar in
-            scalar.value > 0x1f && !CharacterSet.whitespacesAndNewlines.contains(scalar)
+            guard scalar.value > 0x1f, scalar.value != 0x7f, scalar.value != 0xfeff else { return false }
+            return !scalar.properties.isWhitespace
+                && !CharacterSet.newlines.contains(scalar)
+                && !CharacterSet.whitespacesAndNewlines.contains(scalar)
         }
     }
 
@@ -234,6 +245,6 @@ private extension NSLock {
     }
 }
 
-private extension JSONEncoder {
+extension JSONEncoder {
     static var cameraEvent: JSONEncoder { let e = JSONEncoder(); e.dateEncodingStrategy = .iso8601; return e }
 }
