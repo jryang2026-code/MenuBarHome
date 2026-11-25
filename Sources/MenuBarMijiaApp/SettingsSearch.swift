@@ -49,6 +49,10 @@ enum SettingsAnchor: String, CaseIterable, Hashable, Sendable {
     case assistantEnable
     case assistantProvider
     case assistantRemoveProvider
+    case assistantServiceAddress
+    case assistantModel
+    case assistantKeyImport
+    case onDeviceSpeech
     case assistantAPIKey
     case assistantTest
     case proactiveSuggestions
@@ -98,6 +102,7 @@ enum SettingsAnchor: String, CaseIterable, Hashable, Sendable {
              .miMultiAccounts:
             return .connection
         case .askWhenUnsure, .assistantEnable, .assistantProvider, .assistantRemoveProvider,
+             .assistantServiceAddress, .assistantModel, .assistantKeyImport, .onDeviceSpeech,
              .assistantAPIKey, .assistantTest, .proactiveSuggestions, .habitMemory:
             return .assistant
         case .hideFromScreenSharing, .blockControlWhileLocked, .safetyAlerts, .sensorAlerts, .alertsOnlyWhenAway,
@@ -283,7 +288,8 @@ enum SettingsSearch {
             entry(.menuBarPinnedReadouts, section: generalSection, zhTitle: "菜单栏钉选读数", enTitle: "Pinned Menu Bar Readouts",
                   synonyms: ["钉选", "菜单栏", "温湿度", "开关状态", "pin", "pinned", "readout", "menu bar", "status item"]),
             entry(.compactGrid, section: generalSection, zhTitle: "双列紧凑磁贴视图", enTitle: "2-Column Compact Grid",
-                  synonyms: ["紧凑", "双列", "网格", "磁贴", "密度", "compact", "grid", "tile", "density"]),
+                  synonyms: ["紧凑", "双列", "网格", "磁贴", "密度", "高级显示", "更多显示选项", "compact", "grid", "tile",
+                             "density", "advanced display", "more display options"]),
             entry(.hideOfflineDevices, section: generalSection,
                   zhTitle: "隐藏离线/未通电的设备", enTitle: "Hide Offline / Unpowered Devices",
                   synonyms: ["离线", "隐藏", "未通电", "offline", "hide", "unpowered"]),
@@ -368,20 +374,29 @@ enum SettingsSearch {
             entry(.askWhenUnsure, section: assistantSection, zhTitle: "不确定时先问我",
                   enTitle: "Ask Me When Unsure",
                   synonyms: ["不确定", "先问我", "AI 不确定时先问我", "确认", "把握", "把握度", "阈值",
-                             "高风险设备始终先确认", "unsure", "confirm", "confidence", "threshold"]),
+                             "把握度阈值", "高风险设备始终先确认",
+                             "高风险操作仍需确认", "unsure", "confirm", "confidence", "threshold"]),
             entry(.assistantEnable, section: assistantSection, zhTitle: "启用 AI 助手",
                   enTitle: "Enable AI Assistant",
                   synonyms: ["开关", "启用", "关闭", "AI", "启用 AI 一句话控制", "一句话控制",
                              "enable", "disable", "toggle", "assistant", "ai command control"]),
-            entry(.assistantProvider, section: assistantSection, zhTitle: "AI 服务商",
-                  enTitle: "AI Provider & Model",
-                  synonyms: ["模型", "服务商", "提供商", "provider", "model", "openrouter", "endpoint",
+            entry(.assistantProvider, section: assistantSection, zhTitle: "服务商",
+                  enTitle: "AI Provider",
+                  synonyms: ["AI 服务商", "AI 服务商与模型", "服务商", "提供商", "provider", "openrouter",
                              "assistant", "助手"]),
-            entry(.assistantRemoveProvider, section: assistantSection, zhTitle: "移除 AI 服务商",
-                  enTitle: "Remove AI Provider",
-                  synonyms: ["移除", "删除", "服务商", "密钥", "清除", "恢复默认", "高级", "服务地址", "模型",
-                             "导入", "环境变量", "remove", "delete", "provider", "revoke", "restore defaults",
-                             "advanced", "service address", "model", "import"]),
+            entry(.assistantServiceAddress, section: assistantSection, zhTitle: "服务地址",
+                  enTitle: "Service Address",
+                  synonyms: ["地址", "接口", "url", "endpoint", "base url", "高级", "advanced"]),
+            entry(.assistantModel, section: assistantSection, zhTitle: "模型", enTitle: "Model",
+                  synonyms: ["AI 服务商与模型", "模型名称", "model", "高级", "advanced"]),
+            entry(.assistantKeyImport, section: assistantSection, zhTitle: "从本机环境导入 Key",
+                  enTitle: "Import Key from This Mac",
+                  synonyms: ["导入", "环境变量", "从环境变量或其他工具导入 Key", "codexbar", "import",
+                             "environment", "高级", "advanced"]),
+            entry(.assistantRemoveProvider, section: assistantSection, zhTitle: "移除此服务商",
+                  enTitle: "Remove This Provider",
+                  synonyms: ["移除 AI 服务商", "移除", "删除", "清除", "恢复默认", "高级", "remove",
+                             "remove ai provider", "delete", "provider", "restore defaults", "advanced"]),
             entry(.assistantAPIKey, section: assistantSection, zhTitle: "AI 密钥", enTitle: "AI API Key",
                   synonyms: ["密钥", "令牌", "api key", "apikey", "token", "key", "credential", "secret"]),
             entry(.assistantTest, section: assistantSection, zhTitle: "测试连接",
@@ -392,8 +407,11 @@ enum SettingsSearch {
                   synonyms: ["建议", "猜你想做", "猜你想控", "推荐", "suggestions", "proactive", "recommend"]),
             entry(.habitMemory, section: assistantSection, zhTitle: "习惯记忆", enTitle: "Habit Memory",
                   synonyms: ["习惯", "记忆", "偏好", "习惯学习", "学习使用习惯", "向 AI 附带习惯摘要", "习惯摘要",
-                             "本机语音识别", "语音识别", "habit", "memory", "learn", "habit summary",
-                             "on-device speech"]),
+                             "habit", "memory", "learn", "habit summary"]),
+            entry(.onDeviceSpeech, section: assistantSection, zhTitle: "优先本机语音识别",
+                  enTitle: "Prefer On-Device Speech Recognition",
+                  synonyms: ["本机语音识别", "语音识别", "语音只在本机识别", "苹果服务器", "speech", "on-device",
+                             "on-device speech", "dictation"]),
 
             entry(.appearanceMode, section: generalSection, zhTitle: "外观模式", enTitle: "Appearance",
                   synonyms: ["外观", "浅色", "深色", "跟随系统", "基础显示", "appearance", "light", "dark",
@@ -467,17 +485,17 @@ enum SettingsSearch {
                              "onboarding", "guide", "tutorial", "setup"]),
             entry(.privacyNotes, section: aboutSection, zhTitle: "隐私说明", enTitle: "Privacy Notes",
                   synonyms: ["隐私", "本机", "privacy", "local", "data", "offline"]),
-            entry(.copyDiagnostics, section: diagnosticsSection, zhTitle: "复制排障信息",
-                  enTitle: "Copy Diagnostics",
-                  synonyms: ["诊断", "排障", "复制", "反馈", "反馈问题", "隐去账号", "错误", "崩溃",
+            entry(.copyDiagnostics, section: diagnosticsSection, zhTitle: "复制脱敏诊断报告",
+                  enTitle: "Copy Diagnostics Report",
+                  synonyms: ["复制排障信息", "诊断", "排障", "复制", "反馈", "反馈问题", "隐去账号", "错误", "崩溃",
                              "diagnostics", "troubleshooting", "copy", "report", "debug", "redacted", "crash"]),
             entry(.scanUnsupportedDevices, section: diagnosticsSection, zhTitle: "未能显示在面板的设备",
                   enTitle: "Devices Not Shown in the Panel",
-                  synonyms: ["不支持", "跳过", "未识别", "扫描", "原因", "查找未在面板显示的设备", "unsupported", "skipped", "scan",
+                  synonyms: ["不支持", "跳过", "未识别", "扫描", "原因", "查找未在面板显示的设备", "扫描未能显示的设备", "扫描不支持的设备", "unsupported", "skipped", "scan",
                              "missing", "reason"]),
-            entry(.signOut, section: resetSection, zhTitle: "退出并清除所有账号与密钥",
-                  enTitle: "Sign Out & Clear All Accounts and Keys",
-                  synonyms: ["退出登录", "吊销", "注销", "清除账号", "重置", "高级排障", "退出并吊销",
+            entry(.signOut, section: resetSection, zhTitle: "退出米家并清除 HA 与 AI 密钥",
+                  enTitle: "Sign Out of Xiaomi Home & Clear HA and AI Keys",
+                  synonyms: ["退出并清除所有账号与密钥", "清除全部账号与密钥", "退出登录", "吊销", "注销", "清除账号", "重置", "高级排障", "退出并吊销",
                              "sign out", "logout", "revoke", "token", "clear accounts", "reset"]),
             entry(.quitApp, section: aboutSection, zhTitle: "退出应用", enTitle: "Quit the App",
                   synonyms: ["退出", "关闭应用", "完全退出", "quit", "exit", "terminate"])
@@ -636,7 +654,7 @@ enum SettingsSearch {
     private static var safetySection: String { L10n.tr("安全与提醒", "Safety & Alerts") }
     private static var highRiskSection: String { L10n.tr("高级控制权限", "High-Risk Control Permissions") }
     private static var aboutSection: String { L10n.tr("关于与诊断", "About & Diagnostics") }
-    private static var diagnosticsSection: String { L10n.tr("排障与诊断", "Troubleshooting & Diagnostics") }
+    private static var diagnosticsSection: String { L10n.tr("诊断与排障工具", "Diagnostics & Troubleshooting") }
     private static var resetSection: String { L10n.tr("高级排障与重置", "Advanced Troubleshooting & Reset") }
 }
 

@@ -1038,7 +1038,7 @@ enum AssistantSettingsCopy {
 
     static var askWhenUnsureTitle: String { L10n.tr("不确定时先问我", "Ask me when unsure") }
 
-    static var askWhenUnsureHint: String { L10n.tr("高风险设备始终先确认", "Risky devices always ask first") }
+    static var askWhenUnsureHint: String { L10n.tr("高风险操作仍需确认", "High-risk actions still ask first") }
 
     static var removeProviderConfirm: String { L10n.tr("再点一次确认移除", "Click again to confirm removal") }
 
@@ -1074,13 +1074,13 @@ enum AssistantSettingsCopy {
 
     static var privacyExplanation: String {
         L10n.tr(
-            "本机听不懂的指令，会连同设备名和状态发给 AI 服务；密钥只存本机",
-            "Commands this Mac can't parse go to the AI service with device names and states; keys stay on this Mac"
+            "本机听不懂的指令和主动建议，会连同设备名和状态发给 AI 服务；密钥存在本机",
+            "Commands this Mac can't parse, and proactive suggestions, send device names and states to the AI service; keys are stored on this Mac and sent only to that service"
         )
     }
 
     static var restoreDefaults: String { L10n.tr("恢复默认", "Restore Defaults") }
-    static var testConnection: String { L10n.tr("测试连接", "Test") }
+    static var testConnection: String { L10n.tr("测试连接", "Test Connection") }
     static var testingConnection: String { L10n.tr("测试中…", "Testing…") }
     static var saveConfiguration: String { L10n.tr("保存", "Save") }
     static var keySaved: String { L10n.tr("已填写", "Key saved") }
@@ -1194,7 +1194,9 @@ struct AssistantSettingsSection: View {
     @Environment(\.settingsUnsavedChanges) private var unsaved
     @Environment(\.settingsSearchFocus) private var searchFocus
     /// Rows that live inside 高级; a search hit on one opens the disclosure.
-    static let advancedAnchors: Set<SettingsAnchor?> = [.assistantRemoveProvider, .habitMemory]
+    static let advancedAnchors: Set<SettingsAnchor?> = [
+        .assistantServiceAddress, .assistantModel, .assistantKeyImport, .assistantRemoveProvider, .habitMemory, .onDeviceSpeech
+    ]
     /// The fields as last loaded or saved; edits that differ from them are unsaved (#148).
     @State private var savedFields: AssistantSettingsDraft.Fields?
 
@@ -1356,6 +1358,20 @@ struct AssistantSettingsSection: View {
 
             consentedEndpointsRow
 
+            // #50: stays outside 高级 so the fallback to Apple's servers is never hidden.
+            if store.prefersOnDeviceSpeech && !Self.supportsOnDeviceSpeech(for: store.effectiveLanguage) {
+                Label(
+                    L10n.tr(
+                        "当前语言不支持本机识别，语音可能经苹果服务器处理",
+                        "On-device recognition isn't available for this language; Apple's servers may process your audio"
+                    ),
+                    systemImage: "exclamationmark.triangle.fill"
+                )
+                .font(.system(size: DesignTokens.TypeSize.caption))
+                .foregroundStyle(.orange)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+
             Text(AssistantSettingsCopy.privacyExplanation)
                 .font(.system(size: DesignTokens.TypeSize.caption))
                 .foregroundStyle(DesignTokens.secondaryText)
@@ -1488,6 +1504,7 @@ struct AssistantSettingsSection: View {
             )
             .textFieldStyle(.roundedBorder)
         }
+        .settingsRow(anchor: .assistantServiceAddress)
 
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 4) {
@@ -1518,26 +1535,26 @@ struct AssistantSettingsSection: View {
             .controlSize(.regular)
             .font(.system(size: DesignTokens.TypeSize.body, design: .monospaced))
         }
+        .settingsRow(anchor: .assistantModel)
 
         if selectedPreset.supportsKeyImport {
             keyImportRow(importedSource: importedSource)
+                .settingsRow(anchor: .assistantKeyImport)
         }
 
         HStack(spacing: 6) {
-            if hasStoredProviderConfig {
-                if isArmedForRemoval {
-                    Button(AssistantSettingsCopy.removeProviderConfirm, action: removeSelectedProvider)
-                        .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .red))
-                    Button(L10n.tr("取消", "Cancel")) { isArmedForRemoval = false }
-                        .buttonStyle(PillActionButtonStyle())
-                } else {
-                    Button(AssistantSettingsCopy.removeProvider) { isArmedForRemoval = true }
-                        .buttonStyle(PillActionButtonStyle())
-                        .help(L10n.tr(
-                            "只清除该服务商的本机配置与密钥，其他服务商不受影响",
-                            "Clears only this provider's local settings and key; other providers are untouched"
-                        ))
-                }
+            if isArmedForRemoval {
+                Button(AssistantSettingsCopy.removeProviderConfirm, action: removeSelectedProvider)
+                    .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .red))
+                Button(L10n.tr("取消", "Cancel")) { isArmedForRemoval = false }
+                    .buttonStyle(PillActionButtonStyle())
+            } else {
+                Button(AssistantSettingsCopy.removeProvider) { isArmedForRemoval = true }
+                    .buttonStyle(PillActionButtonStyle())
+                    .help(L10n.tr(
+                        "只清除该服务商的本机配置与密钥，其他服务商不受影响",
+                        "Clears only this provider's local settings and key; other providers are untouched"
+                    ))
             }
             Button(AssistantSettingsCopy.restoreDefaults) {
                 selectedPreset = .openRouterJev
@@ -1551,17 +1568,6 @@ struct AssistantSettingsSection: View {
             Spacer()
         }
         .settingsRow(anchor: .assistantRemoveProvider)
-    }
-
-    /// 移除此服务商 shows only when the picked provider left something on this Mac: a key or a cloud consent.
-    private var hasStoredProviderConfig: Bool {
-        let target = baseURLDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            ? selectedPreset.defaultBaseURL
-            : baseURLDraft
-        if !store.storedAssistantAPIKey(forBaseURL: target).isEmpty { return true }
-        return store.consentedCloudEndpoints.contains {
-            AssistantProviderPreset.infer(baseURL: "https://\($0)") == selectedPreset
-        }
     }
 
     /// Whether the current UI language ships an on-device recognizer on this Mac (#50).
@@ -1668,21 +1674,9 @@ struct AssistantSettingsSection: View {
             }
             .toggleStyle(.glass)
             .controlSize(.regular)
+            .settingsRow(anchor: .onDeviceSpeech)
             .help(L10n.tr("不把声音发给苹果，系统支持时生效", "Keeps audio off Apple's servers when macOS supports it"))
 
-            // #50: say so instead of silently falling back to Apple's servers.
-            if store.prefersOnDeviceSpeech && !Self.supportsOnDeviceSpeech(for: store.effectiveLanguage) {
-                Label(
-                    L10n.tr(
-                        "当前语言（\(store.effectiveLanguage.speechLocaleIdentifier)）不支持本机识别，语音将使用苹果服务器。",
-                        "This language (\(store.effectiveLanguage.speechLocaleIdentifier)) can't be recognized on-device; Apple's servers will be used."
-                    ),
-                    systemImage: "exclamationmark.triangle.fill"
-                )
-                .font(.system(size: DesignTokens.TypeSize.caption))
-                .foregroundStyle(.orange)
-                .fixedSize(horizontal: false, vertical: true)
-            }
         }
     }
 

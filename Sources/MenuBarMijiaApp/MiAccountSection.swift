@@ -216,8 +216,8 @@ public struct MiAccountSection: View {
 
     static func regionDisclosureTitle(for region: MiCloudRegion) -> String {
         L10n.format(
-            "服务器地区（%@）",
-            "Server region (%@)",
+            "云端服务器地区（%@）",
+            "Cloud region (%@)",
             region.label
         )
     }

@@ -69,6 +69,36 @@ struct SettingsSearchTests {
         }
     }
 
+    @Test("AI rows under Advanced are found by their control names and old names")
+    func assistantAdvancedRowsAreSearchable() {
+        L10n.$overrideLanguage.withValue(.zhHans) {
+            let expected: [(String, SettingsAnchor)] = [
+                ("移除此服务商", .assistantRemoveProvider),
+                ("优先本机语音识别", .onDeviceSpeech),
+                ("从本机环境导入 Key", .assistantKeyImport),
+                ("服务地址", .assistantServiceAddress),
+                ("模型", .assistantModel),
+                ("把握度阈值", .askWhenUnsure),
+                ("高风险操作仍需确认", .askWhenUnsure),
+                ("更多显示选项", .compactGrid),
+                ("高级显示", .compactGrid),
+            ]
+            for (query, anchor) in expected {
+                let hits = SettingsSearch.search(query)
+                #expect(hits.first?.anchor == anchor,
+                        "「\(query)」should rank \(anchor.rawValue) first, got \(hits.map(\.anchor.rawValue))")
+            }
+            #expect(SettingsSearch.search("AI 服务商与模型").contains { $0.anchor == .assistantProvider })
+        }
+        L10n.$overrideLanguage.withValue(.en) {
+            #expect(SettingsSearch.search("Remove this provider").first?.anchor == .assistantRemoveProvider)
+        }
+        for anchor in [SettingsAnchor.assistantServiceAddress, .assistantModel, .assistantKeyImport,
+                       .assistantRemoveProvider, .habitMemory, .onDeviceSpeech] {
+            #expect(AssistantSettingsSection.advancedAnchors.contains(anchor))
+        }
+    }
+
     @Test("Every anchor in the enum is searchable")
     func everyAnchorIsIndexed() {
         // An anchor with no index entry is a row nobody can find; an index entry with no anchor

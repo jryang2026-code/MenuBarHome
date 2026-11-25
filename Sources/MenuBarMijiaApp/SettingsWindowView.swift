@@ -1108,7 +1108,7 @@ private struct GeneralSettingsTab: View {
                     }
                     .padding(.top, 6)
                 } label: {
-                    Text(L10n.tr("更多显示选项", "More display options"))
+                    Text(L10n.tr("高级显示", "Advanced Display"))
                         .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
                         .foregroundStyle(DesignTokens.secondaryText)
                 }
@@ -1615,7 +1615,7 @@ private struct ConnectionSettingsTab: View {
                 .settingsRow(anchor: .demoMode)
 
                 if store.homeBackend == .demo {
-                    Text(L10n.tr("示例模式，不会控制真实设备", "Demo mode; real devices are not controlled"))
+                    Text(L10n.tr("示例家庭，不会控制真实设备", "Demo home; won't control real devices"))
                         .font(.system(size: DesignTokens.TypeSize.caption))
                         .foregroundStyle(DesignTokens.secondaryText)
                 }
@@ -2636,8 +2636,8 @@ private struct PrivacySettingsTab: View {
 
                     Label(
                         L10n.tr(
-                            "解锁「更多设置」其余控件，高风险仍需确认",
-                            "Unlocks the rest of More Settings; risky actions still ask"
+                            "允许写入次要控件，高风险仍需确认",
+                            "Enables secondary writes; high-risk actions still ask first"
                         ),
                         systemImage: "exclamationmark.triangle.fill"
                     )
@@ -2681,8 +2681,8 @@ private struct PrivacySettingsTab: View {
 
                     Label(
                         L10n.tr(
-                            "链接直接执行；高风险设备开关仍确认，场景与脚本不确认",
-                            "Links run directly; risky device switches still ask, scenes and scripts don't"
+                            "场景与脚本直接运行，高风险操作仍需确认",
+                            "Scenes and scripts run directly; high-risk actions still ask first"
                         ),
                         systemImage: "exclamationmark.triangle.fill"
                     )
@@ -2868,7 +2868,7 @@ private struct AboutSettingsTab: View {
                 }
                 refreshDiagnosticsPreviewIfNeeded()
             }
-            .alert(L10n.tr("退出并清除所有账号与密钥？", "Sign out and clear all accounts and keys?"), isPresented: $confirmsRevoke) {
+            .alert(L10n.tr("退出米家并清除 HA 与 AI 密钥？", "Sign out of Xiaomi Home and clear HA and AI keys?"), isPresented: $confirmsRevoke) {
                 Button(L10n.tr("取消", "Cancel"), role: .cancel) {}
                 Button(L10n.tr("退出并清除", "Sign Out & Clear"), role: .destructive) {
                     scanner.reset()
@@ -2877,8 +2877,8 @@ private struct AboutSettingsTab: View {
                 }
             } message: {
                 Text(L10n.tr(
-                    "全部米家会话、Home Assistant 连接钥匙以及 AI 密钥与授权将从本机删除；用电与温湿度历史、房间与全关偏好会保留。需要时可重新扫码或填写钥匙连接。",
-                    "All Xiaomi Home sessions, the Home Assistant connection key, and saved AI keys and consent will be removed from this Mac; local power/climate history, rooms and All Off preferences stay. You can reconnect anytime."
+                    "米家会话、HA 访问密钥、AI 密钥与云端授权将从本机删除；摄像机与电视凭据、历史和偏好保留。",
+                    "Xiaomi Home sessions, the HA access token, AI keys and cloud consent are removed from this Mac; camera and TV credentials, history and preferences stay."
                 ))
             }
     }
@@ -2986,7 +2986,7 @@ private struct AboutSettingsTab: View {
     private var aboutDiagnostics: some View {
         let errorTimestamps = errorLog.errorTimestamps
 
-        SettingsSection(title: L10n.tr("排障与诊断", "Troubleshooting & Diagnostics"), anchor: .copyDiagnostics) {
+        SettingsSection(title: L10n.tr("诊断与排障工具", "Diagnostics & Troubleshooting"), anchor: .copyDiagnostics) {
             Text(L10n.tr(
                 "不含账号、密钥与设备 ID",
                 "No accounts, keys or device IDs"
@@ -3012,8 +3012,8 @@ private struct AboutSettingsTab: View {
                     HStack(spacing: 4) {
                         Image(systemName: "doc.on.doc")
                         Text(L10n.tr(
-                            "复制排障信息",
-                            "Copy Diagnostics"
+                            "复制脱敏诊断报告",
+                            "Copy Diagnostics Report"
                         ))
                     }
                 }
@@ -3045,6 +3045,11 @@ private struct AboutSettingsTab: View {
                     }
                 }
                 .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .accentColor))
+
+                Text(L10n.tr("打开 GitHub 并复制脱敏诊断", "Opens GitHub and copies redacted diagnostics"))
+                    .font(.system(size: DesignTokens.TypeSize.caption))
+                    .foregroundStyle(DesignTokens.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             DisclosureGroup(isExpanded: $showsDiagnosticsPreview) {
@@ -3089,7 +3094,7 @@ private struct AboutSettingsTab: View {
                 Spacer()
                 Button(scanner.isScanning
                        ? L10n.tr("扫描中…", "Scanning…")
-                       : L10n.tr("扫描不支持的设备", "Scan Skipped Devices")) {
+                       : L10n.tr("扫描未能显示的设备", "Scan Hidden Devices")) {
                     Task { await scanner.scan(store: store) }
                 }
                 .buttonStyle(PillActionButtonStyle())
@@ -3163,12 +3168,12 @@ private struct AboutSettingsTab: View {
                 VStack(alignment: .leading, spacing: 8) {
                     HStack(alignment: .top, spacing: 12) {
                         VStack(alignment: .leading, spacing: 3) {
-                            Text(L10n.tr("退出并清除所有账号与密钥", "Sign Out & Clear All Accounts and Keys"))
+                            Text(L10n.tr("退出米家并清除 HA 与 AI 密钥", "Sign Out of Xiaomi Home & Clear HA and AI Keys"))
                                 .font(.system(size: DesignTokens.TypeSize.body, weight: .medium))
 
                             Text(L10n.tr(
-                                "清除全部账号与密钥，保留本地偏好",
-                                "Clears every account and key; local preferences stay"
+                                "摄像机与电视凭据、本地偏好保留",
+                                "Camera and TV credentials and local preferences stay"
                             ))
                             .font(.system(size: DesignTokens.TypeSize.caption))
                             .foregroundStyle(DesignTokens.secondaryText)
@@ -3186,7 +3191,7 @@ private struct AboutSettingsTab: View {
                     .settingsRow(anchor: .signOut)
                 }
             } label: {
-                Text(L10n.tr("清除全部本机登录凭据与授权", "Clear all local credentials and authorizations"))
+                Text(L10n.tr("清除米家、HA 与 AI 凭据", "Clear Xiaomi Home, HA and AI credentials"))
                     .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
                     .foregroundStyle(DesignTokens.secondaryText)
             }
@@ -3521,24 +3526,22 @@ struct LGWebOSSettingsSection: View {
                     }
                     .buttonStyle(PillActionButtonStyle())
 
-                    if isPaired {
-                        Button(L10n.tr("重新信任电视", "Trust TV Again")) {
-                            confirmsTrustReset = true
+                    Button(L10n.tr("重新信任电视", "Trust TV Again")) {
+                        confirmsTrustReset = true
+                    }
+                    .buttonStyle(PillActionButtonStyle())
+                    .alert(L10n.tr("清除已保存的电视身份？", "Clear the saved TV identity?"), isPresented: $confirmsTrustReset) {
+                        Button(L10n.tr("取消", "Cancel"), role: .cancel) {}
+                        Button(L10n.tr("重新配对", "Pair Again"), role: .destructive) {
+                            LGWebOSSettingsSaveGuard.resetTrustAndPair(
+                                isEnabled: &isEnabled,
+                                hostDraft: &hostDraft,
+                                macDraft: &macDraft,
+                                in: store
+                            )
                         }
-                        .buttonStyle(PillActionButtonStyle())
-                        .alert(L10n.tr("清除已保存的电视身份？", "Clear the saved TV identity?"), isPresented: $confirmsTrustReset) {
-                            Button(L10n.tr("取消", "Cancel"), role: .cancel) {}
-                            Button(L10n.tr("重新配对", "Pair Again"), role: .destructive) {
-                                LGWebOSSettingsSaveGuard.resetTrustAndPair(
-                                    isEnabled: &isEnabled,
-                                    hostDraft: &hostDraft,
-                                    macDraft: &macDraft,
-                                    in: store
-                                )
-                            }
-                        } message: {
-                            Text(L10n.tr("请先核对电视 IP。确认后将清除旧证书和配对密钥，下次连接会信任新的证书，并要求在电视上重新确认。", "Verify the TV IP first. This clears the saved certificate and pairing key, trusts the certificate on the next connection, and requires confirmation on the TV."))
-                        }
+                    } message: {
+                        Text(L10n.tr("请先核对电视 IP。确认后将清除旧证书和配对密钥，下次连接会信任新的证书，并要求在电视上重新确认。", "Verify the TV IP first. This clears the saved certificate and pairing key, trusts the certificate on the next connection, and requires confirmation on the TV."))
                     }
 
                     Spacer()

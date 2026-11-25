@@ -1084,8 +1084,8 @@ struct AutomationSettingsSection: View {
             )
         case .calendar:
             return L10n.tr(
-                "需系统日历权限（只读）",
-                "Needs Calendar permission (read-only)"
+                "需日历完整访问权限，仅读取事件",
+                "Needs full Calendar access; only reads events"
             )
         }
     }
