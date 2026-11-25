@@ -296,15 +296,14 @@ export function renderDeviceTypeSelectionSection(
             })
             .join("")}
         </div>
-        <p class="cc-field-hint" style="margin: 4px 0 0 0;">${esc(host, modeHints[draft.mode])}</p>
         ${draft.mode === "allSupportedTypes" ? "" : `
         <p data-device-type-safety-note role="note" style="margin: 6px 0 0 0; font-size: 12px; line-height: 16px; color: var(--text-secondary);">
           ${esc(
             host,
             tr3(
-              "为了继续提供已开启的安全提醒，仍会读取部分隐藏设备；可在「安全与提醒」单独关闭提醒。",
-              "為了繼續提供已開啟的安全提醒，仍會讀取部分隱藏裝置；可在「安全與提醒」單獨關閉提醒。",
-              "Some hidden devices are still read so enabled safety alerts keep working; turn an alert off in Safety & Alerts.",
+              "已开启的安全提醒仍会继续工作",
+              "已開啟的安全提醒仍會繼續運作",
+              "Safety alerts you turned on keep working",
               lang,
             ),
           )}

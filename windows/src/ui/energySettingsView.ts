@@ -332,9 +332,9 @@ function renderSevenDayChart(
       </div>
       <p class="cc-field-hint" style="margin-top: 4px;">${esc(
         tr3(
-          "显示「—」表示当天没有采样记录（应用未运行或插座未上报），不代表零用电。",
-          "顯示「—」表示當天沒有取樣記錄（應用未執行或插座未回報），不代表零用電。",
-          "A “—” means nothing was sampled that day (the app was closed or the plug reported nothing), not zero usage.",
+          "「—」表示当天无记录",
+          "「—」表示當天無記錄",
+          "“—” means no record that day",
         ),
       )}</p>
     </div>`;
@@ -356,9 +356,9 @@ function renderTopDevicesSection(
         )}</div>
         <p class="cc-field-hint" id="settings-energy-ranking-empty" style="margin: 0;">${esc(
           tr3(
-            "还没有可排行的用电增量。插座累计电量计数增长后会自动出现在这里。",
-            "還沒有可排行的用電增量。插座累計電量計數增長後會自動出現在這裡。",
-            "No measured increase yet. Plugs appear here once their cumulative counter grows.",
+            "暂无用电记录",
+            "暫無用電記錄",
+            "No usage recorded yet",
           ),
         )}</p>
       </div>`;
@@ -436,15 +436,15 @@ export function renderEnergySettingsSection(ctx: SettingsViewContext): string {
     statusCopy = history.hasMeasuredConsumption
       ? startedLabel
       : `${startedLabel} · ${tr3(
-          "已记下基线，等待第一次电量计数增长。",
-          "已記下基線，等待第一次電量計數增長。",
-          "Baseline stored; waiting for the first counter increase.",
+          "已开始记录，等待用电数据",
+          "已開始記錄，等待用電資料",
+          "Recording started; waiting for usage data",
         )}`;
   } else {
     statusCopy = tr3(
-      "还没有收到插座的累计电量读数。接入带电量计数的智能插座后会自动开始记录。",
-      "還沒有收到插座的累計電量讀數。接入帶電量計數的智慧插座後會自動開始記錄。",
-      "No plug counter reading yet. Recording starts automatically once a metering plug reports cumulative kWh.",
+      "接入计量插座后自动记录",
+      "接入計量插座後自動記錄",
+      "Recording starts once a metering plug is connected",
     );
   }
 
@@ -454,32 +454,12 @@ export function renderEnergySettingsSection(ctx: SettingsViewContext): string {
     ? session.priceDraft
     : canonicalPriceText;
 
-  const priceHint =
-    savedPrice === null
-      ? tr3(
-          "金额默认隐藏。填入每度电价后按实测电量折算电费；输入非正数会保留原电价，清空输入框并保存才会清除。",
-          "金額預設隱藏。填入每度電價後按實測電量折算電費；輸入非正數會保留原電價，清空輸入框並儲存才會清除。",
-          "Cost stays hidden until set. Non-positive input keeps the saved price; clear the field and save to remove it.",
-        )
-      : tr3(
-          `当前电价：¥${canonicalPriceText} / kWh（电费 = 实测电量 × 电价，仅在本机计算）。`,
-          `目前電價：¥${canonicalPriceText} / kWh（電費 = 實測電量 × 電價，僅在本機計算）。`,
-          `Current tariff: ¥${canonicalPriceText} / kWh (cost = measured kWh × price, calculated locally).`,
-        );
-
   const canClearHistory = startedAt !== null || history.hasMeasuredConsumption;
   const confirmingClear = Boolean(session?.confirmingClear && canClearHistory);
 
   return `
     <div class="cc-field" id="settings-energy-section" data-settings-anchor="energyHistory">
       <label>${esc(tr3("插座用电统计", "插座用電統計", "Plug Energy"))}</label>
-      <p class="cc-field-hint">${esc(
-        tr3(
-          "仅保存在本机，基于智能插座自身累计电量（kWh）差值记账，绝不用功率估算；首次读数只建立基线，保留最近 31 天。",
-          "僅儲存在本機，基於智慧插座自身累計電量（kWh）差值記帳，絕不用功率估算；首次讀數只建立基線，保留最近 31 天。",
-          "Stored on this PC only from each plug's cumulative kWh counter — never estimated from wattage. First reading sets baseline; keeps 31 days.",
-        ),
-      )}</p>
       <p class="cc-field-hint" id="settings-energy-status" style="opacity: 0.85;">${esc(statusCopy)}</p>
 
       <div
@@ -558,24 +538,16 @@ export function renderEnergySettingsSection(ctx: SettingsViewContext): string {
               };">${esc(session.priceFeedback.text)}</p>`
             : ""
         }
-        <p class="cc-field-hint" id="settings-energy-price-hint" style="margin-top: 4px;">${esc(priceHint)}</p>
       </div>
 
       <div id="settings-energy-clear-group" style="margin-top: 8px; padding-top: 8px; border-top: 1px solid rgba(128, 128, 128, 0.14);">
         <div class="cc-field-row" style="gap: 8px;">
-          <p class="cc-field-hint" style="margin: 0; flex: 1;">${esc(
-            tr3(
-              "清空将删除全部已记录的电量与基线，从下一次读数重新开始累计；电价设置会保留。",
-              "清空將刪除全部已記錄的電量與基線，從下一次讀數重新開始累計；電價設定會保留。",
-              "Clearing deletes all recorded samples and baselines so the next reading starts fresh; your price is kept.",
-            ),
-          )}</p>
           <button
             type="button"
             class="cc-btn-danger"
             id="btn-clear-energy-history"
             ${canClearHistory ? "" : "disabled"}
-          >${esc(tr3("清空用电统计", "清空用電統計", "Clear Energy History"))}</button>
+          >${esc(tr3("清除用电记录", "清除用電記錄", "Clear Energy History"))}</button>
         </div>
         <div
           id="settings-clear-energy-confirm"

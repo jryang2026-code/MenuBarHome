@@ -295,8 +295,8 @@ describe("P5a-W acceptance 2: removing a provider clears only its own config and
     baseEl.value = "https://api.deepseek.com/v1";
     baseEl.dispatchEvent(new Event("input", { bubbles: true }));
     assert.equal(
-      document.querySelector<HTMLElement>('[data-ai-preset="deepseek"]')?.classList.contains("is-active"),
-      true,
+      document.querySelector<HTMLSelectElement>("#settings-ai-provider")?.value,
+      "deepseek",
       "typing the URL must move the active pill before removal",
     );
 
@@ -465,7 +465,9 @@ describe("P5a-W acceptance 3: late in-flight results dispatch nothing", () => {
     app.render();
 
     // The user selects Custom but has not typed a URL: the empty field means Custom.
-    element('[data-ai-preset="custom"]').click();
+    const providerEl = element("#settings-ai-provider") as HTMLSelectElement;
+    providerEl.value = "custom";
+    providerEl.dispatchEvent(new Event("change", { bubbles: true }));
     const baseEl = element("#settings-base-url") as HTMLInputElement;
     assert.equal(baseEl.value, "");
 
@@ -574,9 +576,9 @@ describe("P5a-W acceptance 3: late in-flight results dispatch nothing", () => {
 describe("P5a-W acceptance 4: the new wording ships in all three languages", () => {
   it("renders the AI toggle label in zh-Hans, zh-Hant and en", () => {
     const expectations: Array<{ language: "zh-Hans" | "zh-Hant" | "en"; label: string; hint: RegExp }> = [
-      { language: "zh-Hans", label: "AI 一句话控制", hint: /不再发送 AI 请求/ },
-      { language: "zh-Hant", label: "AI 一句話控制", hint: /不再傳送 AI 請求/ },
-      { language: "en", label: "AI command control", hint: /no AI requests are sent/ },
+      { language: "zh-Hans", label: "启用 AI 助手", hint: /仅本地解析，密钥保留/ },
+      { language: "zh-Hant", label: "啟用 AI 助手", hint: /僅本機解析，金鑰保留/ },
+      { language: "en", label: "Enable AI Assistant", hint: /Local parsing only; keys are kept/ },
     ];
     for (const { language, label, hint } of expectations) {
       const app = mountDemoApp();

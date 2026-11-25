@@ -26,6 +26,13 @@ async function click(selector: string): Promise<void> {
   await setImmediate();
 }
 
+async function pickProvider(id: string): Promise<void> {
+  const select = element("#settings-ai-provider") as HTMLSelectElement;
+  select.value = id;
+  select.dispatchEvent(new Event("change", { bubbles: true }));
+  await setImmediate();
+}
+
 function tile(id: string): string {
   return element(`[data-body-device="${id}"]`).textContent ?? "";
 }
@@ -1093,10 +1100,10 @@ describe("AI key stays with the server it was saved for (#19)", () => {
     await click("#btn-settings");
     assert.equal(keyField().value, "sk-or-saved");
 
-    await click('[data-ai-preset="deepseek"]');
+    await pickProvider("deepseek");
     assert.equal(keyField().value, "");
 
-    await click('[data-ai-preset="openrouter_jev"]');
+    await pickProvider("openrouter_jev");
     assert.equal(keyField().value, "sk-or-saved");
 
     const base = element("#settings-base-url") as HTMLInputElement;
@@ -1148,7 +1155,7 @@ describe("AI key stays with the server it was saved for (#19)", () => {
     await setImmediate();
 
     await click("#btn-settings");
-    await click('[data-ai-preset="deepseek"]');
+    await pickProvider("deepseek");
     assert.equal(keyField().value, "");
     keyField().value = "sk-ds-2";
     await click("#btn-save-settings");
@@ -1159,9 +1166,9 @@ describe("AI key stays with the server it was saved for (#19)", () => {
 
     await click("#btn-settings");
     assert.equal(keyField().value, "sk-ds-2");
-    await click('[data-ai-preset="openrouter_jev"]');
+    await pickProvider("openrouter_jev");
     assert.equal(keyField().value, "sk-or-1");
-    await click('[data-ai-preset="deepseek"]');
+    await pickProvider("deepseek");
     assert.equal(keyField().value, "sk-ds-2");
 
     // Saving a custom endpoint and then saving a built-in provider keeps the custom endpoint's binding intact.
@@ -1174,7 +1181,7 @@ describe("AI key stays with the server it was saved for (#19)", () => {
     await setImmediate();
 
     await click("#btn-settings");
-    await click('[data-ai-preset="deepseek"]');
+    await pickProvider("deepseek");
     assert.equal(keyField().value, "sk-ds-2");
     await click("#btn-save-settings");
     await setImmediate();
