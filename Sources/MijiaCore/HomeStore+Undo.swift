@@ -61,6 +61,7 @@ extension HomeStore {
         lastAssistantUndo = nil
         setAssistantState(.idle)
         pendingCloudConsent = nil
+        pendingDiffPreview = nil
         assistantSuggestions = []
         aiProactiveSuggestions = nil
         proactiveRefreshTask?.cancel()
@@ -68,6 +69,7 @@ extension HomeStore {
         isProactiveRecommending = false
         proactiveRetryEarliest = nil
         clearOptimisticLocks()
+        groupCoverIgnoreUntil.removeAll()
         lastCoverPositions.removeAll()
         lastHistoryRecordAt = nil
         cancelFacetWrites(for: nil)
