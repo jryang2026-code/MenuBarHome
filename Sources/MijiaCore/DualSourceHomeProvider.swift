@@ -219,7 +219,7 @@ private final class DisabledXiaomiAccountsGate: @unchecked Sendable {
     }
 }
 
-/// Monotonic (insert/update only, never delete) source-native id ↔ canonical card id table for
+/// Source-native id ↔ canonical card id table for
 /// `DualSourceHomeProvider` (#303, #325). Shared via `NSLock` so `HomeStore` can expand
 /// `starredDeviceIds` synchronously when publishing type-pruning policies, even after a device
 /// type is closed or one source disconnects.
@@ -257,6 +257,14 @@ private final class CanonicalSourceIDBox: @unchecked Sendable {
             for (sourceID, canonicalID) in miCanonicalIDs where !sourceID.isEmpty && !canonicalID.isEmpty {
                 miToCanonical[sourceID] = canonicalID
             }
+        }
+    }
+
+    func remove(canonicalIDs: Set<String>) {
+        guard !canonicalIDs.isEmpty else { return }
+        lock.withLock {
+            haToCanonical = haToCanonical.filter { !canonicalIDs.contains($0.value) }
+            miToCanonical = miToCanonical.filter { !canonicalIDs.contains($0.value) }
         }
     }
 
@@ -307,7 +315,7 @@ private final class CanonicalSourceIDBox: @unchecked Sendable {
 /// Keeps both providers connected and publishes one merged home. Commands are routed by their
 /// target address, so an entity id decides the source without a second lookup table.
 public actor DualSourceHomeProvider: HomeProvider {
-    public typealias CanonicalIDPersistence = @Sendable ([String: String]) -> Void
+    public typealias CanonicalIDPersistence = @Sendable (CanonicalDeviceRegistry) -> Void
 
     /// How long a configured source that just dropped stays trusted for routing after its last
     /// snapshot (#25). A Wi-Fi roam, a wake-from-sleep reconnect or a websocket blip resolves in
@@ -409,7 +417,7 @@ public actor DualSourceHomeProvider: HomeProvider {
         initialCanonicalIDs: [String: String] = [:],
         knownPreferenceIDs: @escaping @Sendable () -> Set<String> = { [] },
         pinnedBackends: @escaping @Sendable () -> [String: HomeBackend] = { [:] },
-        persistCanonicalIDs: @escaping CanonicalIDPersistence = { _ in }
+        persistCanonicalIDs: @escaping @Sendable ([String: String]) -> Void = { _ in }
     ) {
         self.init(
             homeAssistant: homeAssistant,
@@ -417,7 +425,7 @@ public actor DualSourceHomeProvider: HomeProvider {
             initialCanonicalIDs: initialCanonicalIDs,
             knownPreferenceIDs: knownPreferenceIDs,
             pinnedBackends: pinnedBackends,
-            persistCanonicalIDs: persistCanonicalIDs,
+            persistCanonicalIDs: { persistCanonicalIDs($0.assignments) },
             graceNow: { SuspendingClock.now },
             fallbackRecheckTimer: DispatchFallbackRecheckTimer()
         )
@@ -427,6 +435,7 @@ public actor DualSourceHomeProvider: HomeProvider {
         homeAssistant: (any HomeProvider)?,
         xiaomiCloud: (any HomeProvider)?,
         initialCanonicalIDs: [String: String] = [:],
+        initialRegistry: CanonicalDeviceRegistry? = nil,
         knownPreferenceIDs: @escaping @Sendable () -> Set<String> = { [] },
         pinnedBackends: @escaping @Sendable () -> [String: HomeBackend] = { [:] },
         persistCanonicalIDs: @escaping CanonicalIDPersistence = { _ in },
@@ -435,8 +444,8 @@ public actor DualSourceHomeProvider: HomeProvider {
     ) {
         self.homeAssistant = homeAssistant
         self.xiaomiCloud = xiaomiCloud
-        self.canonical = CanonicalDeviceRegistry(assignments: initialCanonicalIDs)
-        self.canonicalSourceIDs = CanonicalSourceIDBox(initialAssignments: initialCanonicalIDs)
+        self.canonical = initialRegistry ?? CanonicalDeviceRegistry(assignments: initialCanonicalIDs)
+        self.canonicalSourceIDs = CanonicalSourceIDBox(initialAssignments: canonical.assignments)
         self.knownPreferenceIDs = knownPreferenceIDs
         self.pinnedBackends = pinnedBackends
         self.persistCanonicalIDs = persistCanonicalIDs
@@ -1722,6 +1731,14 @@ public actor DualSourceHomeProvider: HomeProvider {
         return statuses.first
     }
 
+    private func adoptCanonicalRegistry(_ next: CanonicalDeviceRegistry) {
+        guard next != canonical else { return }
+        let removedIDs = Set(canonical.assignments.values).subtracting(next.assignments.values)
+        canonicalSourceIDs.remove(canonicalIDs: removedIDs)
+        canonical = next
+        persistCanonicalIDs(next)
+    }
+
     private func recompute(allowEmpty: Bool = false, now overrideNow: SuspendingClock.Instant? = nil) {
         guard !isShutDown else { return }
         guard allowEmpty || haSnapshot != nil || miSnapshot != nil else {
@@ -1729,6 +1746,11 @@ public actor DualSourceHomeProvider: HomeProvider {
             miGraceActiveInLastRecompute = false
             miGracedAccountsInLastRecompute.removeAll()
             cancelFallbackRecheck()
+            let now = Date()
+            var next = canonical
+            next.purgeExpired(at: now)
+            next.reconcile(presentIDs: [], at: now)
+            adoptCanonicalRegistry(next)
             return
         }
         let now = overrideNow ?? effectiveGraceNow()
@@ -1767,10 +1789,7 @@ public actor DualSourceHomeProvider: HomeProvider {
             pinnedBackends: pinnedBackends()
         )
         scheduleFallbackRecheckIfNeeded(now: now)
-        if result.canonical != canonical {
-            canonical = result.canonical
-            persistCanonicalIDs(result.canonical.assignments)
-        }
+        adoptCanonicalRegistry(result.canonical)
         rooms = result.rooms
         routes = result.routes
         canonicalSourceIDs.merge(haCanonicalIDs: result.haCanonicalIDs, miCanonicalIDs: result.miCanonicalIDs)

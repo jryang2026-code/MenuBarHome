@@ -52,8 +52,11 @@ public enum DeviceDeduplicator {
         canonical: CanonicalDeviceRegistry = CanonicalDeviceRegistry(),
         rooms: RoomIdentityRegistry = RoomIdentityRegistry(),
         knownPreferenceIDs: Set<String> = [],
-        pinnedBackends: [String: HomeBackend] = [:]
+        pinnedBackends: [String: HomeBackend] = [:],
+        registryNow: Date = Date()
     ) -> DeviceMergeResult {
+        var canonical = canonical
+        canonical.purgeExpired(at: registryNow)
         var haCandidates = candidates(
             in: homeAssistant,
             backend: .homeAssistant,
@@ -165,15 +168,31 @@ public enum DeviceDeduplicator {
             )
         }
 
+        let haScope = homeAssistant?.homeAssistantScope
+        let haIdentityKeys = draftCards.map { card -> [String] in
+            guard let haScope,
+                  let ha = [card.winner, card.other].compactMap({ $0 }).first(where: { $0.backend == .homeAssistant }),
+                  let identity = ha.identity else { return [] }
+            return identity.uniqueIds.map { "ha-unique:\(haScope.utf8.count):\(haScope):\(ha.device.kind.tag):\($0)" }
+        }
+        var haIdentityCounts: [String: Int] = [:]
+        for keys in haIdentityKeys {
+            for key in keys { haIdentityCounts[key, default: 0] += 1 }
+        }
+
+        let uniqueHAKeys = haIdentityKeys.map { keys in keys.filter { haIdentityCounts[$0] == 1 } }
+        let existingMatches = draftCards.map { canonical.canonicalID(forKeys: $0.strongKeys) }
+        let strongMatches = draftCards.enumerated().map { index, draft -> String? in
+            if let current = existingMatches[index] { return current }
+            let aliases = Set(uniqueHAKeys[index].compactMap { canonical.canonicalID(forKeys: [$0]) })
+            guard aliases.count == 1, let alias = aliases.first,
+                  alias != draft.winner.device.id, alias != draft.other?.device.id else { return nil }
+            return alias
+        }
+        let strongClaimedCanonicals = Set(strongMatches.compactMap { $0 })
         var cardFallbackCounts: [String: Int] = [:]
-        var strongClaimedCanonicals: Set<String> = []
         for draft in draftCards {
-            for key in draft.fallbackKeys {
-                cardFallbackCounts[key, default: 0] += 1
-            }
-            if let strongMatch = canonical.canonicalID(forKeys: draft.strongKeys) {
-                strongClaimedCanonicals.insert(strongMatch)
-            }
+            for key in draft.fallbackKeys { cardFallbackCounts[key, default: 0] += 1 }
         }
 
         var memberCardIndicesByID: [String: Set<Int>] = [:]
@@ -189,10 +208,10 @@ public enum DeviceDeduplicator {
             let isFreeOfForeignMember: (String) -> Bool = { candidate in
                 (memberCardIndicesByID[candidate] ?? []).subtracting([index]).isEmpty
             }
-            let rawStrongMatch = canonical.canonicalID(forKeys: draft.strongKeys)
+            let rawStrongMatch = strongMatches[index]
             let strongMatch = rawStrongMatch.flatMap { isFreeOfForeignMember($0) ? $0 : nil }
             let rawFallbackMatch = rawStrongMatch == nil
-                ? canonical.canonicalID(forKeys: validFallbackKeys)
+                ? canonical.canonicalID(forKeys: validFallbackKeys, allowOrphans: false)
                 : nil
             let fallbackMatch = rawFallbackMatch.flatMap {
                 (strongClaimedCanonicals.contains($0) || !isFreeOfForeignMember($0)) ? nil : $0
@@ -201,10 +220,14 @@ public enum DeviceDeduplicator {
                 || (rawFallbackMatch != nil && fallbackMatch == nil)
             let defaultPaired = draft.defaultPairedCanonical.flatMap { isFreeOfForeignMember($0) ? $0 : nil }
             let chosen = strongMatch ?? fallbackMatch ?? defaultPaired
+            // A single-source HA unique ID is instance-scoped. Do not broaden a recovered alias
+            // into shared hardware or name keys without an actual cross-source pair.
+            let recoveredFromScopedKey = draft.other == nil && existingMatches[index] == nil && rawStrongMatch != nil
             return Card(
                 winner: draft.winner,
                 other: draft.other,
-                canonicalKeys: draft.strongKeys + validFallbackKeys,
+                canonicalKeys: recoveredFromScopedKey ? [] : draft.strongKeys + validFallbackKeys,
+                haIdentityKeys: uniqueHAKeys[index],
                 chosenCanonical: chosen,
                 hadStaleCanonicalConflict: hadStaleCanonicalConflict
             )
@@ -274,6 +297,7 @@ public enum DeviceDeduplicator {
             } else {
                 canonicalID = "\(card.winner.backend.rawValue):\(card.winner.device.id)"
             }
+            updatedCanonical.assign(canonicalID, toKeys: card.haIdentityKeys)
             usedCanonicalIDs.insert(canonicalID)
 
             let wasPaired = card.other != nil
@@ -352,6 +376,8 @@ public enum DeviceDeduplicator {
             )
             deviceBackends[canonicalID] = card.winner.backend
         }
+
+        updatedCanonical.reconcile(presentIDs: usedCanonicalIDs, at: registryNow)
 
         var roomNameOrder: [String: Int] = [:]
         func registerRoom(_ rawName: String) {
@@ -672,6 +698,7 @@ public enum DeviceDeduplicator {
         var winner: Candidate
         var other: Candidate?
         let canonicalKeys: [String]
+        let haIdentityKeys: [String]
         let chosenCanonical: String?
         let hadStaleCanonicalConflict: Bool
     }
