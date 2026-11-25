@@ -742,6 +742,7 @@ public actor HAWebSocketProvider: HomeProvider {
             currentSession = nil
             ws = webSocketFactoryOverride(wsURL)
         } else {
+            try await HAPlaintextConsent.validateConnectionAddress(wsURL)
             guard let createdSession = replaceSession() else { return }
             currentSession = createdSession
             let task = createdSession.webSocketTask(with: wsURL)
@@ -1095,14 +1096,25 @@ public actor HAWebSocketProvider: HomeProvider {
         guard allowsToken(baseURLString) else {
             throw HomeProviderError.networkError(HAPlaintextConsent.waitingMessage(baseURLString))
         }
+        let requestBaseURL = baseURLString
+        let requestToken = token
         let (domain, service, payload) = Self.mapCommandToService(command)
-        if let entityId = payload["entity_id"] as? String,
-           let category = snapshot.closedCategory(for: entityId, policy: typePrunePolicyLoader()) {
-            throw CapabilityControlBlockedError(reason: .categoryDisabled(category))
+        func requireEnabledCategory() throws {
+            if let entityId = payload["entity_id"] as? String,
+               let category = snapshot.closedCategory(for: entityId, policy: typePrunePolicyLoader()) {
+                throw CapabilityControlBlockedError(reason: .categoryDisabled(category))
+            }
         }
-        guard let url = URL(string: "\(baseURLString)/api/services/\(domain)/\(service)") else {
-            throw HomeProviderError.invalidURL(baseURLString)
+        try requireEnabledCategory()
+        guard let url = URL(string: "\(requestBaseURL)/api/services/\(domain)/\(service)") else {
+            throw HomeProviderError.invalidURL(requestBaseURL)
         }
+        try await HAPlaintextConsent.validateConnectionAddress(url)
+        guard requestBaseURL == baseURLString, requestToken == token else { throw CancellationError() }
+        guard allowsToken(baseURLString) else {
+            throw HomeProviderError.networkError(HAPlaintextConsent.waitingMessage(baseURLString))
+        }
+        try requireEnabledCategory()
 
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
