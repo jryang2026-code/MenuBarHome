@@ -4,8 +4,9 @@
 
 ## 当前交接快照
 
-- 更新时间：2026-11-25（Wave 2B 收口，v1.5.0 发版准备）
-- `main`：`b6da9bb`（Wave 2B 全部合入）
+- 更新时间：2026-11-25（Wave 2B + 只读通用摄像机收口，v1.5.0 发版准备）
+- `main`：`34f5c5b`（W3-CAM 两端合入：#529 #531 #530；文档已同步 README / platform-matrix / GLOSSARY / 冒烟清单）
+- 待合：#532 氛围撤销基线竞态（真 bug：异步刷新覆盖了撤销基线，MoodCaptureTests:109 抖动根因），v1.5.0 必带
 - Wave 2B：15/15 DONE（#504–#528）；发版前真机冒烟清单见 docs/plans/2026-11-v1.5.0-smoke-checklist.md；release-checklist 文档同步已完成 main dbb72c40（CI 绿）；过时素材待重录：readme-v3 的 keyboard-search.gif、panel-themes.gif、all-off-undo.gif、hold-to-talk.gif、settings.gif、windows-fluent.png（需真机录制，HUMAN_GATE）
 - Wave 2A：14/14 DONE（#485–#503）
 - Wave 1：12/12 DONE（#471–#484 + main 187b6743）
@@ -16,7 +17,7 @@
 - main ef6a9b7（#490）CI 一度红（runner 编译卡顿），后续 d565cf9 已含该提交且 CI 绿 → main 已恢复
 - Codex 云端审查额度耗尽（#479–#484 均 usage limit）：设备写入/网络 PR 由主控兜底审 diff
 - main 红一次（#467 新增 TV 撤销测试抖动）已由 2caf7730 修绿
-- 作者已定（2026-11-25）：`v1.5.0` 在 Wave 2B 全部合入后发；发版前按 release-checklist 核对文档并出真机冒烟清单
+- 作者已定（2026-11-25）：`v1.5.0` 在 Wave 2B + 只读通用摄像机合入后发（Wave 3A 其余项发版后再定）；发版前按 release-checklist 核对文档并出真机冒烟清单
 - 需作者拍板：`v1.5.0` 打 tag、`#12` SignPath 申请启动
 
 ## 模型分派约定
@@ -96,6 +97,13 @@
 | W2B-12 P1-8c 30 天设备墓碑 + .bak 滚动落盘 | — | Codex sol6.2 | Wave 2A | PR | DONE | #527 + #528 已合 | 数据迁移高风险 |
 | W2B-13 米家离线设备只读 LAN 可达性探测 | #412 | Codex sol6.2 | Wave 2A | PR | DONE | #520 合入中（mac） | 后续：Windows 已有 LAN miIO（#478），同等只读探测可在 Wave 3 补 |
 | W2B-14 Context Stack Windows 同构 | — | Neon Mid | W2A-3b | PR | DONE | #514 → main 296590e | 来自 W2A-3b 遗留（共享 context_stack_golden.json） |
+
+## v1.5.0 加码：只读通用摄像机（作者 2026-11-25 决定：加这一项后再冒烟发版，其余 Wave 3A 不动）
+
+| ID | 关联已有Issue | 模型分派 | 前置依赖 | 通道 | 状态 | PR/SHA | 交接备注 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| W3-CAM-1 macOS 只读通用摄像机（RTSP/ONVIF/ISAPI/大华/Tapo） | — | Codex sol6.2 | Wave 2B | PR | DONE | #529 aaba0e2a（契约+钥匙串+go2rtc 内存只读接口）；#531 a9ae21e（设置/卡片/PiP） | 只看画面；凭据入钥匙串；高级连接入口；共享 genericCameraSources 契约 |
+| W3-CAM-2 Windows 只读通用摄像机 | — | Neon Mid | Wave 2B | PR | DONE | #530 34f5c5b（对齐 #529 夹具；凭据内存注入，不落 yaml） | 同契约；凭据入 Credential Manager；复用 go2rtc 监督与 Job Object |
 
 ## Wave 3A：P2 插件化与多厂商
 

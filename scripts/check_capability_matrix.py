@@ -315,6 +315,25 @@ CODE_ANCHORS = (
         },
     },
     {
+        "id": "generic-camera",
+        "macos": {
+            "path": "Sources/MijiaCore/HomeStore+GenericCameras.swift",
+            "symbol": "saveGenericCamera",
+        },
+        "windows": {
+            "checks": (
+                {
+                    "path": "windows/src/core/genericCameras.ts",
+                    "symbol": "buildGenericCameraSourceUrl",
+                },
+                {
+                    "path": "windows/src/ui/genericCameraSettingsView.ts",
+                    "symbol": "bindGenericCameraSettingsEvents",
+                },
+            ),
+        },
+    },
+    {
         "id": "camera-live",
         "macos": {
             "path": "Sources/MenuBarMijiaApp/CameraLivePanelController.swift",

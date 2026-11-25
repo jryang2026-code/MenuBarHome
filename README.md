@@ -181,7 +181,7 @@ The tray app uses the Classic two-column split-tile panel by default and also of
 ## What Else It Does
 
 - **Works with a lot of devices.** Lights, ACs, fans, plugs, TVs (including MIoT TVs and set-top boxes), curtains, clothes airers, air purifiers, humidifiers, fridges, water heaters, washers and dryers, bath heaters, range hoods, robot vacuums, cameras, locks, and all sorts of sensors. Mi devices without a dedicated card still get a generic one. [Check your own devices here.](docs/supported-devices.md)
-- **Camera windows, still wall & PiP.** Click a camera for a pinned live view (independent always-on-top PiP on Windows, 3:4 portrait layout for doorbells, optional auto-open countdown on doorbell/alarm events with up to 2 pinned switches, and listen-only audio where supported by the stream). A 2×2 still wall keeps recent snapshots and a 7-day camera event history; dual-lens models can switch lenses, and pan-tilt cameras turn when you drag the picture.
+- **Camera windows, still wall & PiP.** Click a camera for a pinned live view (independent always-on-top PiP on Windows, 3:4 portrait layout for doorbells, optional auto-open countdown on doorbell/alarm events with up to 2 pinned switches, and listen-only audio where supported by the stream). A 2×2 still wall keeps recent snapshots and a 7-day camera event history; dual-lens models can switch lenses, and pan-tilt cameras turn when you drag the picture. Non-Xiaomi IP cameras (RTSP, ONVIF, Hikvision ISAPI, Dahua, Tapo) can be added under Settings → advanced connections as **read-only generic cameras**: live view and PiP only (no PTZ, talk-back, or camera settings), LAN or `.local` hosts unless you explicitly allow a public address, and passwords kept in the Keychain / Windows Credential Manager, never in config files.
 - **Climate trends and energy logs.** Sensors show a 24-hour hover sparkline right on the card plus full 24-hour and 7-day charts; plugs keep a daily energy log, and with your electricity rate entered you get a cost estimate.
 - **Moods, room groups & "For You" suggestions.** Save a room's current device states as a local **Mood** (up to 32) and replay it with one click or a global hotkey. Rooms with two or more controllable devices of the same kind show auto-group capsules. Based on what you usually turn on and when, "For You" surfaces likely next actions; habits stay on your machine and can be reviewed or cleared anytime.
 - **Multiple accounts, two sources & LAN-first speed.** Sign in to several Xiaomi accounts at once, or run Mi Home and Home Assistant side by side; the same physical device is merged automatically. Compatible Wi-Fi Mi devices prefer direct LAN control with explicit write acknowledgements, and macOS probes cloud-offline Xiaomi devices on the LAN as a read-only reachability hint.
@@ -239,6 +239,7 @@ macOS is a native Swift 6 app; Windows 11 is a separate Tauri v2 implementation.
 | Local commands and optional AI | ✅ | ✅ |
 | All Off and Undo | ✅ | ✅ |
 | Camera live view | ✅ | ✅ |
+| Read-only generic IP cameras (RTSP/ONVIF/ISAPI/Dahua/Tapo) | ✅ | ✅ |
 | Several Xiaomi accounts at once | ✅ | ✅ |
 | Mi Home + Home Assistant dual source | ✅ | ✅ |
 | Event automation | ✅ | ⚠️ partial |

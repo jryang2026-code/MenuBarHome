@@ -233,6 +233,13 @@
       "windows": "supported"
     },
     {
+      "id": "generic-camera",
+      "en": "Read-Only Generic Cameras",
+      "zh": "只读通用摄像机",
+      "macos": "supported",
+      "windows": "supported"
+    },
+    {
       "id": "layout-resize",
       "en": "Layout Editing Resize",
       "zh": "布局编辑调大小",

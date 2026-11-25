@@ -236,6 +236,10 @@ _Avoid_: Toast（瞬时提示）
 持久化 LIFO 状态栈（`automation_context_stack_v1`，上限 32 帧、12 小时有效期；`Sources/MijiaCore/AutomationContextStack.swift`、`windows/src/core/automationContextStack.ts`），仅记录触发自动化进入时改动的电源状态，在上下文退出且未被人工接管时恢复原状。
 _Avoid_: Undo banner（手动撤销横幅）
 
+**GenericCameraSource（只读通用摄像机）**：
+用户在设置中添加的非米家网络摄像机（`rtsp` / `onvif` / `isapi` / `dahua` / `tapo`），只读实时画面（`Sources/MijiaCore/GenericCameraSource.swift`、`windows/src/core/genericCameras.ts`，共享契约 `Shared/genericCameraSources.schema.json`）。凭据存于 `generic-camera:<id>`，仅在内存中交给 go2rtc。
+_Avoid_: IP camera integration（IP 摄像机集成）、ONVIF device（ONVIF 设备）
+
 **CameraEventStore / StillWall（摄像机事件库与 2×2 静态墙）**：
 7 天 / 500 条本机摄像机事件与抓拍缩略图存储（`Sources/MijiaCore/CameraEvent.swift`、`windows/src/core/cameraEventStore.ts`、`windows/src-tauri/src/camera_events.rs`），驱动最多 4 路摄像机的 2×2 静态墙，并配合 `CameraPipWatchPolicy`（`Sources/MijiaCore/CameraPipWatchPolicy.swift`、`windows/src/core/cameraPip.ts`）控制门铃/告警自动弹出画中画倒计时与固定开关。
 _Avoid_: Cloud recording（云录像）
