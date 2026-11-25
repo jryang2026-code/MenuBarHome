@@ -847,6 +847,8 @@ struct SensorCardView: View {
                 Text(String(format: "%.0f%%", h))
                     .font(.system(size: DesignTokens.TypeSize.title, weight: .semibold, design: .rounded))
                     .monospacedDigit()
+                    // Rolls with the arc, like the temperature beside it.
+                    .contentTransition(.numericText(value: h))
                     .foregroundStyle(humidityColor)
             }
         }

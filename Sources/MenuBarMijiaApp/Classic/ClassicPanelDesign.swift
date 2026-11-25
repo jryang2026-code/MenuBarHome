@@ -74,15 +74,19 @@ struct ClassicHoldToConfirmButton: View {
         .padding(.horizontal, 11)
         .padding(.vertical, 5)
         .background {
-            GeometryReader { geo in
-                Rectangle()
-                    .fill(Color.accentColor.opacity(0.28))
-                    .frame(width: holding ? geo.size.width : 0)
-            }
-            .clipShape(capsule)
+            // Scaling (not resizing) the fill keeps the 0.6 s sweep on the compositor.
+            Rectangle()
+                .fill(Color.accentColor.opacity(0.28))
+                .scaleEffect(x: holding ? 1 : 0, y: 1, anchor: .leading)
+                .clipShape(capsule)
         }
         .modifier(ClassicChipSurface(shape: capsule, tint: nil, interactive: true, clear: false))
-        .scaleEffect(holding && !reduceMotion ? 0.95 : 1)
+        // The press dip answers at once; only the fill runs at hold speed.
+        .animation(AppleMotion.resolve(.pressFeedback, reduceMotion: reduceMotion)) {
+            $0.scaleEffect(holding && !reduceMotion ? 0.96 : 1)
+        }
+        // The fill is the hold's progress readout, so it keeps its linear sweep under Reduce Motion.
+        .transaction { if reduceMotion { $0.disablesAnimations = false } }
         .contentShape(capsule)
         .onTapGesture {
             guard !PanelTransientUIState.shared.shouldSuppressTap() else { return }

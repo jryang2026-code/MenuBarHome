@@ -202,7 +202,7 @@ struct ClassicClimatePanelModule: View {
             }
         }
         .frame(height: 4)
-        .animation(AppleMotion.resolve(.pressFeedback, reduceMotion: reduceMotion), value: spec.targetTemperature)
+        .animation(AppleMotion.resolve(.valueChange, reduceMotion: reduceMotion), value: spec.targetTemperature)
     }
 
     private func stepButton(symbol: String, delta: Double) -> some View {
@@ -236,7 +236,7 @@ struct ClassicClimatePanelModule: View {
             ForEach(modes, id: \.self) { mode in
                 let selected = isRunning && spec.hvacMode == mode
                 Button {
-                    withAnimation(AppleMotion.resolve(.surface, reduceMotion: reduceMotion)) {
+                    withAnimation(AppleMotion.resolve(.control, reduceMotion: reduceMotion)) {
                         store.setClimateMode(device.id, mode: mode)
                     }
                 } label: {
@@ -275,7 +275,7 @@ struct ClassicClimatePanelModule: View {
                 HStack(spacing: 4) {
                     ForEach(options, id: \.self) { option in
                         Button(Self.localizeOption(option)) {
-                            withAnimation(AppleMotion.resolve(.reveal, reduceMotion: reduceMotion)) { onSelect(option) }
+                            withAnimation(AppleMotion.resolve(.control, reduceMotion: reduceMotion)) { onSelect(option) }
                         }
                         .buttonStyle(ClassicPillActionButtonStyle(isSelected: option == current, tintColor: accent))
                     }

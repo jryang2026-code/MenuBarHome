@@ -95,7 +95,6 @@ extension ControlCenterPanel {
                 }
                 HStack(spacing: 5) {
                     BreathingDot(color: statusDotColor)
-                        .id(statusDotColor)
                     statusSubtitle
                 }
             }
@@ -1398,7 +1397,6 @@ struct PanelConnectionFooterBar: View {
     var body: some View {
         HStack(spacing: 8) {
             BreathingDot(color: status.color)
-                .id(status.color)
             PanelConnectionStatusControl(store: store, theme: theme)
             Spacer(minLength: 4)
 

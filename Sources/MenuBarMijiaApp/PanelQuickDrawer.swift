@@ -80,6 +80,7 @@ final class PanelQuickDrawerState {
 /// Single compact, discoverable affordance that folds/expands both Quick Actions/Scenes and
 /// "For You" suggestions without adding an extra vertical layer to the first screen.
 struct PanelQuickDrawerToggleButton: View {
+    @Environment(\.effectiveReduceMotion) private var reduceMotion
     let isExpanded: Bool
     let theme: PanelTheme
     let action: () -> Void
@@ -94,8 +95,11 @@ struct PanelQuickDrawerToggleButton: View {
                     .font(.system(size: DesignTokens.TypeSize.caption, weight: isExpanded ? .semibold : .medium))
                     .foregroundStyle(isExpanded ? Color.primary : Color.secondary)
                     .lineLimit(1)
-                Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                Image(systemName: "chevron.down")
                     .font(.system(size: DesignTokens.TypeSize.footnote - 1, weight: .bold))
+                    .animation(AppleMotion.resolve(.control, reduceMotion: reduceMotion)) {
+                        $0.rotationEffect(.degrees(isExpanded ? 180 : 0))
+                    }
                     .foregroundStyle(isExpanded ? Color.accentColor : Color.secondary)
             }
             .padding(.horizontal, 9)
