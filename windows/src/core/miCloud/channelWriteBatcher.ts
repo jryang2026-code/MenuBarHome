@@ -34,6 +34,8 @@ export interface EnqueueChannelWriteItem {
   readonly property: MiotPropWrite;
   readonly spec: MiotDeviceSpec;
   readonly client: ChannelWriteClient;
+  readonly userInitiated?: boolean;
+  readonly beforeSend?: () => void;
   readonly stillAllowed?: () => boolean | Promise<boolean>;
   readonly executeSingle: () => Promise<boolean | null>;
 }
@@ -112,8 +114,12 @@ export class MiCloudChannelWriteBatcher {
       while (!this.shutDown && (this.pending.get(batchKey)?.length ?? 0) > 0) {
         await this.sleep(CHANNEL_WRITE_BATCH_WINDOW_MS);
         if (this.shutDown) break;
-        const window = [...(this.pending.get(batchKey) ?? [])];
-        if (window.length === 0) continue;
+        const queued = this.pending.get(batchKey) ?? [];
+        const first = queued[0];
+        if (!first) continue;
+        const userInitiated = first.userInitiated !== false;
+        // Automation writes must not borrow a manual batch's reserved capacity.
+        const window = queued.filter((entry) => (entry.userInitiated !== false) === userInitiated);
         const windowIds = new Set(window.map((e) => e.id));
         const rejectedIds = new Set<number>();
         for (const entry of window) {
@@ -140,7 +146,7 @@ export class MiCloudChannelWriteBatcher {
           try { only.resolve(await only.executeSingle()); } catch (err) { only.reject(err); }
           continue;
         }
-        await this.sendBatch(batch);
+        await this.sendBatch(batch, userInitiated);
       }
     } finally {
       this.draining.delete(batchKey);
@@ -151,7 +157,7 @@ export class MiCloudChannelWriteBatcher {
     }
   }
 
-  private async sendBatch(batch: readonly PendingChannelWrite[]): Promise<void> {
+  private async sendBatch(batch: readonly PendingChannelWrite[], userInitiated: boolean): Promise<void> {
     const first = batch[0]!;
     const writes = batch.map((e) => e.property);
     if (isMainsBreaker(first.spec) || !writes.every((w) => isChannelPowerProperty(w, first.spec))) {
@@ -159,6 +165,10 @@ export class MiCloudChannelWriteBatcher {
       for (const entry of batch) entry.reject(error);
       return;
     }
+    const beforeSend = (): void => {
+      if (this.shutDown) throw aborted("Channel write batcher shut down");
+      for (const entry of batch) entry.beforeSend?.();
+    };
     const beforeFallback = async (): Promise<void> => {
       if (this.shutDown) throw aborted("Channel write batcher shut down");
       for (const entry of batch) {
@@ -168,9 +178,10 @@ export class MiCloudChannelWriteBatcher {
       }
     };
     try {
+      beforeSend();
       const verdicts = typeof first.client.setPropVerdicts === "function"
-        ? await first.client.setPropVerdicts(writes, beforeFallback)
-        : (await first.client.setProps(writes, beforeFallback), writes.map(() => null));
+        ? await first.client.setPropVerdicts(writes, beforeFallback, userInitiated, beforeSend)
+        : (await first.client.setProps(writes, beforeFallback, userInitiated, beforeSend), writes.map(() => null));
       if (verdicts.length !== batch.length) throw new MiCloudError("badResponse", "Incomplete channel write verdicts");
       batch.forEach((entry, i) => (verdicts[i] ? entry.reject(verdicts[i]) : entry.resolve(null)));
     } catch (error) {

@@ -1,3 +1,4 @@
+import { miCloudRateLimiter } from "../src/core/miCloud/rateLimiter.js";
 import assert from "node:assert/strict";
 import { setImmediate } from "node:timers/promises";
 import { afterEach, beforeEach, describe, it } from "node:test";
@@ -24,8 +25,6 @@ import {
   isXiaomiRateLimitError,
   miSessionFingerprint,
   miSessionRejectedStorageKey,
-  recordXiaomiRateLimit,
-  shouldSkipSilentPollForBackoff,
 } from "../src/core/pollingPolicy.js";
 import { HomeAssistantSynthesizer, haServiceCall, parseCachedHAHome } from "../src/core/homeAssistant.js";
 import { DEVICE_CATEGORY_IDS } from "../src/core/capabilityManifest.js";
@@ -245,17 +244,6 @@ describe("A2: PollingPolicy cadence, 20-round topology split, 429 backoff, lock 
       [1, 2, 3, 4, 5, 6, 10].map((hit) => PollingPolicy.rateLimitBackoffMs(hit)),
       [60_000, 120_000, 240_000, 480_000, 900_000, 900_000, 900_000],
     );
-
-    const host = {};
-    const baseNow = 1_000_000;
-    assert.equal(recordXiaomiRateLimit(host, SESSION_A, baseNow), 60_000);
-    assert.equal(shouldSkipSilentPollForBackoff(host, SESSION_A, baseNow + 59_999), true);
-    assert.equal(shouldSkipSilentPollForBackoff(host, SESSION_A, baseNow + 60_000), false);
-    assert.equal(recordXiaomiRateLimit(host, SESSION_A, baseNow + 60_000), 120_000);
-    assert.equal(recordXiaomiRateLimit(host, SESSION_A, baseNow + 180_000), 240_000);
-    assert.equal(recordXiaomiRateLimit(host, SESSION_A, baseNow + 420_000), 480_000);
-    assert.equal(recordXiaomiRateLimit(host, SESSION_A, baseNow + 900_000), 900_000);
-    assert.equal(recordXiaomiRateLimit(host, SESSION_A, baseNow + 1_800_000), 900_000);
   });
 
   it("decodes HTTP 429 as rate-limit error even when body contains non-zero JSON code", () => {
@@ -461,7 +449,7 @@ describe("A2: PollingPolicy cadence, 20-round topology split, 429 backoff, lock 
     assert.ok(deviceListCalls >= 3, "a full discovery, not a cached topology round");
   });
 
-  it("skips silent polls during 429 backoff or workstation lock, allows manual refresh to clear backoff, and resumes on unlock", async () => {
+  it("pauses silent and manual cloud reads during 429 backoff and skips locked workstation polling", async () => {
     let return429 = false;
     let workstationLocked = false;
     let httpCalls = 0;
@@ -476,7 +464,7 @@ describe("A2: PollingPolicy cadence, 20-round topology split, 429 backoff, lock 
           if (url.includes("miot-spec.org")) return okResponse(LIGHT_SPEC_RAW);
           httpCalls += 1;
           if (return429) {
-            return { status: 429, headers: {}, body: JSON.stringify({ code: -1, message: "too many requests" }) };
+            return { status: 429, headers: { "Retry-After": "60" }, body: JSON.stringify({ code: -1, message: "too many requests" }) };
           }
           if (url.includes("device_list")) {
             return okResponse({
@@ -516,7 +504,7 @@ describe("A2: PollingPolicy cadence, 20-round topology split, 429 backoff, lock 
     const before429 = httpCalls;
     await app.refreshDevices(true);
     assert.equal(httpCalls, before429 + 1);
-    const backoffUntil = getXiaomiBackoffUntilMs(app, SESSION_A);
+    const backoffUntil = getXiaomiBackoffUntilMs(SESSION_A);
     assert.ok(backoffUntil !== null && backoffUntil > Date.now() + 50_000, "60s backoff armed");
 
     await app.refreshDevices(true);
@@ -524,7 +512,8 @@ describe("A2: PollingPolicy cadence, 20-round topology split, 429 backoff, lock 
 
     return429 = false;
     await app.refreshDevices(false);
-    assert.equal(getXiaomiBackoffUntilMs(app, SESSION_A), null, "successful refresh clears 429 backoff");
+    assert.equal(httpCalls, before429 + 1, "manual refresh respects Retry-After");
+    await miCloudRateLimiter.clear();
 
     const beforeLockCalls = httpCalls;
     workstationLocked = true;

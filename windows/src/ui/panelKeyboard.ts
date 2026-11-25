@@ -12,6 +12,7 @@ import {
   shouldKeepPopoverPinned,
 } from "./speechGuard.js";
 import { invokeTauriVoid } from "./transport.js";
+import { dismissPendingMoodPrompts } from "./moods.js";
 
 function allTiles(host: MenuMijiaWindowsApp): HTMLElement[] {
   return [...host.root.querySelectorAll<HTMLElement>("[data-tile-id]:not([data-exit-ghost])")];
@@ -283,6 +284,12 @@ export function handlePanelKey(host: MenuMijiaWindowsApp, event: KeyboardEvent):
     if (hasPendingUrlConfirmation(host)) {
       event.preventDefault();
       dismissPendingUrlConfirmation(host, false);
+      return true;
+    }
+    if (host.pendingMoodConfirm !== null || host.pendingMoodCapture !== null) {
+      event.preventDefault();
+      dismissPendingMoodPrompts(host);
+      host.render();
       return true;
     }
     if (isConnectionsAndDiagModalOpen(host)) {

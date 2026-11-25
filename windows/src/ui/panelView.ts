@@ -29,6 +29,7 @@ import { effectivePanelHomeTitle, getCachedUnsupportedDeviceCountOnHost } from "
 import { syncEnergyHostOnRender } from "./energySettingsView.js";
 import { syncSensorHistoryHost } from "./sensorHistoryView.js";
 import { getPanelThemeProfile } from "./panelTheme.js";
+import { renderMoodActionsRow } from "./moods.js";
 import { renderPersistentUndoPill, tr3 } from "./undoTracker.js";
 import { ManualControlPolicy } from "../core/assistant.js";
 import { renderDiffPreviewCard, renderRoomAutoGroupBar } from "./roomGroupActions.js";
@@ -220,6 +221,7 @@ export function renderPanel(host: MenuMijiaWindowsApp): void {
           </div>
 
           ${quickStrip(host)}
+          ${renderMoodActionsRow(host)}
 
           <div class="cc-room-bar">
             <div class="cc-room-track">

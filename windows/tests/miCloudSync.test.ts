@@ -1,3 +1,4 @@
+import { MiCloudRateLimiter } from "../src/core/miCloud/rateLimiter.js";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -594,7 +595,7 @@ describe("MiCloud transport redirect lock, rate-limit non-fallback, and spec ded
         headers: {},
         body: JSON.stringify({ code: -1, message: "too many requests" }),
       };
-    });
+    }, new MiCloudRateLimiter());
 
     await assert.rejects(
       () => client429.deviceList(),
@@ -612,7 +613,7 @@ describe("MiCloud transport redirect lock, rate-limit non-fallback, and spec ded
         headers: {},
         body: JSON.stringify({ code: -1, message: "请求过于频繁，请稍后再试" }),
       };
-    });
+    }, new MiCloudRateLimiter());
     await assert.rejects(
       () => clientRateApi.homeRooms(),
       (err: unknown) => err instanceof MiCloudError && err.kind === "api" && err.code === -1,
@@ -628,7 +629,7 @@ describe("MiCloud transport redirect lock, rate-limit non-fallback, and spec ded
         headers: {},
         body: JSON.stringify({ code: -1, message: "rate limit exceeded" }),
       };
-    });
+    }, new MiCloudRateLimiter());
     await assert.rejects(
       () => fetchCameraMetadataList(camClient),
       (err: unknown) => err instanceof MiCloudError && err.code === 429,
@@ -654,7 +655,7 @@ describe("MiCloud transport redirect lock, rate-limit non-fallback, and spec ded
         headers: {},
         body: JSON.stringify({ code: -1, message: "too many requests" }),
       };
-    });
+    }, new MiCloudRateLimiter());
     await assert.rejects(
       () =>
         resolveLiveCameraTarget(

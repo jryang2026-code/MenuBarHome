@@ -548,7 +548,7 @@ public final class SpeechInputController {
         submittedCommandsCount += 1
         submittedCommands.append(text)
         Task { @MainActor in
-            await store.runAssistantCommand(text)
+            await store.runAssistantCommand(text, preferDiffPreview: true)
             if case .done = store.assistantState {
                 self.draft = ""
             }
@@ -634,6 +634,10 @@ struct AssistantResponseArea: View {
                 .transition(.opacity.combined(with: .move(edge: .top)))
             }
 
+            if let preview = store.pendingDiffPreview {
+                diffPreviewCard(preview)
+            }
+
             if let consent = store.pendingCloudConsent {
                 cloudConsentRow(consent)
             }
@@ -654,6 +658,7 @@ struct AssistantResponseArea: View {
         .animation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion), value: store.assistantState)
         .animation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion), value: store.assistantSuggestions)
         .animation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion), value: store.pendingCloudConsent)
+        .animation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion), value: store.pendingDiffPreview)
         .animation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion), value: store.scheduledCommands)
         .animation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion), value: store.visiblePausedScheduledCommands)
         .animation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion), value: asksForTimerNotifications)
@@ -665,6 +670,7 @@ struct AssistantResponseArea: View {
             guard !Task.isCancelled,
                   case .done = store.assistantState,
                   store.pendingCloudConsent == nil,
+                  store.pendingDiffPreview == nil,
                   store.scheduledCommands.isEmpty,
                   store.visiblePausedScheduledCommands.isEmpty,
                   !asksForTimerNotifications else { return }
@@ -681,6 +687,68 @@ struct AssistantResponseArea: View {
                 asksForTimerNotifications = true
             }
         }
+    }
+
+    /// Inline diff preview under the omnibar for multi-device or high-risk commands.
+    private func diffPreviewCard(_ preview: AssistantDiffPreview) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline, spacing: 5) {
+                Image(systemName: preview.hasHighRiskDevice ? "exclamationmark.triangle.fill" : "list.bullet.rectangle")
+                    .foregroundStyle(preview.hasHighRiskDevice ? Color.orange : Color.accentColor)
+                Text(preview.title)
+                    .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
+                    .foregroundStyle(preview.hasHighRiskDevice ? Color.orange : .primary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                ForEach(preview.items) { item in
+                    HStack(spacing: 6) {
+                        if item.isHighRisk {
+                            Image(systemName: "shield.lefthalf.filled")
+                                .foregroundStyle(Color.orange)
+                        }
+                        Text(item.deviceName)
+                            .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
+                            .foregroundStyle(.primary)
+                            .lineLimit(1)
+                        Spacer(minLength: 4)
+                        Text("\(item.fromState) → \(item.toState)")
+                            .font(.system(size: DesignTokens.TypeSize.caption))
+                            .foregroundStyle(item.isHighRisk ? Color.orange : DesignTokens.secondaryText)
+                            .lineLimit(1)
+                    }
+                }
+            }
+            HStack(spacing: 6) {
+                Spacer(minLength: 0)
+                Button(L10n.tr("取消", "Cancel")) {
+                    store.cancelPendingDiffPreview()
+                }
+                .buttonStyle(PillActionButtonStyle())
+                Button(L10n.tr("确认执行", "Confirm")) {
+                    Task { @MainActor in
+                        _ = await store.confirmPendingDiffPreview()
+                        if case .done = store.assistantState {
+                            speech.draft = ""
+                        }
+                    }
+                }
+                .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: preview.hasHighRiskDevice ? .orange : .accentColor))
+            }
+        }
+        .padding(8)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color.primary.opacity(0.05))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(
+                    preview.hasHighRiskDevice ? Color.orange.opacity(0.45) : Color.primary.opacity(0.10),
+                    lineWidth: DesignTokens.hairline
+                )
+        )
+        .transition(.opacity.combined(with: .move(edge: .top)))
     }
 
     /// Asked once per AI service before anything is sent to the cloud (#20).
@@ -819,6 +887,7 @@ struct AssistantResponseArea: View {
         if let speechError = speech.errorMessage {
             return (speechError, true, false, nil)
         }
+        if store.pendingDiffPreview != nil { return nil }
         switch store.assistantState {
         case .done(let text):
             return (

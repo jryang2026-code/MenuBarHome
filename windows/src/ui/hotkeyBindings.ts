@@ -14,6 +14,8 @@ import { parseGlobalShortcut, withAliases } from "./panelPrefs.js";
 import { buildHostCapabilityContext, isDualSourceEnabled } from "./cloudRefresh.js";
 import { invokeTauriVoid, isWorkstationLockBlockingControl } from "./transport.js";
 import { toggleDeviceForHost } from "./bindEvents.js";
+import type { MoodSnapshot } from "../core/moodSnapshot.js";
+import { applyMoodForHost } from "./moods.js";
 import type { MenuMijiaWindowsApp } from "./app.js";
 
 export const MAX_CUSTOM_HOTKEY_BINDINGS = 8;
@@ -21,7 +23,8 @@ export const MAX_CUSTOM_HOTKEY_BINDINGS = 8;
 export type HotkeyBindingTarget =
   | { readonly kind: "devicePower"; readonly deviceId: string }
   | { readonly kind: "scene"; readonly sceneId: string }
-  | { readonly kind: "quickAction"; readonly actionId: QuickActionId };
+  | { readonly kind: "quickAction"; readonly actionId: QuickActionId }
+  | { readonly kind: "mood"; readonly moodId: string };
 
 export interface HotkeyBinding {
   readonly id: string;
@@ -48,6 +51,8 @@ export type HotkeyExecutionOutcome =
   | { readonly status: "executed"; readonly message: string }
   | { readonly status: "blocked"; readonly message: string }
   | { readonly status: "needsConfirmation"; readonly message: string }
+  | { readonly status: "cancelled"; readonly message: string }
+  | { readonly status: "failed"; readonly message: string }
   | { readonly status: "unavailable"; readonly label: string };
 
 const KNOWN_WINDOWS_SYSTEM_SHORTCUTS: Readonly<Record<string, string>> = {
@@ -97,6 +102,9 @@ function parseBindingTarget(raw: unknown): HotkeyBindingTarget | null {
   if (obj.kind === "quickAction" && isQuickActionId(obj.actionId)) {
     return { kind: "quickAction", actionId: obj.actionId };
   }
+  if (obj.kind === "mood" && typeof obj.moodId === "string" && obj.moodId.trim()) {
+    return { kind: "mood", moodId: obj.moodId.trim() };
+  }
   return null;
 }
 
@@ -122,7 +130,9 @@ export function normalizeCustomHotkeyBindings(raw: unknown): HotkeyBinding[] {
           ? quickActionTitle(target.actionId)
           : target.kind === "devicePower"
             ? target.deviceId
-            : target.sceneId;
+            : target.kind === "scene"
+              ? target.sceneId
+              : target.moodId;
     seenIds.add(id);
     seenShortcuts.add(shortcut);
     out.push({ id, target, targetLabel, shortcut });
@@ -200,6 +210,7 @@ export function isHotkeyBindingTargetAvailable(
   binding: HotkeyBinding,
   devices: readonly SmartDevice[],
   scenes: readonly HomeScene[],
+  moods: readonly MoodSnapshot[] = [],
 ): boolean {
   const target = binding.target;
   switch (target.kind) {
@@ -211,6 +222,8 @@ export function isHotkeyBindingTargetAvailable(
       return scenes.some((s) => s.id === target.sceneId);
     case "quickAction":
       return devices.length > 0;
+    case "mood":
+      return moods.some((m) => m.id === target.moodId);
   }
 }
 
@@ -218,6 +231,7 @@ export function resolvedHotkeyBindingLabel(
   binding: HotkeyBinding,
   devices: readonly SmartDevice[],
   scenes: readonly HomeScene[],
+  moods: readonly MoodSnapshot[] = [],
 ): string {
   const target = binding.target;
   switch (target.kind) {
@@ -227,6 +241,8 @@ export function resolvedHotkeyBindingLabel(
       return scenes.find((s) => s.id === target.sceneId)?.name ?? binding.targetLabel;
     case "quickAction":
       return quickActionTitle(target.actionId);
+    case "mood":
+      return moods.find((m) => m.id === target.moodId)?.name ?? binding.targetLabel;
   }
 }
 
@@ -238,6 +254,8 @@ export function encodeHotkeyTargetKey(target: HotkeyBindingTarget): string {
       return `scene:${target.sceneId}`;
     case "quickAction":
       return `quick:${target.actionId}`;
+    case "mood":
+      return `mood:${target.moodId}`;
   }
 }
 
@@ -253,6 +271,10 @@ export function decodeHotkeyTargetKey(raw: string): HotkeyBindingTarget | null {
   if (raw.startsWith("quick:")) {
     const actionId = raw.slice("quick:".length).trim();
     return isQuickActionId(actionId) ? { kind: "quickAction", actionId } : null;
+  }
+  if (raw.startsWith("mood:")) {
+    const moodId = raw.slice("mood:".length).trim();
+    return moodId ? { kind: "mood", moodId } : null;
   }
   return null;
 }
@@ -390,6 +412,18 @@ export async function executeCustomHotkeyBinding(
       return { status: "blocked", message };
     }
     return { status: "executed", message };
+  }
+
+  if (target.kind === "mood") {
+    const mood = host.moods.find((m) => m.id === target.moodId);
+    if (!mood) {
+      return { status: "unavailable", label: binding.targetLabel };
+    }
+    const outcome = await applyMoodForHost(host, mood.id, { openPanelForModal: true });
+    if ("message" in outcome && outcome.message) {
+      await notifyIfPanelHidden(outcome.message);
+    }
+    return outcome;
   }
 
   // quickAction

@@ -193,6 +193,17 @@ import {
   type CameraStillWallRenderState,
 } from "../core/cameraEventStore.js";
 import { scheduledCommandIdentity, setScheduledCommandsRunning } from "./scheduledCommands.js";
+import { loadMoodSnapshots, MOOD_SNAPSHOTS_STORAGE_KEY, type MoodSnapshot } from "../core/moodSnapshot.js";
+import {
+  applyMoodForHost,
+  captureMoodForHost,
+  deleteMoodForHost,
+  dismissPendingMoodPrompts,
+  renderMoodPrompt,
+  type PendingMoodCapturePrompt,
+  type PendingMoodConfirmationPrompt,
+} from "./moods.js";
+import type { HotkeyExecutionOutcome } from "./hotkeyBindings.js";
 
 export { undoBannerMs, undoDeviceCount } from "./undoTracker.js";
 
@@ -398,6 +409,29 @@ export class MenuMijiaWindowsApp {
   /** Room buttons keyed by id: two homes may both have a 客厅. */
   public get roomOptions(): RoomOption[] {
     return activeRoomOptions(this);
+  }
+
+  public moodAvailableRooms(): RoomOption[] {
+    return this.roomOptions;
+  }
+
+  public get activeRoomId(): string | null {
+    return this.listCut.kind === "room" ? this.listCut.roomId : null;
+  }
+
+  public captureMood(
+    name: string,
+    roomId: string | null = this.listCut.kind === "room" ? this.listCut.roomId : null,
+  ): boolean {
+    return captureMoodForHost(this, name, roomId);
+  }
+
+  public deleteMood(id: string): void {
+    deleteMoodForHost(this, id);
+  }
+
+  public applyMood(id: string): Promise<HotkeyExecutionOutcome> {
+    return applyMoodForHost(this, id);
   }
 
   public selectRoom(roomId: string | null, roomName?: string): void {
@@ -659,6 +693,10 @@ export class MenuMijiaWindowsApp {
   public customHotkeyRegistrationErrors: Record<string, string> = {};
   public isAddingCustomHotkey = false;
   public newCustomHotkeyTargetKey = "";
+  public moods: MoodSnapshot[] = loadMoodSnapshots();
+  public lastCoverPositions: Record<string, number> = {};
+  public pendingMoodCapture: PendingMoodCapturePrompt | null = null;
+  public pendingMoodConfirm: PendingMoodConfirmationPrompt | null = null;
   /** Retryable diagnostic when settings or credential vault reads failed during legacy migration. */
   public identityMigrationDiagnostic: string | null = null;
 
@@ -793,6 +831,11 @@ export class MenuMijiaWindowsApp {
         this.render();
         return;
       }
+      if (storageKey === MOOD_SNAPSHOTS_STORAGE_KEY) {
+        this.moods = loadMoodSnapshots();
+        this.render();
+        return;
+      }
       if (storageKey && storageKey !== STORAGE_KEY) {
         return;
       }
@@ -802,14 +845,21 @@ export class MenuMijiaWindowsApp {
       if (!this.root.isConnected || !this.isStandaloneSettingsWindow) return;
       this.requestCloseSettingsSheet();
     };
+    const onCrossWindowMoodsSync = () => {
+      if (!this.root.isConnected) return;
+      this.moods = loadMoodSnapshots();
+      this.render();
+    };
     window.addEventListener("menumijia:select-settings-tab", onSelectSettingsTab);
     window.addEventListener("menumijia:settings-sync", onCrossWindowSettingsSync);
+    window.addEventListener("menumijia:moods-sync", onCrossWindowMoodsSync);
     window.addEventListener("menumijia:request-close-settings", onRequestCloseSettings);
     window.addEventListener("storage", onCrossWindowSettingsSync);
     this.appDisposers.push(
       () => window.removeEventListener("blur", onBlurCancelAllOff),
       () => window.removeEventListener("menumijia:select-settings-tab", onSelectSettingsTab),
       () => window.removeEventListener("menumijia:settings-sync", onCrossWindowSettingsSync),
+      () => window.removeEventListener("menumijia:moods-sync", onCrossWindowMoodsSync),
       () => window.removeEventListener("menumijia:request-close-settings", onRequestCloseSettings),
       () => window.removeEventListener("storage", onCrossWindowSettingsSync),
       unsubscribeHaLifecycle,
@@ -930,6 +980,7 @@ export class MenuMijiaWindowsApp {
     }
     this.loadedSettings = reloaded;
     this.settings = reloaded.settings;
+    this.moods = loadMoodSnapshots();
     // `writeSettingsForStorage` strips credential secrets from localStorage, so keep live
     // in-memory credentials intact across cross-window sync (unless sign-out/revocation
     // cleared them) while re-hydrating authoritatively from CredentialVault below.
@@ -1080,6 +1131,7 @@ export class MenuMijiaWindowsApp {
     this.pipeline.clearTransientState();
     this.pipeline.eventScope.abort();
     this.clearPendingHighRisk();
+    dismissPendingMoodPrompts(this);
     this.cancelAllOffHold();
     for (const stop of this.appDisposers.splice(0)) stop();
     if (this.cameraLive.activeLiveCameraId !== null || this.cameraLive.liveCameraKeepAliveTimer !== null) {
@@ -1106,7 +1158,9 @@ export class MenuMijiaWindowsApp {
       this.isEditingLayout ||
       this.isHomeMenuOpen ||
       this.ctxMenu !== null ||
-      this.prompt !== null
+      this.prompt !== null ||
+      this.pendingMoodCapture !== null ||
+      this.pendingMoodConfirm !== null
     );
   }
 
@@ -2352,7 +2406,7 @@ export class MenuMijiaWindowsApp {
   }
 
   public renderPrompt(): string {
-    return renderUrlConfirmationPrompt(this) || renderPrompt(this);
+    return renderUrlConfirmationPrompt(this) || renderMoodPrompt(this) || renderPrompt(this);
   }
 
   public renderOnboardingModal(): string {
@@ -2587,6 +2641,7 @@ export class MenuMijiaWindowsApp {
         this.isRoomBrowseMenuOpen ||
         this.expandedDeviceId !== null;
       this.clearPendingHighRisk({ syncPin: false });
+      dismissPendingMoodPrompts(this);
       resetPanelSplitTransientState(this);
       if (hadTransientSplit) {
         this.expandedDeviceId = null;

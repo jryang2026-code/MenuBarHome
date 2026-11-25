@@ -37,7 +37,6 @@ import {
 import {
   clearCachedXiaomiTopology,
   clearPersistedMiSessionExpired,
-  clearXiaomiRateLimitBackoff,
 } from "../core/pollingPolicy.js";
 import { withAliases, type HomeOption, type LayoutPrefs } from "./panelPrefs.js";
 import { normalizePanelTheme } from "./panelTheme.js";
@@ -620,7 +619,6 @@ export async function signOutAndRevokeAll(host: SettingsEventsHost): Promise<voi
   (host as { miSessionExpired?: boolean }).miSessionExpired = false;
   clearPersistedMiSessionExpired();
   clearCachedXiaomiTopology(host);
-  clearXiaomiRateLimitBackoff(host);
   host.cloudValuesStale = false;
   (host as { expandedDeviceId?: string | null }).expandedDeviceId = null;
   (host as { waitingDeviceIds?: Set<string> }).waitingDeviceIds?.clear();
