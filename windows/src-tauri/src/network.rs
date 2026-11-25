@@ -1,4 +1,6 @@
 use super::*;
+use std::io;
+use std::net::{IpAddr, SocketAddr};
 
 /// Configured origins retain the protocol and port, so permission for one service
 /// cannot authorize another service on the same host (#29).
@@ -137,6 +139,7 @@ struct HttpRedirectScope {
     allowed_origins: HashSet<String>,
     original_origin: String,
     ha_scope: Option<String>,
+    address_policy: EndpointAddressPolicy,
 }
 
 // Reqwest polls its redirect middleware inside the request future. Scope the authorization
@@ -147,6 +150,8 @@ tokio::task_local! {
 
 static HTTP_CLIENT: LazyLock<Result<reqwest::Client, String>> = LazyLock::new(|| {
     reqwest::Client::builder()
+        .no_proxy()
+        .dns_resolver(std::sync::Arc::new(PolicyAwareResolver))
         .redirect(reqwest::redirect::Policy::custom(|attempt| {
             let allowed = HTTP_REDIRECT_SCOPE
                 .try_with(|scope| {
@@ -161,6 +166,94 @@ static HTTP_CLIENT: LazyLock<Result<reqwest::Client, String>> = LazyLock::new(||
         .build()
         .map_err(|error| format_reqwest_error(&error))
 });
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AddressClass {
+    Public,
+    Lan,
+    Prohibited,
+}
+
+fn address_class(ip: IpAddr) -> AddressClass {
+    match ip {
+        IpAddr::V4(ip) => match ip.octets() {
+            [0 | 127 | 224..=255, ..] => AddressClass::Prohibited,
+            // Shared address space (100.64/10) includes Tailscale endpoints.
+            [10, ..] | [172, 16..=31, ..] | [192, 168, ..] | [169, 254, ..]
+            | [100, 64..=127, ..] => AddressClass::Lan,
+            _ => AddressClass::Public,
+        },
+        IpAddr::V6(ip) => {
+            if let Some(mapped) = ip.to_ipv4_mapped() {
+                return address_class(mapped.into());
+            }
+            match ip.segments() {
+                [0, 0, 0, 0, 0, 0, ..] | [0xfec0..=0xffff, ..] => AddressClass::Prohibited,
+                [0xfc00..=0xfdff | 0xfe80..=0xfebf, ..] => AddressClass::Lan,
+                _ => AddressClass::Public,
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct EndpointAddressPolicy {
+    requires_lan: bool,
+    #[cfg(test)]
+    fixture: Option<SocketAddr>,
+}
+
+impl EndpointAddressPolicy {
+    pub(crate) fn for_endpoint(host: &str, _port: u16, scheme: &str) -> Self {
+        let host = normalize_host(host);
+        let local = host.parse::<IpAddr>().map_or_else(
+            |_| is_local_network_host(&host),
+            |ip| address_class(ip) == AddressClass::Lan,
+        );
+        Self {
+            requires_lan: local && matches!(scheme, "http" | "ws"),
+            #[cfg(test)]
+            fixture: host.parse::<IpAddr>().ok().map(|ip| SocketAddr::new(ip, _port))
+                .filter(|addr| LOOPBACK_FIXTURES.read().unwrap().contains(addr)),
+        }
+    }
+
+    pub(crate) fn validate(self, addresses: impl IntoIterator<Item = SocketAddr>) -> io::Result<Vec<SocketAddr>> {
+        let addresses: Vec<_> = addresses.into_iter().collect();
+        if addresses.is_empty() {
+            return Err(io::Error::new(io::ErrorKind::NotFound, "endpoint has no resolved addresses"));
+        }
+        for address in &addresses {
+            #[cfg(test)]
+            if self.fixture == Some(*address) {
+                continue;
+            }
+            let class = address_class(address.ip());
+            if class == AddressClass::Prohibited || (self.requires_lan && class == AddressClass::Public) {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "endpoint resolved to a prohibited IP address or a public IP for local plaintext traffic",
+                ));
+            }
+        }
+        Ok(addresses)
+    }
+}
+
+struct PolicyAwareResolver;
+
+impl reqwest::dns::Resolve for PolicyAwareResolver {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        let policy = HTTP_REDIRECT_SCOPE.try_with(|scope| scope.address_policy);
+        Box::pin(async move {
+            let policy = policy.map_err(|_| {
+                io::Error::new(io::ErrorKind::PermissionDenied, "missing endpoint address policy")
+            })?;
+            let addresses = tokio::net::lookup_host((name.as_str(), 0)).await?;
+            Ok(Box::new(policy.validate(addresses)?.into_iter()) as reqwest::dns::Addrs)
+        })
+    }
+}
 
 fn in_ha_scope(url: &reqwest::Url, scope: &str) -> bool {
     let path = url.path().to_ascii_lowercase();
@@ -198,12 +291,21 @@ pub(crate) async fn native_http_with_scope(
         return Err("Home Assistant HTTP request is outside the registered scope".into());
     }
 
+    // Each origin has one address policy, including when a connection is reused.
+    // Hyper skips the resolver for IP literals, so validate them before checkout.
+    let host = normalize_host(parsed_url.host_str().expect("validated request host"));
+    let port = parsed_url.port_or_known_default().expect("validated request port");
+    let address_policy = EndpointAddressPolicy::for_endpoint(&host, port, parsed_url.scheme());
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        address_policy.validate([SocketAddr::new(ip, port)]).map_err(|error| error.to_string())?;
+    }
     let follow = follow_redirects.unwrap_or(true);
     let redirect_scope = HttpRedirectScope {
         follow,
         allowed_origins,
         original_origin: url_origin(&parsed_url).expect("validated request origin"),
         ha_scope,
+        address_policy,
     };
     let client = HTTP_CLIENT.as_ref().map_err(Clone::clone)?;
 
@@ -283,6 +385,23 @@ pub(crate) async fn native_http_with_scope(
         headers: out_headers,
         body: text,
     })
+}
+
+#[cfg(test)]
+static LOOPBACK_FIXTURES: LazyLock<RwLock<HashSet<SocketAddr>>> = LazyLock::new(Default::default);
+
+#[cfg(test)]
+pub(crate) fn allow_loopback_fixture(listener: &std::net::TcpListener) -> impl Drop + use<> {
+    struct Fixture(SocketAddr);
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            LOOPBACK_FIXTURES.write().unwrap().remove(&self.0);
+        }
+    }
+    let address = listener.local_addr().unwrap();
+    assert!(address.ip().is_loopback());
+    LOOPBACK_FIXTURES.write().unwrap().insert(address);
+    Fixture(address)
 }
 
 pub(crate) fn origin_from_endpoint(raw: &str) -> Option<String> {
@@ -630,6 +749,82 @@ pub(crate) fn set_service_endpoints(
 }
 
 #[cfg(test)]
+mod address_policy_tests {
+    use super::*;
+    use reqwest::dns::Resolve;
+
+    #[test]
+    fn classifies_ip_literals_and_ipv4_mapped_addresses() {
+        for (raw, expected) in [
+            ("0.0.0.0", AddressClass::Prohibited),
+            ("0.1.2.3", AddressClass::Prohibited),
+            ("127.255.0.1", AddressClass::Prohibited),
+            ("::", AddressClass::Prohibited),
+            ("::1", AddressClass::Prohibited),
+            ("::ffff:127.0.0.1", AddressClass::Prohibited),
+            ("169.254.1.2", AddressClass::Lan),
+            ("::ffff:192.168.1.2", AddressClass::Lan),
+            ("fe80::1", AddressClass::Lan),
+            ("febf::1", AddressClass::Lan),
+            ("fc00::1", AddressClass::Lan),
+            ("fdff::1", AddressClass::Lan),
+            ("100.64.0.1", AddressClass::Lan),
+            ("100.127.255.255", AddressClass::Lan),
+            ("100.128.0.1", AddressClass::Public),
+            ("::ffff:8.8.8.8", AddressClass::Public),
+            ("2001:4860::8888", AddressClass::Public),
+        ] {
+            assert_eq!(address_class(raw.parse().unwrap()), expected, "{raw}");
+        }
+    }
+
+    #[test]
+    fn validates_dns_answers_for_the_configured_host_and_scheme() {
+        let lan = "192.168.1.2:8123".parse::<SocketAddr>().unwrap();
+        for (host, scheme, other, allowed) in [
+            ("cloud.example", "https", "100.64.0.1:8123", true),
+            ("cloud.example", "http", "192.0.2.1:8123", true),
+            ("cloud.example", "https", "127.0.0.1:8123", false),
+            ("home.lan", "http", "192.0.2.1:8123", false),
+            ("home.lan", "https", "192.0.2.1:8123", true),
+            ("home.local", "ws", "192.0.2.1:8123", false),
+            ("home.local", "wss", "192.0.2.1:8123", true),
+            ("home.lan", "http", "[::ffff:127.0.0.1]:8123", false),
+            ("192.168.1.2", "http", "192.0.2.1:8123", false),
+        ] {
+            let policy = EndpointAddressPolicy::for_endpoint(host, lan.port(), scheme);
+            let addresses = [lan, other.parse().unwrap()];
+            let result = policy.validate(addresses);
+            if allowed {
+                assert_eq!(result.unwrap(), addresses, "{scheme}://{host} with {other}");
+            } else {
+                assert_eq!(result.unwrap_err().kind(), io::ErrorKind::PermissionDenied, "{scheme}://{host} with {other}");
+            }
+        }
+    }
+
+    #[test]
+    fn resolver_refuses_localhost_dns_under_a_public_scope() {
+        let scope = HttpRedirectScope {
+            follow: false,
+            allowed_origins: HashSet::new(),
+            original_origin: "https://cloud.example:443".into(),
+            ha_scope: None,
+            address_policy: EndpointAddressPolicy::for_endpoint("cloud.example", 443, "https"),
+        };
+        let result = tauri::async_runtime::block_on(HTTP_REDIRECT_SCOPE.scope(
+            scope,
+            async { PolicyAwareResolver.resolve("localhost".parse().unwrap()).await },
+        ));
+        let error = result.err().expect("loopback DNS answer was accepted");
+        assert_eq!(
+            error.downcast_ref::<io::Error>().unwrap().kind(),
+            io::ErrorKind::PermissionDenied,
+        );
+    }
+}
+
+#[cfg(test)]
 mod ha_scope_tests {
     use super::*;
 
@@ -679,6 +874,7 @@ mod ha_scope_tests {
 
         let _guard = crate::ORIGIN_TEST_LOCK.lock().unwrap();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let _fixture = crate::network::allow_loopback_fixture(&listener);
         let base = format!("http://{}", listener.local_addr().unwrap());
         let origin = normalize_extra_origin(&base).unwrap();
         EXTRA_ALLOWED_ORIGINS.write().unwrap().insert(origin.clone());
@@ -728,6 +924,7 @@ mod ha_scope_tests {
     fn redirect_outside_the_registered_ha_scope_is_stopped() {
         let _guard = crate::ORIGIN_TEST_LOCK.lock().unwrap();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let _fixture = crate::network::allow_loopback_fixture(&listener);
         let base = format!("http://{}", listener.local_addr().unwrap());
         let origin = normalize_extra_origin(&base).unwrap();
         EXTRA_ALLOWED_ORIGINS.write().unwrap().insert(origin.clone());

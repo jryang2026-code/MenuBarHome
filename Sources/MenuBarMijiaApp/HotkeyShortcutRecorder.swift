@@ -450,6 +450,8 @@ struct CustomHotkeyBindingsSection: View {
             return store.devices.first(where: { $0.id == id })?.name ?? id
         case .scene(let id):
             return store.scenes.first(where: { $0.id == id })?.name ?? id
+        case .mood(let id):
+            return store.moods.first(where: { $0.id == id })?.name ?? id
         case .quickAction(let action):
             return action.title
         }
@@ -459,6 +461,7 @@ struct CustomHotkeyBindingsSection: View {
         switch target {
         case .devicePower: return "power"
         case .scene: return "sparkles"
+        case .mood: return "lightspectrum.horizontal"
         case .quickAction(let action): return action.sfSymbolName
         }
     }
@@ -479,6 +482,7 @@ struct CustomHotkeyBindingsSection: View {
                     Button {
                         selectedTarget = toggleableDevices.first.map { .devicePower(deviceId: $0.id) }
                             ?? store.scenes.first.map { .scene(sceneId: $0.id) }
+                            ?? store.moods.first.map { .mood(moodId: $0.id) }
                             ?? .quickAction(.lightsOff)
                         state.setBindingConflictError(nil)
                         isAdding = true
@@ -525,8 +529,8 @@ struct CustomHotkeyBindingsSection: View {
 
     @ViewBuilder
     private func bindingRow(_ binding: HotkeyBinding) -> some View {
-        let available = binding.isTargetAvailable(devices: store.devices, scenes: store.scenes)
-        let displayName = binding.resolvedDisplayName(devices: store.devices, scenes: store.scenes)
+        let available = binding.isTargetAvailable(devices: store.devices, scenes: store.scenes, moods: store.moods)
+        let displayName = binding.resolvedDisplayName(devices: store.devices, scenes: store.scenes, moods: store.moods)
         let isRecordingThis = recorder.recordingTarget == .binding(id: binding.id)
 
         VStack(alignment: .leading, spacing: 4) {
@@ -610,6 +614,13 @@ struct CustomHotkeyBindingsSection: View {
                     Section(L10n.tr("场景", "Scenes")) {
                         ForEach(store.scenes, id: \.id) { scene in
                             Text(scene.name).tag(Optional(HotkeyBindingTarget.scene(sceneId: scene.id)))
+                        }
+                    }
+                }
+                if !store.moods.isEmpty {
+                    Section(L10n.tr("氛围", "Moods")) {
+                        ForEach(store.moods) { mood in
+                            Text(mood.name).tag(Optional(HotkeyBindingTarget.mood(moodId: mood.id)))
                         }
                     }
                 }

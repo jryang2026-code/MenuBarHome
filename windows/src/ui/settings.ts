@@ -17,6 +17,7 @@ import { MI_ACCOUNT_CAPABILITY_STORAGE_KEY } from "../core/miAccountControl.js";
 import { normalizeMiCloudRegion } from "../core/miCloudClient.js";
 import type { SmartDevice } from "../core/models.js";
 import { SCHEDULED_COMMANDS_STORAGE_KEY } from "../core/scheduledCommands.js";
+import { normalizeCustomHotkeyBindings } from "./hotkeyBindings.js";
 import {
   DEFAULT_GLOBAL_SHORTCUT,
   PANEL_HEIGHTS,
@@ -376,6 +377,7 @@ export function loadSettings(): LoadedSettings {
             : "system",
         enableGlobalHotkey: typeof parsed.enableGlobalHotkey === "boolean" ? parsed.enableGlobalHotkey : true,
         globalHotkey: normalizeGlobalShortcut(parsed.globalHotkey),
+        customHotkeyBindings: normalizeCustomHotkeyBindings(parsed.customHotkeyBindings),
         launchAtLogin: typeof parsed.launchAtLogin === "boolean" ? parsed.launchAtLogin : false,
         blockControlWhileLocked:
           typeof parsed.blockControlWhileLocked === "boolean" ? parsed.blockControlWhileLocked : true,
@@ -496,6 +498,7 @@ function buildDefaultSettings(): PersistedSettings {
     temperatureUnit: "system",
     enableGlobalHotkey: true,
     globalHotkey: DEFAULT_GLOBAL_SHORTCUT,
+    customHotkeyBindings: [],
     launchAtLogin: false,
     blockControlWhileLocked: true,
     voiceInputEnabled: true,
