@@ -41,6 +41,7 @@ export interface SourceSwitchHost {
 /** Structural slice the home switch operates on; see `switchHome`. */
 export interface SwitchHomeHost {
   readonly sourceEpoch: SourceEpoch;
+  isResolvingIntent: boolean;
   isSyncingCloud: boolean;
   aiProactiveSuggestions: AssistantSuggestion[] | null;
   aiProactiveSignature: string | null;
@@ -115,6 +116,9 @@ export function switchHome(host: SwitchHomeHost): void {
   // resolves the pending promise with `false` (and drops the inline buttons) instead of running
   // a scene that may not even exist in the newly selected home.
   host.clearPendingHighRisk();
+  // The in-flight natural command will discard its late result on the homeRevision guard, so it
+  // cannot clear this flag itself; the switch owns the spinner from here.
+  host.isResolvingIntent = false;
   host.isSyncingCloud = false;
   // A different home is a different suggestion context even at the same ambient signature (Codex #116 review).
   host.aiProactiveSuggestions = null;

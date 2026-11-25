@@ -1,8 +1,12 @@
 import assert from "node:assert/strict";
 import { describe, it, type TestContext } from "node:test";
+import { setImmediate } from "node:timers/promises";
 
+import { assistantEndpointIdentity } from "../src/core/assistant.js";
 import { buildDiffPreview } from "../src/core/assistantDiffPreview.js";
 import { setLanguage } from "../src/core/i18n.js";
+import type { HttpRequest } from "../src/core/miCloudClient.js";
+import type { HttpResponse } from "../src/core/miCloud/session.js";
 import type { DeviceCommand, SmartDevice } from "../src/core/models.js";
 import { buildRoomAutoGroups } from "../src/core/roomAutoGroup.js";
 import { MenuMijiaWindowsApp } from "../src/ui/app.js";
@@ -82,6 +86,47 @@ function armAllPending(app: MenuMijiaWindowsApp): void {
   }];
 }
 
+interface DeferredTransport {
+  calls: string[];
+  release: (index: number, response: HttpResponse) => void;
+}
+
+function installDeferredTransport(app: MenuMijiaWindowsApp): DeferredTransport {
+  const calls: string[] = [];
+  const releases: Array<(response: HttpResponse) => void> = [];
+  Object.defineProperty(app, "transport", {
+    configurable: true,
+    value: (request: HttpRequest): Promise<HttpResponse> => {
+      calls.push(request.url);
+      return new Promise<HttpResponse>((resolve) => { releases.push(resolve); });
+    },
+  });
+  return {
+    calls,
+    release: (index, response) => { releases[index]?.(response); },
+  };
+}
+
+function chatCompletion(content: unknown): HttpResponse {
+  return {
+    status: 200,
+    headers: {},
+    body: JSON.stringify({ choices: [{ message: { content: JSON.stringify(content) } }] }),
+  };
+}
+
+function enableAiForRequest(app: MenuMijiaWindowsApp): void {
+  const endpoint = assistantEndpointIdentity("https://openrouter.ai/api/v1");
+  assert.ok(endpoint);
+  app.settings.assistantBaseURL = "https://openrouter.ai/api/v1";
+  app.settings.assistantModel = "gpt-4o-mini";
+  app.settings.openRouterApiKey = "sk-or-test";
+  app.settings.assistantKeyEndpoint = endpoint;
+  if (!app.settings.cloudConsentEndpoints.includes(endpoint)) {
+    app.settings.cloudConsentEndpoints.push(endpoint);
+  }
+}
+
 /** Mounts a fresh happy-dom window and app, and counts every device write the UI attempts. */
 function setup(test: TestContext): { app: MenuMijiaWindowsApp; writes: DeviceCommand[] } {
   const dom = mountTestWindow({ stubInterval: true });
@@ -135,6 +180,60 @@ describe("pending confirmations cannot survive a home/source switch (§13)", () 
     assert.equal(app.pendingRoomGroupConfirm, null, "the room-group confirmation must not survive the source switch");
     assert.deepEqual(app.pendingSuggestions, [], "the source switch drops old suggestions");
     assert.ok(app.sourceRevision > sourceBefore, "switchSource advances the source level");
+  });
+});
+
+describe("a home switch discards a natural-command result still awaiting model resolution", () => {
+  const utterance = "魔法彩虹泡泡机启动";
+  const modelActions = {
+    reply: "已关闭两盏灯",
+    actions: [
+      { device: "l1", op: "power", value: false },
+      { device: "l2", op: "power", value: false },
+    ],
+  };
+
+  it("arms no diff preview for the previous home", async (test) => {
+    const { app, writes } = setup(test);
+    app.devices = [light("l1", "客厅灯"), light("l2", "卧室灯")];
+    enableAiForRequest(app);
+    const transport = installDeferredTransport(app);
+
+    const pending = app.handleNaturalCommand(utterance, false, true);
+    await setImmediate();
+    assert.equal(transport.calls.length, 1, "the model request was in flight before the switch");
+
+    const homeBefore = app.homeRevision;
+    switchHome(app);
+    assert.ok(app.homeRevision > homeBefore, "switchHome advances only the home revision");
+    assert.equal(app.sourceRevision, 0, "sourceRevision alone would not detect this race");
+    transport.release(0, chatCompletion(modelActions));
+    await pending;
+    await setImmediate();
+
+    assert.equal(app.pendingDiffPreview, null, "the stale resolution must not re-arm a diff preview");
+    assert.deepEqual(writes, [], "discarded results must never write devices");
+    assert.equal(app.isResolvingIntent, false, "the home switch owns the spinner after invalidating the run");
+  });
+
+  it("executes no intents from the previous home", async (test) => {
+    const { app, writes } = setup(test);
+    app.devices = [light("l1", "客厅灯"), light("l2", "卧室灯")];
+    enableAiForRequest(app);
+    const transport = installDeferredTransport(app);
+
+    const pending = app.handleNaturalCommand(utterance);
+    await setImmediate();
+    assert.equal(transport.calls.length, 1);
+
+    switchHome(app);
+    transport.release(0, chatCompletion(modelActions));
+    await pending;
+    await setImmediate();
+
+    assert.deepEqual(writes, [], "no Home A intent may run after the switch to Home B");
+    assert.equal(app.pendingDiffPreview, null);
+    assert.equal(app.isResolvingIntent, false);
   });
 });
 
