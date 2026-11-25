@@ -359,6 +359,14 @@ pub(crate) fn escape_toast_xml(raw: &str) -> String {
 }
 
 const TOAST_URL_PREFIX: &str = "menumijia://notification/";
+const MAX_TOAST_ACTIONS: usize = 2;
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ToastAction {
+    pub(crate) label: String,
+    pub(crate) arguments: String,
+}
 
 #[derive(Clone, Copy, Default, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -394,7 +402,6 @@ fn is_valid_toast_device_id(id: &str) -> bool {
         && id.bytes().all(|b| b.is_ascii_alphanumeric() || b"_.:@-".contains(&b))
 }
 
-#[cfg(test)]
 pub(crate) fn parse_toast_activation(url: &str) -> Option<&str> {
     let (kind, id) = url.strip_prefix(TOAST_URL_PREFIX)?.split_once('/')?;
     if !matches!(kind, "safety" | "doorbell" | "leak" | "smoke" | "gas")
@@ -405,11 +412,25 @@ pub(crate) fn parse_toast_activation(url: &str) -> Option<&str> {
     Some(id)
 }
 
+pub(crate) fn is_valid_toast_action_url(url: &str) -> bool {
+    if url.len() > 320 {
+        return false;
+    }
+    if let Some(token) = url.strip_prefix("menumijia://notification/action/") {
+        return (16..=128).contains(&token.len())
+            && token
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-');
+    }
+    parse_toast_activation(url).is_some()
+}
+
 fn format_windows_toast_xml(
     title: &str,
     body: &str,
     kind: ToastKind,
     device_id: Option<&str>,
+    actions: Option<&[ToastAction]>,
 ) -> Result<String, String> {
     let clean_title = escape_toast_xml(&clamp_utf16_units(title.trim(), 120));
     let clean_body = escape_toast_xml(&clamp_utf16_units(body.trim(), 240));
@@ -421,8 +442,31 @@ fn format_windows_toast_xml(
         .filter(|id| is_valid_toast_device_id(id))
         .map(|id| format!(" activationType=\"protocol\" launch=\"{TOAST_URL_PREFIX}{}/{id}\"", kind.as_str()))
         .unwrap_or_default();
+    let actions_xml = actions
+        .map(|list| {
+            let mut rendered = String::new();
+            for action in list.iter().filter(|a| is_valid_toast_action_url(a.arguments.trim())) {
+                let clean_label = escape_toast_xml(&clamp_utf16_units(action.label.trim(), 40));
+                if clean_label.is_empty() {
+                    continue;
+                }
+                let args = action.arguments.trim();
+                rendered.push_str(&format!(
+                    "<action content=\"{clean_label}\" arguments=\"{args}\" activationType=\"protocol\"/>"
+                ));
+                if rendered.matches("<action ").count() >= MAX_TOAST_ACTIONS {
+                    break;
+                }
+            }
+            if rendered.is_empty() {
+                String::new()
+            } else {
+                format!("<actions>{rendered}</actions>")
+            }
+        })
+        .unwrap_or_default();
     Ok(format!(
-        "<toast{scenario}{activation}><visual><binding template=\"ToastGeneric\"><text>{clean_title}</text><text>{clean_body}</text></binding></visual></toast>"
+        "<toast{scenario}{activation}><visual><binding template=\"ToastGeneric\"><text>{clean_title}</text><text>{clean_body}</text></binding></visual>{actions_xml}</toast>"
     ))
 }
 
@@ -527,6 +571,7 @@ pub(crate) async fn send_desktop_notification(
     body: String,
     kind: Option<ToastKind>,
     device_id: Option<String>,
+    actions: Option<Vec<ToastAction>>,
 ) -> Result<(), String> {
     let kind = kind.unwrap_or_default();
     #[cfg(windows)]
@@ -538,7 +583,14 @@ pub(crate) async fn send_desktop_notification(
             let use_winrt =
                 !cfg!(debug_assertions) && !tauri::is_dev() && is_toast_registered(&aumid);
             let activation_device_id = if use_winrt { device_id.as_deref() } else { None };
-            let xml = format_windows_toast_xml(&title, &body, kind, activation_device_id)?;
+            let activation_actions = if use_winrt { actions.as_deref() } else { None };
+            let xml = format_windows_toast_xml(
+                &title,
+                &body,
+                kind,
+                activation_device_id,
+                activation_actions,
+            )?;
             let winrt_result = use_winrt.then(|| {
                 show_winrt_toast(&aumid, &xml, kind).map_err(|err| {
                     let message: Vec<u16> = format!("WinRT 系统通知发送失败，尝试 PowerShell：{err}\n")
@@ -565,7 +617,16 @@ pub(crate) async fn send_desktop_notification(
     }
     #[cfg(not(windows))]
     {
-        let _ = (app, format_windows_toast_xml(&title, &body, kind, device_id.as_deref())?);
+        let _ = (
+            app,
+            format_windows_toast_xml(
+                &title,
+                &body,
+                kind,
+                device_id.as_deref(),
+                actions.as_deref(),
+            )?,
+        );
     }
     Ok(())
 }
@@ -755,17 +816,20 @@ mod tests {
             "点击 '查看' \"画面\"\n第二行",
             ToastKind::Doorbell,
             Some("camera.front_door"),
+            None,
         )
         .expect("valid toast xml");
         assert!(xml.contains("&lt;前门&gt; &amp; 告警"));
         assert!(xml.contains("&apos;查看&apos; &quot;画面&quot; 第二行"));
         assert!(xml.contains("activationType=\"protocol\" launch=\"menumijia://notification/doorbell/camera.front_door\""));
         assert!(!xml.contains("scenario="));
+        assert!(!xml.contains("<actions>"));
         let curly = format_windows_toast_xml(
             "小明’s 传感器’; calc.exe; #",
             "‘注入测试’ ‚ ‛ <toast>",
             ToastKind::Smoke,
             Some("invalid/id"),
+            None,
         )
         .expect("curly single quotes toast xml");
         assert!(curly.contains("小明’s 传感器’; calc.exe; #"));
@@ -774,7 +838,62 @@ mod tests {
         assert!(!curly.contains("launch="));
         assert!(WINDOWS_TOAST_POWERSHELL_SCRIPT.contains("$doc.LoadXml([string]$env:MMB_TOAST_XML)"));
         assert!(!WINDOWS_TOAST_POWERSHELL_SCRIPT.contains("{}"));
-        assert!(format_windows_toast_xml("   ", "\n\t", ToastKind::Safety, None).is_err());
+        assert!(format_windows_toast_xml("   ", "\n\t", ToastKind::Safety, None, None).is_err());
+    }
+
+    #[test]
+    fn windows_toast_xml_formats_bounded_safe_actions_and_rejects_invalid_urls() {
+        let valid_token = "0123456789abcdef0123456789abcdef";
+        let actions = vec![
+            ToastAction {
+                label: "立即关闭 <1>".to_string(),
+                arguments: format!("menumijia://notification/action/{valid_token}"),
+            },
+            ToastAction {
+                label: "查看".to_string(),
+                arguments: "menumijia://notification/safety/plug.coffee".to_string(),
+            },
+            ToastAction {
+                label: "多余第三个按钮".to_string(),
+                arguments: "menumijia://notification/safety/plug.other".to_string(),
+            },
+        ];
+        let xml = format_windows_toast_xml(
+            "咖啡机已开启",
+            "超过 45 分钟",
+            ToastKind::Safety,
+            Some("plug.coffee"),
+            Some(&actions),
+        )
+        .expect("valid interactive toast xml");
+        assert!(xml.contains("<actions>"));
+        assert!(xml.contains("<action content=\"立即关闭 &lt;1&gt;\" arguments=\"menumijia://notification/action/0123456789abcdef0123456789abcdef\" activationType=\"protocol\"/>"));
+        assert!(xml.contains("<action content=\"查看\" arguments=\"menumijia://notification/safety/plug.coffee\" activationType=\"protocol\"/>"));
+        assert!(!xml.contains("多余第三个按钮"));
+
+        let bad_actions = vec![
+            ToastAction {
+                label: "Bad".to_string(),
+                arguments: "https://evil.example/steal".to_string(),
+            },
+            ToastAction {
+                label: "Short".to_string(),
+                arguments: "menumijia://notification/action/short".to_string(),
+            },
+            ToastAction {
+                label: "Unlock".to_string(),
+                arguments: "menumijia://unlock?device=lock.1".to_string(),
+            },
+        ];
+        let cleaned = format_windows_toast_xml(
+            "门锁告警",
+            "异常",
+            ToastKind::Safety,
+            Some("lock.1"),
+            Some(&bad_actions),
+        )
+        .expect("bad actions dropped");
+        assert!(!cleaned.contains("<actions>"));
     }
 
     #[test]
@@ -782,7 +901,7 @@ mod tests {
         let registered = "example.registered";
         assert_eq!(powershell_toast_aumid(registered, Some(Ok(()))), None);
 
-        let xml = format_windows_toast_xml("漏水", "厨房", ToastKind::Leak, Some("sensor.leak"))
+        let xml = format_windows_toast_xml("漏水", "厨房", ToastKind::Leak, Some("sensor.leak"), None)
             .expect("valid alarm xml");
         for (winrt_result, expected_aumid) in [
             (Some(Err(())), registered),
