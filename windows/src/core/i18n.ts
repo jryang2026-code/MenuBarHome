@@ -463,6 +463,7 @@ const CATALOG: Readonly<Record<string, readonly [string, string]>> = {
   "学习使用习惯": ["学习使用习惯", "Learn usage habits"],
   "向 AI 附带习惯摘要": ["向 AI 附带习惯摘要", "Include habit summary for AI"],
   "输入一句话，预览附带的摘要": ["输入一句话，预览附带的摘要", "Type a command to preview the summary"],
+  "预览习惯摘要": ["预览习惯摘要", "Preview habit summary"],
   "不会发送习惯摘要": ["不会发送习惯摘要", "Nothing from your habits is sent."],
   "已学习 {count} 条习惯": ["已学习 {count} 条习惯", "Learned {count} habits"],
   "不影响定时任务与自动化规则": ["不影响定时任务与自动化规则", "Doesn't affect timers or automation rules"],

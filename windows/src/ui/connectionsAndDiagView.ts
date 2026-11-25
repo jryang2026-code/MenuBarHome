@@ -220,6 +220,8 @@ export const CONNECTIONS_DIAG_SEARCH_ANCHORS: readonly ConnectionsDiagSearchAnch
     section: SEC_DIAGNOSTICS,
     title: ["扫描未能显示的设备", "掃描未能顯示的裝置", "Scan Unsupported Devices"],
     synonyms: [
+      "查找未在面板显示的设备",
+      "查找未在面板顯示的裝置",
       "未显示",
       "不支持",
       "未识别",

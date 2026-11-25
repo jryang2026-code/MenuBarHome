@@ -1080,7 +1080,7 @@ function renderAssistantPanel(ctx: SettingsViewContext): string {
           tr3("不确定时先问我", "不確定時先問我", "Ask Me When Unsure"),
         )}</label>
         <p class="cc-field-hint" style="margin: 2px 0 0 0;">${ctx.escapeHtml(
-          tr3("高风险设备始终先确认", "高風險裝置一律先確認", "High-risk devices always ask first"),
+          tr3("高风险操作仍需确认", "高風險操作仍需確認", "High-risk actions still ask first"),
         )}</p>
       </div>
       <input id="settings-ask-when-unsure" type="checkbox" ${askWhenUnsure ? "checked" : ""} />
@@ -1088,9 +1088,9 @@ function renderAssistantPanel(ctx: SettingsViewContext): string {
 
     <p class="cc-field-hint" data-ai-cloud-notice>${ctx.escapeHtml(
       tr3(
-        "本机听不懂的指令，会连同设备名和状态发给 AI 服务；密钥只存本机",
-        "本機聽不懂的指令，會連同裝置名稱和狀態傳給 AI 服務；金鑰只存本機",
-        "Commands this PC can't parse are sent to the AI service with device names and states; keys stay on this PC",
+        "本机听不懂的指令和主动建议，会连同设备名和状态发给 AI 服务；密钥存在本机",
+        "本機聽不懂的指令和主動建議，會連同裝置名稱和狀態傳給 AI 服務；金鑰存在本機",
+        "Commands this PC can't parse, and proactive suggestions, send device names and states to the AI service; keys are stored on this PC and sent only to that service",
       ),
     )}</p>
 
@@ -1149,7 +1149,7 @@ function renderAssistantPanel(ctx: SettingsViewContext): string {
           <input type="checkbox" id="settings-habit-share" ${ctx.settings.habitShareEnabled ? "checked" : ""} />
           <span>${t("向 AI 附带习惯摘要")}</span>
         </label>
-        <input id="settings-habit-share-sample" class="cc-input" type="text" placeholder="${ctx.escapeHtml(t("输入一句话，预览附带的摘要"))}" />
+        <input id="settings-habit-share-sample" class="cc-input" type="text" aria-label="${ctx.escapeHtml(t("预览习惯摘要"))}" placeholder="${ctx.escapeHtml(t("输入一句话，预览附带的摘要"))}" />
         <div id="settings-habit-share-preview">${t("不会发送习惯摘要")}</div>
       </div>
       ${
@@ -1326,7 +1326,7 @@ function renderSafetyPanel(ctx: SettingsViewContext): string {
         <p class="cc-field-hint" style="margin: 2px 0 4px 0;">${t("插座、扫地机等默认不参与")}</p>
         <details class="cc-conn-secondary" data-conn-section="allOffDevices">
         <summary class="cc-conn-secondary-summary">${ctx.escapeHtml(t("已包含 {count} 台设备", {
-          count: allOffCandidates.filter((d) => joinsAllOff(d, ctx.settings.allOffOverrides)).length,
+          count: allOffCandidates.filter((d) => joinsAllOff(d, ctx.settings.allOffOverrides) && deviceCanTogglePower(d)).length,
         }))}</summary>
         <div class="cc-timers-stack">
           ${allOffCandidates
@@ -1406,9 +1406,9 @@ function renderAboutPanel(ctx: SettingsViewContext): string {
             )}</label>
             <p class="cc-field-hint" style="margin: 2px 0 0 0;">${ctx.escapeHtml(
               tr3(
-                "清除全部账号与密钥，回到示例家庭",
-                "清除全部帳號與金鑰，回到範例家庭",
-                "Clears every account and key and returns to the demo home",
+                "退出米家，清除 HA、AI 与本机集成密钥，回到示例家庭",
+                "登出米家，清除 HA、AI 與本機整合金鑰，回到範例家庭",
+                "Signs out of Xiaomi and clears HA, AI and local-integration keys, then returns to the demo home",
               ),
             )}</p>
           </div>

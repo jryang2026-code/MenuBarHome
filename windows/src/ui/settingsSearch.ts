@@ -357,7 +357,7 @@ const RAW_SPECS: readonly RawAnchorSpec[] = [
     anchor: "assistantProvider",
     section: SEC_ASSISTANT,
     title: ["服务商", "服務商", "Provider"],
-    synonyms: ["AI 服务商预设", "服务商预设", "启用 AI 助手", "AI 一句话控制", "AI 开关", "enable ai", "預設", "预设", "大模型", "自定义", "openrouter", "jev", "deepseek", "qwen", "千问", "glm", "智谱", "kimi", "openai", "gemini", "groq", "ollama", "custom", "provider", "preset"],
+    synonyms: ["AI 服务商预设", "AI 服務商預設", "服务商预设", "启用 AI 助手", "AI 一句话控制", "AI 开关", "enable ai", "預設", "预设", "大模型", "自定义", "openrouter", "jev", "deepseek", "qwen", "千问", "glm", "智谱", "kimi", "openai", "gemini", "groq", "ollama", "custom", "provider", "preset"],
   },
   {
     anchor: "proactiveSuggestions",
@@ -473,6 +473,8 @@ const RAW_SPECS: readonly RawAnchorSpec[] = [
       "耗电排行",
       "柱状图",
       "清空用电",
+      "清除用电记录",
+      "清除用電記錄",
       "energy",
       "electricity",
       "tariff",
@@ -648,7 +650,7 @@ const RAW_SPECS: readonly RawAnchorSpec[] = [
     anchor: "softwareUpdate",
     section: SEC_ABOUT,
     title: ["软件更新与自动检查", "軟體更新與自動檢查", "Software Update & Auto Check"],
-    synonyms: ["更新", "升级", "检查更新", "自动更新", "新版本", "下载更新", "update", "upgrade", "software update", "auto update", "check update", "release", "gengxin", "shengji"],
+    synonyms: ["更新", "升级", "检查更新", "自动检查更新", "自動檢查更新", "自动更新", "新版本", "下载更新", "update", "upgrade", "software update", "auto update", "check update", "release", "gengxin", "shengji"],
   },
   {
     anchor: "aboutVersion",
