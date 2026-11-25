@@ -17,6 +17,8 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
 
     private weak var store: HomeStore?
     private var hotKeyRef: EventHotKeyRef?
+    private var customHotKeyRefs: [UInt32: EventHotKeyRef] = [:]
+    private var customHotKeyBindings: [UInt32: HotkeyBinding] = [:]
     private var eventHandlerRef: EventHandlerRef?
     private var hotkeyHoldTask: Task<Void, Never>?
     private var hotkeyPressedAt: Date?
@@ -81,6 +83,7 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
             self?.handleVoiceInputPreferenceChanged(enabled: enabled)
         }
         syncGlobalHotKeyRegistration(enabled: store.enableGlobalHotkey)
+        applyCustomHotkeyBindings()
         MenuBarPanelController.shared.install(with: store)
         setupLocalKeyboardMonitors()
         setupNotificationsIfBundled()
@@ -131,6 +134,68 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
     /// Retry button next to the registration error.
     public func retryHotkeyRegistration() {
         applyHotkeyPreference()
+        applyCustomHotkeyBindings()
+    }
+
+    private static let customHotKeyIdBase: UInt32 = 100
+
+    public func applyCustomHotkeyBindings() {
+        unregisterCustomHotKeys()
+        let bindings = HotkeyBindingsPreferences.load()
+        HotkeySettingsState.shared.reloadBindings()
+        guard !bindings.isEmpty else { return }
+        guard installHotKeyHandler() else {
+            var errors: [String: String] = [:]
+            for binding in bindings {
+                errors[binding.id] = HotkeySettingsState.message(for: OSStatus(-1))
+            }
+            HotkeySettingsState.shared.setBindingErrors(errors)
+            return
+        }
+
+        var errors: [String: String] = [:]
+        for (index, binding) in bindings.enumerated() {
+            let carbonId = Self.customHotKeyIdBase + UInt32(index)
+            var ref: EventHotKeyRef?
+            let hotKeyID = EventHotKeyID(signature: OSType(0x4D49_4A41), id: carbonId)
+            let status = RegisterEventHotKey(
+                UInt32(binding.shortcut.keyCode),
+                Self.carbonModifiers(binding.shortcut.modifiers),
+                hotKeyID,
+                GetApplicationEventTarget(),
+                0,
+                &ref
+            )
+            if status == noErr, let ref {
+                customHotKeyRefs[carbonId] = ref
+                customHotKeyBindings[carbonId] = binding
+            } else {
+                errors[binding.id] = HotkeySettingsState.message(for: status)
+            }
+        }
+        HotkeySettingsState.shared.setBindingErrors(errors)
+    }
+
+    private func unregisterCustomHotKeys() {
+        for ref in customHotKeyRefs.values {
+            UnregisterEventHotKey(ref)
+        }
+        customHotKeyRefs.removeAll()
+        customHotKeyBindings.removeAll()
+    }
+
+    func handleCustomHotKeyPressed(id: UInt32) {
+        guard let store, let binding = customHotKeyBindings[id] else { return }
+        Task { @MainActor [weak self] in
+            let outcome = await store.executeHotkeyBinding(binding)
+            guard let self,
+                  !MenuBarPanelController.shared.isPanelVisible,
+                  let body = outcome.notificationBody else { return }
+            self.deliverExternalActionNotification(
+                title: L10n.tr("快捷热键", "Global Hotkey"),
+                body: body
+            )
+        }
     }
 
     private func unregisterGlobalHotKey() {
@@ -193,14 +258,31 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
             GetApplicationEventTarget(),
             { _, event, _ -> OSStatus in
                 guard let event else { return noErr }
+                var hotKeyID = EventHotKeyID()
+                let paramStatus = GetEventParameter(
+                    event,
+                    EventParamName(kEventParamDirectObject),
+                    EventParamType(typeEventHotKeyID),
+                    nil,
+                    MemoryLayout<EventHotKeyID>.size,
+                    nil,
+                    &hotKeyID
+                )
+                let id = paramStatus == noErr ? hotKeyID.id : 1
                 let kind = GetEventKind(event)
-                if kind == UInt32(kEventHotKeyPressed) {
-                    Task { @MainActor in
-                        HotkeyAndNotificationManager.shared.handleGlobalHotKeyPressed()
+                if id == 1 {
+                    if kind == UInt32(kEventHotKeyPressed) {
+                        Task { @MainActor in
+                            HotkeyAndNotificationManager.shared.handleGlobalHotKeyPressed()
+                        }
+                    } else if kind == UInt32(kEventHotKeyReleased) {
+                        Task { @MainActor in
+                            HotkeyAndNotificationManager.shared.handleGlobalHotKeyReleased()
+                        }
                     }
-                } else if kind == UInt32(kEventHotKeyReleased) {
+                } else if kind == UInt32(kEventHotKeyPressed) {
                     Task { @MainActor in
-                        HotkeyAndNotificationManager.shared.handleGlobalHotKeyReleased()
+                        HotkeyAndNotificationManager.shared.handleCustomHotKeyPressed(id: id)
                     }
                 }
                 return noErr
