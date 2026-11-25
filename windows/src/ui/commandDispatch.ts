@@ -5,6 +5,7 @@ import { getCachedXiaomiTopology, miSessionFingerprint } from "../core/pollingPo
 import { miSceneAccount } from "../core/miCloud/scenes.js";
 import { requestMiSceneConfirmation } from "./sceneConfirmation.js";
 import { isWorkstationLockBlockingControl } from "./transport.js";
+import { recordWorkstationLockBlock } from "./speechGuard.js";
 import type { MenuMijiaWindowsApp } from "./app.js";
 import type { UndoAction } from "./appTypes.js";
 import {
@@ -113,6 +114,8 @@ export interface SliderWriteRequest {
   readonly debounceHighRisk?: boolean;
   readonly execute?: () => Promise<void>;
   readonly onFailure?: () => void;
+  /** Re-checked against live state right before a queued write is sent; a message refuses it. */
+  readonly revalidateBeforeSend?: () => string | null;
 }
 
 interface SliderMailboxTiming {
@@ -282,6 +285,13 @@ function startSliderDrain(
         if (!isCurrent()) { slot.pending = null; break; }
         const current = slot.pending;
         slot.pending = null;
+        const refusal = current.revalidateBeforeSend?.() ?? null;
+        if (refusal !== null) {
+          host.replyBanner = { text: refusal, source: t("需要确认"), isError: true };
+          host.render();
+          current.onFailure?.();
+          continue;
+        }
         const startMs = state.timing.now();
         slot.startedCount += 1;
         const seqBefore = peekDeviceWriteSeq(host, current.device.id);
@@ -289,7 +299,9 @@ function startSliderDrain(
         try {
           await (current.execute
             ? current.execute()
-            : host.executeSingleCommand(current.device, current.command, current.summary, current.intent));
+            : host.executeSingleCommand(current.device, current.command, current.summary, current.intent, false, {
+                revalidateBeforeSend: current.revalidateBeforeSend,
+              }));
           const failed =
             (host.replyBanner !== prevBanner && host.replyBanner?.isError === true) ||
             (!current.execute && peekDeviceWriteSeq(host, current.device.id) === seqBefore);
@@ -349,7 +361,14 @@ export function submitSliderWrite(host: MenuMijiaWindowsApp, request: SliderWrit
 
 interface ApplyCommandOptions {
   readonly roomGroupCover?: boolean;
+  /** Set only for a scheduled timer fired by its own tick; every other write stays lock-guarded at send time. */
+  readonly allowWhileLocked?: boolean;
+  /** Re-checked synchronously right before the request leaves; a message refuses the write. */
+  readonly revalidateBeforeSend?: () => string | null;
 }
+
+/** A write refused by its live-state re-check right before the send; carries the user-facing reason. */
+class BeforeSendRefusalError extends Error {}
 
 const customApplyCommandByHost = new WeakMap<
   object,
@@ -1138,6 +1157,7 @@ export async function applyCommand(
 ): Promise<boolean> {
   const sourceRevision = host.sourceRevision;
   const homeRevision = host.homeRevision;
+  const allowWhileLocked = options?.allowWhileLocked === true;
   const originalCommand = command;
   const wasUndoRestore = undoRestoreCommands.has(originalCommand);
   const capturedFacet = wasUndoRestore
@@ -1169,10 +1189,13 @@ export async function applyCommand(
     if (
       !scene ||
       !miSceneBelongsToSelectedHome(host, scene) ||
-      await isWorkstationLockBlockingControl(host) ||
       sourceRevision !== host.sourceRevision ||
       homeRevision !== host.homeRevision
     ) {
+      return false;
+    }
+    if (await isWorkstationLockBlockingControl(host)) {
+      recordWorkstationLockBlock(host);
       return false;
     }
     if (!(await requestMiSceneConfirmation(host, scene, command))) {
@@ -1186,7 +1209,11 @@ export async function applyCommand(
       };
       return false;
     }
-    if (await isWorkstationLockBlockingControl(host) || sourceRevision !== host.sourceRevision ||
+    if (await isWorkstationLockBlockingControl(host)) {
+      recordWorkstationLockBlock(host);
+      return false;
+    }
+    if (sourceRevision !== host.sourceRevision ||
         homeRevision !== host.homeRevision || !miSceneBelongsToSelectedHome(host, scene) ||
         !host.scenes.some((row) => row.entityId === scene.entityId && row.miScene &&
           row.miScene.ownerUid === scene.miScene?.ownerUid)) return false;
@@ -1215,12 +1242,20 @@ export async function applyCommand(
     if (effectiveMode === "homeAssistant") {
       command = homeAssistantCommand(command, host.devices, host.deviceFacets);
     }
-    const readPower = await dispatchCloudCommand(host, command, readBackPower, originalCommand.entityId, userInitiated);
+    const readPower = await dispatchCloudCommand(
+      host, command, readBackPower, originalCommand.entityId, userInitiated, allowWhileLocked,
+      options?.revalidateBeforeSend,
+    );
     if (typeof readPower === "boolean") command = withReadPower(command, readPower);
   } catch (error) {
     if (sourceRevision !== host.sourceRevision) return false;
     const revertedCover = Boolean(coverWrite && stillOwnsWrite(host, claim));
     if (coverWrite && revertedCover) revertCoverOptimisticWrite(host, coverWrite);
+    if (error instanceof BeforeSendRefusalError) {
+      host.replyBanner = { text: error.message, source: t("需要确认"), isError: true };
+      host.render();
+      return false;
+    }
     if (error instanceof MiIOUnconfirmedWriteError && targetDeviceId !== null && stillOwnsWrite(host, claim)) {
       scheduleDelayedReadBack(host, targetDeviceId, READ_BACK_DELAY_MS);
     }
@@ -1498,15 +1533,13 @@ async function dispatchCloudCommand(
   readBackPower: boolean,
   originalEntityId: string,
   userInitiated: boolean,
+  allowWhileLocked: boolean,
+  revalidateBeforeSend?: () => string | null,
 ): Promise<boolean | null> {
   const sourceRevision = host.sourceRevision;
   const homeRevision = host.homeRevision;
   const isMiotChannelSwitch =
     !readBackPower && command.kind === "setSwitch" && parseMiotAddress(command.entityId) !== null;
-  const wasLocked =
-    isMiotChannelSwitch && host.settings?.blockControlWhileLocked
-      ? await isWorkstationLockBlockingControl(host)
-      : false;
   const provider = homeProviderFor(host);
   const beforeSend = () => {
     if (sourceRevision !== host.sourceRevision || homeRevision !== host.homeRevision) {
@@ -1530,15 +1563,28 @@ async function dispatchCloudCommand(
         throw new CapabilityGateError(gateFailure.reason, host.settings?.interfaceLanguage);
       }
     }
+    const refusal = revalidateBeforeSend?.() ?? null;
+    if (refusal !== null) throw new BeforeSendRefusalError(refusal);
+  };
+  // The lock can engage while the command waits (spec lookup, HA connection, LAN attempt), so it
+  // is re-checked after those waits and right before the first request; a refusal is recorded so
+  // a manual run of a missed timer goes back to the missed list.
+  const lockedOut = async (): Promise<boolean> => {
+    if (allowWhileLocked || !(await isWorkstationLockBlockingControl(host))) return false;
+    recordWorkstationLockBlock(host);
+    return true;
+  };
+  const lockGate = async (): Promise<void> => {
+    if (await lockedOut()) {
+      throw new DOMException("Control blocked while workstation is locked", "AbortError");
+    }
   };
   const stillAllowed = isMiotChannelSwitch
     ? async (): Promise<boolean> => {
         if (sourceRevision !== host.sourceRevision || homeRevision !== host.homeRevision) {
           return false;
         }
-        if (!wasLocked && (await isWorkstationLockBlockingControl(host))) {
-          return false;
-        }
+        if (await lockedOut()) return false;
         if (host.miSessionExpired && effectiveCommandBackend(host, command) === "xiaomiCloud") {
           return false;
         }
@@ -1556,10 +1602,10 @@ async function dispatchCloudCommand(
       userInitiated,
       beforeSend,
       stillAllowed,
+      // Attached only while the lock guard is on, so an unguarded send gains no extra awaits.
+      ...(!allowWhileLocked && host.settings?.blockControlWhileLocked ? { beforeSendAsync: lockGate } : {}),
       beforeFallback: async () => {
-        if (await isWorkstationLockBlockingControl(host)) {
-          throw new DOMException("Control blocked while workstation is locked", "AbortError");
-        }
+        await lockGate();
         beforeSend();
       },
     });

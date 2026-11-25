@@ -48,6 +48,11 @@ export interface ExecuteIntentsOptions {
   readonly recordHabits?: boolean;
   readonly userInitiated?: boolean;
   /**
+   * Only a scheduled timer fired by its own tick sets this: its steps keep running while Windows is
+   * locked. The flag travels down to the send-time lock re-checks, which run after awaits.
+   */
+  readonly allowWhileLocked?: boolean;
+  /**
    * Maximum number of per-device batches in flight simultaneously within a phase.
    * Bulk actions ("一键全关" / quick actions) default to `1` so mid-batch undo halts before the
    * very next device (`HomeStore+Undo.swift` parity); general multi-device intents default to `2`.
@@ -598,7 +603,7 @@ export async function executeIntents(
           if (command.kind === "activateScene") {
             const prevBanner = host.replyBanner;
             try {
-              const ok = await runningBatch.trackInFlight(() => host.applyCommand(command, false, options.userInitiated));
+              const ok = await runningBatch.trackInFlight(() => host.applyCommand(command, false, options.userInitiated, { allowWhileLocked: options.allowWhileLocked === true }));
               if (ok) {
                 succeeded += 1;
                 const entry = candidateIntents[intentIndex];
@@ -661,7 +666,7 @@ export async function executeIntents(
           await runningBatch.trackInFlight(async () => {
             try {
               const seqBefore = peekDeviceWriteSeq(host, deviceId);
-              const sendPromise = host.applyCommand(command, false, options.userInitiated);
+              const sendPromise = host.applyCommand(command, false, options.userInitiated, { allowWhileLocked: options.allowWhileLocked === true });
               const claim =
                 peekDeviceWriteSeq(host, deviceId) === seqBefore
                   ? claimDeviceWrite(host, deviceId)
@@ -863,6 +868,7 @@ export async function executeSingleCommand(
   summary: string,
   intent?: DeviceIntent,
   readBackPower = false,
+  options: { readonly revalidateBeforeSend?: () => string | null } = {},
 ): Promise<void> {
   if (host.settings?.connectionMode !== "demo" || isDualSourceEnabled(host)) {
     const activeId = host.devices.some((d) => d.id === device.id) ? device.id : null;
@@ -893,7 +899,9 @@ export async function executeSingleCommand(
   let applied = false;
   try {
     const seqBefore = peekDeviceWriteSeq(host, device.id);
-    const sendPromise = host.applyCommand(command, readBackPower);
+    const sendPromise = options.revalidateBeforeSend
+      ? host.applyCommand(command, readBackPower, true, { revalidateBeforeSend: options.revalidateBeforeSend })
+      : host.applyCommand(command, readBackPower);
     if (peekDeviceWriteSeq(host, device.id) === seqBefore) {
       claimDeviceWrite(host, device.id);
     }

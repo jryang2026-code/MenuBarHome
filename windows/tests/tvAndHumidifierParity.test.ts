@@ -49,7 +49,7 @@ afterEach(async () => {
   }
 });
 
-async function flushAsyncTicks(turns = 10): Promise<void> {
+async function flushAsyncTicks(turns = 20): Promise<void> {
   for (let i = 0; i < turns; i += 1) {
     await Promise.resolve();
   }

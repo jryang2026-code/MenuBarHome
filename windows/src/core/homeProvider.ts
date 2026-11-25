@@ -21,6 +21,11 @@ export interface ExecuteOptions {
    * provider was resolving it.
    */
   readonly beforeSend?: () => void;
+  /**
+   * Awaited once the provider has finished its own waits (spec lookup, connection ready), before
+   * any LAN or cloud request. Throwing cancels the send with nothing on the wire.
+   */
+  readonly beforeSendAsync?: () => Promise<void>;
   readonly beforeFallback?: () => void | Promise<void>;
   /**
    * Re-checked right before a coalesced multi-channel batch is sent (after the 100 ms window) and
@@ -99,6 +104,7 @@ export class HomeAssistantProvider implements HomeProvider {
       throw new HaBlockedRequestError(scope);
     }
     await this.ready;
+    if (options.beforeSendAsync) await options.beforeSendAsync();
     if (scope && getHaScopeLifecyclePhase(scope) !== "enabled") {
       throw new HaBlockedRequestError(scope);
     }
@@ -130,6 +136,7 @@ export class MiCloudProvider implements HomeCommandProvider {
     const { client, specResolver, deviceForEntity, channelBatcher, accountKey = "" } = this.dependencies;
     if (command.kind === "activateScene" && miSceneAccount(command.entityId)) {
       if (!client.runManualScene) throw new Error("Xiaomi scenes unavailable");
+      if (options.beforeSendAsync) await options.beforeSendAsync();
       return executeMiScene(
         { runManualScene: client.runManualScene.bind(client) },
         this.dependencies.sceneForEntity?.(command.entityId),
@@ -147,6 +154,7 @@ export class MiCloudProvider implements HomeCommandProvider {
       specType: null,
     });
     const mapped = MiotCommandMapper.map(command, spec);
+    if (options.beforeSendAsync) await options.beforeSendAsync();
     const beforeFallback = options.beforeFallback ?? options.beforeSend;
     const sendSingle = async (): Promise<boolean | null> => {
       options.beforeSend?.();
