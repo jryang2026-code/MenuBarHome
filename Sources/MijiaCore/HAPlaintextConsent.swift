@@ -14,6 +14,19 @@ public enum HAPlaintextConsent {
     static let defaultsKey = "ha_plaintext_consent_v1"
     static let addressLookupTimeout: Duration = .milliseconds(2500)
     private static let sharedLookup = BoundedHostLookup(resolve: lookup)
+    private static let internalLoopbackPorts = InternalLoopbackPortRegistry()
+
+    public static func registerInternalLoopbackPort(_ port: UInt16) {
+        internalLoopbackPorts.register(port)
+    }
+
+    public static func unregisterInternalLoopbackPort(_ port: UInt16) {
+        internalLoopbackPorts.unregister(port)
+    }
+
+    public static func isInternalLoopbackPort(_ port: UInt16) -> Bool {
+        internalLoopbackPorts.contains(port)
+    }
 
     /// True when sending the token to `baseURL` would cross the internet unencrypted. An address that
     /// does not parse counts as needing consent, so an odd URL fails closed.
@@ -170,7 +183,8 @@ public enum HAPlaintextConsent {
     }
 
     /// Returns `true` for a local go2rtc bridge URL owned by `XiaomiCameraBridge` or an explicit
-    /// loopback custom camera URL configured by the user.
+    /// loopback custom camera URL configured by the user. Internal loopback helper ports (such as
+    /// active HLS relays) are always blocked from arbitrary loopback access.
     public static func isAllowedLoopbackStreamURL(_ url: URL, customStreamURL: String?) async -> Bool {
         if await XiaomiCameraBridge.shared.isManagedStreamURL(url) { return true }
         guard let customStreamURL else { return false }
@@ -183,6 +197,9 @@ public enum HAPlaintextConsent {
               let customOrigin = normalizedOrigin(from: customComponents, allowUserInfo: true),
               urlOrigin == customOrigin,
               AssistantEndpoint(trimmedCustom)?.isLoopback == true else {
+            return false
+        }
+        if let port = UInt16(exactly: urlOrigin.port), isInternalLoopbackPort(port) {
             return false
         }
         if urlComponents.user != nil || urlComponents.password != nil {
@@ -199,6 +216,11 @@ public enum HAPlaintextConsent {
         guard let origin = normalizedOrigin(from: components) else { return false }
         let endpoint = components.string.flatMap(AssistantEndpoint.init)
         let normalizedHost = endpoint?.host ?? origin.host
+        if endpoint?.isLoopback == true,
+           let port = UInt16(exactly: origin.port),
+           isInternalLoopbackPort(port) {
+            return false
+        }
         if let literal = EndpointAddressClass(numericAddress: normalizedHost) {
             return literal != .prohibited || (allowsLoopback && endpoint?.isLoopback == true)
         }
@@ -510,6 +532,36 @@ final class BoundedHostLookup: @unchecked Sendable {
         for (nextID, nextKey, nextHost) in nextJobs {
             dispatchLookup(id: nextID, key: nextKey, host: nextHost)
         }
+    }
+}
+
+private final class InternalLoopbackPortRegistry: @unchecked Sendable {
+    private let lock = NSLock()
+    private var counts: [UInt16: Int] = [:]
+
+    func register(_ port: UInt16) {
+        guard port > 0 else { return }
+        lock.lock()
+        defer { lock.unlock() }
+        counts[port, default: 0] += 1
+    }
+
+    func unregister(_ port: UInt16) {
+        guard port > 0 else { return }
+        lock.lock()
+        defer { lock.unlock() }
+        guard let current = counts[port] else { return }
+        if current <= 1 {
+            counts.removeValue(forKey: port)
+        } else {
+            counts[port] = current - 1
+        }
+    }
+
+    func contains(_ port: UInt16) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return (counts[port] ?? 0) > 0
     }
 }
 

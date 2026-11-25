@@ -5,9 +5,14 @@ import Testing
 struct HAHLSPlaylistPolicyTests {
     private let originURL = URL(string: "http://192.168.1.10:8123/api/hls/tok/master_playlist.m3u8")!
     private let mediaPlaylistURL = URL(string: "http://192.168.1.10:8123/api/hls/tok/playlist.m3u8")!
+    private let token = "0123456789abcdef0123456789abcdef"
+    private var relay: HAHLSPlaylistPolicy.RelayBase {
+        HAHLSPlaylistPolicy.RelayBase(port: 43210, token: token)!
+    }
 
-    @Test("Rewrites valid same-origin master and media playlists including relative paths, maps, keys, parts, and BOM")
+    @Test("Rewrites valid same-origin master and media playlists onto loopback relay including relative paths, maps, keys, parts, and BOM")
     func rewritesValidSameOriginPlaylists() throws {
+        let prefix = "http://127.0.0.1:43210/\(token)"
         let master = "\u{FEFF}#EXTM3U\r\n"
             + "#EXT-X-VERSION:7\r\n"
             + "#EXT-X-INDEPENDENT-SEGMENTS\r\n"
@@ -19,13 +24,14 @@ struct HAHLSPlaylistPolicyTests {
             decoding: HAHLSPlaylistPolicy.rewritePlaylist(
                 data: Data(master.utf8),
                 playlistURL: originURL,
-                allowedOrigin: originURL
+                allowedOrigin: originURL,
+                relay: relay
             ),
             as: UTF8.self
         )
         #expect(!rewrittenMaster.contains("\r"))
-        #expect(rewrittenMaster.contains("URI=\"menubarhome-hls-http://192.168.1.10:8123/api/hls/tok/audio/index.m3u8\""))
-        #expect(rewrittenMaster.contains("\nmenubarhome-hls-http://192.168.1.10:8123/api/hls/tok/playlist.m3u8?v=1\n"))
+        #expect(rewrittenMaster.contains("URI=\"\(prefix)/api/hls/tok/audio/index.m3u8\""))
+        #expect(rewrittenMaster.contains("\n\(prefix)/api/hls/tok/playlist.m3u8?v=1\n"))
         #expect(rewrittenMaster.contains("CODECS=\"avc1.64001f,mp4a.40.2\""))
 
         let media = [
@@ -47,47 +53,52 @@ struct HAHLSPlaylistPolicyTests {
             decoding: HAHLSPlaylistPolicy.rewritePlaylist(
                 data: Data(media.utf8),
                 playlistURL: mediaPlaylistURL,
-                allowedOrigin: originURL
+                allowedOrigin: originURL,
+                relay: relay
             ),
             as: UTF8.self
         )
-        #expect(rewrittenMedia.contains("#EXT-X-MAP:URI=\"menubarhome-hls-http://192.168.1.10:8123/api/hls/tok/init.mp4\",BYTERANGE=\"720@0\""))
-        #expect(rewrittenMedia.contains("#EXT-X-KEY:METHOD=AES-128,URI=\"menubarhome-hls-http://192.168.1.10:8123/api/hls/tok/key.bin?k=1\",IV=0x01"))
+        #expect(rewrittenMedia.contains("#EXT-X-MAP:URI=\"\(prefix)/api/hls/tok/init.mp4\",BYTERANGE=\"720@0\""))
+        #expect(rewrittenMedia.contains("#EXT-X-KEY:METHOD=AES-128,URI=\"\(prefix)/api/hls/tok/key.bin?k=1\",IV=0x01"))
         #expect(rewrittenMedia.contains("#EXT-X-KEY:METHOD=NONE"))
-        #expect(rewrittenMedia.contains("#EXT-X-PART:DURATION=0.5,URI=\"menubarhome-hls-http://192.168.1.10:8123/api/hls/tok/part0.m4s\",INDEPENDENT=YES"))
-        #expect(rewrittenMedia.contains("\nmenubarhome-hls-http://192.168.1.10:8123/api/hls/tok/seg0.m4s\n"))
-        #expect(rewrittenMedia.contains("\nmenubarhome-hls-http://192.168.1.10:8123/api/hls/shared/seg1.m4s\n"))
-        #expect(rewrittenMedia.contains("#EXT-X-PRELOAD-HINT:TYPE=PART,URI=\"menubarhome-hls-http://192.168.1.10:8123/api/hls/tok/part1.m4s\""))
+        #expect(rewrittenMedia.contains("#EXT-X-PART:DURATION=0.5,URI=\"\(prefix)/api/hls/tok/part0.m4s\",INDEPENDENT=YES"))
+        #expect(rewrittenMedia.contains("\n\(prefix)/api/hls/tok/seg0.m4s\n"))
+        #expect(rewrittenMedia.contains("\n\(prefix)/api/hls/shared/seg1.m4s\n"))
+        #expect(rewrittenMedia.contains("#EXT-X-PRELOAD-HINT:TYPE=PART,URI=\"\(prefix)/api/hls/tok/part1.m4s\""))
     }
 
     @Test("Handles bare CR line endings identically to AVFoundation and rejects smuggled cross-origin URIs")
     func handlesBareCarriageReturnLineEndings() throws {
+        let prefix = "http://127.0.0.1:43210/\(token)"
         let safeBareCR = "#EXTM3U\r#EXTINF:2.0,\rseg0.ts\r"
         let rewritten = try String(
             decoding: HAHLSPlaylistPolicy.rewritePlaylist(
                 data: Data(safeBareCR.utf8),
                 playlistURL: mediaPlaylistURL,
-                allowedOrigin: originURL
+                allowedOrigin: originURL,
+                relay: relay
             ),
             as: UTF8.self
         )
         #expect(!rewritten.contains("\r"))
-        #expect(rewritten == "#EXTM3U\n#EXTINF:2.0,\nmenubarhome-hls-http://192.168.1.10:8123/api/hls/tok/seg0.ts\n")
+        #expect(rewritten == "#EXTM3U\n#EXTINF:2.0,\n\(prefix)/api/hls/tok/seg0.ts\n")
 
         let smuggledBareCR = "#EXTM3U\n#EXTINF:2.0,\rhttp://169.254.169.254/latest/meta-data/\nseg0.ts\n"
         #expect(throws: HAHLSPlaylistError.crossOriginURI) {
             _ = try HAHLSPlaylistPolicy.rewritePlaylist(
                 data: Data(smuggledBareCR.utf8),
                 playlistURL: mediaPlaylistURL,
-                allowedOrigin: originURL
+                allowedOrigin: originURL,
+                relay: relay
             )
         }
     }
 
-    @Test("Rejects cross-origin, loopback, metadata, userinfo, and unquoted/malformed URI attributes fail-closed")
+    @Test("Rejects cross-origin, loopback, metadata, userinfo, fragment, and unquoted/malformed URI attributes fail-closed")
     func rejectsCrossOriginAndMalformedPlaylists() {
         let crossOriginPayloads = [
             "#EXTM3U\n#EXTINF:2.0,\nhttp://127.0.0.1:8080/secret.ts\n",
+            "#EXTM3U\n#EXTINF:2.0,\nhttp://127.0.0.1:43210/\(token)/api/hls/tok/seg0.ts\n",
             "#EXTM3U\n#EXTINF:2.0,\nhttp://169.254.169.254/latest/meta-data/\n",
             "#EXTM3U\n#EXTINF:2.0,\n//attacker.example/evil.ts\n",
             "#EXTM3U\n#EXTINF:2.0,\nhttps://192.168.1.10:8123/api/hls/tok/seg0.ts\n",
@@ -106,14 +117,15 @@ struct HAHLSPlaylistPolicyTests {
                 _ = try HAHLSPlaylistPolicy.rewritePlaylist(
                     data: Data(payload.utf8),
                     playlistURL: mediaPlaylistURL,
-                    allowedOrigin: originURL
+                    allowedOrigin: originURL,
+                    relay: relay
                 )
             }
         }
 
         let invalidURIPayloads = [
             "#EXTM3U\n#EXTINF:2.0,\nfile:///etc/passwd\n",
-            "#EXTM3U\n#EXTINF:2.0,\nmenubarhome-hls-http://192.168.1.10:8123/api/hls/tok/seg0.ts\n",
+            "#EXTM3U\n#EXTINF:2.0,\nseg0.ts#fragment\n",
             "#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"data:text/plain;base64,AAAA\"\n",
             "#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI='http://127.0.0.1/key'\n",
             "#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"\"\n",
@@ -124,7 +136,8 @@ struct HAHLSPlaylistPolicyTests {
                 _ = try HAHLSPlaylistPolicy.rewritePlaylist(
                     data: Data(payload.utf8),
                     playlistURL: mediaPlaylistURL,
-                    allowedOrigin: originURL
+                    allowedOrigin: originURL,
+                    relay: relay
                 )
             }
         }
@@ -133,49 +146,101 @@ struct HAHLSPlaylistPolicyTests {
             _ = try HAHLSPlaylistPolicy.rewritePlaylist(
                 data: Data("#EXTM3U\n#EXT-X-DEFINE:NAME=\"h\",VALUE=\"169.254.169.254\"\nhttp://{$h}/x\n".utf8),
                 playlistURL: mediaPlaylistURL,
-                allowedOrigin: originURL
+                allowedOrigin: originURL,
+                relay: relay
             )
         }
         #expect(throws: HAHLSPlaylistError.malformedTag) {
             _ = try HAHLSPlaylistPolicy.rewritePlaylist(
                 data: Data("#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"unterminated.key\n".utf8),
                 playlistURL: mediaPlaylistURL,
-                allowedOrigin: originURL
+                allowedOrigin: originURL,
+                relay: relay
             )
         }
         #expect(throws: HAHLSPlaylistError.malformedTag) {
             _ = try HAHLSPlaylistPolicy.rewritePlaylist(
                 data: Data("#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"ok.key\"garbage\n".utf8),
                 playlistURL: mediaPlaylistURL,
-                allowedOrigin: originURL
+                allowedOrigin: originURL,
+                relay: relay
             )
         }
         #expect(throws: HAHLSPlaylistError.missingHeader) {
             _ = try HAHLSPlaylistPolicy.rewritePlaylist(
                 data: Data("seg0.ts\n".utf8),
                 playlistURL: mediaPlaylistURL,
-                allowedOrigin: originURL
+                allowedOrigin: originURL,
+                relay: relay
             )
         }
         #expect(throws: HAHLSPlaylistError.invalidEncoding) {
             _ = try HAHLSPlaylistPolicy.rewritePlaylist(
                 data: Data("#EXTM3U\n\0seg0.ts\n".utf8),
                 playlistURL: mediaPlaylistURL,
-                allowedOrigin: originURL
+                allowedOrigin: originURL,
+                relay: relay
             )
         }
     }
 
-    @Test("Proxy scheme round-trips HTTP(S) URLs, detects spoofed extensionless playlists, and parses Content-Range")
-    func schemeMappingDetectionAndContentRange() throws {
-        let httpsURL = try #require(URL(string: "https://ha.example.com:8443/api/hls/abc/master.m3u8?token=1"))
-        let proxied = try #require(HAHLSPlaylistPolicy.proxiedURL(from: httpsURL))
-        #expect(proxied.scheme == HAHLSPlaylistPolicy.httpsProxyScheme)
-        #expect(HAHLSPlaylistPolicy.originalURL(from: proxied) == httpsURL)
+    @Test("Loopback relay mapping validates 128-bit token, preserves origin/IPv6/query, and rejects malformed targets without trapping")
+    func relayMappingAndTokenVerification() throws {
+        #expect(HAHLSPlaylistPolicy.RelayBase(port: 0, token: token) == nil)
+        #expect(HAHLSPlaylistPolicy.RelayBase(port: 43210, token: "short") == nil)
+        #expect(HAHLSPlaylistPolicy.RelayBase(port: 43210, token: String(repeating: "G", count: 32)) == nil)
+
+        let httpsOrigin = try #require(URL(string: "https://ha.example.com:8443/api/hls/abc/master.m3u8?token=1"))
+        let relayed = try #require(HAHLSPlaylistPolicy.relayURL(for: httpsOrigin, allowedOrigin: httpsOrigin, relay: relay))
+        #expect(relayed.absoluteString == "http://127.0.0.1:43210/\(token)/api/hls/abc/master.m3u8?token=1")
+        let targetPathAndQuery = "/\(token)/api/hls/abc/master.m3u8?token=1"
+        #expect(HAHLSPlaylistPolicy.upstreamURL(
+            forRequestTarget: targetPathAndQuery,
+            expectedToken: token,
+            originURL: httpsOrigin
+        ) == httpsOrigin)
+
+        // IPv6 literal origin round-trip.
+        let ipv6Origin = try #require(URL(string: "http://[fd00::1]:8123/api/hls/live.m3u8"))
+        let ipv6Relayed = try #require(HAHLSPlaylistPolicy.relayURL(for: ipv6Origin, allowedOrigin: ipv6Origin, relay: relay))
+        #expect(ipv6Relayed.absoluteString == "http://127.0.0.1:43210/\(token)/api/hls/live.m3u8")
+        #expect(HAHLSPlaylistPolicy.upstreamURL(
+            forRequestTarget: "/\(token)/api/hls/seg0.ts",
+            expectedToken: token,
+            originURL: ipv6Origin
+        ) == URL(string: "http://[fd00::1]:8123/api/hls/seg0.ts"))
+
+        // Dot segments are collapsed so rewritten URIs cannot traverse out of /<token>/.
+        let dotSegmentURL = try #require(URL(string: "http://192.168.1.10:8123/api/hls/tok/../../shared/seg.ts"))
+        let normalizedRelayed = try #require(HAHLSPlaylistPolicy.relayURL(for: dotSegmentURL, allowedOrigin: originURL, relay: relay))
+        #expect(normalizedRelayed.absoluteString == "http://127.0.0.1:43210/\(token)/api/shared/seg.ts")
+
+        // Wrong token, missing slash, bad percent-encoding (%ZZ), fragment, or non-origin target fail cleanly without trapping.
+        let wrongToken = "fedcba9876543210fedcba9876543210"
+        for badTarget in [
+            "/\(wrongToken)/api/hls/tok/seg0.ts",
+            "/\(token)",
+            "/api/hls/tok/seg0.ts",
+            "http://192.168.1.10:8123/api/hls/tok/seg0.ts",
+            "/\(token)/api/hls/%ZZ/seg0.ts",
+            "/\(token)/api/hls/seg0.ts?bad=%2",
+            "/\(token)/api/hls/seg0.ts#frag",
+            "/\(token)/api/hls/seg0.ts\\evil",
+            "/\(token)/api/hls/seg0.ts HTTP/1.1",
+            "/other/../\(token)/api/hls/seg0.ts",
+        ] {
+            #expect(
+                HAHLSPlaylistPolicy.upstreamURL(forRequestTarget: badTarget, expectedToken: token, originURL: originURL) == nil,
+                "expected rejection for target \(badTarget)"
+            )
+        }
 
         let withUserInfo = try #require(URL(string: "http://user:pass@192.168.1.10:8123/master.m3u8"))
-        #expect(HAHLSPlaylistPolicy.proxiedURL(from: withUserInfo) == nil)
+        #expect(HAHLSPlaylistPolicy.relayURL(for: withUserInfo, allowedOrigin: originURL, relay: relay) == nil)
+    }
 
+    @Test("Detects spoofed extensionless playlists and parses Content-Range safely without Int64.max overflow")
+    func playlistDetectionAndSafeContentRangeParsing() throws {
         // Extensionless URL with application/octet-stream still detected via #EXTM3U body sniffing.
         let extensionless = try #require(URL(string: "http://192.168.1.10:8123/api/hls/stream"))
         #expect(HAHLSPlaylistPolicy.isPlaylistResponse(
@@ -199,9 +264,49 @@ struct HAHLSPlaylistPolicyTests {
 
         let range = try #require(HAHLSPlaylistPolicy.parseContentRange("bytes 0-1023/4096"))
         #expect(range.start == 0 && range.end == 1023 && range.total == 4096)
+        #expect(HAHLSPlaylistPolicy.formatContentRange(start: range.start, end: range.end, total: range.total) == "bytes 0-1023/4096")
+
         let openTotal = try #require(HAHLSPlaylistPolicy.parseContentRange("bytes 10-19/*"))
         #expect(openTotal.start == 10 && openTotal.end == 19 && openTotal.total == nil)
-        #expect(HAHLSPlaylistPolicy.parseContentRange("bytes 20-10/100") == nil)
-        #expect(HAHLSPlaylistPolicy.parseContentRange("bytes 0-100/100") == nil)
+        #expect(HAHLSPlaylistPolicy.formatContentRange(start: openTotal.start, end: openTotal.end, total: openTotal.total) == "bytes 10-19/*")
+
+        // Maximum representable valid Content-Range boundary (end = Int64.max - 1, total = Int64.max).
+        let maxValid = try #require(HAHLSPlaylistPolicy.parseContentRange("bytes 0-9223372036854775806/9223372036854775807"))
+        #expect(maxValid.start == 0 && maxValid.end == Int64.max - 1 && maxValid.total == Int64.max)
+
+        // Regression [P1-2]: hostile Int64.max, overflowing, negative, inverted, signed, and injected Content-Range headers must return nil without trapping.
+        for hostile in [
+            "bytes 0-9223372036854775807/*",
+            "bytes 9223372036854775807-9223372036854775807/*",
+            "bytes 0-9223372036854775807/9223372036854775807",
+            "bytes 0-9999999999999999999999999/*",
+            "bytes -1-10/100",
+            "bytes +0-+10/100",
+            "bytes 20-10/100",
+            "bytes 0-100/100",
+            "bytes 0-100/99",
+            "bytes 0-10/100\r\nX-Injected: 1",
+            "items 0-10/100",
+            "",
+        ] {
+            #expect(HAHLSPlaylistPolicy.parseContentRange(hostile) == nil, "expected nil for hostile Content-Range: \(hostile)")
+        }
+
+        // Complete-from-zero 206 verification for playlists.
+        #expect(HAHLSPlaylistPolicy.isCompleteFromZeroContentRange("bytes 0-19/20", expectedByteCount: 20))
+        #expect(!HAHLSPlaylistPolicy.isCompleteFromZeroContentRange("bytes 1-20/21", expectedByteCount: 20))
+        #expect(!HAHLSPlaylistPolicy.isCompleteFromZeroContentRange("bytes 0-19/*", expectedByteCount: 20))
+        #expect(!HAHLSPlaylistPolicy.isCompleteFromZeroContentRange("bytes 0-19/40", expectedByteCount: 20))
+        #expect(!HAHLSPlaylistPolicy.isCompleteFromZeroContentRange("bytes 0-9223372036854775807/*", expectedByteCount: 20))
+
+        // Range and response header sanitization.
+        #expect(HAHLSPlaylistPolicy.sanitizedRangeHeader("bytes=0-1023") == "bytes=0-1023")
+        #expect(HAHLSPlaylistPolicy.sanitizedRangeHeader("bytes=512-") == "bytes=512-")
+        #expect(HAHLSPlaylistPolicy.sanitizedRangeHeader("bytes=-128") == "bytes=-128")
+        #expect(HAHLSPlaylistPolicy.sanitizedRangeHeader("bytes=0-9223372036854775807") == nil)
+        #expect(HAHLSPlaylistPolicy.sanitizedRangeHeader("bytes=10-5") == nil)
+        #expect(HAHLSPlaylistPolicy.sanitizedRangeHeader("bytes=0-10\r\nX-Evil: 1") == nil)
+        #expect(HAHLSPlaylistPolicy.sanitizedHeaderValue("video/mp2t") == "video/mp2t")
+        #expect(HAHLSPlaylistPolicy.sanitizedHeaderValue("video/mp2t\r\nSet-Cookie: a=1") == nil)
     }
 }

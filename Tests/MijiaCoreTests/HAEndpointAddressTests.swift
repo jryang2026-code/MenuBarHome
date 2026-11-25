@@ -257,6 +257,22 @@ struct HAEndpointAddressTests {
         #expect(!(await HAPlaintextConsent.isAllowedLoopbackStreamURL(wrongPort, customStreamURL: configured)))
         #expect(!(await HAPlaintextConsent.isAllowedLoopbackStreamURL(nonLoopback, customStreamURL: nonLoopback.absoluteString)))
 
+        // Internal loopback helper ports (e.g. active HLS relays) are blocked from arbitrary loopback access.
+        let helperPort: UInt16 = 54321
+        let helperIPv4 = try #require(URL(string: "http://127.0.0.1:\(helperPort)/mjpeg"))
+        let helperLocalhost = try #require(URL(string: "http://localhost:\(helperPort)/mjpeg"))
+        let helperIPv6 = try #require(URL(string: "http://[::1]:\(helperPort)/mjpeg"))
+        HAPlaintextConsent.registerInternalLoopbackPort(helperPort)
+        defer { HAPlaintextConsent.unregisterInternalLoopbackPort(helperPort) }
+        #expect(HAPlaintextConsent.isInternalLoopbackPort(helperPort))
+        #expect(!(await HAPlaintextConsent.isAllowedLoopbackStreamURL(helperIPv4, customStreamURL: helperIPv4.absoluteString)))
+        #expect(!(await HAPlaintextConsent.isAllowedLoopbackStreamURL(helperLocalhost, customStreamURL: helperLocalhost.absoluteString)))
+        #expect(!HAPlaintextConsent.allowsImmediatePlaybackURL(helperIPv4, allowsLoopback: true))
+        #expect(!HAPlaintextConsent.allowsImmediatePlaybackURL(helperLocalhost, allowsLoopback: true))
+        #expect(!HAPlaintextConsent.allowsImmediatePlaybackURL(helperIPv6, allowsLoopback: true))
+        // Other ports stay unaffected.
+        #expect(await HAPlaintextConsent.isAllowedLoopbackStreamURL(exact, customStreamURL: configured))
+
         // Redirect origin checks must stay strict and continue rejecting URLs with userinfo.
         #expect(!HAPlaintextConsent.hasSameOrigin(exact, as: strippedAuth))
         #expect(!HAPlaintextConsent.hasSameOrigin(exact, as: exact))

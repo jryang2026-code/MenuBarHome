@@ -1766,7 +1766,7 @@ struct CameraHLSPlayerView: NSViewRepresentable {
         view.player = player
         context.coordinator.observe(
             item: built.item,
-            resourceLoader: built.loader,
+            relay: built.relay,
             onAudioAvailabilityChanged: onAudioAvailabilityChanged
         )
         player.play()
@@ -1791,7 +1791,7 @@ struct CameraHLSPlayerView: NSViewRepresentable {
         player.isMuted = isMuted
         context.coordinator.observe(
             item: built.item,
-            resourceLoader: built.loader,
+            relay: built.relay,
             onAudioAvailabilityChanged: onAudioAvailabilityChanged
         )
         nsView.player = player
@@ -1808,18 +1808,18 @@ struct CameraHLSPlayerView: NSViewRepresentable {
     final class Coordinator {
         var currentURL: URL?
         var currentAllowsLoopback: Bool?
-        private var resourceLoader: CameraHLSResourceLoader?
+        private var relay: CameraHLSLoopbackRelay?
         private var statusObservation: NSKeyValueObservation?
         private var tracksObservation: NSKeyValueObservation?
         private var observationGeneration: UInt64 = 0
 
         func observe(
             item: AVPlayerItem,
-            resourceLoader: CameraHLSResourceLoader?,
+            relay: CameraHLSLoopbackRelay?,
             onAudioAvailabilityChanged: (@MainActor (Bool?) -> Void)?
         ) {
             clearObservations()
-            self.resourceLoader = resourceLoader
+            self.relay = relay
             observationGeneration &+= 1
             let generation = observationGeneration
             let report: @MainActor (AVPlayerItem?) -> Void = { [weak self] item in
@@ -1847,8 +1847,8 @@ struct CameraHLSPlayerView: NSViewRepresentable {
             statusObservation = nil
             tracksObservation?.invalidate()
             tracksObservation = nil
-            resourceLoader?.invalidate()
-            resourceLoader = nil
+            relay?.stop()
+            relay = nil
         }
     }
 }
