@@ -6,7 +6,11 @@ extension ClassicDeviceCardView {
 
     func cameraDrawer(_ spec: CameraSpec) -> some View {
         VStack(alignment: .leading, spacing: 9) {
-            ClassicCameraStillWall(store: store)
+            if let camera = store.genericCamera(for: device.id) {
+                GenericCameraCardPreview(store: store, camera: camera)
+            } else {
+                ClassicCameraStillWall(store: store)
+            }
             ScrollView(.horizontal, showsIndicators: false) {
                 AdaptiveGlassContainer(spacing: 6) {
                     HStack(spacing: 6) {

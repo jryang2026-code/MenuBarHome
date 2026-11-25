@@ -187,6 +187,7 @@ extension HomeStore {
     }
 
     public func startListening() {
+        refreshGenericCameraCards()
         hasReceivedInitialSnapshot = false
         connectedBackends = []
         deviceBackends = [:]
@@ -794,7 +795,7 @@ extension HomeStore {
             let facetsChanged = deviceFacets != nextFacets
             if facetsChanged { deviceFacets = nextFacets }
 
-            let nextDevices = devicesWithAliases(merged)
+            let nextDevices = devicesWithAliases(merged + genericCameraCards)
             let devicesChanged = devices != nextDevices
             if devicesChanged {
                 devices = nextDevices

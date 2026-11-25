@@ -581,7 +581,10 @@ public final class HomeStore {
 
     /// Persisted flag set once the user finishes or dismisses the first-launch onboarding guide.
     public var hasCompletedOnboarding: Bool = false {
-        didSet { userDefaults.set(hasCompletedOnboarding, forKey: "has_completed_onboarding") }
+        didSet {
+            userDefaults.set(hasCompletedOnboarding, forKey: "has_completed_onboarding")
+            if oldValue != hasCompletedOnboarding { refreshGenericCameraCards() }
+        }
     }
 
     /// First-run guide's launch-at-login checkbox. Checked until the user clears it (#281).
@@ -1000,6 +1003,9 @@ public final class HomeStore {
         voiceInputPreferenceObservers.removeValue(forKey: id)
     }
 
+    public internal(set) var genericCameras: [GenericCameraSource] = []
+    public internal(set) var genericCameraRevision = 0
+    public var onGenericCameraChanged: ((String) -> Void)?
     public var onOpenCameraLiveView: ((SmartDevice) -> Void)?
     public internal(set) var activeLiveCameraDeviceId: String?
     public static let cameraStreamURLsKey = ViewPreferenceKeys.cameraStreamURLs
@@ -1261,6 +1267,7 @@ public final class HomeStore {
             if oldValue.enabledCategories != capabilitySelection.enabledCategories {
                 scheduleRaycastSnapshotExport()
             }
+            defer { refreshGenericCameraCards() }
             guard oldValue.enabledCategories.contains(.camera),
                   !capabilitySelection.enabledCategories.contains(.camera) else { return }
             // The cards are still in `devices` here; the next refresh prunes them, so the stop requests
@@ -1594,6 +1601,11 @@ public final class HomeStore {
         }
         self.provider = initialProvider
         loadPersistedCapabilityState()
+        if let data = ud.data(forKey: Self.genericCameraSourcesKey),
+           let cameras = try? JSONDecoder().decode([GenericCameraSource].self, from: data) {
+            self.genericCameras = cameras
+            refreshGenericCameraCards()
+        }
         if provider == nil, dualSource == nil, initialBackend != .demo, !isIdentityUncertain {
             self.provider = makeLiveProvider()
         }

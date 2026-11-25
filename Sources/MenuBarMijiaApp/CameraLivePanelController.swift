@@ -96,6 +96,12 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
     /// Detected from the active stream without an extra network call (`nil` while probing).
     public private(set) var detectedAudioTrack: Bool?
     public var isExpandedSize = true
+    private var isPreparingGenericPictureInPicture = false
+    private var genericStream: GenericCameraSource.Stream = .main
+
+    private var isGenericCamera: Bool {
+        activeDeviceId.flatMap { store?.genericCamera(for: $0) } != nil
+    }
     /// The window fills the screen's visible frame until the user restores it.
     public private(set) var isMaximized = false
     private var frameBeforeMaximize: NSRect?
@@ -212,6 +218,9 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
         self.store = store
         store.onOpenCameraLiveView = { [weak self] device in
             self?.present(device: device)
+        }
+        store.onGenericCameraChanged = { [weak self] id in
+            self?.tearDownDevices([id])
         }
         store.onDoorbellRing = { [weak self] response in
             self?.respondToDoorbell(response)
@@ -479,11 +488,15 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
 
         let previousDeviceId = activeDeviceId
         let previousLensID = activeLensID
+        if store.genericCamera(for: device.id) != nil, panelWindow?.isVisible != true {
+            isExpandedSize = false
+        }
         let targetLens = selectedLens(for: device)
         let targetLensID = targetLens?.id ?? "main"
         let canReuseHotStream = (
             previousDeviceId == device.id
             && previousLensID == targetLensID
+            && (store.genericCamera(for: device.id) == nil || (genericStream == .main) == (isExpandedSize || isMaximized))
             && errorMessage == nil
             && (activePlayback != nil || streamSource != nil || isLoadingStream)
         )
@@ -492,7 +505,7 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
             : takeWarmPlayback(deviceID: device.id, lensID: targetLensID)
         if let previousDeviceId, !canReuseHotStream {
             let oldId = previousDeviceId
-            if previousDeviceId != device.id,
+            if previousDeviceId != device.id, store.genericCamera(for: previousDeviceId) == nil,
                let playback = activePlayback,
                playback.failure == nil,
                case .liveMP4 = playback.source {
@@ -750,6 +763,7 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
     }
 
     private func stopStreamTasks(keepingAudioOptInFallback: Bool = false, keepingListenOnlyFailed: Bool = false) {
+        isPreparingGenericPictureInPicture = false
         if !keepingAudioOptInFallback {
             pendingAudioOptInFallbackDeviceID = nil
         }
@@ -875,6 +889,10 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
     // MARK: - Picture in Picture
 
     public func togglePictureInPicture() {
+        if isGenericCamera, !isPictureInPictureActive, genericStream == .main {
+            reloadStream(preservingMute: true, preparingGenericPictureInPicture: true)
+            return
+        }
         if pictureInPicture == nil, let player = videoPlayer {
             setUpPictureInPicture(for: player)
         }
@@ -903,8 +921,13 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
         pip.onPlaybackPaused = { [weak player] paused in
             player?.setPlaybackPaused(paused)
         }
-        pip.onRestore = { [weak self] in
-            self?.panelWindow?.orderFrontRegardless()
+        pip.onRestore = { [weak self, weak pip] in
+            guard let self else { return }
+            self.panelWindow?.orderFrontRegardless()
+            if pip?.isActive == false, self.isGenericCamera, self.genericStream == .sub,
+               self.isExpandedSize || self.isMaximized {
+                self.reloadStream(preservingMute: true)
+            }
         }
         pip.onClosed = { [weak self] in
             self?.closePanel()
@@ -1034,11 +1057,18 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
         let clampedY = min(max(newOrigin.y, screenFrame.minY + 12), screenFrame.maxY - targetSize.height - 12)
         let nextFrame = NSRect(origin: NSPoint(x: clampedX, y: clampedY), size: targetSize)
         panel.setFrame(nextFrame, display: true, animate: presentsActively)
+        if isGenericCamera { reloadStream(preservingMute: true) }
     }
 
     public func toggleMaximized() {
         guard let panel = panelWindow else { return }
         claimDoorbellWindowForUser(claimsPlacement: true)
+        let wasMain = isExpandedSize || isMaximized
+        defer {
+            if isGenericCamera, wasMain != (isExpandedSize || isMaximized) {
+                reloadStream(preservingMute: true)
+            }
+        }
         if isMaximized {
             if let frameBeforeMaximize {
                 panel.setFrame(frameBeforeMaximize, display: true, animate: presentsActively)
@@ -1083,7 +1113,8 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
     public func reloadStream(
         preservingMute: Bool = false,
         keepingAudioOptInFallback: Bool = false,
-        keepingListenOnlyFailed: Bool = false
+        keepingListenOnlyFailed: Bool = false,
+        preparingGenericPictureInPicture: Bool = false
     ) {
         if !preservingMute {
             isMuted = true
@@ -1109,6 +1140,9 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
         activeLensID = lens?.id ?? "main"
         let channel = lens?.channel ?? 0
         let audioEnabled = !isMuted
+        isPreparingGenericPictureInPicture = preparingGenericPictureInPicture
+        genericStream = (isExpandedSize || isMaximized) && !preparingGenericPictureInPicture ? .main : .sub
+        let genericStream = self.genericStream
         let priorResolveTask = cancelledResolveTask
         cancelledResolveTask = nil
         resolveTask = Task { @MainActor [weak self] in
@@ -1119,7 +1153,9 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
             await self.pendingStopTasks[deviceId]?.value
             guard !Task.isCancelled else { return }
             do {
-                let resolved = try await store.resolveCameraStream(for: deviceId, channel: channel, audioEnabled: audioEnabled)
+                let resolved = try await store.resolveCameraStream(
+                    for: deviceId, channel: channel, audioEnabled: audioEnabled, genericStream: genericStream
+                )
                 guard !Task.isCancelled else { return }
                 self.streamSource = resolved
                 self.isLoadingStream = false
@@ -1201,6 +1237,10 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
             guard let self, let playback, self.activePlayback === playback else { return }
             self.pendingAudioOptInFallbackDeviceID = nil
             self.hasLiveVideoFrame = true
+            if self.isPreparingGenericPictureInPicture {
+                self.isPreparingGenericPictureInPicture = false
+                self.togglePictureInPicture()
+            }
         }
 
         playback.onAudioAvailabilityChanged = { [weak self, weak playback] available in
@@ -1947,7 +1987,7 @@ struct CameraLivePanelView: View {
 
     /// HA has no video for this camera and no Mi account is signed in (#97).
     private var offersMiSignIn: Bool {
-        guard let device, let cameraSpec else { return false }
+        guard let device, let cameraSpec, store.genericCamera(for: device.id) == nil else { return false }
         return cameraSpec.offersMiSignInForVideo(
             backend: store.deviceBackend(for: device.id),
             hasMiSource: store.hasMiSource
@@ -2192,7 +2232,7 @@ struct CameraLivePanelView: View {
                 }
                 .disabled(!controller.hasLiveVideoFrame && !controller.isPictureInPictureActive)
             }
-            if store.supportsCustomCameraStreams {
+            if store.supportsCustomCameraStreams, device.flatMap({ store.genericCamera(for: $0.id) }) == nil {
                 Button {
                     controller.isShowingURLConfig.toggle()
                     controller.setURLFieldActive(controller.isShowingURLConfig)
@@ -2208,7 +2248,7 @@ struct CameraLivePanelView: View {
             } label: {
                 Label(L10n.tr("重新连接", "Reconnect"), systemImage: "arrow.clockwise")
             }
-            if let activeCameraId = device?.id {
+            if let activeCameraId = device?.id, store.genericCamera(for: activeCameraId) == nil {
                 Divider()
                 let autoOpenOn = store.isCameraPipAutoOpenEnabled(for: activeCameraId)
                 Button {
@@ -2500,7 +2540,7 @@ struct CameraLivePanelView: View {
                         .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .orange))
                     }
 
-                    if store.supportsCustomCameraStreams {
+                    if store.supportsCustomCameraStreams, device.flatMap({ store.genericCamera(for: $0.id) }) == nil {
                         Button {
                             controller.isShowingURLConfig = true
                             controller.setURLFieldActive(true)
