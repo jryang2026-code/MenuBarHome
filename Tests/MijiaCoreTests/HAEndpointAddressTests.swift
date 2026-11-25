@@ -35,8 +35,8 @@ struct HAEndpointAddressTests {
         ("https://home.lan", "192.0.2.10", nil),
         ("ws://home.local", "192.0.2.10", .publicAddressForLocalPlaintext),
         ("wss://home.local", "192.0.2.10", nil),
-        ("http://192.168.1.10", "192.0.2.10", .publicAddressForLocalPlaintext),
-        ("http://[::ffff:192.168.1.10]", "192.0.2.10", .publicAddressForLocalPlaintext),
+        ("http://192.168.1.10", "192.0.2.10", nil),
+        ("http://[::ffff:192.168.1.10]", "192.0.2.10", nil),
         ("http://home.lan", "::ffff:127.0.0.1", .prohibitedAddress)
     ])
     func validatesMixedAnswers(_ test: (String, String, HAEndpointResolutionError?)) throws {
@@ -60,5 +60,16 @@ struct HAEndpointAddressTests {
                 try await HAPlaintextConsent.validateConnectionAddress(url)
             }
         }
+    }
+
+    @Test
+    func ipLiteralSkipsLookup() throws {
+        var lookupCalled = false
+        let url = try #require(URL(string: "http://192.168.1.10:8123"))
+        try HAPlaintextConsent.validateConnectionAddress(url) { _ in
+            lookupCalled = true
+            return ["192.0.2.10"]
+        }
+        #expect(!lookupCalled)
     }
 }

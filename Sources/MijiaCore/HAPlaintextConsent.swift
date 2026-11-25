@@ -11,6 +11,7 @@ import Glibc
 /// once; the agreement is keyed by origin, so a changed address asks again.
 public enum HAPlaintextConsent {
     static let defaultsKey = "ha_plaintext_consent_v1"
+    private static let addressLookupTimeout: Duration = .milliseconds(500)
 
     /// True when sending the token to `baseURL` would cross the internet unencrypted. An address that
     /// does not parse counts as needing consent, so an odd URL fails closed.
@@ -32,7 +33,13 @@ public enum HAPlaintextConsent {
     public static func validateConnectionAddress(_ url: URL) async throws {
         try Task.checkCancellation()
         let (resolved, completion) = AsyncThrowingStream<Void, Error>.makeStream()
-        // getaddrinfo blocks. Cancellation stops the caller from waiting for it.
+        let timeoutTask = Task {
+            do {
+                try await Task.sleep(for: addressLookupTimeout)
+                completion.finish(throwing: URLError(.timedOut))
+            } catch {
+            }
+        }
         DispatchQueue.global(qos: .userInitiated).async {
             do {
                 try validateConnectionAddress(url, resolve: lookup)
@@ -40,9 +47,15 @@ public enum HAPlaintextConsent {
             } catch {
                 completion.finish(throwing: error)
             }
+            timeoutTask.cancel()
         }
         var result = resolved.makeAsyncIterator()
-        _ = try await result.next()
+        try await withTaskCancellationHandler {
+            _ = try await result.next()
+        } onCancel: {
+            completion.finish(throwing: CancellationError())
+        }
+        timeoutTask.cancel()
         try Task.checkCancellation()
     }
 
@@ -61,8 +74,9 @@ public enum HAPlaintextConsent {
         let literal = EndpointAddressClass(numericAddress: normalizedHost)
         guard literal != .prohibited else { throw HAEndpointResolutionError.prohibitedAddress }
         guard literal != nil || endpoint != nil else { throw URLError(.badURL) }
+        if literal != nil { return }
         let requiresLAN = plaintext && (literal.map { $0 == .lan } ?? (endpoint?.isLocalNetwork == true))
-        let answers = try resolve(literal == nil ? host : normalizedHost)
+        let answers = try resolve(host)
         guard !answers.isEmpty else { throw URLError(.cannotFindHost) }
         for answer in answers {
             guard let addressClass = EndpointAddressClass(numericAddress: answer),
