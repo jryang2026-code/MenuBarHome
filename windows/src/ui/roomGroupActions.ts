@@ -15,6 +15,8 @@ export interface PendingRoomGroupConfirm {
   readonly action: { readonly kind: "toggle" } | { readonly kind: "brightness"; readonly percent: number };
   readonly riskyNames: readonly string[];
   readonly sourceRevision: number;
+  /** Home generation at arm time; a home switch must void the confirmation even if sourceRevision is unchanged. */
+  readonly homeRevision: number;
 }
 
 function roomGroupWriteGate(
@@ -96,7 +98,7 @@ export async function confirmPendingDiffPreview(host: MenuMijiaWindowsApp): Prom
   const preview = host.pendingDiffPreview;
   if (!preview) return false;
   host.pendingDiffPreview = null;
-  if (preview.sourceRevision !== host.sourceRevision) {
+  if (preview.sourceRevision !== host.sourceRevision || preview.homeRevision !== host.homeRevision) {
     host.render();
     return false;
   }
@@ -202,7 +204,7 @@ export async function executeRoomGroupAction(
   }
 
   if (riskyNames.length > 0 && !confirmedHighRisk) {
-    host.pendingRoomGroupConfirm = { group, action, riskyNames, sourceRevision: host.sourceRevision };
+    host.pendingRoomGroupConfirm = { group, action, riskyNames, sourceRevision, homeRevision };
     host.render();
     return false;
   }

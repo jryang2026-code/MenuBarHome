@@ -19,6 +19,8 @@ export interface AssistantDiffPreview {
   readonly recordHabits: boolean;
   readonly learnAfterRun: boolean;
   readonly sourceRevision: number;
+  /** Home generation at arm time; a home switch must void the preview even when sourceRevision is unchanged. */
+  readonly homeRevision: number;
   readonly hasHighRiskDevice: boolean;
 }
 
@@ -91,6 +93,7 @@ export function buildDiffPreview(args: {
   readonly recordHabits: boolean;
   readonly learnAfterRun: boolean;
   readonly sourceRevision: number;
+  readonly homeRevision: number;
 }): AssistantDiffPreview {
   const byId = new Map(args.devices.map((d) => [d.id, d]));
   const scenesById = new Map(args.scenes.map((s) => [s.id, s]));
@@ -134,6 +137,7 @@ export function buildDiffPreview(args: {
     recordHabits: args.recordHabits,
     learnAfterRun: args.learnAfterRun,
     sourceRevision: args.sourceRevision,
+    homeRevision: args.homeRevision,
     hasHighRiskDevice: items.some((i) => i.isHighRisk),
   };
 }

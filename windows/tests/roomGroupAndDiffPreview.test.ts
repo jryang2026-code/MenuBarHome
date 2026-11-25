@@ -162,6 +162,7 @@ describe("Room group write gates & inline diff preview thresholds", () => {
       recordHabits: true,
       learnAfterRun: false,
       sourceRevision: 1,
+      homeRevision: 1,
     });
     assert.equal(preview.items.length, 2);
     assert.equal(preview.hasHighRiskDevice, false);
@@ -169,6 +170,7 @@ describe("Room group write gates & inline diff preview thresholds", () => {
     const sent: DeviceCommand[] = [];
     const fakeHost = {
       sourceRevision: 1,
+      homeRevision: 1,
       devices,
       scenes: [],
       settings: { connectionMode: "demo", blockControlWhileLocked: false, interfaceLanguage: "zh-Hans" },

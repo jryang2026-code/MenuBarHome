@@ -61,6 +61,9 @@ export async function handleNaturalCommand(
     let trimmed = rawInput.trim();
     if (!trimmed) return;
     const sourceRevision = host.sourceRevision;
+    // A home switch advances homeRevision without touching sourceRevision or assistantEpoch; a
+    // late model result still belongs to the previous home's device set and must be discarded.
+    const homeRevision = host.homeRevision;
     // A disable or provider change mid-flight must discard this run's late model result
     // before it can reach the write gate (P5a-W acceptance #3).
     const assistantEpoch = host.assistantEpoch;
@@ -89,11 +92,13 @@ export async function handleNaturalCommand(
     const quickActionId = parseQuickActionCommand(trimmed);
     if (quickActionId) {
       await executeBuiltInQuickAction(host, quickActionId);
+      if (homeRevision !== host.homeRevision) return;
       return;
     }
 
     if (UndoPhrase.isUndo(trimmed)) {
       await host.performUndo();
+      if (homeRevision !== host.homeRevision) return;
       return;
     }
 
@@ -219,6 +224,7 @@ export async function handleNaturalCommand(
     if (learnedMatch) {
       // A timer firing a learned phrase is not a user action, so it never trains habits (#34/#113).
       await host.executeIntents(learnedMatch.intents, learnedMatch.reply, t("习惯记忆 0ms"), { recordHabits: !fromScheduled });
+      if (homeRevision !== host.homeRevision) return;
       return;
     }
 
@@ -305,7 +311,11 @@ export async function handleNaturalCommand(
         // Gate every transport attempt (initial call and in-resolver retries alike): once
         // the run is superseded or AI is off, no further request may leave (P5a-W #1/#3).
         const gatedTransport: HttpTransport = (request) => {
-          if (assistantEpoch !== host.assistantEpoch || !isAiAssistantEnabled(host.settings)) {
+          if (
+            assistantEpoch !== host.assistantEpoch ||
+            homeRevision !== host.homeRevision ||
+            !isAiAssistantEnabled(host.settings)
+          ) {
             return Promise.reject(new Error("assistant request superseded"));
           }
           return host.transport(request);
@@ -336,7 +346,11 @@ export async function handleNaturalCommand(
           mention: { kind: "utterance", text: trimmed },
         });
         plan = await resolver.resolve(trimmed, aliasedDevices, host.scenes, context);
-        if (sourceRevision !== host.sourceRevision || assistantEpoch !== host.assistantEpoch) return;
+        if (
+          sourceRevision !== host.sourceRevision ||
+          homeRevision !== host.homeRevision ||
+          assistantEpoch !== host.assistantEpoch
+        ) return;
         sourceLabel = resolver.usesSystemOne ? "Jev SystemOne" : host.settings.assistantModel;
       }
 
@@ -410,6 +424,7 @@ export async function handleNaturalCommand(
           recordHabits: plan.source === "local" && !fromScheduled,
           learnAfterRun: host.settings.habitLearningEnabled && plan.source === "model",
           sourceRevision,
+          homeRevision,
         });
         if (hazardous.length > 0) {
           host.pendingSuggestions = ModelActionPolicy.chips(sanitized, null, "confirm:local", aliasedDevices, host.scenes, true);
@@ -455,7 +470,11 @@ export async function handleNaturalCommand(
       const succeeded = await host.executeIntents(sanitized, replyText, sourceLabel, {
         recordHabits: plan.source === "local" && !fromScheduled,
       });
-      if (sourceRevision !== host.sourceRevision || assistantEpoch !== host.assistantEpoch) return;
+      if (
+        sourceRevision !== host.sourceRevision ||
+        homeRevision !== host.homeRevision ||
+        assistantEpoch !== host.assistantEpoch
+      ) return;
 
       if (
         succeeded &&
@@ -466,7 +485,11 @@ export async function handleNaturalCommand(
         learnShortcut(host, trimmed, replyText, sanitized);
       }
     } catch (err) {
-      if (sourceRevision !== host.sourceRevision || assistantEpoch !== host.assistantEpoch) return;
+      if (
+        sourceRevision !== host.sourceRevision ||
+        homeRevision !== host.homeRevision ||
+        assistantEpoch !== host.assistantEpoch
+      ) return;
       const msg = err instanceof Error ? err.message : String(err);
       host.replyBanner = {
         text: msg,
@@ -474,7 +497,11 @@ export async function handleNaturalCommand(
         isError: true,
       };
     } finally {
-      if (sourceRevision === host.sourceRevision && assistantEpoch === host.assistantEpoch) {
+      if (
+        sourceRevision === host.sourceRevision &&
+        homeRevision === host.homeRevision &&
+        assistantEpoch === host.assistantEpoch
+      ) {
         host.isResolvingIntent = false;
         host.render();
       }

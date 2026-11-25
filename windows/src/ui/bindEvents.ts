@@ -940,7 +940,7 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
     });
     host.root.querySelector("#btn-room-group-confirm")?.addEventListener("click", () => {
       const pending = host.pendingRoomGroupConfirm;
-      if (!pending || pending.sourceRevision !== host.sourceRevision) {
+      if (!pending || pending.sourceRevision !== host.sourceRevision || pending.homeRevision !== host.homeRevision) {
         host.pendingRoomGroupConfirm = null;
         host.render();
         return;
