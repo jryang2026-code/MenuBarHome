@@ -255,6 +255,16 @@ final class MenuBarPanelController: NSObject {
             self.voiceInputObserverID = nil
         }
         self.store = store
+        observers.append(NotificationCenter.default.addObserver(
+            forName: ScreenSharingPrivacy.didChange, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                ScreenSharingPrivacy.applyToAppWindows(
+                    hidden: self.userDefaults.bool(forKey: ScreenSharingPrivacy.storageKey)
+                )
+            }
+        })
         self.voiceInputObserverID = store.addVoiceInputPreferenceObserver { [weak self] enabled in
             if !enabled {
                 self?.cancelHoldToTalkOnDisable()
@@ -1015,6 +1025,9 @@ final class MenuBarPanelController: NSObject {
             }
         }
         panelWindow = panel
+        panel.sharingType = ScreenSharingPrivacy.sharingType(
+            hidden: userDefaults.bool(forKey: ScreenSharingPrivacy.storageKey)
+        )
         installPanelGeometryObservers(for: panel)
         return panel
     }

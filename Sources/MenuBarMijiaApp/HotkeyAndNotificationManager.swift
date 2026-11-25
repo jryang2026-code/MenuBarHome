@@ -268,6 +268,12 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
         } else {
             guard let store, store.enableGlobalHotkey else { return }
             toggleMenuBarExtraWindow()
+            let isVisible = MenuBarPanelController.shared.isPanelVisible
+            HotkeyHUDController.shared.show(
+                title: L10n.tr("控制中心", "Control Center"),
+                result: isVisible ? .on : .off,
+                screen: NSScreen.main
+            )
         }
     }
 

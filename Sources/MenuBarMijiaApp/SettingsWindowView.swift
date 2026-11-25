@@ -2473,6 +2473,7 @@ private struct PrivacySettingsTab: View {
     @State private var showNotificationRationale = false
     @State private var confirmsAdvancedFacetWrites = false
     @AppStorage(URLDirectControl.allowDirectControlKey) private var allowDirectControl = false
+    @AppStorage(ScreenSharingPrivacy.storageKey) private var hideFromScreenSharing = false
 
     private var notifications: NotificationPermissionState { .shared }
 
@@ -2482,6 +2483,27 @@ private struct PrivacySettingsTab: View {
         let includedCount = store.allOffIncludedDevices.count
 
         VStack(alignment: .leading, spacing: 16) {
+            SettingsSection(title: L10n.tr("投屏隐私", "Screen Sharing Privacy"), anchor: .hideFromScreenSharing) {
+                SettingsToggleRow(
+                    title: L10n.tr("共享屏幕时隐藏面板与摄像机窗口", "Hide from screen sharing"),
+                    isOn: Binding(
+                        get: { hideFromScreenSharing },
+                        set: { enabled in
+                            hideFromScreenSharing = enabled
+                            ScreenSharingPrivacy.applyToAppWindows(hidden: enabled)
+                            NotificationCenter.default.post(name: ScreenSharingPrivacy.didChange, object: nil)
+                        }
+                    )
+                )
+                Text(L10n.tr(
+                    "开启后，控制面板、摄像机小窗和快捷键提示不会出现在共享画面中。默认关闭。",
+                    "When on, the control panel, camera windows, and hotkey HUD are excluded from shared screens. Off by default."
+                ))
+                .font(.system(size: DesignTokens.TypeSize.caption))
+                .foregroundStyle(DesignTokens.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+
             SettingsSection(title: L10n.tr("锁屏控制", "Lock-Screen Protection"), anchor: .blockControlWhileLocked) {
                 SettingsToggleRow(
                     title: L10n.tr("锁屏时禁止控制设备", "Block device control while locked"),

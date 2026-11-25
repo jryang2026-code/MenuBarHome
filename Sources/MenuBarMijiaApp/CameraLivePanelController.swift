@@ -1493,6 +1493,9 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
         panel.backgroundColor = .clear
         panel.hasShadow = true
         panel.isMovableByWindowBackground = true
+        panel.sharingType = ScreenSharingPrivacy.sharingType(
+            hidden: UserDefaults.standard.bool(forKey: ScreenSharingPrivacy.storageKey)
+        )
         panel.minSize = NSSize(width: CameraLivePanelMetrics.compactWidth, height: 204)
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         panel.delegate = self
