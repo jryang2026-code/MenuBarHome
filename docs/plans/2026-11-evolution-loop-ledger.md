@@ -4,18 +4,20 @@
 
 ## 当前交接快照
 
-- 更新时间：2026-11-25（Wave 2A 收口，Wave 2B 启动）
-- `main`：`0d11867`（Wave 2A 全部合入）
+- 更新时间：2026-11-25（Wave 2B 收口，v1.5.0 发版准备）
+- `main`：`b6da9bb`（Wave 2B 全部合入）
+- Wave 2B：15/15 DONE（#504–#528）；发版前真机冒烟清单见 docs/plans/2026-11-v1.5.0-smoke-checklist.md；release-checklist 文档同步进行中
 - Wave 2A：14/14 DONE（#485–#503）
 - Wave 1：12/12 DONE（#471–#484 + main 187b6743）
 - Wave 0：8/8 DONE（#463 #464 #465 #466 #467 #468 #469 + main 1682695f）
 - 已完成不再派活：`#453`、`#461`（Windows Rust miIO 原生层）、`#460`（WidgetKit 签名可行性 spike）、`#462`（调研总纲）
-- 2026-11-25 01:1x Antigravity 返回 401 认证失效（W2A-9b 失败）：可能需重新登录 Antigravity
+- Antigravity 401 认证失效第 2 次（W2B-5、W2B-14 中断）：需作者重新登录 Antigravity；期间改派 Codex/opencode
 - main 14d3ade（#493）CI 红于 AssistantTests:603 + MiAccountDisableTests（计时抖动），重跑转绿；确定化修复已直推 main 0c16f1d4（CI 绿）
 - main ef6a9b7（#490）CI 一度红（runner 编译卡顿），后续 d565cf9 已含该提交且 CI 绿 → main 已恢复
 - Codex 云端审查额度耗尽（#479–#484 均 usage limit）：设备写入/网络 PR 由主控兜底审 diff
 - main 红一次（#467 新增 TV 撤销测试抖动）已由 2caf7730 修绿
-- 需作者拍板：`v1.5.0` 发版、`#12` SignPath 申请启动
+- 作者已定（2026-11-25）：`v1.5.0` 在 Wave 2B 全部合入后发；发版前按 release-checklist 核对文档并出真机冒烟清单
+- 需作者拍板：`v1.5.0` 打 tag、`#12` SignPath 申请启动
 
 ## 模型分派约定
 
@@ -79,20 +81,21 @@
 
 | ID | 关联已有Issue | 模型分派 | 前置依赖 | 通道 | 状态 | PR/SHA | 交接备注 |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| W2B-1 P1-5a macOS 滑块单槽邮箱 + 100ms 多路合并写 + LAN UDP Socket 复用 | — | Codex sol6.2 | Wave 2A | PR | TODO | | 高危设备禁 Leading |
-| W2B-2 P1-5b 双端 429 读写分账令牌桶 + Retry-After + Full Jitter | — | Codex sol6.2 | W2B-1 | PR | TODO | | 40% 预留写 |
-| W2B-3 P1-5c Windows 滑块单槽邮箱 + 合并写 | — | Neon Mid | W2B-1 | PR | TODO | | liquidGlassSlider.ts |
-| W2B-4 P1-6a 单设备/单场景全局热键（双端） | — | Neon Mid | Wave 2A | PR | TODO | | 冲突检测 + 锁屏/高危门 |
-| W2B-5 P1-6b 盲操 HUD + 投屏防窥 + macOS 键鼠/Emoji 细节 | — | Hydrogen High | W2B-4 | PR / 快车道 | TODO | | sharingType = .none |
-| W2B-6 P1-7a 跨源 Capture Mood 氛围快照 | — | Codex sol6.2 | Wave 2A | PR | TODO | | 跨源写场景 |
-| W2B-7 P1-7b 房间同类群控胶囊 + omnibar 差异预览 | — | Neon Mid | W2B-6 | PR | TODO | | 不另起 Alt+Space 大窗 |
-| W2B-8 Win HA mDNS 自动发现 | #294 | Hydrogen High | Wave 2A | PR | TODO | | |
-| W2B-9 P1-7c 可交互通知 + 传感器 Sparkline | — | Hydrogen High | Wave 2A | PR / 快车道 | TODO | | 复用锁屏策略 |
-| W2B-10 P1-8a Connect-Time 防 DNS Rebinding（双端） | — | Codex sol6.2 | Wave 2A | PR | TODO | | 网络安全边界 |
-| W2B-11 P1-8b Win Job Object 硬配额 | — | Neon Mid | Wave 2A | PR | TODO | | 128MB/20% CPU/2 进程 |
-| W2B-12 P1-8c 30 天设备墓碑 + .bak 滚动落盘 | — | Codex sol6.2 | Wave 2A | PR | TODO | | 数据迁移高风险 |
-| W2B-13 米家离线设备只读 LAN 可达性探测 | #412 | Codex sol6.2 | Wave 2A | PR | TODO | | |
-| W2B-14 Context Stack Windows 同构 | — | Neon Mid | W2A-3b | PR | TODO | | 来自 W2A-3b 遗留（共享 context_stack_golden.json） |
+| W2B-1 P1-5a macOS 滑块单槽邮箱 + 100ms 多路合并写 + LAN UDP Socket 复用 | — | Codex sol6.2 | Wave 2A | PR | DONE | #506 + #507 已合（按 sender endpoint + 请求 id 双重分发回包） | 高危设备禁 Leading |
+| W2B-2 P1-5b 双端 429 读写分账令牌桶 + Retry-After + Full Jitter | — | Codex sol6.2 | W2B-1 | PR | DONE | #512 + #515 合入中 | 40% 预留写 |
+| W2B-3 P1-5c Windows 滑块单槽邮箱 + 合并写 | — | Neon Mid | W2B-1 | PR | DONE | #517 → main 6114562 | liquidGlassSlider.ts |
+| W2B-4 P1-6a 单设备/单场景全局热键（双端） | — | Neon Mid | Wave 2A | PR | DONE | #505 + #509 已合 | 冲突检测 + 锁屏/高危门 |
+| W2B-5 P1-6b 盲操 HUD + 投屏防窥 + macOS 键鼠/Emoji 细节 | — | Codex sol6.2（Antigravity 401 改派） | W2B-4 | PR / 快车道 | DONE | #521 已合（HUD 选屏 + 投屏隐私快照已采纳） | sharingType = .none |
+| W2B-6 P1-7a 跨源 Capture Mood 氛围快照 | — | Codex sol6.2 | Wave 2A | PR | DONE | #511 → main fc5423d（mac） | 跨源写场景 |
+| W2B-6b Windows Capture Mood 同构 | — | Hydrogen High | W2B-6 | PR | DONE | #525 → main 99ce95c | 复用 mood_snapshot schema + golden |
+| W2B-7 P1-7b 房间同类群控胶囊 + omnibar 差异预览 | — | Neon Mid | W2B-6 | PR | DONE | #523 + #526 已合 | 不另起 Alt+Space 大窗 |
+| W2B-8 Win HA mDNS 自动发现 | #294 | Hydrogen High | Wave 2A | PR | DONE | #508 → main 9755828 | |
+| W2B-9 P1-7c 可交互通知 + 传感器 Sparkline | — | Hydrogen High | Wave 2A | PR / 快车道 | DONE | #518 + #519 + #522 + #524 已合 | 复用锁屏策略 |
+| W2B-10 P1-8a Connect-Time 防 DNS Rebinding（双端） | — | Codex sol6.2 | Wave 2A | PR | DONE | #510 + #516 合入中（mac 轻量预解析；LG LAN 超时已修） | 网络安全边界 |
+| W2B-11 P1-8b Win Job Object 硬配额 | — | Neon Mid | Wave 2A | PR | DONE | #504 → main cdb9984 | 128MB/20% CPU/2 进程 |
+| W2B-12 P1-8c 30 天设备墓碑 + .bak 滚动落盘 | — | Codex sol6.2 | Wave 2A | PR | DONE | #527 + #528 已合 | 数据迁移高风险 |
+| W2B-13 米家离线设备只读 LAN 可达性探测 | #412 | Codex sol6.2 | Wave 2A | PR | DONE | #520 合入中（mac） | 后续：Windows 已有 LAN miIO（#478），同等只读探测可在 Wave 3 补 |
+| W2B-14 Context Stack Windows 同构 | — | Neon Mid | W2A-3b | PR | DONE | #514 → main 296590e | 来自 W2A-3b 遗留（共享 context_stack_golden.json） |
 
 ## Wave 3A：P2 插件化与多厂商
 
