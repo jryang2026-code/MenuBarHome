@@ -2179,10 +2179,15 @@ public actor MiCloudProvider: HomeProvider {
 
     private var pendingChannelWrites: [String: [ChannelWrite]] = [:]
     private var channelWriteTasks: [String: Task<Void, Never>] = [:]
+    private var channelWriteEnqueuedForTesting: (@Sendable () -> Void)?
     var channelWriteSleep: @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
 
-    func setChannelWriteSleepForTesting(_ sleep: @escaping @Sendable (Duration) async throws -> Void) {
+    func setChannelWriteSleepForTesting(
+        onEnqueue: (@Sendable () -> Void)? = nil,
+        _ sleep: @escaping @Sendable (Duration) async throws -> Void
+    ) {
         channelWriteSleep = sleep
+        channelWriteEnqueuedForTesting = onEnqueue
     }
 
     func pendingChannelWriteCountForTesting(did: String) -> Int { pendingChannelWrites[did]?.count ?? 0 }
@@ -2206,6 +2211,7 @@ public actor MiCloudProvider: HomeProvider {
                     cancelChannelWrite(did: did, id: earlier.id)
                 }
                 pendingChannelWrites[did, default: []].append(entry)
+                channelWriteEnqueuedForTesting?()
                 if channelWriteTasks[did] == nil {
                     channelWriteTasks[did] = Task { [weak self] in
                         await self?.drainChannelWrites(did: did)
@@ -2232,37 +2238,48 @@ public actor MiCloudProvider: HomeProvider {
             try? await channelWriteSleep(.milliseconds(100))
             guard !isShutDown else { return }
             let window = pendingChannelWrites[did] ?? []
-            for entry in window where await entry.stillAllowed?() == false {
-                cancelChannelWrite(did: did, id: entry.id)
+            // Cloud quota is charged per request, so each batch can use only one priority.
+            for isBackgroundWrite in [false, true] {
+                let group = window.filter { $0.isBackgroundWrite == isBackgroundWrite }
+                guard !group.isEmpty else { continue }
+                for entry in group where await entry.stillAllowed?() == false {
+                    cancelChannelWrite(did: did, id: entry.id)
+                }
+                let groupIDs = Set(group.map(\.id))
+                let batch = pendingChannelWrites[did, default: []].filter { groupIDs.contains($0.id) }
+                pendingChannelWrites[did]?.removeAll { groupIDs.contains($0.id) }
+                guard !batch.isEmpty else { continue }
+                await MiCloudClient.$isBackgroundWrite.withValue(isBackgroundWrite) {
+                    await finishChannelBatch(batch, did: did)
+                }
             }
-            let windowIDs = Set(window.map(\.id))
-            let batch = pendingChannelWrites[did, default: []].filter { windowIDs.contains($0.id) }
-            pendingChannelWrites[did]?.removeAll { windowIDs.contains($0.id) }
-            guard !batch.isEmpty else { continue }
-            do {
-                if batch.count == 1, let entry = batch.first {
-                    try await MiCloudClient.$isBackgroundWrite.withValue(entry.isBackgroundWrite) {
-                        try await execute(entry.command, reportCloudWriteDenial: entry.reportCloudWriteDenial, allowChannelBatch: false)
-                    }
+        }
+    }
+
+    private func finishChannelBatch(_ batch: [ChannelWrite], did: String) async {
+        do {
+            if batch.count == 1, let entry = batch.first {
+                try await Self.$channelWriteStillAllowed.withValue(entry.stillAllowed) {
+                    try await execute(entry.command, reportCloudWriteDenial: entry.reportCloudWriteDenial, allowChannelBatch: false)
+                }
+                entry.reply.resume()
+                return
+            }
+            let (outcomes, viaCloud) = try await sendChannelBatch(batch, did: did)
+            for (index, entry) in batch.enumerated() {
+                switch outcomes[index] {
+                case .success:
                     entry.reply.resume()
-                } else {
-                    let (outcomes, viaCloud) = try await sendChannelBatch(batch, did: did)
-                    for (index, entry) in batch.enumerated() {
-                        switch outcomes[index] {
-                        case .success:
-                            entry.reply.resume()
-                        case .failure(let error):
-                            if viaCloud, entry.reportCloudWriteDenial, Self.isExplicitWriteDenial(error) {
-                                entry.reply.resume(throwing: CloudWriteDenied(error: error))
-                            } else {
-                                entry.reply.resume(throwing: error)
-                            }
-                        }
+                case .failure(let error):
+                    if viaCloud, entry.reportCloudWriteDenial, Self.isExplicitWriteDenial(error) {
+                        entry.reply.resume(throwing: CloudWriteDenied(error: error))
+                    } else {
+                        entry.reply.resume(throwing: error)
                     }
                 }
-            } catch {
-                for entry in batch { entry.reply.resume(throwing: error) }
             }
+        } catch {
+            for entry in batch { entry.reply.resume(throwing: error) }
         }
     }
 
@@ -2303,9 +2320,7 @@ public actor MiCloudProvider: HomeProvider {
             guard !isShutDown else { throw MiIOError.shutDown }
         }
         do {
-            let result = try await MiCloudClient.$isBackgroundWrite.withValue(batch.allSatisfy(\.isBackgroundWrite)) {
-                try await performCloudCall { try await api.setPropVerdicts(writes) }
-            }
+            let result = try await performCloudCall { try await api.setPropVerdicts(writes) }
             guard result.count == writes.count else { throw MiCloudError.badResponse("Incomplete channel write verdicts") }
             return (result, true)
         } catch MiCloudError.sessionExpired {
@@ -2382,6 +2397,8 @@ public actor MiCloudProvider: HomeProvider {
                 throw CancellationError()
             } catch {
                 recordLANFailure(did: record.miotDid, error: error)
+                guard await Self.channelWriteStillAllowed?() != false else { throw CancellationError() }
+                guard !isShutDown else { throw MiIOError.shutDown }
             }
         }
 
