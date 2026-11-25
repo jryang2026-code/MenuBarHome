@@ -128,7 +128,7 @@ extension HomeStore {
             }
             do {
                 try await send(step.effect.command, for: write, context: context)
-                if !step.effect.restore.isEmpty { restores.append((live, step.effect.restore.reversed(), write)) }
+                if !approved.effect.restore.isEmpty { restores.append((live, approved.effect.restore.reversed(), write)) }
             } catch {
                 if step.isCover { groupCoverIgnoreUntil.removeValue(forKey: live.id) }
                 skipped.append(original.name)
