@@ -18,7 +18,7 @@ import {
   miSessionExpiryState,
 } from "../src/core/miCloud/session.js";
 import {
-  MiotSpecResolver, parseMiotDeviceSpec, type HttpRequest, type HttpResponse,
+  MiCloudClient, MiotSpecResolver, parseMiotDeviceSpec, type HttpRequest, type HttpResponse,
   type HttpTransport, type MiDeviceRecord, type MiSession,
 } from "../src/core/miCloudClient.js";
 import {
@@ -30,6 +30,7 @@ import {
   executeMultiAccountMiotCommand, formatAccountTokenNotice, getAccountTokenStatus,
   hasSecondaryMiAccountsInIndex, makeMiAccount, markAccountSessionRejected, miAccountId, refreshMiAccountsConcurrently,
 } from "../src/core/miAccountsStore.js";
+import { MiCloudRateLimiter } from "../src/core/miCloud/rateLimiter.js";
 import {
   CanonicalDeviceRegistry, CANONICAL_DEVICE_REGISTRY_STORAGE_KEY, DUAL_SOURCE_ENABLED_STORAGE_KEY, DeviceDeduplicator, DeviceIdentityNormalizer, DeviceSourcePinStorage,
   DualSourceCoordinator, DualSourceHomeProvider, PINNED_DEVICE_SOURCES_STORAGE_KEY, ROOM_IDENTITY_REGISTRY_STORAGE_KEY, RoomIdentityRegistry, commandTargetBackend,
@@ -444,6 +445,77 @@ describe("B6: MiAccountsStore coexistence, <accountId>/ namespacing, shared did 
     markAccountSessionRejected(accFresh.session, true, { isPrimary: false, storage: localStorage, nowMs });
     assert.equal(getAccountTokenStatus(accFresh, nowMs, localStorage).kind, "expired");
     assert.equal(getAccountTokenStatus(accSoon, nowMs, localStorage).kind, "expiringSoon");
+  });
+
+  it("retains cloud values and applies LAN reads during an account read cooldown", async () => {
+    const account = makeMiAccount(SESSION_CN_PRIMARY);
+    let now = 0;
+    const limiter = new MiCloudRateLimiter(() => now, () => now, () => 0);
+    const lamp = {
+      did: "lamp", name: "Lamp", model: LIGHT_MODEL, isOnline: true,
+      localip: "192.168.0.5", token: "0123456789abcdef".repeat(2),
+    };
+    let cloudRequests = 0;
+    let lanAvailable = false;
+    let lanReads = 0;
+    const transport: HttpTransport = async ({ url }) => {
+      cloudRequests++;
+      const path = new URL(url).pathname;
+      if (path === "/app/v2/home/device_list_page") return okMi({ list: [lamp] });
+      if (path === "/app/miotspec/prop/get") {
+        return okMi([
+          { did: lamp.did, siid: 2, piid: 1, value: true },
+          { did: lamp.did, siid: 2, piid: 2, value: 80 },
+        ]);
+      }
+      return okMi({});
+    };
+    const options = {
+      accounts: [account],
+      transport,
+      storage: null,
+      specResolver: new MiotSpecResolver(transport, { [LIGHT_MODEL]: parseMiotDeviceSpec(LIGHT_SPEC_RAW)! }),
+      clientFactory: () => {
+        const client = new MiCloudClient(account.session, transport, limiter);
+        return lanAvailable ? client.withLAN([MiCloudClient.parseDeviceRecord(lamp)!], [], async <T>() => {
+          lanReads++;
+          return { values: [{ did: lamp.did, siid: 2, piid: 1, value: false }] } as T;
+        }) : client;
+      },
+    };
+    const first = await refreshMiAccountsConcurrently(options);
+    assert.equal(first.merged.accountStatuses[account.id]?.kind, "connected");
+    const previousLight = first.merged.home.devices[0]?.kind;
+    assert.equal(previousLight?.kind, "light");
+    assert.equal(previousLight.isOn, true);
+    assert.equal(previousLight.brightnessPercent, 80);
+
+    await limiter.recordLimit(account.id, "30");
+    const beforeCooldownRefresh = cloudRequests;
+    const cold = await refreshMiAccountsConcurrently(options);
+    assert.equal(cold.merged.accountStatuses[account.id]?.kind, "connecting");
+    assert.equal(cold.merged.home.devices.length, 0);
+
+    const paused = await refreshMiAccountsConcurrently({ ...options, previousSnapshots: first.children });
+    assert.equal(paused.merged.accountStatuses[account.id]?.kind, "connected");
+    assert.deepEqual(paused.merged.home.devices, first.merged.home.devices);
+    assert.equal(paused.merged.staleDeviceIds.size, 0);
+
+    lanAvailable = true;
+    const withLan = await refreshMiAccountsConcurrently({ ...options, previousSnapshots: paused.children });
+    const updatedLight = withLan.merged.home.devices[0]?.kind;
+    assert.equal(updatedLight?.kind, "light");
+    assert.equal(updatedLight.isOn, false);
+    assert.equal(updatedLight.brightnessPercent, 80);
+    assert.equal(withLan.merged.accountStatuses[account.id]?.kind, "connected");
+    assert.equal(cloudRequests, beforeCooldownRefresh);
+    assert.equal(lanReads, 1);
+
+    now = 30_000;
+    lanAvailable = false;
+    const resumed = await refreshMiAccountsConcurrently({ ...options, previousSnapshots: withLan.children });
+    assert.ok(cloudRequests > beforeCooldownRefresh);
+    assert.deepEqual(resumed.merged.home.devices, first.merged.home.devices);
   });
 
   it("namespaces rooms with <accountId>/, deduplicates shared physical did primary-first, isolates secondary errors, and fails over MIoT commands", async () => {

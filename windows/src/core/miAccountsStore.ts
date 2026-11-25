@@ -1,3 +1,4 @@
+import { miCloudRateLimiter } from "./miCloud/rateLimiter.js";
 import { executeMiScene, miSceneAccount, miSceneRows, refreshMiScenes, type MiSceneSnapshot } from "./miCloud/scenes.js";
 import { discoverMiHome } from "./miCloud/discovery.js";
 import {
@@ -45,13 +46,11 @@ import type { CapabilityIndexedDevice, CapabilitySelection, SafetySignalKind } f
 import { clearPersistedMiSessionExpired,
   clearPersistedMiSessionExpiredFor,
   defaultStorage,
-  isXiaomiRateLimitError,
   MI_ACCOUNTS_EXPIRED_STORAGE_KEY,
   miAccountId,
   miSessionFingerprint,
   miSessionRejectedRecord,
   persistMiSessionExpired,
-  PollingPolicy,
 } from "./pollingPolicy.js";
 import { CredentialVault,
   WIN32_CRED_MAX_BLOB_BYTES,
@@ -724,6 +723,7 @@ export interface AccountChildSnapshot { readonly account: MiAccount;
   readonly allDevices: readonly MiDeviceRecord[];
   readonly allRooms: readonly MiRoom[];
   readonly sceneSnapshot?: MiSceneSnapshot;
+  readonly propValues?: ReadonlyMap<string, unknown>;
   readonly specs: Readonly<Record<string, MiotDeviceSpec>>;
   readonly lightGroupOwners: ReadonlyMap<string, string>;
   /** Devices of a turned-off category whose enabled alerts still need their signal (P3a-W). */
@@ -1166,33 +1166,8 @@ function buildMemberGroupOwners(
   return owners;
 }
 
-interface AccountBackoffEntry {
-  fingerprint: string;
-  consecutiveHits: number;
-  backoffUntilMs: number;
-}
-
-const perAccountBackoffMap = new Map<string, AccountBackoffEntry>();
-
-function getAccountRateLimitBackoffUntilMs(
-  account: MiAccount,
-  nowMs = Date.now(),
-): number | null {
-  const entry = perAccountBackoffMap.get(account.id);
-  if (!entry) return null;
-  if (entry.fingerprint !== miSessionFingerprint(account.session)) {
-    perAccountBackoffMap.delete(account.id);
-    return null;
-  }
-  return entry.backoffUntilMs > nowMs ? entry.backoffUntilMs : null;
-}
-
 export function clearAccountRateLimitBackoff(accountId?: string): void {
-  if (accountId === undefined) {
-    perAccountBackoffMap.clear();
-  } else {
-    perAccountBackoffMap.delete(accountId);
-  }
+  void miCloudRateLimiter.clear(accountId);
 }
 
 interface RefreshMiAccountsOptions {
@@ -1282,28 +1257,16 @@ export async function refreshMiAccountsConcurrently(options: RefreshMiAccountsOp
       };
     }
 
-    const backoffUntil = silent ? getAccountRateLimitBackoffUntilMs(account, nowMs) : null;
-    if (backoffUntil !== null) { const previous = previousSnapshots[account.id];
-      if (previous) return previous;
-      return {
-        account,
-        home: { rooms: [], devices: [], environmentReadings: [], scenes: [] },
-        homes: [],
-        rawDevices: [],
-        allDevices: [],
-        allRooms: [],
-        specs: {},
-        lightGroupOwners: new Map(),
-        status: {
-          kind: "disconnected",
-          reason: tr3("请求过于频繁，稍后自动重试", "請求過於頻繁，稍後自動重試", "Rate limited, retrying shortly"),
-        },
-        tokenStatus: preTokenStatus,
-      };
-    }
-
-    try { const client = clientFactory(account.session, transport);
-      const discovered = await discoverMiAccountDevicesAndRooms(client);
+    try {
+      const client = clientFactory(account.session, transport);
+      const previous = previousSnapshots[account.id];
+      const readPaused = client.readCooldownMs > 0;
+      if (readPaused && previous && !previous.propValues) {
+        return { ...previous, account, tokenStatus: preTokenStatus };
+      }
+      const discovered = readPaused
+        ? { devices: previous?.allDevices ?? [], rooms: previous?.allRooms ?? [] }
+        : await discoverMiAccountDevicesAndRooms(client);
       const rawSelection = MiAccountScope.scopedSelectionForAccount(effectiveSelectedHomeId,
         account.id,
         allAccountIds,
@@ -1320,12 +1283,14 @@ export async function refreshMiAccountsConcurrently(options: RefreshMiAccountsOp
       const skipLightGroupMembers =
         options.prune !== undefined &&
         miotRoundClosesCategory(options.prune.selection, miAccountScopeOf(account.id), "light");
-      const [specs, membersByGroup] = await Promise.all([
-        specResolver.resolveForDevices(filtered.devices),
-        groupDids.length > 0 && !skipLightGroupMembers
-          ? client.lightGroupMembers(groupDids).catch(() => new Map<string, string[]>())
-          : Promise.resolve(new Map<string, string[]>()),
-      ]);
+      const [specs, lightGroupOwners] = readPaused
+        ? [previous?.specs ?? {}, previous?.lightGroupOwners ?? new Map<string, string>()]
+        : await Promise.all([
+            specResolver.resolveForDevices(filtered.devices),
+            groupDids.length > 0 && !skipLightGroupMembers
+              ? client.lightGroupMembers(groupDids).then(buildMemberGroupOwners, () => new Map<string, string>())
+              : Promise.resolve(new Map<string, string>()),
+          ]);
 
       const prune = options.prune
         ? buildMiotTypePrunePlan({
@@ -1341,12 +1306,14 @@ export async function refreshMiAccountsConcurrently(options: RefreshMiAccountsOp
       // every account, and a closed category's alert-only devices keep just the reads they need.
       const propKeys = prune ? [...prune.readKeys] : collectAccountMiotPropKeys(filtered.devices, specs);
       if (!options.clientFactory) client.withLAN(filtered.devices, discovered.rooms);
-      const values = propKeys.length > 0
-          ? await client.getProps(propKeys)
-          : new Map<string, unknown>();
+      const values = new Map(readPaused ? previous?.propValues : undefined);
+      if (propKeys.length > 0) {
+        const observed = await client.getProps(propKeys, { lanOnly: readPaused });
+        for (const [key, value] of observed) values.set(key, value);
+      }
 
-      const sceneSnapshot = await refreshMiScenes(
-        client, discovered.rooms, account.session.userId, previousSnapshots[account.id]?.sceneSnapshot, nowMs,
+      const sceneSnapshot = readPaused ? previous?.sceneSnapshot : await refreshMiScenes(
+        client, discovered.rooms, account.session.userId, previous?.sceneSnapshot, nowMs,
       );
       const rawHome = MiotSynthesizer.synthesize(prune ? prune.visibleRecords : filtered.devices,
         filtered.rooms,
@@ -1361,12 +1328,7 @@ export async function refreshMiAccountsConcurrently(options: RefreshMiAccountsOp
       const stamped = stampAccountSnapshot(rawHome, rawHomes, account, namespaceIds);
       const stampedSafety = safetyHome ? stampAccountSnapshot(safetyHome, [], account, namespaceIds) : null;
 
-      clearAccountRateLimitBackoff(account.id);
-      markAccountSessionRejected(account.session, false, {
-        isPrimary,
-        storage,
-        nowMs,
-      });
+      if (!readPaused) markAccountSessionRejected(account.session, false, { isPrimary, storage, nowMs });
       const freshTokenStatus = getAccountTokenStatus(account, nowMs, storage);
       return {
         account,
@@ -1376,14 +1338,15 @@ export async function refreshMiAccountsConcurrently(options: RefreshMiAccountsOp
         allDevices: discovered.devices,
         allRooms: discovered.rooms,
         sceneSnapshot,
+        propValues: values,
         specs,
-        lightGroupOwners: buildMemberGroupOwners(membersByGroup),
+        lightGroupOwners,
         ...(stampedSafety
           ? { safetyDevices: stampedSafety.home.devices, safetyDeviceFacets: stampedSafety.home.deviceFacets ?? {} }
           : {}),
         ...(prune && prune.hiddenIndexedDevices.length > 0 ? { hiddenDevices: prune.hiddenIndexedDevices } : {}),
         ...(prune ? { safetySignalsByDeviceId: prune.safetySignalsByDeviceId } : {}),
-        status: { kind: "connected" },
+        status: readPaused ? previous?.status ?? { kind: "connecting" } : { kind: "connected" },
         tokenStatus: freshTokenStatus,
       };
     } catch (error) { if (error instanceof MiCloudError && error.kind === "sessionExpired") {
@@ -1417,16 +1380,6 @@ export async function refreshMiAccountsConcurrently(options: RefreshMiAccountsOp
         };
       }
 
-      if (isXiaomiRateLimitError(error)) { const fp = miSessionFingerprint(account.session);
-        const prev = perAccountBackoffMap.get(account.id);
-        const hits = prev && prev.fingerprint === fp ? prev.consecutiveHits + 1 : 1;
-        perAccountBackoffMap.set(account.id, {
-          fingerprint: fp,
-          consecutiveHits: hits,
-          backoffUntilMs: nowMs + PollingPolicy.rateLimitBackoffMs(hits),
-        });
-      }
-
       const previous = previousSnapshots[account.id];
       const reason = error instanceof Error ? error.message : String(error);
       return {
@@ -1441,6 +1394,8 @@ export async function refreshMiAccountsConcurrently(options: RefreshMiAccountsOp
         rawDevices: previous?.rawDevices ?? [],
         allDevices: previous?.allDevices ?? [],
         allRooms: previous?.allRooms ?? [],
+        sceneSnapshot: previous?.sceneSnapshot,
+        propValues: previous?.propValues,
         specs: previous?.specs ?? {},
         lightGroupOwners: previous?.lightGroupOwners ?? new Map(),
         // The panel keeps drawing this account's last snapshot, so it must keep answering
@@ -1569,6 +1524,7 @@ export class MultiAccountMiCloudProvider implements HomeCommandProvider {
         new MiCloudClient(account.session, this.dependencies.transport),
         this.dependencies.sceneForEntity?.(command.entityId),
         options.beforeSend,
+        options.userInitiated,
       );
     }
     const parsed = parseMiotActionAddress(command.entityId) ?? parseMiotAddress(command.entityId);
@@ -1624,10 +1580,10 @@ export class MultiAccountMiCloudProvider implements HomeCommandProvider {
       const beforeFallback = options.beforeFallback ?? options.beforeSend;
       const sendSingle = async (): Promise<boolean | null> => {
         if (write.kind === "action") {
-          await client.action(write.call, beforeFallback);
+          await client.action(write.call, beforeFallback, options.userInitiated, options.beforeSend);
           return null;
         }
-        await client.setProps(write.writes, beforeFallback);
+        await client.setProps(write.writes, beforeFallback, options.userInitiated, options.beforeSend);
         if (!options.readBackPower) return null;
         const power = write.writes.find((w) => typeof w.value === "boolean");
         if (!power) return null;
@@ -1656,6 +1612,8 @@ export class MultiAccountMiCloudProvider implements HomeCommandProvider {
             property: write.writes[0]!,
             spec,
             client,
+            userInitiated: options.userInitiated,
+            beforeSend: options.beforeSend,
             stillAllowed: options.stillAllowed,
             executeSingle: sendSingle,
           });

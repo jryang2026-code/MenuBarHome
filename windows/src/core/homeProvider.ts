@@ -134,6 +134,7 @@ export class MiCloudProvider implements HomeCommandProvider {
         { runManualScene: client.runManualScene.bind(client) },
         this.dependencies.sceneForEntity?.(command.entityId),
         options.beforeSend,
+        options.userInitiated,
       );
     }
     const device = deviceForEntity(command.entityId);
@@ -150,10 +151,10 @@ export class MiCloudProvider implements HomeCommandProvider {
     const sendSingle = async (): Promise<boolean | null> => {
       options.beforeSend?.();
       if (mapped.kind === "action") {
-        await client.action(mapped.call, beforeFallback);
+        await client.action(mapped.call, beforeFallback, options.userInitiated, options.beforeSend);
         return null;
       }
-      await client.setProps(mapped.writes, beforeFallback);
+      await client.setProps(mapped.writes, beforeFallback, options.userInitiated, options.beforeSend);
       if (!options.readBackPower) return null;
       const power = mapped.writes.find((write) => {
         if (typeof write.value === "boolean") return true;
@@ -189,6 +190,8 @@ export class MiCloudProvider implements HomeCommandProvider {
         property: mapped.writes[0]!,
         spec,
         client,
+        userInitiated: options.userInitiated,
+        beforeSend: options.beforeSend,
         stillAllowed: options.stillAllowed,
         executeSingle: sendSingle,
       });
