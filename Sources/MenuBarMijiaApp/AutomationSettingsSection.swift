@@ -4,15 +4,8 @@ import MijiaCore
 
 /// Localized copy for the companion integration block (Raycast / CLI / MCP, P6a-M).
 enum CompanionSettingsCopy {
-    static var toggleTitle: String { L10n.tr("外部快捷工具与伴生集成（Raycast / CLI / MCP）", "External Tools & Companion Integration (Raycast / CLI / MCP)") }
-    static var statusEnabled: String { L10n.tr("已开启 · 仅本机可访问，不共享米家或 Home Assistant 登录凭据", "Enabled · Local access only; your Xiaomi Home and Home Assistant sign-ins are never shared") }
-    static var statusDisabled: String { L10n.tr("已关闭 · 停止快照导出并拒绝伴生命令（普通外部链接仍按安全与提醒设置执行）", "Off · Snapshot export stopped and companion commands rejected (ordinary links still follow Safety & Alerts)") }
-    static var scopeHint: String {
-        L10n.tr(
-            "开启后只在本机导出当前已启用连接与设备类型的快照文件，供 Raycast、本地 CLI 与 MCP 协作；高风险设备与锁屏保护仍在应用内执行。本功能不会自动修改任何外部应用配置。",
-            "Exports a local snapshot of enabled connections and device types for Raycast, local CLI, and MCP. High-risk confirmations and screen-lock protection still run inside the app. External app configs are never modified automatically."
-        )
-    }
+    static var toggleTitle: String { L10n.tr("Raycast / CLI / MCP 集成", "Raycast / CLI / MCP integration") }
+    static var statusEnabled: String { L10n.tr("仅本机可读，不共享账号凭据", "Readable on this Mac only; account sign-ins are never shared") }
     static var copyConfigButton: String { L10n.tr("复制配置", "Copy Config") }
     static var checkButton: String { L10n.tr("检测", "Check") }
     static var disconnectButton: String { L10n.tr("断开", "Disconnect") }
@@ -37,6 +30,7 @@ struct AutomationSettingsSection: View {
 
     @Environment(\.settingsSearchFocus) private var searchFocus
     @State private var companionCheckReport: CompanionCheckReport?
+    @State private var showsCompanion = false
     /// Loaded in `onAppear`; a `@State` initializer would re-decode `UserDefaults` on every render.
     @State private var rules: [AutomationRule] = []
     /// Paused groups and quick actions whose connection was removed: the fail-safe keeps them paused,
@@ -125,8 +119,8 @@ struct AutomationSettingsSection: View {
             .toggleStyle(.switch)
 
             Text(L10n.tr(
-                "关闭后停止到点执行和补发，已排定的定时暂停保留；重新开启时先复验目标，已过期的不补发，改为进入错过流程。",
-                "Turning this off stops timers from firing and never catches up; pending timers stay paused with their plans. Turning it back on revalidates every target first, and timers that came due meanwhile go to the missed flow instead of running silently."
+                "关闭后暂停执行，过期不补发",
+                "Off pauses timers; overdue ones never run late"
             ))
             .font(.system(size: DesignTokens.TypeSize.caption))
             .foregroundStyle(DesignTokens.secondaryText)
@@ -172,26 +166,10 @@ struct AutomationSettingsSection: View {
             .toggleStyle(.switch)
             .disabled(store.identityMigrationDiagnostic != nil)
 
-            Text(L10n.tr(
-                "规则默认没有任何内容。锁屏、合盖、睡眠会合并成一个「离开」触发；解锁与唤醒合并成「回来」。同一触发一分钟内只执行一次。摄像头 / 麦克风、电源与电量、Wi-Fi、专注状态、日历和深夜使用等 Mac 专属触发默认关闭，按需逐条添加；Wi-Fi 名称、专注状态和日历需要系统权限，未授权时对应规则不会触发。",
-                "No rules exist by default. Lock, lid close and sleep are grouped as Away; unlock and wake as Back. The same trigger runs at most once per minute. Mac-only signals (camera/microphone, power and battery, Wi-Fi, Focus, Calendar, late-night use) are off until you add a rule. Wi-Fi name, Focus status and Calendar need system permission; without it their rules do not fire."
-            ))
-            .font(.system(size: DesignTokens.TypeSize.caption))
-            .foregroundStyle(DesignTokens.secondaryText)
-            .fixedSize(horizontal: false, vertical: true)
-
-            Text(L10n.tr(
-                "需要区分时改用三个精确触发：锁屏（未休眠）、合盖休眠、休眠（未合盖）。合盖会先锁屏再休眠，所以「锁屏」要晚约 2 秒判定，免得把合盖错认成单纯锁屏；休眠本身不等待，否则指令会赶不上机器挂起。条件是「且」的关系，例如「合盖休眠 + 只在公司 Wi-Fi」。",
-                "For finer control use the three precise triggers: Screen locked (not asleep), Sleep after lid close, and Sleep (lid open). A lid close locks before it sleeps, so “Screen locked” is decided about 2 s late to avoid mistaking a lid close for a plain lock; sleep itself is never delayed, otherwise the command would miss the suspend. Conditions are ANDed with the trigger, for example “Sleep after lid close + only on office Wi-Fi”."
-            ))
-            .font(.system(size: DesignTokens.TypeSize.caption))
-            .foregroundStyle(DesignTokens.secondaryText)
-            .fixedSize(horizontal: false, vertical: true)
-
             if rules.isEmpty {
                 Text(L10n.tr(
-                    "还没有规则。下面新建一条，例如「离开 → 关闭书房灯」。",
-                    "No rules yet. Create one below, for example “Away → turn off the study light”."
+                    "暂无自动化规则",
+                    "No automation rules yet"
                 ))
                 .font(.system(size: DesignTokens.TypeSize.caption))
                 .foregroundStyle(DesignTokens.secondaryText)
@@ -214,35 +192,7 @@ struct AutomationSettingsSection: View {
 
             Divider().overlay(Color.primary.opacity(0.06))
 
-            HStack(alignment: .center, spacing: 12) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(L10n.tr("外部链接直控权限", "External Link Direct Control"))
-                        .font(.system(size: DesignTokens.TypeSize.body))
-                    Text(L10n.tr(
-                        "外部链接（menumijia://）跳过确认的高风险开关已归入「安全与提醒 › 高级控制权限」统一管理。",
-                        "The high-risk switch allowing menumijia:// links to skip confirmation is managed under Safety & Alerts › High-Risk Control Permissions."
-                    ))
-                    .font(.system(size: DesignTokens.TypeSize.caption))
-                    .foregroundStyle(DesignTokens.secondaryText)
-                    .fixedSize(horizontal: false, vertical: true)
-                }
-
-                Spacer(minLength: 8)
-
-                Button {
-                    searchFocus?.jump(to: .allowURLControl)
-                } label: {
-                    HStack(spacing: 3) {
-                        Text(L10n.tr("前往设置", "Go to Settings"))
-                        Image(systemName: "chevron.right")
-                            .font(.system(size: DesignTokens.TypeSize.micro, weight: .semibold))
-                    }
-                }
-                .buttonStyle(PillActionButtonStyle())
-            }
-
-            Divider().overlay(Color.primary.opacity(0.06))
-
+            DisclosureGroup(isExpanded: $showsCompanion) {
             VStack(alignment: .leading, spacing: 8) {
                 SettingsToggleRow(
                     title: CompanionSettingsCopy.toggleTitle,
@@ -257,22 +207,19 @@ struct AutomationSettingsSection: View {
                 .disabled(store.identityMigrationDiagnostic != nil && !store.companionIntegrationEnabled)
 
                 let isCompanionPaused = store.companionIntegrationEnabled && store.identityMigrationDiagnostic != nil
+                if store.companionIntegrationEnabled {
                 HStack(spacing: 6) {
                     Circle()
                         .fill(isCompanionPaused ? Color.orange : (store.companionIntegrationEnabled ? Color.green : DesignTokens.secondaryText.opacity(0.45)))
                         .frame(width: 7, height: 7)
                     Text(isCompanionPaused
                          ? HomeStore.companionIdentityUnavailableMessage
-                         : (store.companionIntegrationEnabled ? CompanionSettingsCopy.statusEnabled : CompanionSettingsCopy.statusDisabled))
+                         : CompanionSettingsCopy.statusEnabled)
                         .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
-                        .foregroundStyle(store.companionIntegrationEnabled ? Color.primary : DesignTokens.secondaryText)
+                        .foregroundStyle(Color.primary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
-
-                Text(CompanionSettingsCopy.scopeHint)
-                    .font(.system(size: DesignTokens.TypeSize.caption))
-                    .foregroundStyle(DesignTokens.secondaryText)
-                    .fixedSize(horizontal: false, vertical: true)
+                }
 
                 HStack(spacing: 8) {
                     // Copy and Disconnect only mean something while the integration is on; Check stays to explain why it is off.
@@ -319,12 +266,21 @@ struct AutomationSettingsSection: View {
                     .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 8))
                 }
             }
+            .padding(.top, 6)
+            } label: {
+                Text(L10n.tr("高级", "Advanced"))
+                    .font(.system(size: DesignTokens.TypeSize.body, weight: .medium))
+            }
             .settingsRow(anchor: .raycast)
         }
         .onAppear {
+            if searchFocus?.highlight == .raycast { showsCompanion = true }
             rules = store.automationRuleStore.load()
             refreshPausedQuickActions()
             locationAuthorized = MacHardwareProbe.isWiFiAuthorized
+        }
+        .onChange(of: searchFocus?.highlight) { _, highlight in
+            if highlight == .raycast { showsCompanion = true }
         }
         // Coming back from System Settings is the moment the state actually changed.
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
@@ -380,8 +336,8 @@ struct AutomationSettingsSection: View {
                 }
                 if store.pausedRuleRequiresManualResume(rule) {
                     Text(L10n.tr(
-                        "已暂停且不会自动恢复，打开右侧开关即可恢复",
-                        "Paused and it will not resume on its own; turn the switch on to resume it"
+                        "已暂停，打开开关恢复",
+                        "Paused; turn the switch on to resume"
                     ))
                     .font(.system(size: DesignTokens.TypeSize.caption))
                     .foregroundStyle(DesignTokens.secondaryText)
@@ -389,86 +345,84 @@ struct AutomationSettingsSection: View {
                 }
                 if !rule.canEnable && !rule.isEnabled {
                     Text(L10n.tr(
-                        "请先展开下方「编辑规则」选择设备后再启用",
-                        "Expand “Edit rule” below to pick devices before enabling"
+                        "请先编辑并选择设备",
+                        "Edit the rule and pick devices first"
                     ))
                     .font(.system(size: DesignTokens.TypeSize.caption))
                     .foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
                 }
-                if supportsRuleEditor(rule) {
-                    DisclosureGroup(L10n.tr("编辑规则", "Edit rule")) {
-                        if rule.trigger == .frontmostAppBecame || rule.trigger == .frontmostAppLeft {
-                            frontmostAppEditor(Binding(
-                                get: { rule.triggerOptions.frontmostAppBundleID ?? "" },
-                                set: { bundleID in
-                                    guard var current = store.automationRuleStore.load().first(where: { $0.id == rule.id }) else { return }
-                                    let trimmed = bundleID.trimmingCharacters(in: .whitespacesAndNewlines)
-                                    current.triggerOptions.frontmostAppBundleID = trimmed.isEmpty ? nil : trimmed
-                                    if !current.canEnable { current.isEnabled = false }
-                                    update(current)
-                                }
-                            ))
-                        }
-                        if case .devices(let ids, let isOn) = rule.action {
-                            ruleDevicesEditor(rule: rule, selectedIDs: Set(ids), isOn: isOn)
-                        }
-                        // The row above already shows this switch when the trigger has a paired exit.
-                        if rule.trigger.pairedContextTrigger == nil,
-                           let defaultRestore = rule.trigger.defaultRestoreTrigger,
-                           case .devices = rule.action {
-                            Toggle(L10n.tr("情境结束后还原", "Restore when the context ends"), isOn: Binding(
-                                get: { rule.restoreWhenContextEnds },
-                                set: { enabled in
-                                    guard var current = store.automationRuleStore.load().first(where: { $0.id == rule.id }) else { return }
-                                    current.restoreWhenContextEnds = enabled
-                                    current.restoreTrigger = enabled ? defaultRestore : nil
-                                    if current.isEnabled, enabled,
-                                       let confirmation = current.highRiskConfirmation(devices: store.devices),
-                                       !current.highRiskApproved {
-                                        guard confirmHighRiskRule(confirmation) else { return }
-                                        current.highRiskApproved = true
-                                    }
-                                    update(current)
-                                }
-                            ))
-                            .toggleStyle(.checkbox)
-                        }
-                        if rule.trigger == .scheduledTime {
-                            scheduleEditor(Binding(
-                                get: { rule.triggerOptions.scheduledTime ?? ScheduledTime(hour: 8, minute: 0) },
-                                set: { schedule in
-                                    guard var current = store.automationRuleStore.load().first(where: { $0.id == rule.id }) else { return }
-                                    current.triggerOptions.scheduledTime = schedule
-                                    update(current)
-                                }
-                            ))
-                        }
-                        if rule.trigger.supportsLasting {
-                            lastingEditor(Binding(
-                                get: { rule.conditions.lastingMinutes ?? 0 },
-                                set: { minutes in
-                                    guard var current = store.automationRuleStore.load().first(where: { $0.id == rule.id }) else { return }
-                                    current.conditions.lastingMinutes = minutes == 0 ? nil : minutes
-                                    update(current)
-                                }
-                            ))
-                        }
+                DisclosureGroup(L10n.tr("编辑规则", "Edit rule")) {
+                    if rule.trigger == .frontmostAppBecame || rule.trigger == .frontmostAppLeft {
+                        frontmostAppEditor(Binding(
+                            get: { rule.triggerOptions.frontmostAppBundleID ?? "" },
+                            set: { bundleID in
+                                guard var current = store.automationRuleStore.load().first(where: { $0.id == rule.id }) else { return }
+                                let trimmed = bundleID.trimmingCharacters(in: .whitespacesAndNewlines)
+                                current.triggerOptions.frontmostAppBundleID = trimmed.isEmpty ? nil : trimmed
+                                if !current.canEnable { current.isEnabled = false }
+                                update(current)
+                            }
+                        ))
                     }
-                    .font(.system(size: DesignTokens.TypeSize.caption))
-                }
-                Picker(L10n.tr("执行模式", "Execution mode"), selection: Binding(
-                    get: { rule.mode },
-                    set: { mode in
-                        guard var current = store.automationRuleStore.load().first(where: { $0.id == rule.id }) else { return }
-                        current.mode = mode
-                        update(current)
+                    if case .devices(let ids, let isOn) = rule.action {
+                        ruleDevicesEditor(rule: rule, selectedIDs: Set(ids), isOn: isOn)
                     }
-                )) {
-                    ForEach(AutomationExecutionMode.allCases, id: \.self) { mode in
-                        Text(mode.title).tag(mode)
+                    // The row above already shows this switch when the trigger has a paired exit.
+                    if rule.trigger.pairedContextTrigger == nil,
+                       let defaultRestore = rule.trigger.defaultRestoreTrigger,
+                       case .devices = rule.action {
+                        Toggle(L10n.tr("情境结束后还原", "Restore when the context ends"), isOn: Binding(
+                            get: { rule.restoreWhenContextEnds },
+                            set: { enabled in
+                                guard var current = store.automationRuleStore.load().first(where: { $0.id == rule.id }) else { return }
+                                current.restoreWhenContextEnds = enabled
+                                current.restoreTrigger = enabled ? defaultRestore : nil
+                                if current.isEnabled, enabled,
+                                   let confirmation = current.highRiskConfirmation(devices: store.devices),
+                                   !current.highRiskApproved {
+                                    guard confirmHighRiskRule(confirmation) else { return }
+                                    current.highRiskApproved = true
+                                }
+                                update(current)
+                            }
+                        ))
+                        .toggleStyle(.checkbox)
+                    }
+                    if rule.trigger == .scheduledTime {
+                        scheduleEditor(Binding(
+                            get: { rule.triggerOptions.scheduledTime ?? ScheduledTime(hour: 8, minute: 0) },
+                            set: { schedule in
+                                guard var current = store.automationRuleStore.load().first(where: { $0.id == rule.id }) else { return }
+                                current.triggerOptions.scheduledTime = schedule
+                                update(current)
+                            }
+                        ))
+                    }
+                    if rule.trigger.supportsLasting {
+                        lastingEditor(Binding(
+                            get: { rule.conditions.lastingMinutes ?? 0 },
+                            set: { minutes in
+                                guard var current = store.automationRuleStore.load().first(where: { $0.id == rule.id }) else { return }
+                                current.conditions.lastingMinutes = minutes == 0 ? nil : minutes
+                                update(current)
+                            }
+                        ))
+                    }
+                    Picker(L10n.tr("执行模式", "Execution mode"), selection: Binding(
+                        get: { rule.mode },
+                        set: { mode in
+                            guard var current = store.automationRuleStore.load().first(where: { $0.id == rule.id }) else { return }
+                            current.mode = mode
+                            update(current)
+                        }
+                    )) {
+                        ForEach(AutomationExecutionMode.allCases, id: \.self) { mode in
+                            Text(mode.title).tag(mode)
+                        }
                     }
                 }
+                .font(.system(size: DesignTokens.TypeSize.caption))
                 DisclosureGroup(L10n.tr("最近运行", "Recent runs")) {
                     let entries = store.automationRunHistory.filter { $0.ruleId == rule.id }
                     if entries.isEmpty {
@@ -563,14 +517,6 @@ struct AutomationSettingsSection: View {
                     .help(template.detail)
                 }
             }
-
-            Text(L10n.tr(
-                "一键添加默认关闭的模板（不预选设备），选好设备后再启用；情境结束时自动还原状态。",
-                "Adds disabled starter rules with no pre-selected devices. Pick devices before enabling; state restores when the context ends."
-            ))
-            .font(.system(size: DesignTokens.TypeSize.caption))
-            .foregroundStyle(DesignTokens.secondaryText)
-            .fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -580,15 +526,6 @@ struct AutomationSettingsSection: View {
         store.automationRuleStore.save(stored)
         rules = stored
         store.onAutomationRulesChanged?()
-    }
-
-    private func supportsRuleEditor(_ rule: AutomationRule) -> Bool {
-        if rule.trigger == .scheduledTime || rule.trigger.supportsLasting
-            || rule.trigger == .frontmostAppBecame || rule.trigger == .frontmostAppLeft {
-            return true
-        }
-        if case .devices = rule.action { return true }
-        return false
     }
 
     @ViewBuilder
@@ -613,13 +550,6 @@ struct AutomationSettingsSection: View {
                 .frame(maxWidth: 260)
                 .controlSize(.regular)
             }
-            Text(L10n.tr(
-                "仅保存你选择的 Bundle ID，不记录或日志输出其他应用。",
-                "Stores only the bundle ID you pick; other apps are never recorded or logged."
-            ))
-            .font(.system(size: DesignTokens.TypeSize.caption))
-            .foregroundStyle(DesignTokens.secondaryText)
-            .fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -953,22 +883,14 @@ struct AutomationSettingsSection: View {
                 .fixedSize(horizontal: false, vertical: true)
             }
 
-            Text(L10n.tr(
-                "精确匹配网络名称。未连接任何 Wi-Fi 时，上面两种条件都不满足，规则不会触发；未授予「定位」权限时同样不会触发。",
-                "Names are matched exactly. When no Wi-Fi is connected neither mode is satisfied and the rule stays quiet; the same applies without Location permission."
-            ))
-            .font(.system(size: DesignTokens.TypeSize.caption))
-            .foregroundStyle(DesignTokens.secondaryText)
-            .fixedSize(horizontal: false, vertical: true)
-
             // A menu-bar-only app (LSUIElement) has no window at launch, so macOS often suppresses
             // the Location prompt entirely. Ask once, then tell the user exactly where to grant it
             // instead of leaving them with a rule that silently never fires.
             if !locationAuthorized {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text(L10n.tr(
-                        "还没有「定位」权限，带 Wi-Fi 条件的规则不会触发。菜单栏应用可能不弹授权框，请手动允许。",
-                        "Location permission is missing, so rules with a Wi-Fi condition never fire. A menu-bar app often shows no prompt; grant it manually."
+                        "需要定位权限才能识别 Wi-Fi",
+                        "Location permission is needed to read Wi-Fi"
                     ))
                     .font(.system(size: DesignTokens.TypeSize.caption))
                     .foregroundStyle(.orange)
@@ -1152,18 +1074,18 @@ struct AutomationSettingsSection: View {
         switch permission {
         case .location:
             return L10n.tr(
-                "读取 Wi-Fi 名称需要「定位」权限。未授权时 Wi-Fi 规则不会触发，其他规则不受影响。",
-                "Reading the Wi-Fi name requires Location permission. Wi-Fi rules stay inactive without it; other rules are unaffected."
+                "读取 Wi-Fi 需定位权限",
+                "Reading Wi-Fi needs Location permission"
             )
         case .focus:
             return L10n.tr(
-                "专注状态需要系统权限。公开 API 只提供「是否处于专注」，无法读取具体专注模式名称。",
-                "Focus status requires system permission. The public API only reports whether some Focus is active, not which Focus mode."
+                "需系统专注状态权限",
+                "Needs Focus status permission"
             )
         case .calendar:
             return L10n.tr(
-                "日历规则需要完整的日历访问权限，只读取开始时间，不修改事件。",
-                "Calendar rules need full calendar access. Only event start times are read; events are never modified."
+                "需系统日历权限（只读）",
+                "Needs Calendar permission (read-only)"
             )
         }
     }
@@ -1206,8 +1128,8 @@ struct AutomationSettingsSection: View {
             let selectable = store.controllableDevices
             if selectable.isEmpty {
                 Text(L10n.tr(
-                    "当前没有可控设备（隐藏、离线或只能展开详情的设备不会列出）。连接数据源或取消隐藏后再试。",
-                    "No controllable devices (hidden, offline, or detail-only devices are not listed). Connect a data source or unhide a device first."
+                    "暂无可控设备",
+                    "No controllable devices"
                 ))
                 .font(.system(size: DesignTokens.TypeSize.caption))
                 .foregroundStyle(DesignTokens.secondaryText)

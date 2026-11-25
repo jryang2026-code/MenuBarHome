@@ -19,13 +19,13 @@ struct SettingsSafetyAndAboutTests {
         L10n.$overrideLanguage.withValue(.zhHans) {
             #expect(SettingsTab.privacy.title == "安全与提醒")
             #expect(SettingsTab.about.title == "关于与诊断")
-            #expect(SettingsTab.privacy.paneSubtitle?.contains("设备类型关闭后仍可管理对应提醒") == true)
+            #expect(SettingsTab.privacy.paneSubtitle == "锁屏保护、安全提醒与全关范围")
             #expect(SettingsTab.about.paneSubtitle?.contains("版本更新、隐私说明、排障信息、重置与退出") == true)
         }
         L10n.$overrideLanguage.withValue(.zhHant) {
             #expect(SettingsTab.privacy.title == "安全與提醒")
             #expect(SettingsTab.about.title == "關於與診斷")
-            #expect(SettingsTab.privacy.paneSubtitle?.contains("裝置類型關閉後仍可管理對應提醒") == true)
+            #expect(SettingsTab.privacy.paneSubtitle == "鎖定畫面保護、安全提醒與全關範圍")
             #expect(SettingsTab.about.paneSubtitle?.contains("版本更新、隱私說明、排障資訊、重置與退出") == true)
         }
         L10n.$overrideLanguage.withValue(.en) {

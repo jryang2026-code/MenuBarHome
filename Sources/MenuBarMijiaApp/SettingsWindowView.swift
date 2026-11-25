@@ -715,8 +715,8 @@ struct ContinueOnboardingSection: View {
         SettingsSection(title: L10n.tr("初始设置", "Initial Setup"), anchor: anchor) {
             HStack(spacing: 12) {
                 Text(L10n.tr(
-                    "初始设置尚未完成，继续完成连接家庭数据源、搜索设备与全关撤销引导。",
-                    "Initial setup is still in progress. Continue the guide to connect your home, search devices, and practice All Off + Undo."
+                    "完成设备连接与基础引导",
+                    "Finish connecting devices and the basic guide"
                 ))
                 .font(.system(size: DesignTokens.TypeSize.caption))
                 .foregroundStyle(DesignTokens.secondaryText)
@@ -786,14 +786,6 @@ private struct GeneralSettingsTab: View {
                 }
                 .frame(minHeight: DesignTokens.Settings.rowHeight)
                 .settingsRow(anchor: .appearanceMode)
-
-                Text(L10n.tr(
-                    "面板会跟随系统自动使用浅色或深色材质，开启的设备比关闭的磁贴略亮一层。",
-                    "The panel follows light and dark automatically, and a device that is on sits one step brighter than the off tile."
-                ))
-                .font(.system(size: DesignTokens.TypeSize.caption))
-                .foregroundStyle(DesignTokens.secondaryText)
-                .fixedSize(horizontal: false, vertical: true)
 
                 Divider().overlay(Color.primary.opacity(0.06))
 
@@ -869,14 +861,6 @@ private struct GeneralSettingsTab: View {
                 )
                 .settingsRow(anchor: .soundFeedback)
 
-                Text(L10n.tr(
-                    "默认关闭。开启后，开关、全关和 AI 执行成功会播放轻提示音，失败会播放另一种提示音。",
-                    "Off by default. When enabled, successful toggles, All Off and AI actions play a soft cue, and failures play a different one."
-                ))
-                .font(.system(size: DesignTokens.TypeSize.caption))
-                .foregroundStyle(DesignTokens.secondaryText)
-                .fixedSize(horizontal: false, vertical: true)
-
                 SettingsToggleRow(
                     title: L10n.tr("语音输入", "Voice Input"),
                     isOn: Binding(
@@ -887,8 +871,8 @@ private struct GeneralSettingsTab: View {
                 .settingsRow(anchor: .voiceInput)
 
                 Text(L10n.tr(
-                    "开启后，面板顶部显示麦克风按钮，也能按 V 或长按菜单栏图标、全局快捷键说话。关闭后隐藏麦克风按钮，也不会启动语音识别。",
-                    "When on, the panel shows the microphone button and lets you speak by pressing V or holding the menu bar icon or global shortcut. When off, the microphone button is hidden and voice recognition never starts."
+                    "按 V，或长按菜单栏图标、快捷键说话",
+                    "Press V, or hold the menu bar icon or shortcut, to speak"
                 ))
                 .font(.system(size: DesignTokens.TypeSize.caption))
                 .foregroundStyle(DesignTokens.secondaryText)
@@ -938,15 +922,10 @@ private struct GeneralSettingsTab: View {
 
                 VStack(alignment: .leading, spacing: DesignTokens.Settings.rowSpacing) {
                     SettingsToggleRow(
-                        title: store.enableVoiceInput
-                            ? L10n.tr(
-                                "启用全局快捷键 \(hotkey.shortcut.displayString)（短按面板，长按语音）",
-                                "Global shortcut \(hotkey.shortcut.displayString) (tap for dashboard, hold to speak)"
-                            )
-                            : L10n.tr(
-                                "启用全局快捷键 \(hotkey.shortcut.displayString)（打开/收起面板）",
-                                "Global shortcut \(hotkey.shortcut.displayString) (open or close dashboard)"
-                            ),
+                        title: L10n.tr(
+                            "启用全局快捷键 \(hotkey.shortcut.displayString)",
+                            "Global shortcut \(hotkey.shortcut.displayString)"
+                        ),
                         isOn: Binding(
                             get: { store.enableGlobalHotkey },
                             set: { store.enableGlobalHotkey = $0 }
@@ -956,14 +935,6 @@ private struct GeneralSettingsTab: View {
                     if store.enableGlobalHotkey {
                         HotkeyRecorderRow()
                     }
-
-                    Text(L10n.tr(
-                        "关闭开关会立即取消系统级注册，不会继续占用这个组合。",
-                        "Turning this off unregisters the shortcut immediately so other apps can use it."
-                    ))
-                    .font(.system(size: DesignTokens.TypeSize.caption))
-                    .foregroundStyle(DesignTokens.secondaryText)
-                    .fixedSize(horizontal: false, vertical: true)
 
                     Divider().overlay(Color.primary.opacity(0.06))
 
@@ -1100,14 +1071,6 @@ private struct GeneralSettingsTab: View {
                         )
                         .settingsRow(anchor: .hideGroupedLights)
 
-                        Text(L10n.tr(
-                            "开启后，米家灯组的成员灯会折叠进灯组卡片；灯组卡片被隐藏、离线或被筛掉时，成员单灯仍会显示。全关、场景、搜索与助手仍按完整设备集合计算。默认开启。",
-                            "When on, member lights fold into their Mi light-group card. If that card is hidden, offline or filtered out, the member lights stay visible. All Off, scenes, search and the assistant still use the full device set. On by default."
-                        ))
-                        .font(.system(size: DesignTokens.TypeSize.caption))
-                        .foregroundStyle(DesignTokens.secondaryText)
-                        .fixedSize(horizontal: false, vertical: true)
-
                         Divider().overlay(Color.primary.opacity(0.06))
 
                         VStack(alignment: .leading, spacing: DesignTokens.Settings.rowSpacing) {
@@ -1140,20 +1103,12 @@ private struct GeneralSettingsTab: View {
                                     .labelsHidden()
                                 }
                             }
-
-                            Text(L10n.tr(
-                                "可选最多 2 项传感器温湿度或开关状态固定显示在菜单栏图标旁；默认不钉选，沿用上方的「菜单栏旁显示」设置。",
-                                "Pin up to 2 sensor readings or switch states next to the menu bar icon. Nothing is pinned by default, keeping the Menu Bar Readout setting above."
-                            ))
-                            .font(.system(size: DesignTokens.TypeSize.caption))
-                            .foregroundStyle(DesignTokens.secondaryText)
-                            .fixedSize(horizontal: false, vertical: true)
                         }
                         .settingsRow(anchor: .menuBarPinnedReadouts)
                     }
                     .padding(.top, 6)
                 } label: {
-                    Text(L10n.tr("面板主题、高度、紧凑网格与卡片显示细节", "Panel theme, height, compact grid and card layout options"))
+                    Text(L10n.tr("更多显示选项", "More display options"))
                         .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
                         .foregroundStyle(DesignTokens.secondaryText)
                 }
@@ -1409,10 +1364,6 @@ enum CorruptRemovalRecoveryGuidance {
                     "1. 点击下方「选择本地文件夹并重试…」，选一个 Mac 内置磁盘上的个人文件夹。",
                     "1. Click \"Choose Local Folder & Retry…\" below and pick a folder on your Mac's internal disk."
                 ),
-                L10n.tr(
-                    "2. 或将用户目录 / Application Support 迁回支持 F_FULLFSYNC 的本地卷后，再点击「重试原位置」。",
-                    "2. Or move your user home / Application Support back to a local F_FULLFSYNC-capable volume, then click \"Retry Default Location\"."
-                ),
             ]
             return Copy(
                 title: title,
@@ -1429,8 +1380,8 @@ enum CorruptRemovalRecoveryGuidance {
                 ? L10n.tr("所选备用位置写入或校验未通过", "Selected alternate location failed write or verification")
                 : L10n.tr("隔离备份写入或校验未通过", "Could not write or verify quarantine backup")
             let detail = L10n.tr(
-                "写入私有隔离文件、目录同步或逐字节回读校验失败，原记录已保留。可能是磁盘空间不足、目标目录并非当前用户独占（0700/0600 或存在符号链接）或临时 I/O 错误。",
-                "Writing the private quarantine file, syncing directories, or verifying byte-for-byte read-back failed. The original record was kept untouched. This may be caused by low disk space, non-private permissions (not 0700/0600 owned by you, or a symlink), or a transient I/O error."
+                "备份写入或校验失败，原记录已保留。可能是磁盘空间不足、文件夹权限不对或临时读写错误。",
+                "Writing or verifying the backup failed; the original record was kept. Low disk space, wrong folder permissions or a temporary disk error can cause this."
             )
             let steps = [
                 L10n.tr(
@@ -1457,7 +1408,7 @@ enum CorruptRemovalRecoveryGuidance {
 }
 
 enum ConnectionSettingsDisclosure {
-    static let advancedConnectionAnchors: Set<SettingsAnchor> = [.miMultiAccounts, .dualSourceFusion]
+    static let advancedConnectionAnchors: Set<SettingsAnchor> = [.miMultiAccounts]
 
     struct State: Equatable, Sendable {
         var isExpanded: Bool = false
@@ -1663,18 +1614,11 @@ private struct ConnectionSettingsTab: View {
                 .toggleStyle(.switch)
                 .settingsRow(anchor: .demoMode)
 
-                Text(store.homeBackend == .demo
-                     ? L10n.tr(
-                        "示例家庭，不会控制真实设备。关闭开关即可连接已配置的账号。",
-                        "Demo home will not control real devices. Turn it off to connect configured accounts."
-                     )
-                     : L10n.tr(
-                        "支持连接米家、Home Assistant 和 LG 电视；关闭示例家庭后将连接已配置的平台。",
-                        "Supports Xiaomi Home, Home Assistant and LG TV; connects to configured platforms when Demo Home is off."
-                     ))
-                    .font(.system(size: DesignTokens.TypeSize.caption))
-                    .foregroundStyle(DesignTokens.secondaryText)
-                    .fixedSize(horizontal: false, vertical: true)
+                if store.homeBackend == .demo {
+                    Text(L10n.tr("示例模式，不会控制真实设备", "Demo mode; real devices are not controlled"))
+                        .font(.system(size: DesignTokens.TypeSize.caption))
+                        .foregroundStyle(DesignTokens.secondaryText)
+                }
             }
 
             if store.homeBackend != .demo {
@@ -1710,7 +1654,7 @@ private struct ConnectionSettingsTab: View {
                             withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) { haExpanded = true }
                         } label: {
                             HStack {
-                                Text(L10n.tr("我用 Home Assistant", "I use Home Assistant"))
+                                Text(L10n.tr("连接 Home Assistant", "Connect Home Assistant"))
                                 Spacer()
                                 Image(systemName: "chevron.right")
                                     .foregroundStyle(DesignTokens.secondaryText)
@@ -1718,12 +1662,6 @@ private struct ConnectionSettingsTab: View {
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
-                        Text(L10n.tr(
-                            "已经有 Home Assistant 的话在这里连接；只用米家的话可以跳过。",
-                            "Already run Home Assistant? Connect it here. If you only use Mi Home, skip this."
-                        ))
-                        .font(.system(size: DesignTokens.TypeSize.caption))
-                        .foregroundStyle(DesignTokens.secondaryText)
                     }
                 }
 
@@ -1736,13 +1674,6 @@ private struct ConnectionSettingsTab: View {
                                 VStack(alignment: .leading, spacing: 3) {
                                     Text(L10n.tr("添加更多米家账号", "Add Another Xiaomi Home Account"))
                                         .font(.system(size: DesignTokens.TypeSize.body, weight: .medium))
-                                    Text(L10n.tr(
-                                        "如果有家人账号或不同地区的米家设备，可以继续扫码添加第二个米家账号；已添加账号可直接在上方「米家」卡片单独移除或全部退出。",
-                                        "If you have a family account or Xiaomi Home devices in another region, scan to add another account. Added accounts can be removed or signed out directly in the Xiaomi Home card above."
-                                    ))
-                                    .font(.system(size: DesignTokens.TypeSize.caption))
-                                    .foregroundStyle(DesignTokens.secondaryText)
-                                    .fixedSize(horizontal: false, vertical: true)
                                 }
                                 Spacer(minLength: 8)
                                 Button {
@@ -1762,20 +1693,6 @@ private struct ConnectionSettingsTab: View {
 
                             Divider().overlay(Color.primary.opacity(0.06))
 
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text(L10n.tr("同时连接多个家居平台（相同设备自动合并）", "Connect Multiple Home Platforms Together (Duplicate Devices Merge Automatically)"))
-                                    .font(.system(size: DesignTokens.TypeSize.body, weight: .medium))
-                                Text(L10n.tr(
-                                    "同时配置米家与 Home Assistant 后，应用会自动并行连接，并把同一台设备合并成一张卡片，无需手动切换平台。",
-                                    "When both Xiaomi Home and Home Assistant are configured, the app connects to both in parallel and merges duplicate devices into a single tile without manual platform switching."
-                                ))
-                                .font(.system(size: DesignTokens.TypeSize.caption))
-                                .foregroundStyle(DesignTokens.secondaryText)
-                                .fixedSize(horizontal: false, vertical: true)
-                            }
-                            .settingsRow(anchor: .dualSourceFusion)
-
-                            Divider().overlay(Color.primary.opacity(0.06))
                             GenericCameraSettings(store: store)
                         }
                         .padding(.top, 6)
@@ -1948,8 +1865,8 @@ private struct ConnectionSettingsTab: View {
         panel.canCreateDirectories = true
         panel.prompt = L10n.tr("选择此位置", "Use This Folder")
         panel.message = L10n.tr(
-            "请选择本机内置磁盘（APFS / HFS+）上的文件夹；应用将在其中创建私有隔离目录（0700）并完成 F_FULLFSYNC 落盘校验。",
-            "Choose a folder on your Mac's internal APFS/HFS+ drive. A private quarantine directory (0700) will be created inside it and verified with F_FULLFSYNC."
+            "请改选 Mac 内置磁盘上的文件夹",
+            "Choose a folder on your Mac's internal disk"
         )
         guard panel.runModal() == .OK else { return nil }
         return panel.url
@@ -2180,16 +2097,16 @@ private struct ConnectionSettingsTab: View {
             }
             if isDisabling {
                 Text(L10n.tr(
-                    "正在关闭实时连接并回收后台任务，完成后将保持停用。",
-                    "Closing the live connection and cleaning up background tasks; it will stay turned off once finished."
+                    "正在停用…",
+                    "Turning off…"
                 ))
                 .font(.system(size: DesignTokens.TypeSize.caption))
                 .foregroundStyle(DesignTokens.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
             } else if !isEnabled {
                 Text(L10n.tr(
-                    "已暂停同步与控制；保存的地址、连接钥匙、明文授权与本地历史均已保留。",
-                    "Sync and control are paused; your saved address, access token, plaintext approval and local history are kept."
+                    "已停用，配置与历史已保留",
+                    "Turned off; settings and history are kept"
                 ))
                 .font(.system(size: DesignTokens.TypeSize.caption))
                 .foregroundStyle(DesignTokens.secondaryText)
@@ -2228,15 +2145,8 @@ private struct ConnectionSettingsTab: View {
                     .textFieldStyle(.roundedBorder)
                     .controlSize(.regular)
                     .font(.system(size: DesignTokens.TypeSize.body, design: .monospaced))
-                Text(L10n.tr(
-                    "不确定地址？可在 Home Assistant 网页设置里查看。",
-                    "Not sure about the address? Check Settings in your Home Assistant web page."
-                ))
-                .font(.system(size: DesignTokens.TypeSize.caption))
-                .foregroundStyle(DesignTokens.secondaryText)
-                .fixedSize(horizontal: false, vertical: true)
                 if HAConnectionSaveGuard.showsPlaintextWarning(forDraft: urlDraft) {
-                    Label(L10n.tr("连接钥匙将以明文在网络上传输，建议使用 HTTPS 或 Nabu Casa 地址。", "Your access token will travel unencrypted. Use HTTPS or a Nabu Casa address."), systemImage: "exclamationmark.triangle.fill")
+                    Label(L10n.tr("当前为明文 HTTP，建议改用 HTTPS", "This is plain HTTP; use HTTPS instead"), systemImage: "exclamationmark.triangle.fill")
                         .font(.system(size: DesignTokens.TypeSize.caption))
                         .foregroundStyle(.orange)
                         .fixedSize(horizontal: false, vertical: true)
@@ -2245,7 +2155,7 @@ private struct ConnectionSettingsTab: View {
 
             VStack(alignment: .leading, spacing: 4) {
                 HStack {
-                    Text(L10n.tr("专属连接钥匙 (Access Token，安全存入钥匙串)", "Access Token (Long-Lived Token, Stored in Keychain)"))
+                    Text(L10n.tr("访问密钥 (Access Token)", "Access Token"))
                         .font(.system(size: DesignTokens.TypeSize.caption))
                         .foregroundStyle(DesignTokens.secondaryText)
                     Spacer()
@@ -2263,8 +2173,8 @@ private struct ConnectionSettingsTab: View {
                     .controlSize(.regular)
                     .font(.system(size: DesignTokens.TypeSize.body, design: .monospaced))
                 Text(L10n.tr(
-                    "可在 Home Assistant 网页左下角「个人资料 → 安全设置」底部创建长期专属连接钥匙。",
-                    "Create a Long-Lived Access Token at the bottom of Profile → Security in your Home Assistant web page."
+                    "在 HA「个人资料 → 安全」底部创建",
+                    "Create one at the bottom of Profile → Security in HA"
                 ))
                 .font(.system(size: DesignTokens.TypeSize.caption))
                 .foregroundStyle(DesignTokens.secondaryText)
@@ -2345,37 +2255,7 @@ private struct AssistantSettingsTab: View {
     var body: some View {
         let _ = store.effectiveLanguage
         VStack(alignment: .leading, spacing: 16) {
-            // #149: set the AI up first; how boldly it acts only matters once it is set up.
             AssistantSettingsSection(store: store)
-
-            // #180: the headline is plain language; the number moved into advanced settings.
-            SettingsSection(title: L10n.tr("AI 不确定时", "When the AI Is Unsure"), anchor: .askWhenUnsure) {
-                SettingsToggleRow(
-                    title: L10n.tr("不确定时先问我", "Ask me when unsure"),
-                    isOn: Binding(
-                        get: { store.askWhenUnsureBeforeAIActions },
-                        set: { store.askWhenUnsureBeforeAIActions = $0 }
-                    )
-                )
-
-                Text(L10n.tr(
-                    "只在你配置了 AI 之后才起作用。开着时，AI 没把握的动作只给建议，点一下才执行；关掉后它会更主动。电暖器、插座、扫地机这类高风险设备仍然会先问。",
-                    "Only matters once an AI service is set up. On: actions the AI is unsure about become suggestions and wait for a click. Off: it acts more boldly. Risky devices such as heaters, plugs and vacuums still ask first."
-                ))
-                .font(.system(size: DesignTokens.TypeSize.caption))
-                .foregroundStyle(DesignTokens.secondaryText)
-                .fixedSize(horizontal: false, vertical: true)
-
-                // One sentence needs no disclosure triangle: the fixed threshold reads inline.
-                Text(L10n.tr(
-                    "把握度低于 \(Int(ModelActionPolicy.autoRunThreshold * 100))% 时算「不确定」，这个阈值固定不变，用来避免误操作。",
-                    "Below \(Int(ModelActionPolicy.autoRunThreshold * 100))% confidence counts as unsure; the threshold is fixed to prevent accidental control."
-                ))
-                .font(.system(size: DesignTokens.TypeSize.caption))
-                .foregroundStyle(DesignTokens.secondaryText)
-                .fixedSize(horizontal: false, vertical: true)
-                .settingsRow(anchor: .confidenceThreshold)
-            }
         }
     }
 }
@@ -2395,8 +2275,8 @@ struct NotificationRationaleCard: View {
             .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
 
             Text(L10n.tr(
-                "守护提醒（设备长时间开启、电量过低）和错过的定时任务要靠系统通知提醒你。通知只在本机显示，不会上传任何内容；不发通知时 App 其它功能照常使用。",
-                "Safety alerts (a device left on too long, low battery) and missed timers are delivered as local macOS notifications. They stay on this Mac; the rest of the app works without them."
+                "用于推送安全提醒与定时通知",
+                "Used for safety alerts and timer notices"
             ))
             .font(.system(size: DesignTokens.TypeSize.caption))
             .foregroundStyle(DesignTokens.secondaryText)
@@ -2493,8 +2373,8 @@ private struct PrivacySettingsTab: View {
                     )
                 )
                 Text(L10n.tr(
-                    "尝试在兼容的共享工具中隐藏控制面板、摄像机浮窗和快捷键提示。系统画中画和部分截屏工具仍可捕获画面。",
-                    "Requests that compatible sharing tools hide the control panel, floating camera windows, and hotkey HUD. System Picture in Picture and some capture tools may still show them."
+                    "仅对兼容的共享工具生效",
+                    "Works only with compatible sharing tools"
                 ))
                 .font(.system(size: DesignTokens.TypeSize.caption))
                 .foregroundStyle(DesignTokens.secondaryText)
@@ -2510,8 +2390,8 @@ private struct PrivacySettingsTab: View {
                     )
                 )
                 Text(L10n.tr(
-                    "开启后，Mac 锁屏期间会拒绝卡片、详情、URL 链接、快捷指令与助手发起的控制；定时任务与自动化规则不受影响。默认开启。",
-                    "When on, card/detail controls, URL links, shortcuts and assistant commands are refused while the Mac is locked. Scheduled commands and automation rules still run. On by default."
+                    "不影响定时任务与自动化规则",
+                    "Timers and automation rules still run"
                 ))
                 .font(.system(size: DesignTokens.TypeSize.caption))
                 .foregroundStyle(DesignTokens.secondaryText)
@@ -2547,8 +2427,8 @@ private struct PrivacySettingsTab: View {
 
                 SettingsToggleRow(
                     title: L10n.tr(
-                        "门窗和移动只在这台 Mac 锁屏、睡眠或切换走时提醒",
-                        "Door and motion only when this Mac is locked, asleep, or switched away"
+                        "门窗与移动仅在离开或锁屏时提醒",
+                        "Door and motion only when away or locked"
                     ),
                     isOn: Binding(
                         get: { store.sensorAlertsOnlyWhenAway },
@@ -2556,14 +2436,6 @@ private struct PrivacySettingsTab: View {
                     )
                 )
                 .settingsRow(anchor: .alertsOnlyWhenAway)
-
-                Text(L10n.tr(
-                    "即使今后关闭某类设备（包括摄像机实时画面），已开启的安全提醒与门铃提醒仍会正常工作；要停止提醒请在此处单独关闭。",
-                    "Even if you disable a device type later (including live camera views), enabled safety and doorbell alerts continue to work. Turn an alert off here when you want to stop it."
-                ))
-                .font(.system(size: DesignTokens.TypeSize.caption))
-                .foregroundStyle(DesignTokens.secondaryText)
-                .fixedSize(horizontal: false, vertical: true)
 
                 Divider().overlay(Color.primary.opacity(0.06))
 
@@ -2592,13 +2464,6 @@ private struct PrivacySettingsTab: View {
                 .settingsRow(anchor: .doorbellChime)
 
                 if !store.hasMiSource && !store.hasHASource && store.homeBackend != .demo {
-                    Text(L10n.tr(
-                        "门铃事件由米家或 Home Assistant 连接提供；连接支持门铃与摄像头的家庭后自动生效。",
-                        "Doorbell events come from Xiaomi Home or Home Assistant connections and take effect once a supported home is connected."
-                    ))
-                    .font(.system(size: DesignTokens.TypeSize.caption))
-                    .foregroundStyle(DesignTokens.secondaryText)
-                    .fixedSize(horizontal: false, vertical: true)
                 }
 
                 DisclosureGroup(isExpanded: $disclosure.isDoorbellAdvancedExpanded) {
@@ -2675,16 +2540,8 @@ private struct PrivacySettingsTab: View {
                 .frame(minHeight: DesignTokens.Settings.rowHeight)
 
                 Text(L10n.tr(
-                    "面板执行「全关」时，仅关闭当前房间或筛选范围内已开启的参与设备。",
-                    "Running All Off in the panel only turns off participating devices that are currently on in the active room or filter."
-                ))
-                .font(.system(size: DesignTokens.TypeSize.caption))
-                .foregroundStyle(DesignTokens.secondaryText)
-                .fixedSize(horizontal: false, vertical: true)
-
-                Text(L10n.tr(
-                    "插座、扫地机、阀门、摄像机等默认不参与全关，避免断电路由器、冰箱或中断清扫；窗帘始终不参与全关。",
-                    "Plugs, robot vacuums, valves and cameras are excluded from All Off by default to avoid cutting power to routers or fridges; covers never join All Off."
+                    "插座、扫地机等默认不参与",
+                    "Plugs, vacuums and similar are left out by default"
                 ))
                 .font(.system(size: DesignTokens.TypeSize.caption))
                 .foregroundStyle(DesignTokens.secondaryText)
@@ -2779,21 +2636,13 @@ private struct PrivacySettingsTab: View {
 
                     Label(
                         L10n.tr(
-                            "打开高风险设备的额外控制（门锁、阀门、加热等），每次操作前仍会单独确认",
-                            "Enable extra controls for high-risk devices (locks, valves, heating, etc.); each action still asks for confirmation"
+                            "解锁「更多设置」其余控件，高风险仍需确认",
+                            "Unlocks the rest of More Settings; risky actions still ask"
                         ),
                         systemImage: "exclamationmark.triangle.fill"
                     )
                     .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
                     .foregroundStyle(Color.orange)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                    Text(L10n.tr(
-                        "默认只放开亮度、模式、风速这类低风险写入。「更多设置」里的其他开关、滑块和按钮会显示为不可用；开启后它们也可以操作，请先确认设备确实支持该项。",
-                        "Brightness, mode and fan level are the only writes open by default. Other switches, sliders and buttons under More Settings stay disabled until you turn this on; check that the device really supports the setting first."
-                    ))
-                    .font(.system(size: DesignTokens.TypeSize.caption))
-                    .foregroundStyle(DesignTokens.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
                 }
                 .settingsRow(anchor: .advancedDeviceWrites)
@@ -2832,21 +2681,13 @@ private struct PrivacySettingsTab: View {
 
                     Label(
                         L10n.tr(
-                            "外部链接将跳过确认直接执行；单个高风险设备的开关仍会确认，场景与 HA 脚本不会",
-                            "External links run without confirmation; switching a single high-risk device still asks, scenes and HA scripts do not"
+                            "链接直接执行；高风险设备开关仍确认，场景与脚本不确认",
+                            "Links run directly; risky device switches still ask, scenes and scripts don't"
                         ),
                         systemImage: "exclamationmark.triangle.fill"
                     )
                     .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
                     .foregroundStyle(Color.orange)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                    Text(L10n.tr(
-                        "默认每次都会先列出设备与动作，确认后才执行；开启后任何网页或 App 打开链接都会立即执行，仅在完全信任来源时开启。链接格式：menumijia://toggle?device=<id>、menumijia://scene?name=<场景>、menumijia://ask?text=<一句话>。",
-                        "By default every link lists the device and action and waits for confirmation; when on, any web page or app opening a link executes immediately, so only turn this on for trusted sources. Formats: menumijia://toggle?device=<id>, menumijia://scene?name=<scene>, menumijia://ask?text=<sentence>."
-                    ))
-                    .font(.system(size: DesignTokens.TypeSize.caption))
-                    .foregroundStyle(DesignTokens.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
                 }
                 .settingsRow(anchor: .allowURLControl)
@@ -2866,8 +2707,8 @@ private struct PrivacySettingsTab: View {
                     )
 
                     Text(L10n.tr(
-                        "关闭时不会向系统索引写入任何内容，退出账号或断开连接会同时清空已写入的条目。索引只包含设备名、房间名和场景名，不含设备 ID、地址、账号或令牌。",
-                        "When off, nothing is written to the system index; signing out or removing a connection clears what was written. The index holds device, room and scene names only — no device IDs, addresses, accounts or tokens."
+                        "仅索引名称，不含账号与密钥",
+                        "Names only; no accounts or keys"
                     ))
                     .font(.system(size: DesignTokens.TypeSize.caption))
                     .foregroundStyle(DesignTokens.secondaryText)
@@ -3111,13 +2952,6 @@ private struct AboutSettingsTab: View {
     private var aboutSetupGuide: some View {
         SettingsSection(title: L10n.tr("初始设置引导", "Setup Guide"), anchor: .setupGuide) {
             HStack(spacing: 12) {
-                Text(L10n.tr(
-                    "重新打开初始设置引导，再看一遍连接家庭、搜索设备与全关撤销操作。",
-                    "Reopen the setup guide to review connecting your home, searching devices and All Off + Undo."
-                ))
-                .font(.system(size: DesignTokens.TypeSize.caption))
-                .foregroundStyle(DesignTokens.secondaryText)
-                .fixedSize(horizontal: false, vertical: true)
 
                 Spacer(minLength: 8)
 
@@ -3154,8 +2988,8 @@ private struct AboutSettingsTab: View {
 
         SettingsSection(title: L10n.tr("排障与诊断", "Troubleshooting & Diagnostics"), anchor: .copyDiagnostics) {
             Text(L10n.tr(
-                "复制一段脱敏 Markdown 粘贴到 GitHub Issue。仅包含版本、系统、连接方式、设备型号计数、未显示设备与错误/崩溃时间计数，不含设备 ID、服务器地址、账号或密钥。",
-                "Copies redacted Markdown for a GitHub issue: versions, OS, backend, model counts, skipped devices, and error/crash timestamps only. No device IDs, server addresses, accounts or keys."
+                "不含账号、密钥与设备 ID",
+                "No accounts, keys or device IDs"
             ))
             .font(.system(size: DesignTokens.TypeSize.caption))
             .foregroundStyle(DesignTokens.secondaryText)
@@ -3178,8 +3012,8 @@ private struct AboutSettingsTab: View {
                     HStack(spacing: 4) {
                         Image(systemName: "doc.on.doc")
                         Text(L10n.tr(
-                            "复制排障信息（已自动隐去账号与密钥）",
-                            "Copy Diagnostics (Accounts & Keys Redacted)"
+                            "复制排障信息",
+                            "Copy Diagnostics"
                         ))
                     }
                 }
@@ -3207,18 +3041,10 @@ private struct AboutSettingsTab: View {
                 } label: {
                     HStack(spacing: 4) {
                         Image(systemName: "exclamationmark.bubble")
-                        Text(L10n.tr("反馈问题（预填诊断）", "Report a Problem (Diagnostics Filled In)"))
+                        Text(L10n.tr("反馈问题", "Report a Problem"))
                     }
                 }
                 .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .accentColor))
-
-                Text(L10n.tr(
-                    "在浏览器打开 GitHub Issue，版本、系统、数据源设备数与错误码已填好；提交前可改。同一段内容也会复制到剪贴板，模板没自动填入时直接粘贴。",
-                    "Opens a GitHub issue in the browser with version, OS, per-source device counts and error codes prefilled. You review and submit it; the same block lands on the clipboard in case the form ignores the prefill."
-                ))
-                .font(.system(size: DesignTokens.TypeSize.caption))
-                .foregroundStyle(DesignTokens.secondaryText)
-                .fixedSize(horizontal: false, vertical: true)
             }
 
             DisclosureGroup(isExpanded: $showsDiagnosticsPreview) {
@@ -3247,8 +3073,8 @@ private struct AboutSettingsTab: View {
 
         SettingsSection(title: L10n.tr("未能显示在面板的设备", "Devices Not Shown in the Panel"), anchor: .scanUnsupportedDevices) {
             Text(L10n.tr(
-                "扫描当前账号的原始设备列表，找出被跳过的设备并按原因分组。米家首次扫描会按型号拉取规格，可能需要几十秒；演示模式没有跳过项。",
-                "Scans the raw device registry for devices the panel skipped, grouped by reason. The first Mi Cloud scan loads per-model specs and may take a while; demo mode has none."
+                "查找未在面板显示的设备",
+                "Find devices the panel doesn't show"
             ))
             .font(.system(size: DesignTokens.TypeSize.caption))
             .foregroundStyle(DesignTokens.secondaryText)
@@ -3341,16 +3167,8 @@ private struct AboutSettingsTab: View {
                                 .font(.system(size: DesignTokens.TypeSize.body, weight: .medium))
 
                             Text(L10n.tr(
-                                "清除范围：退出全部米家会话、删除 Home Assistant 连接钥匙并断开连接，同时清除已保存的 AI 服务密钥与云端发送授权。保留项：本机用电与温湿度历史、房间排序、隐藏与全关偏好不会删除。",
-                                "Clears: every Xiaomi Home session, the Home Assistant connection key (disconnecting it), and saved AI service keys and cloud consent. Keeps: local power and climate history, room order, and hidden/All Off preferences."
-                            ))
-                            .font(.system(size: DesignTokens.TypeSize.caption))
-                            .foregroundStyle(DesignTokens.secondaryText)
-                            .fixedSize(horizontal: false, vertical: true)
-
-                            Text(L10n.tr(
-                                "若只想移除某一个家庭平台连接，请前往「家居连接」操作；若只想关闭程序而不删除任何账号，请使用下方「退出 MenuBarHome」。",
-                                "To remove just one home connection, go to Connections; to close the app without deleting any accounts, use Quit MenuBarHome below."
+                                "清除全部账号与密钥，保留本地偏好",
+                                "Clears every account and key; local preferences stay"
                             ))
                             .font(.system(size: DesignTokens.TypeSize.caption))
                             .foregroundStyle(DesignTokens.secondaryText)
@@ -3378,9 +3196,6 @@ private struct AboutSettingsTab: View {
     private var aboutQuit: some View {
         SettingsSection(title: L10n.tr("退出", "Quit"), anchor: .quitApp) {
             HStack {
-                Text(L10n.tr("完全退出后菜单栏图标与快捷键都会停止。", "Quitting stops the menu bar icon and the global shortcut."))
-                    .font(.system(size: DesignTokens.TypeSize.caption))
-                    .foregroundStyle(DesignTokens.secondaryText)
                 Spacer()
                 Button {
                     NSApplication.shared.terminate(nil)
@@ -3665,8 +3480,8 @@ struct LGWebOSSettingsSection: View {
                             .controlSize(.regular)
                             .font(.system(size: DesignTokens.TypeSize.body, design: .monospaced))
                         Text(L10n.tr(
-                            "仅在电视关机后需要从菜单栏远程开机时填写；可在电视「设置 → 网络」里查看 MAC 地址。",
-                            "Only needed to turn the TV on remotely when it is off. Find the MAC address in TV Settings → Network."
+                            "在电视「设置 → 网络」查看",
+                            "Find it in TV Settings → Network"
                         ))
                         .font(.system(size: DesignTokens.TypeSize.caption))
                         .foregroundStyle(DesignTokens.secondaryText)
@@ -3675,8 +3490,8 @@ struct LGWebOSSettingsSection: View {
                     .padding(.top, 4)
                 } label: {
                     Text(L10n.tr(
-                        "高级：允许远程开机（需电视开启网络唤醒）",
-                        "Advanced: Allow Remote Power On (Requires TV Network Wake)"
+                        "高级：远程开机",
+                        "Advanced: Remote Power On"
                     ))
                     .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
                     .foregroundStyle(DesignTokens.secondaryText)
@@ -3706,22 +3521,24 @@ struct LGWebOSSettingsSection: View {
                     }
                     .buttonStyle(PillActionButtonStyle())
 
-                    Button(L10n.tr("重新信任电视", "Trust TV Again")) {
-                        confirmsTrustReset = true
-                    }
-                    .buttonStyle(PillActionButtonStyle())
-                    .alert(L10n.tr("清除已保存的电视身份？", "Clear the saved TV identity?"), isPresented: $confirmsTrustReset) {
-                        Button(L10n.tr("取消", "Cancel"), role: .cancel) {}
-                        Button(L10n.tr("重新配对", "Pair Again"), role: .destructive) {
-                            LGWebOSSettingsSaveGuard.resetTrustAndPair(
-                                isEnabled: &isEnabled,
-                                hostDraft: &hostDraft,
-                                macDraft: &macDraft,
-                                in: store
-                            )
+                    if isPaired {
+                        Button(L10n.tr("重新信任电视", "Trust TV Again")) {
+                            confirmsTrustReset = true
                         }
-                    } message: {
-                        Text(L10n.tr("请先核对电视 IP。确认后将清除旧证书和配对密钥，下次连接会信任新的证书，并要求在电视上重新确认。", "Verify the TV IP first. This clears the saved certificate and pairing key, trusts the certificate on the next connection, and requires confirmation on the TV."))
+                        .buttonStyle(PillActionButtonStyle())
+                        .alert(L10n.tr("清除已保存的电视身份？", "Clear the saved TV identity?"), isPresented: $confirmsTrustReset) {
+                            Button(L10n.tr("取消", "Cancel"), role: .cancel) {}
+                            Button(L10n.tr("重新配对", "Pair Again"), role: .destructive) {
+                                LGWebOSSettingsSaveGuard.resetTrustAndPair(
+                                    isEnabled: &isEnabled,
+                                    hostDraft: &hostDraft,
+                                    macDraft: &macDraft,
+                                    in: store
+                                )
+                            }
+                        } message: {
+                            Text(L10n.tr("请先核对电视 IP。确认后将清除旧证书和配对密钥，下次连接会信任新的证书，并要求在电视上重新确认。", "Verify the TV IP first. This clears the saved certificate and pairing key, trusts the certificate on the next connection, and requires confirmation on the TV."))
+                        }
                     }
 
                     Spacer()

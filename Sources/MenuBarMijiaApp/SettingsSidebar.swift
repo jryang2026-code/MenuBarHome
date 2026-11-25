@@ -272,7 +272,7 @@ struct SettingsSearchResults: View {
                 // Naming the condition is the difference between "this app has no such setting" and
                 // "turn Demo Mode off and it will be here".
                 Text(blocked?.reason.explanation
-                     ?? L10n.tr("试试「开机」「令牌」「深色」", "Try “login”, “token”, “dark”"))
+                     ?? L10n.tr("试试「开机」「密钥」「深色」", "Try “login”, “key”, “dark”"))
                     .font(.system(size: DesignTokens.TypeSize.caption))
                     .foregroundStyle(.tertiary)
                     .multilineTextAlignment(.center)
@@ -368,14 +368,14 @@ extension SettingsTab {
             return L10n.tr("连接 Home Assistant、米家云端与局域网电视。",
                            "Connect Home Assistant, Xiaomi Cloud and LAN TVs.")
         case .assistant:
-            return L10n.tr("AI 的密钥、模型，以及它有多主动。",
-                           "The AI's key, model and how boldly it acts.")
+            return L10n.tr("配置 AI 服务与建议偏好",
+                           "AI service and suggestion preferences")
         case .appearance:
             return L10n.tr("面板的明暗、主题与布局。",
                            "The panel's light or dark look, theme and layout.")
         case .privacy:
-            return L10n.tr("锁屏控制、守护提醒、全关范围与高风险控制权限；设备类型关闭后仍可管理对应提醒。",
-                           "Lock-screen protection, safety alerts, All Off scope, and high-risk control permissions; alerts stay manageable even if a device type is turned off.")
+            return L10n.tr("锁屏保护、安全提醒与全关范围",
+                           "Lock-screen protection, safety alerts and All Off scope")
         case .about:
             return L10n.tr("版本更新、隐私说明、排障信息、重置与退出。",
                            "Software updates, privacy notes, diagnostics, reset, and quitting.")

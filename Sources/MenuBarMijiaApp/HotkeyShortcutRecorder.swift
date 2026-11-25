@@ -494,14 +494,6 @@ struct CustomHotkeyBindingsSection: View {
                 }
             }
 
-            Text(L10n.tr(
-                "一步开关常用设备或触发场景；沿用锁屏阻止与高危二次确认。",
-                "Toggle a device or run a scene in one keystroke; screen-lock and high-risk confirmations still apply."
-            ))
-            .font(.system(size: DesignTokens.TypeSize.caption))
-            .foregroundStyle(.secondary)
-            .fixedSize(horizontal: false, vertical: true)
-
             ForEach(state.bindings) { binding in
                 bindingRow(binding)
             }

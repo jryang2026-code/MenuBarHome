@@ -59,7 +59,7 @@ struct ConnectionRemovalRecoveryUITests {
             #expect(!copyDefault.title.contains("F_FULLFSYNC"))
             #expect(copyDefault.detail.contains("NetworkHome"))
             #expect(copyDefault.detail.contains("换到 Mac 内置磁盘上的文件夹再试"))
-            #expect(copyDefault.steps.count == 2)
+            #expect(copyDefault.steps.count == 1)
             #expect(copyDefault.actions.primaryRetryTitle == "重试原位置")
             #expect(copyDefault.actions.showsChooseAlternateFolderButton)
             #expect(copyDefault.actions.chooseAlternateFolderTitle == "选择本地文件夹并重试…")
@@ -69,7 +69,7 @@ struct ConnectionRemovalRecoveryUITests {
 
             #expect(copyTransient.title != copyDefault.title)
             #expect(!copyTransient.title.contains("无法安全保存数据"))
-            #expect(copyTransient.detail.contains("回读校验"))
+            #expect(copyTransient.detail.contains("校验"))
             #expect(copyTransient.actions.primaryRetryTitle == "重试放弃记录")
             #expect(copyTransient.actions.showsChooseAlternateFolderButton)
         }
@@ -86,7 +86,7 @@ struct ConnectionRemovalRecoveryUITests {
 
             #expect(copyAlt.title.contains("selected folder"))
             #expect(copyTransient.title != copyDefault.title)
-            #expect(copyTransient.detail.contains("read-back"))
+            #expect(copyTransient.detail.contains("verifying"))
             #expect(copyTransient.actions.primaryRetryTitle == "Retry Discard")
         }
     }

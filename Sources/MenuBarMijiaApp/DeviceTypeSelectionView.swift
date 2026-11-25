@@ -50,8 +50,8 @@ struct DeviceTypeSelectionView: View {
             if draftMode != .allSupportedTypes {
                 Label(
                     L10n.tr(
-                        "为了继续提供你已开启的安全提醒，仍会读取部分传感器、门锁、阀门、插座和空调的数据。可在「安全与提醒」单独关闭提醒。",
-                        "To keep the safety alerts you turned on, some sensors, locks, valves, plugs and air conditioners are still read. Turn alerts off separately in Safety & Alerts."
+                        "已开启的安全提醒仍会继续工作",
+                        "Safety alerts you turned on keep working"
                     ),
                     systemImage: "shield.lefthalf.filled"
                 )

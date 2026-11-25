@@ -43,11 +43,9 @@ enum SettingsAnchor: String, CaseIterable, Hashable, Sendable {
     case miCloudRegion
     case lgTV
     case miMultiAccounts
-    case dualSourceFusion
 
     // AI 助手
     case askWhenUnsure
-    case confidenceThreshold
     case assistantEnable
     case assistantProvider
     case assistantRemoveProvider
@@ -97,9 +95,9 @@ enum SettingsAnchor: String, CaseIterable, Hashable, Sendable {
              .appearanceMode, .panelTheme, .panelHeight, .climatePanelModule:
             return .general
         case .demoMode, .localNetwork, .haServerAddress, .haToken, .haDiscovery, .miAccount, .miCloudRegion, .lgTV,
-             .miMultiAccounts, .dualSourceFusion:
+             .miMultiAccounts:
             return .connection
-        case .askWhenUnsure, .confidenceThreshold, .assistantEnable, .assistantProvider, .assistantRemoveProvider,
+        case .askWhenUnsure, .assistantEnable, .assistantProvider, .assistantRemoveProvider,
              .assistantAPIKey, .assistantTest, .proactiveSuggestions, .habitMemory:
             return .assistant
         case .hideFromScreenSharing, .blockControlWhileLocked, .safetyAlerts, .sensorAlerts, .alertsOnlyWhenAway,
@@ -191,7 +189,7 @@ struct SettingsSearchAvailability: Equatable, Sendable {
             if backend == .demo { return .demoMode }
             return hasLocalNetworkBlock ? nil : .noLocalNetworkBlock
         case .haServerAddress, .haToken, .haDiscovery, .miAccount, .miCloudRegion, .lgTV,
-             .miMultiAccounts, .dualSourceFusion:
+             .miMultiAccounts:
             return backend == .demo ? .demoMode : nil
         case .hiddenDevices:
             return hiddenDeviceCount > 0 ? nil : .nothingHidden
@@ -323,9 +321,9 @@ enum SettingsSearch {
                              "电量阈值", "wifi", "automation", "rule", "trigger", "lid", "sleep",
                              "wake", "focus", "calendar"]),
             entry(.raycast, section: automationSection,
-                  zhTitle: "外部快捷工具与伴生集成（Raycast / CLI / MCP）",
-                  enTitle: "External Tools & Companion Integration (Raycast / CLI / MCP)",
-                  synonyms: ["raycast", "集成", "伴生", "外部联动", "外部快捷工具", "cli", "mcp",
+                  zhTitle: "Raycast / CLI / MCP 集成",
+                  enTitle: "Raycast / CLI / MCP Integration",
+                  synonyms: ["raycast", "集成", "伴生", "伴生集成", "外部联动", "外部快捷工具", "cli", "mcp",
                              "复制配置", "检测", "断开", "integration", "extension", "companion",
                              "disconnect", "copy config"]),
             entry(.energyHistory, section: energySection,
@@ -344,8 +342,8 @@ enum SettingsSearch {
                   zhTitle: "Home Assistant 地址 (URL)", enTitle: "Home Assistant URL",
                   synonyms: ["服务器", "地址", "home assistant", "server", "url", "nabu casa", "ha"]),
             entry(.haToken, section: connectionSection,
-                  zhTitle: "专属连接钥匙 (Access Token)", enTitle: "Dedicated Connection Key (Access Token)",
-                  synonyms: ["令牌", "长期访问令牌", "密钥", "钥匙", "专属连接钥匙", "连接钥匙",
+                  zhTitle: "访问密钥 (Access Token)", enTitle: "Access Token",
+                  synonyms: ["令牌", "长期访问令牌", "密钥", "钥匙", "专属连接钥匙", "连接钥匙", "访问密钥",
                              "token", "key", "access token", "dedicated connection key", "credential"]),
             entry(.haDiscovery, section: connectionSection, zhTitle: "查找家中的 Home Assistant",
                   enTitle: "Find Home Assistant on LAN",
@@ -366,38 +364,36 @@ enum SettingsSearch {
                   enTitle: "Add More Xiaomi Accounts",
                   synonyms: ["多账号", "更多账号", "添加账号", "第二个账号", "添加更多米家账号",
                              "multi account", "multiple accounts", "add account", "more xiaomi"]),
-            entry(.dualSourceFusion, section: connectionSection,
-                  zhTitle: "同时连接多个家居平台（相同设备自动合并）",
-                  enTitle: "Connect Multiple Home Platforms Simultaneously (Auto-Merge Identical Devices)",
-                  synonyms: ["双源", "双源融合", "多个平台", "多个家居平台", "自动合并", "合并", "同时连接",
-                             "dual source", "multiple platforms", "auto merge", "merge"]),
 
-            entry(.askWhenUnsure, section: assistantSection, zhTitle: "AI 不确定时先问我",
+            entry(.askWhenUnsure, section: assistantSection, zhTitle: "不确定时先问我",
                   enTitle: "Ask Me When Unsure",
-                  synonyms: ["不确定", "先问我", "确认", "把握", "unsure", "confirm", "confidence"]),
-            entry(.confidenceThreshold, section: assistantSection, zhTitle: "把握度阈值",
-                  enTitle: "Confidence Threshold",
-                  synonyms: ["阈值", "把握度", "高级", "threshold", "confidence", "advanced"]),
-            entry(.assistantEnable, section: assistantSection, zhTitle: "启用 AI 一句话控制",
-                  enTitle: "Enable AI Command Control",
-                  synonyms: ["开关", "启用", "关闭", "AI", "enable", "disable", "toggle", "assistant"]),
-            entry(.assistantProvider, section: assistantSection, zhTitle: "AI 服务商与模型",
+                  synonyms: ["不确定", "先问我", "AI 不确定时先问我", "确认", "把握", "把握度", "阈值",
+                             "高风险设备始终先确认", "unsure", "confirm", "confidence", "threshold"]),
+            entry(.assistantEnable, section: assistantSection, zhTitle: "启用 AI 助手",
+                  enTitle: "Enable AI Assistant",
+                  synonyms: ["开关", "启用", "关闭", "AI", "启用 AI 一句话控制", "一句话控制",
+                             "enable", "disable", "toggle", "assistant", "ai command control"]),
+            entry(.assistantProvider, section: assistantSection, zhTitle: "AI 服务商",
                   enTitle: "AI Provider & Model",
                   synonyms: ["模型", "服务商", "提供商", "provider", "model", "openrouter", "endpoint",
                              "assistant", "助手"]),
             entry(.assistantRemoveProvider, section: assistantSection, zhTitle: "移除 AI 服务商",
                   enTitle: "Remove AI Provider",
-                  synonyms: ["移除", "删除", "服务商", "密钥", "清除", "remove", "delete", "provider", "revoke"]),
+                  synonyms: ["移除", "删除", "服务商", "密钥", "清除", "恢复默认", "高级", "服务地址", "模型",
+                             "导入", "环境变量", "remove", "delete", "provider", "revoke", "restore defaults",
+                             "advanced", "service address", "model", "import"]),
             entry(.assistantAPIKey, section: assistantSection, zhTitle: "AI 密钥", enTitle: "AI API Key",
                   synonyms: ["密钥", "令牌", "api key", "apikey", "token", "key", "credential", "secret"]),
-            entry(.assistantTest, section: assistantSection, zhTitle: "测试 AI 连接",
+            entry(.assistantTest, section: assistantSection, zhTitle: "测试连接",
                   enTitle: "Test the AI Connection",
-                  synonyms: ["测试", "连接", "test", "connection", "verify", "check"]),
+                  synonyms: ["测试", "连接", "测试 AI 连接", "test", "connection", "verify", "check"]),
             entry(.proactiveSuggestions, section: assistantSection, zhTitle: "主动建议",
                   enTitle: "Proactive Suggestions",
                   synonyms: ["建议", "猜你想做", "猜你想控", "推荐", "suggestions", "proactive", "recommend"]),
             entry(.habitMemory, section: assistantSection, zhTitle: "习惯记忆", enTitle: "Habit Memory",
-                  synonyms: ["习惯", "记忆", "偏好", "习惯学习", "habit", "memory", "learn"]),
+                  synonyms: ["习惯", "记忆", "偏好", "习惯学习", "学习使用习惯", "向 AI 附带习惯摘要", "习惯摘要",
+                             "本机语音识别", "语音识别", "habit", "memory", "learn", "habit summary",
+                             "on-device speech"]),
 
             entry(.appearanceMode, section: generalSection, zhTitle: "外观模式", enTitle: "Appearance",
                   synonyms: ["外观", "浅色", "深色", "跟随系统", "基础显示", "appearance", "light", "dark",
@@ -423,7 +419,7 @@ enum SettingsSearch {
                   synonyms: ["门窗", "移动", "烟感", "漏水", "水浸", "sensor", "door", "window", "motion",
                              "smoke", "leak"]),
             entry(.alertsOnlyWhenAway, section: safetySection,
-                  zhTitle: "门窗和移动只在离开时提醒", enTitle: "Door and Motion Only When Away",
+                  zhTitle: "门窗与移动仅在离开或锁屏时提醒", enTitle: "Door and Motion Only When Away or Locked",
                   synonyms: ["离开", "锁屏", "睡眠", "away", "locked", "asleep", "switched away"]),
             entry(.doorbellAutoView, section: safetySection,
                   zhTitle: "门铃响时自动弹出摄像头画面", enTitle: "Show the Doorbell Camera When It Rings",
@@ -473,11 +469,11 @@ enum SettingsSearch {
                   synonyms: ["隐私", "本机", "privacy", "local", "data", "offline"]),
             entry(.copyDiagnostics, section: diagnosticsSection, zhTitle: "复制排障信息",
                   enTitle: "Copy Diagnostics",
-                  synonyms: ["诊断", "排障", "复制", "反馈", "隐去账号", "错误", "崩溃",
+                  synonyms: ["诊断", "排障", "复制", "反馈", "反馈问题", "隐去账号", "错误", "崩溃",
                              "diagnostics", "troubleshooting", "copy", "report", "debug", "redacted", "crash"]),
             entry(.scanUnsupportedDevices, section: diagnosticsSection, zhTitle: "未能显示在面板的设备",
                   enTitle: "Devices Not Shown in the Panel",
-                  synonyms: ["不支持", "跳过", "未识别", "扫描", "原因", "unsupported", "skipped", "scan",
+                  synonyms: ["不支持", "跳过", "未识别", "扫描", "原因", "查找未在面板显示的设备", "unsupported", "skipped", "scan",
                              "missing", "reason"]),
             entry(.signOut, section: resetSection, zhTitle: "退出并清除所有账号与密钥",
                   enTitle: "Sign Out & Clear All Accounts and Keys",
