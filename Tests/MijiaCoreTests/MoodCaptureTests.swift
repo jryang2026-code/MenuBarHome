@@ -69,6 +69,9 @@ struct MoodCaptureTests {
         var prompts: [ManualControlConfirmation] = []
         store.manualControlConfirmationHandler = { prompt in
             prompts.append(prompt)
+            // A provider refresh can arrive after planning and before the send loop runs. The
+            // undo baseline must remain the position captured during planning.
+            store.lastCoverPositions[garage.id] = 80
             return true
         }
         let binding = HotkeyBinding(
