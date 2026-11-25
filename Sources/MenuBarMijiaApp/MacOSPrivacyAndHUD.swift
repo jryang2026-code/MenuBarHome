@@ -8,24 +8,30 @@ struct HotkeyHUDState: Equatable, Sendable {
     var generation: UInt64
 }
 
-enum HotkeyHUDTiming { static let displayDuration: TimeInterval = 1.2 }
+enum HotkeyHUDTiming { static let displayDuration: Duration = .milliseconds(1_200) }
 
-enum PanelInputMode {
-    static func acceptsHover(isKeyboardNavigating: Bool, mouseMovedSinceNavigation: Bool) -> Bool {
-        !isKeyboardNavigating || mouseMovedSinceNavigation
-    }
-}
-
-enum ScreenSharingPrivacy {
+@MainActor
+final class ScreenSharingPrivacy {
     static let storageKey = "hide_from_screen_sharing"
-    static let didChange = Notification.Name("MenuBarMijia.hideFromScreenSharingChanged")
+    static let shared = ScreenSharingPrivacy()
 
-    static func sharingType(hidden: Bool) -> NSWindow.SharingType { hidden ? .none : .readOnly }
-    static func apply(hidden: Bool, to windows: [NSWindow]) {
-        windows.forEach { $0.sharingType = sharingType(hidden: hidden) }
+    private let defaults: UserDefaults
+    private let windows = NSHashTable<NSWindow>.weakObjects()
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
     }
-    static func applyToAppWindows(hidden: Bool, excluding excluded: NSWindow? = nil) {
-        apply(hidden: hidden, to: NSApp.windows.filter { $0 !== excluded })
+
+    func register(_ window: NSWindow) {
+        windows.add(window)
+        window.sharingType = defaults.bool(forKey: Self.storageKey) ? .none : .readOnly
+    }
+
+    func setHidden(_ hidden: Bool) {
+        defaults.set(hidden, forKey: Self.storageKey)
+        for window in windows.allObjects {
+            window.sharingType = hidden ? .none : .readOnly
+        }
     }
 }
 
@@ -33,31 +39,41 @@ enum ScreenSharingPrivacy {
 final class HotkeyHUDController {
     static let shared = HotkeyHUDController()
     private(set) var state: HotkeyHUDState?
-    private var window: NSPanel?
-    private var dismissTask: Task<Void, Never>?
+    private(set) var window: NSPanel?
+    private(set) var dismissTask: Task<Void, Never>?
     private var generation: UInt64 = 0
+    private let sleep: @MainActor (Duration) async throws -> Void
+    private let sharingPrivacy: ScreenSharingPrivacy
+
+    init(
+        sharingPrivacy: ScreenSharingPrivacy = .shared,
+        sleep: @escaping @MainActor (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
+    ) {
+        self.sharingPrivacy = sharingPrivacy
+        self.sleep = sleep
+    }
 
     func show(title: String, result: HotkeyHUDState.Result, screen: NSScreen? = nil) {
         generation &+= 1
         let currentGeneration = generation
-        state = HotkeyHUDState(title: title, result: result, generation: currentGeneration)
+        let state = HotkeyHUDState(title: title, result: result, generation: currentGeneration)
+        self.state = state
         let panel = window ?? makeWindow()
         window = panel
-        panel.contentView = NSHostingView(rootView: HotkeyHUDView(state: state!))
+        panel.contentView = NSHostingView(rootView: HotkeyHUDView(state: state))
         panel.setFrame(frame(for: screen ?? NSScreen.main), display: true)
         panel.orderFrontRegardless()
-        panel.sharingType = UserDefaults.standard.bool(forKey: ScreenSharingPrivacy.storageKey) ? .none : .readOnly
         dismissTask?.cancel()
-        dismissTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .seconds(HotkeyHUDTiming.displayDuration))
+        dismissTask = Task { @MainActor [weak self, sleep] in
+            try? await sleep(HotkeyHUDTiming.displayDuration)
             guard !Task.isCancelled, self?.generation == currentGeneration else { return }
             self?.window?.orderOut(nil)
             self?.state = nil
         }
     }
 
-    private func makeWindow() -> NSPanel {
-        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 220, height: 42), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+    func makeWindow() -> NSPanel {
+        let panel = HotkeyHUDPanel(contentRect: NSRect(x: 0, y: 0, width: 220, height: 42), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         panel.level = .statusBar
         panel.isOpaque = false
         panel.backgroundColor = .clear
@@ -66,6 +82,7 @@ final class HotkeyHUDController {
         panel.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary, .transient, .ignoresCycle]
         panel.hidesOnDeactivate = false
         panel.isReleasedWhenClosed = false
+        sharingPrivacy.register(panel)
         return panel
     }
 
@@ -73,6 +90,11 @@ final class HotkeyHUDController {
         let visible = screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
         return NSRect(x: visible.maxX - 236, y: visible.maxY - 56, width: 220, height: 42)
     }
+}
+
+private final class HotkeyHUDPanel: NSPanel {
+    override var canBecomeKey: Bool { false }
+    override var canBecomeMain: Bool { false }
 }
 
 private struct HotkeyHUDView: View {

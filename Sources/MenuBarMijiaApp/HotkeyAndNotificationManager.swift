@@ -594,6 +594,7 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
 
     /// Performs a routed key; returns whether the panel consumed the event.
     private func perform(_ action: PanelKeyRouter.Action, store: HomeStore) -> Bool {
+        (NSApp.keyWindow as? MenuBarPanel)?.input.record(action)
         switch action {
         case .passThrough:
             return false

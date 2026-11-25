@@ -960,6 +960,12 @@ final class PanelSearchState {
         return results.first
     }
 
+    func selectHoveredResult(_ id: String) {
+        if isExplicitSelection, selectionId != id {
+            selectionId = id
+        }
+    }
+
     /// ↑/↓ through the results, wrapping at both ends.
     func moveSelection(_ delta: Int, in results: [SmartDevice]) {
         guard !results.isEmpty else { return }
@@ -1062,6 +1068,7 @@ enum PanelSearchKeyboard {
             return true
 
         case .moveSelection(let delta):
+            (NSApp.keyWindow as? MenuBarPanel)?.input.keyboardNavigated()
             state.moveSelection(delta, in: results)
             return true
 

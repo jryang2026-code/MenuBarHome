@@ -2492,16 +2492,12 @@ private struct PrivacySettingsTab: View {
                     title: L10n.tr("共享屏幕时隐藏面板与摄像机窗口", "Hide from screen sharing"),
                     isOn: Binding(
                         get: { hideFromScreenSharing },
-                        set: { enabled in
-                            hideFromScreenSharing = enabled
-                            ScreenSharingPrivacy.applyToAppWindows(hidden: enabled)
-                            NotificationCenter.default.post(name: ScreenSharingPrivacy.didChange, object: nil)
-                        }
+                        set: { ScreenSharingPrivacy.shared.setHidden($0) }
                     )
                 )
                 Text(L10n.tr(
-                    "开启后，控制面板、摄像机小窗和快捷键提示不会出现在共享画面中。默认关闭。",
-                    "When on, the control panel, camera windows, and hotkey HUD are excluded from shared screens. Off by default."
+                    "尝试在兼容的共享工具中隐藏控制面板、摄像机浮窗和快捷键提示。系统画中画和部分截屏工具仍可捕获画面。",
+                    "Requests that compatible sharing tools hide the control panel, floating camera windows, and hotkey HUD. System Picture in Picture and some capture tools may still show them."
                 ))
                 .font(.system(size: DesignTokens.TypeSize.caption))
                 .foregroundStyle(DesignTokens.secondaryText)
