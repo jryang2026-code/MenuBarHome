@@ -230,7 +230,7 @@ extension HomeStore {
                     try await send(step.effect.command, for: write, context: context)
                     lastWrite = write
                     revision = write.revision
-                    restore.insert(contentsOf: step.effect.restore.reversed(), at: 0)
+                    restore.insert(contentsOf: approved.effect.restore.reversed(), at: 0)
                 } catch {
                     // A failed optimistic write also advances the row revision.
                     if ownsRow(write) { lastWrite = write }
