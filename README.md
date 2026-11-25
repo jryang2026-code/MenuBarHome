@@ -128,7 +128,7 @@ Get-FileHash -Algorithm SHA256 .\MenuBarHome-1.4.0-windows-x64.msi
 Click the menu bar (or tray) icon to open the panel, open Settings `⚙️`, and pick one:
 
 - **Mi Cloud Connect (recommended):** choose "Mi Cloud Connect", scan the QR code with the Mi Home app on your phone, and your homes, rooms, and devices sync in. CN, SG, DE, US, and RU servers are supported. On both macOS and Windows you can add more accounts and see all their devices in one panel. If your sign-in is about to expire, the panel warns you 3 days ahead, and a quick re-scan in the panel renews it.
-- **Home Assistant:** enter your instance address (for example `http://192.168.1.100:8123`; reverse-proxy subpaths work too) and a long-lived access token. macOS can also find Home Assistant on your local network. The token is kept in the macOS Keychain or Windows Credential Manager.<br>
+- **Home Assistant:** enter your instance address (for example `http://192.168.1.100:8123`; reverse-proxy subpaths work too) and a long-lived access token. Both macOS and Windows can find Home Assistant on your local network. The token is kept in the macOS Keychain or Windows Credential Manager.<br>
   If macOS says "Local network connection blocked by macOS", allow MenuBarHome under **System Settings → Privacy & Security → Local Network**.
 - **Demo mode:** try the whole interface with virtual devices, no account needed.
 
@@ -138,7 +138,7 @@ Click the menu bar (or tray) icon to open the panel, open Settings `⚙️`, and
 
 ### A new panel
 
-Search now sits at the top, and the same box takes device names and spoken commands. Favorite devices are laid out as tiles, the AC can be nudged up or down right on its card, and room tabs, sorting, and the compact view are a click away. Light and dark follow the system, and on macOS 26 or later you can switch to the Liquid Glass theme.
+Search now sits at the top, and the same box takes device names, state questions, and spoken commands. Favorite devices are laid out as tiles, the AC can be nudged up or down right on its card, and room tabs, room auto-group capsules, sorting, and the compact view are a click away. Quick Actions and "For You" suggestions fold behind a single **Shortcuts** toggle (`⌘K` on macOS, `Ctrl+K` on Windows) so the first screen stays uncluttered. Light and dark follow the system, and on macOS 26 or later you can switch to the Liquid Glass theme; opening the macOS panel no longer dims the app you're working in.
 
 <p align="center">
   <img src="docs/assets/readme-v3/panel-themes.gif" alt="The macOS panel in the Classic and Liquid Glass themes, in light and dark appearance" width="900">
@@ -170,7 +170,7 @@ Heading out or going to bed? Hold All Off for 0.6 seconds and everything that's 
 
 ### Windows 11, redesigned too
 
-The tray app was redrawn in Windows 11's Fluent 2 style as two floating islands: home status, "For You" suggestions, and a camera glance on top; search, quick actions, and device tiles below. Keyboard search, the `Alt+M` shortcut, and light/dark appearance are all there.
+The tray app uses the Classic two-column split-tile panel by default and also offers a Windows 11 Fluent 2 two-island flyout (home status, "For You" suggestions, and a camera glance on top; search, quick actions, and device tiles below). Keyboard search, `Alt+M`, native Mica/Acrylic backdrop with system accent colors (Windows 11 22H2+), an independent always-on-top camera PiP window, and light/dark appearance are all there.
 
 <p align="center">
   <img src="docs/assets/readme-v3/windows-fluent.png" alt="The Windows 11 tray panel in light and dark appearance" width="820">
@@ -180,13 +180,13 @@ The tray app was redrawn in Windows 11's Fluent 2 style as two floating islands:
 
 ## What Else It Does
 
-- **Works with a lot of devices.** Lights, ACs, fans, plugs, TVs, curtains, clothes airers, air purifiers, humidifiers, fridges, water heaters, washers and dryers, bath heaters, range hoods, robot vacuums, cameras, locks, and all sorts of sensors. Mi devices without a dedicated card still get a generic one. [Check your own devices here.](docs/supported-devices.md)
-- **Camera windows.** Click a camera for a pinned live view. Dual-lens models can switch lenses, and pan-tilt cameras turn when you drag the picture.
-- **Climate trends and energy logs.** Sensors chart 24-hour and 7-day trends; plugs keep a daily energy log, and with your electricity rate entered you get a cost estimate.
-- **For You suggestions.** Based on what you usually turn on and when, likely next actions are ready before you ask. Habits stay on your machine and can be reviewed or cleared anytime.
-- **Multiple accounts, two sources.** Sign in to several Xiaomi accounts at once, or run Mi Home and Home Assistant side by side; the same physical device is merged automatically.
-- **Safety alerts and a weekly report.** You get a notification when a high-power appliance has been running too long or a favorite device drops offline, and a weekly home health report shows which devices keep disconnecting and which plugs draw standby power.
-- **Plugs into your tools.** Apple Shortcuts, `menumijia://` links, a Raycast extension, a command-line tool, and an MCP server, so AI tools like Claude and Cursor can check on and control your home without ever seeing your account credentials.
+- **Works with a lot of devices.** Lights, ACs, fans, plugs, TVs (including MIoT TVs and set-top boxes), curtains, clothes airers, air purifiers, humidifiers, fridges, water heaters, washers and dryers, bath heaters, range hoods, robot vacuums, cameras, locks, and all sorts of sensors. Mi devices without a dedicated card still get a generic one. [Check your own devices here.](docs/supported-devices.md)
+- **Camera windows, still wall & PiP.** Click a camera for a pinned live view (independent always-on-top PiP on Windows, 3:4 portrait layout for doorbells, optional auto-open countdown on doorbell/alarm events with up to 2 pinned switches, and listen-only audio where supported by the stream). A 2×2 still wall keeps recent snapshots and a 7-day camera event history; dual-lens models can switch lenses, and pan-tilt cameras turn when you drag the picture.
+- **Climate trends and energy logs.** Sensors show a 24-hour hover sparkline right on the card plus full 24-hour and 7-day charts; plugs keep a daily energy log, and with your electricity rate entered you get a cost estimate.
+- **Moods, room groups & "For You" suggestions.** Save a room's current device states as a local **Mood** (up to 32) and replay it with one click or a global hotkey. Rooms with two or more controllable devices of the same kind show auto-group capsules. Based on what you usually turn on and when, "For You" surfaces likely next actions; habits stay on your machine and can be reviewed or cleared anytime.
+- **Multiple accounts, two sources & LAN-first speed.** Sign in to several Xiaomi accounts at once, or run Mi Home and Home Assistant side by side; the same physical device is merged automatically. Compatible Wi-Fi Mi devices prefer direct LAN control with explicit write acknowledgements, and macOS probes cloud-offline Xiaomi devices on the LAN as a read-only reachability hint.
+- **Context-aware automations, safety alerts & weekly report.** Rules can run on schedules, lasting conditions, or Mac frontmost apps (with one-click Meeting and Movie templates on macOS), and context restoration automatically restores prior power states when a session ends. Interactive safety notifications let you turn off a device or view a doorbell live feed right from the alert (guarded by screen lock), and a weekly home health report highlights frequent disconnects and standby power draw.
+- **Plugs into your tools.** Custom global hotkeys (up to 8 device, scene, quick-action, or mood bindings on both platforms, with a non-focus-stealing HUD on macOS), Apple Shortcuts, `menumijia://` links, a Raycast extension, a command-line tool, and an MCP server, so AI tools like Claude and Cursor can check on and control your home without ever seeing your account credentials.
 
 For what each platform supports, see the [platform comparison](docs/platform-matrix.md).
 
@@ -196,11 +196,13 @@ For what each platform supports, see the [platform comparison](docs/platform-mat
 
 ### Keyboard Navigation
 
-`⌥M` opens the panel on macOS and `Alt+M` opens it on Windows. Typing to search, `↑`/`↓`, `Return`/`Space`, `→`/`←`, and `Esc` work on both platforms; `Tab` cycles room tabs on macOS.
+`⌥M` opens the panel on macOS and `Alt+M` opens it on Windows; you can also bind up to 8 custom global hotkeys to individual devices, scenes, quick actions, or moods on both platforms. Typing to search, `↑`/`↓`, `Return`/`Space`, `→`/`←`, `⌘K` / `Ctrl+K` (toggle Shortcuts drawer), and `Esc` work on both platforms; `Tab` cycles room tabs on macOS.
 
 | Shortcut | Action |
 | :--- | :--- |
 | `⌥M` / `Alt+M` | Toggle the MenuBarHome panel (macOS / Windows) |
+| `⌘K` / `Ctrl+K` | Expand or collapse the Shortcuts drawer (Quick Actions, Scenes, and For You) |
+| Custom hotkeys (up to 8) | Trigger a bound device, scene, quick action, or mood globally (with confirmation on high-risk targets) |
 | Type letters | Instant search by device name, room, or pinyin initials (e.g. `sftd`) |
 | `↑` / `↓` | Navigate through search matches and device cards |
 | `Return` / `Space` | Toggle the focused device; expand the detail drawer if not directly switchable |
@@ -216,8 +218,11 @@ These phrases are parsed locally **without any AI API key** or cloud model token
 - **Lighting presets:** "study light moonlight mode", "daylight mode"
 - **Adjustments:** "dimmer", "brighter", "set bedroom light to 40%"
 - **Climate & Fan:** "set ac to 24 degrees", "warmer", "fan natural wind"
+- **State queries:** "which lights are on?", "is the study lamp on?", "living room temperature" (answered locally from current device state)
 - **Timers:** "in 10 minutes turn off study light", "cancel timer"
 - **Undo:** "undo", "revert" (active for 10 minutes after any batch execution)
+
+Commands that touch two or more devices or any high-risk device show an inline before → after diff preview for confirmation before executing.
 
 ---
 
@@ -335,10 +340,10 @@ Every control tool carries `destructiveHint: true`, so MCP clients that honour t
 
 ### Know before you connect
 
-- **Mi Cloud Connect uses an unofficial client API.** It is not an official Xiaomi integration. Xiaomi can rate-limit requests or flag an account (risk control) at any time, and this project cannot promise it won't happen. The app polls less when the panel is closed or the screen is locked to keep traffic low. If you'd rather not take that risk, connect Home Assistant with Xiaomi's official [xiaomi_home](https://github.com/XiaoMi/ha_xiaomi_home) integration instead.
+- **Mi Cloud Connect uses an unofficial client API.** It is not an official Xiaomi integration. Xiaomi can rate-limit requests or flag an account (risk control) at any time, and this project cannot promise it won't happen. The app polls less when the panel is closed or the screen is locked, reserves rate-limit capacity for user control writes with exponential backoff, and routes eligible Wi-Fi devices over direct LAN miIO first. If you'd rather not take that risk, connect Home Assistant with Xiaomi's official [xiaomi_home](https://github.com/XiaoMi/ha_xiaomi_home) integration instead.
 - **You will need to scan again.** The app does not store the long-lived `passToken` and does not renew a sign-in silently ([ADR-0004](docs/adr/0004-no-pass-token-storage.md)). How long a sign-in lasts is decided by Xiaomi's server and is shown in Settings when it is known; the panel warns you 3 days before it ends, and re-scanning takes a few seconds.
 - **The apps are not code-signed commercially.** macOS needs **Open Anyway** on first launch and Windows shows a SmartScreen prompt (see [Install](#1-install)).
-- **Windows is not at feature parity.** Windows 11 only; voice is hands-free only (no hold-to-talk); event automation covers lock/power/display/sleep/camera/mic/Focus-fullscreen/Wi-Fi/schedule/sensor rules (no Calendar or lid-closed sleep triggers); Home Assistant uses on-demand WebSocket snapshots/calls rather than a persistent event stream or mDNS discovery; no Apple Shortcuts. See the [platform comparison](#platform-comparison).
+- **Windows is not at full feature parity.** Windows 11 only; voice is hands-free only (no hold-to-talk); event automation covers lock/unlock, power/battery, display/suspend, camera/mic, Focus/fullscreen/presentation, Wi-Fi, schedules, and sensor rules with context restore (no Calendar, lid-closed sleep, or frontmost-app triggers); no Apple Shortcuts. See the [platform comparison](#platform-comparison).
 
 ### Safety and privacy
 
@@ -368,13 +373,13 @@ On macOS, versions up to 1.0.6 could mirror credentials into plain `UserDefaults
 
 ### High-risk controls, lock screen, and revocation
 
-Manual controls on high-risk devices ask for a second confirmation, not only AI-proposed actions: turning on a heater, switching a plug or camera, starting a vacuum, or turning a water heater on or hotter. Turning one of these off stays direct, so making the home safer never requires fighting a dialog. Door/window and gas-alarm sensors are read-only status cards in this app, so they cannot be actuated here at all. The confirmation table is shared across platforms (`Tests/Fixtures/confirmation_golden.json`, `Sources/MijiaCore/ModelActionPolicy.swift`).
+Manual controls on high-risk devices ask for a second confirmation, not only AI-proposed actions: turning on a heater, switching a plug or camera, starting a vacuum, or turning a water heater on or hotter (on macOS, panel pointer controls also offer a 0.65 s hold or slide-to-confirm gesture, while keyboard and VoiceOver keep explicit confirmation alerts). Turning one of these off stays direct, so making the home safer never requires fighting a dialog. Door/window and gas-alarm sensors are read-only status cards in this app, so they cannot be actuated here at all. The confirmation table is shared across platforms (`Tests/Fixtures/confirmation_golden.json`, `Sources/MijiaCore/ModelActionPolicy.swift`).
 
-On macOS, Settings → 隐私 / Privacy has **锁屏时禁止控制设备 / Block device control while locked**, on by default. While the Mac screen is locked, card/detail controls, `menumijia://` links, App Intents/Shortcuts, assistant commands, the safety notification's 立即关闭 / Turn Off Now action and 立即补执行 / Run Now on a missed timer are refused with a toast; timers that fire on schedule and Mac-event automation rules still run. The toggle is persisted locally and the lock state comes from the system's screen-lock notifications.
+On macOS, Settings → 隐私 / Privacy has **锁屏时禁止控制设备 / Block device control while locked**, on by default, as well as **共享屏幕时隐藏面板与摄像机窗口 / Hide from screen sharing** (`NSWindow.sharingType = .none`). While the Mac screen is locked, card/detail controls, custom hotkeys, `menumijia://` links, App Intents/Shortcuts, assistant commands, the safety notification's 立即关闭 / Turn Off Now action and 立即补执行 / Run Now on a missed timer are refused with a toast; timers that fire on schedule and Mac-event automation rules still run. The toggle is persisted locally and the lock state comes from the system's screen-lock notifications.
 
-The same macOS Settings page has **退出并吊销令牌 / Sign Out & Revoke Tokens**, confirmed by a destructive dialog. It signs out every Xiaomi Home account, deletes the Home Assistant token and disconnects, and clears saved AI keys and cloud-consent records while keeping device names, room layout, and local history; you can also revoke one item at a time in its own section. On Windows, credentials and remembered cloud-AI consent endpoints can be cleared per service across the four-tab Settings sheet (clearing the HA token or a provider's API key deletes its Windows Credential Manager entry, and **AI & Habits** includes a button to revoke remembered cloud-AI consent endpoints).
+The same macOS Settings page has **退出并吊销令牌 / Sign Out & Revoke Tokens**, confirmed by a destructive dialog. It signs out every Xiaomi Home account, deletes the Home Assistant token and disconnects, and clears saved AI keys and cloud-consent records while keeping device names, room layout, and local history; you can also revoke one item at a time in its own section. On Windows, credentials and remembered cloud-AI consent endpoints can be cleared per service across the settings sheet (clearing the HA token or a provider's API key deletes its Windows Credential Manager entry, and **AI & Habits** includes a button to revoke remembered cloud-AI consent endpoints).
 
-On macOS, the Home Assistant token goes directly only to an `https` address or a local-network endpoint; for any other plain-`http` address (such as a public DDNS hostname), the panel explains that the token would travel unencrypted and connects only after you choose 仍然连接 / Connect Anyway (remembered per address and cleared by Sign Out & Revoke Tokens). On Windows, every new Home Assistant or custom AI origin requires approval in a native system dialog (`authorized-http-origins.json`), which adds an explicit plaintext-transmission warning whenever a non-local `http` origin would carry tokens or API keys.
+On macOS, the Home Assistant token goes directly only to an `https` address or a local-network endpoint; for any other plain-`http` address (such as a public DDNS hostname), the panel explains that the token would travel unencrypted and connects only after you choose 仍然连接 / Connect Anyway (remembered per address and cleared by Sign Out & Revoke Tokens). On Windows, every new Home Assistant or custom AI origin requires approval in a native system dialog (`authorized-http-origins.json`), which adds an explicit plaintext-transmission warning whenever a non-local `http` origin would carry tokens or API keys. Both platforms also validate resolved DNS answers before connecting (`HAPlaintextConsent.validateConnectionAddress` on macOS, `PolicyAwareResolver` on Windows) to reject prohibited addresses and protect local plaintext endpoints against DNS rebinding.
 
 Everyday commands are handled by local rules. You can also connect an AI service of your choice for more complex requests. The request includes your command, device and environment information, and any habit summary you have enabled. Manual card actions also train local time-bucket habit memories (used only for the "For You" suggestions); the habit learning toggle turns this off, learned entries can be reviewed and cleared, and undoing a banner rolls the matching records back. Speech recognition uses system services; on macOS, on-device-only recognition is available for supported languages and device, room, and scene names are passed as recognition hints.
 

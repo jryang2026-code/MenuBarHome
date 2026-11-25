@@ -19,7 +19,7 @@ _Avoid_: Device（设备）、Card（卡片）
 _Avoid_: Data mapping（数据映射）、Parsing（解析）
 
 **HomeBackend（连接后端）**：
-驱动 `HomeStore` 的底层数据源（macOS 与 Windows 均支持 Home Assistant 与米家云端单源、多小米账号聚合、双源自动合并及演示模式：macOS 为 `HAWebSocketProvider`、`MiCloudProvider` / `MiAccountsProvider`、`DeviceDeduplicator` 与 `DemoHomeProvider`；Windows 为按需 WebSocket 的 `HomeAssistantClient`、`MultiAccountMiCloudProvider`、`DualSourceHomeProvider` 与 `demo` 模式）。
+驱动 `HomeStore` 的底层数据源（macOS 与 Windows 均支持 Home Assistant 与米家云端单源、多小米账号聚合、双源自动合并及演示模式：macOS 为使用 `subscribe_entities` 压缩订阅的 `HAWebSocketProvider`、`MiCloudProvider` / `MiAccountsProvider`、`DeviceDeduplicator` 与 `DemoHomeProvider`；Windows 为持久化异步 WebSocket 的 `HomeAssistantClient`、连接池原生 HTTP `windows/src-tauri/src/network.rs`、`MultiAccountMiCloudProvider`、`DualSourceHomeProvider` 与 `demo` 模式；双端均支持局域网 miIO UDP 54321 直连）。
 _Avoid_: Server type（服务器类型）、Mode（模式）
 
 **HomeBackendDescriptor（后端描述）**：
@@ -43,11 +43,11 @@ _Avoid_: 缓存文件、数据库
 _Avoid_: API Key、密码
 
 **LocalNetworkEndpoint（局域网端点）**：
-不离开本机或家庭网络的地址（回环、私有/Tailscale 网段、`.local`/`.lan`/`.home.arpa`/`.internal`、无点单段主机名，ccTLD/`xn--` 除外）；凭据只发给 HTTPS 或局域网端点，其余 HTTP HA 须逐一经用户明文确认。
+不离开本机或家庭网络的地址（回环、私有/Tailscale 网段、`.local`/`.lan`/`.home.arpa`/`.internal`、无点单段主机名，ccTLD/`xn--` 除外）；凭据只发给 HTTPS 或局域网端点，其余 HTTP HA 须逐一经用户明文确认；连接前同时在双端校验 DNS 解析结果（`Sources/MijiaCore/HAPlaintextConsent.swift` / `windows/src-tauri/src/network.rs`）防范 DNS 重绑定。
 _Avoid_: Intranet（内网）、Trusted host（可信主机）
 
 **DeviceDeduplication（跨源设备去重合并）**：
-HA 与米家云端同时生效时，按硬件标识或同房间唯一同款/同名匹配物理设备，按「在线 → 可控分 → 同分 HA 优先」选出主驱动源的纯函数合并。
+HA 与米家云端同时生效时，按硬件标识或同房间唯一同款/同名匹配物理设备，按「在线 → 可控分 → 同分 HA 优先」选出主驱动源的纯函数合并，并由 `CanonicalDeviceRegistry`（`Sources/MijiaCore/CanonicalDeviceRegistryFile.swift`、`windows/src/core/canonicalDeviceRegistry.ts`、`windows/src-tauri/src/canonical_registry.rs`）持久化身份分配、显式删除墓碑与轮转备份。
 _Avoid_: Cloud sync（云同步）、Entity bridge（实体桥接）
 
 **deviceBackends（卡片数据源表）**：
@@ -63,7 +63,7 @@ _Avoid_: Token（令牌）、Cookie（网页凭据）、End-to-end encryption（
 _Avoid_: Session（会话）、Profile（账号配置）、Home（家庭）
 
 **MiotSpec（MIoT 设备规格）**：
-`miot-spec.org` 定义的 `siid/piid/aiid` 元数据模型，按型号本地缓存，驱动米家设备合成与指令映射。
+`miot-spec.org` 定义的 `siid/piid/aiid` 元数据模型，双端从 `status=all` 索引按 `released > omitted > preview > debug` 择优获取并按型号本地缓存，叠加官方 `instance/v2/multiLanguage` 翻译缓存与声明式补丁 `Shared/specPatches.json`，驱动米家设备合成与指令映射。
 _Avoid_: Schema（模式）、Profile（配置表）
 
 **MiotFacet（通用控件）**：
@@ -161,7 +161,7 @@ _Avoid_: Ambiguous command（模糊指令）、Whole-home command（全屋指令
 _Avoid_: Background job（后台任务）、Cron（计划任务）
 
 **SourceEpoch（连接源代际）**：
-`windows/src/ui/sourceEpoch.ts` 中三级嵌套（`source` ⊃ `home` ⊃ `localWrite`）的连接源失效代际：`advance` 按层级向下级联（换源三级全动、换家庭动 home+localWrite、本地写只动 localWrite），异步工作用 `capture()` 取 `EpochToken` 后以 `isCurrent` / `guard`（返回 `STALE`）判弃；`ui/sourceSwitch.ts` 的 `switchSource` / `switchHome` 是仅有的换源/换家庭入口，云端同步接力用 `claimSyncRun` 领取独立于三级的 `SyncRunToken`——新一轮领取、换源或换家庭都会使其失效，本地写不会；领取本身不触碰 home 级（后台刷新不等于换了家庭）。
+`windows/src/ui/sourceEpoch.ts` 中三级嵌套（`source` ⊃ `home` ⊃ `localWrite`）的连接源失效代际：`advance` 按层级向下级联（换源三级全动、换家庭动 home+localWrite、本地写只动 localWrite），异步工作用 `capture()` 取 `EpochToken` 后以 `isCurrent` / `guard`（返回 `STALE`）判弃；`ui/sourceSwitch.ts` 的 `switchSource` / `switchHome` 是仅有的换源/换家庭入口，云端同步接力用 `claimSyncRun` 领取独立于三级的 `SyncRunToken`——新一轮领取、换源或换家庭都会使其失效，本地写不会；领取本身不触碰 home 级（后台刷新不等于换了家庭）。配合双端写入保护（macOS `Sources/MijiaCore/HomeStore+ControlWrite.swift` `writeEpoch` / Windows `windows/src/core/optimisticLock.ts`），防止写入前的旧快照回弹覆盖本地新状态。
 _Avoid_: 裸 revision 计数（手写自增 `sourceRevision` / `syncGeneration` / `localControlRevision`）、`invalidateSourceControl`
 
 **ActiveDevice（活跃开启设备）**：
@@ -219,3 +219,27 @@ _Avoid_: Device config（设备配置）、Profile（档案）
 **NativeBackdrop（原生背景）**：
 Windows DWM 绘制的 Mica/Acrylic 背景（`data-backdrop="acrylic"` / `none`），区别于 WebView 内模糊与透明度调节。
 _Avoid_: 玻璃皮、壁纸透出
+
+**MoodSnapshot（本地氛围快照）**：
+跨数据源按房间采集的本机设备状态快照（最多 32 个，`Sources/MijiaCore/MoodSnapshot.swift`、`windows/src/core/moodSnapshot.ts`，契约见 `Tests/Fixtures/mood_snapshot.schema.json`），可通过快捷区或自定义快捷键一键还原，受锁屏、能力门与整批确认保护。
+_Avoid_: Cloud scene（米家云端场景）、Preset（单设备预设）
+
+**RoomAutoGroup（房间同品类自动分组）**：
+同房间同品类（`light` / `cover` / `plug` / `fan` / `climate`）在线可控设备达到 2 台及以上时自动生成的房间控制胶囊（`Sources/MijiaCore/RoomAutoGroup.swift`、`windows/src/core/roomAutoGroup.ts`）。
+_Avoid_: Custom device group（手动自定义分组）
+
+**AssistantDiffPreview（指令变更预览）**：
+语音或文本指令涉及 2 台及以上目标或任意高风险设备时，在命令栏内联展示的「当前状态 → 目标状态」预览确认卡（`Sources/MijiaCore/AssistantDiffPreview.swift`、`windows/src/core/assistantDiffPreview.ts`）。
+_Avoid_: Toast（瞬时提示）
+
+**AutomationContextStack（自动化上下文栈）**：
+持久化 LIFO 状态栈（`automation_context_stack_v1`，上限 32 帧、12 小时有效期；`Sources/MijiaCore/AutomationContextStack.swift`、`windows/src/core/automationContextStack.ts`），仅记录触发自动化进入时改动的电源状态，在上下文退出且未被人工接管时恢复原状。
+_Avoid_: Undo banner（手动撤销横幅）
+
+**CameraEventStore / StillWall（摄像机事件库与 2×2 静态墙）**：
+7 天 / 500 条本机摄像机事件与抓拍缩略图存储（`Sources/MijiaCore/CameraEvent.swift`、`windows/src/core/cameraEventStore.ts`、`windows/src-tauri/src/camera_events.rs`），驱动最多 4 路摄像机的 2×2 静态墙，并配合 `CameraPipWatchPolicy`（`Sources/MijiaCore/CameraPipWatchPolicy.swift`、`windows/src/core/cameraPip.ts`）控制门铃/告警自动弹出画中画倒计时与固定开关。
+_Avoid_: Cloud recording（云录像）
+
+**HotkeyBinding（自定义全局热键绑定）**：
+绑定到单个设备电源、场景、快捷动作或本地氛围的自定义全局快捷键（双端上限 8 组，`Sources/MijiaCore/HotkeyShortcut.swift`、`windows/src/ui/hotkeyBindings.ts`），执行路径复用面板锁屏拦截与高风险确认，macOS 附带非激活态提示浮层（`Sources/MenuBarMijiaApp/MacOSPrivacyAndHUD.swift` `HotkeyHUDController`）。
+_Avoid_: Panel hotkey（主面板呼出热键）
