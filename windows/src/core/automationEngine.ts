@@ -1,4 +1,27 @@
+import {
+  AutomationContextStack,
+  contextValuesEqual,
+  deviceAutomationContextValue,
+  type AutomationContextField,
+  type AutomationContextFrame,
+  type AutomationContextRestoreIntent,
+  type AutomationContextRestorePlan,
+  type AutomationContextSnapshot,
+  type AutomationContextValue,
+} from "./automationContextStack.js";
 import { AutomationRunHistory, AutomationRunState, type AutomationExecutionMode, type AutomationSkipReason } from "./automationRun.js";
+
+export {
+  AutomationContextStack,
+  contextValuesEqual,
+  deviceAutomationContextValue,
+  type AutomationContextField,
+  type AutomationContextFrame,
+  type AutomationContextRestoreIntent,
+  type AutomationContextRestorePlan,
+  type AutomationContextSnapshot,
+  type AutomationContextValue,
+};
 import { DEVICE_CATEGORY_IDS } from "./capabilityManifest.js";
 import { controlTargetRejectionMessage } from "./capabilityReferenceVerdict.js";
 import { ManualControlPolicy } from "./assistant/actionPolicy.js";
@@ -33,6 +56,24 @@ const QUICK_ACTION_SET: ReadonlySet<string> = new Set<QuickActionId>(["lightsOff
 
 export function isAutomationTrigger(value: unknown): value is AutomationTrigger {
   return typeof value === "string" && TRIGGER_SET.has(value);
+}
+
+/**
+ * Natural exit signal for a lasting context trigger. Mirrors macOS
+ * `AutomationTrigger.pairedContextTrigger` for triggers supported on Windows.
+ */
+export function pairedContextTrigger(trigger: AutomationTrigger): AutomationTrigger | null {
+  switch (trigger) {
+    case "cameraInUse": return "cameraNotInUse";
+    case "cameraNotInUse": return "cameraInUse";
+    case "microphoneInUse": return "microphoneNotInUse";
+    case "microphoneNotInUse": return "microphoneInUse";
+    case "focusModeEnabled": return "focusModeDisabled";
+    case "focusModeDisabled": return "focusModeEnabled";
+    case "powerConnected": return "powerDisconnected";
+    case "powerDisconnected": return "powerConnected";
+    default: return null;
+  }
 }
 
 export function automationRequiredPermission(trigger: AutomationTrigger): AutomationPermission | null {
@@ -518,6 +559,8 @@ export interface AutomationRule {
   readonly mode?: AutomationExecutionMode;
   readonly highRiskApproved?: boolean;
   readonly pausedByCapabilities?: readonly string[];
+  readonly restoreWhenContextEnds?: boolean;
+  readonly restoreTrigger?: AutomationTrigger | null;
 }
 
 let fallbackRuleCounter = 1;
@@ -537,7 +580,13 @@ export function createAutomationRule(args: {
   readonly conditions?: AutomationConditions;
   readonly mode?: AutomationExecutionMode;
   readonly highRiskApproved?: boolean;
+  readonly restoreWhenContextEnds?: boolean;
+  readonly restoreTrigger?: AutomationTrigger | null;
 }): AutomationRule {
+  const restoreWhenContextEnds = args.restoreWhenContextEnds === true;
+  const restoreTrigger = restoreWhenContextEnds
+    ? (args.restoreTrigger ?? pairedContextTrigger(args.trigger))
+    : null;
   return {
     id: args.id?.trim() ? args.id.trim() : makeRuleId(),
     isEnabled: args.isEnabled ?? true,
@@ -547,6 +596,7 @@ export function createAutomationRule(args: {
     conditions: createAutomationConditions(args.conditions?.wifi, args.conditions?.timeWindow),
     ...(args.mode === "restart" ? { mode: "restart" as const } : {}),
     ...(args.highRiskApproved ? { highRiskApproved: true } : {}),
+    ...(restoreWhenContextEnds ? { restoreWhenContextEnds: true, ...(restoreTrigger ? { restoreTrigger } : {}) } : {}),
   };
 }
 
@@ -677,6 +727,8 @@ function parseStoredRule(raw: unknown): AutomationRule | null {
   const pausedByCapabilities = Array.isArray(obj.pausedByCapabilities)
     ? obj.pausedByCapabilities.filter((x): x is string => typeof x === "string" && x.length > 0)
     : [];
+  const restoreWhenContextEnds = obj.restoreWhenContextEnds === true;
+  const restoreTrigger = restoreWhenContextEnds && isAutomationTrigger(obj.restoreTrigger) ? obj.restoreTrigger : undefined;
   return {
     id: obj.id,
     isEnabled: obj.isEnabled,
@@ -687,6 +739,7 @@ function parseStoredRule(raw: unknown): AutomationRule | null {
     ...(obj.mode === "restart" ? { mode: "restart" as const } : {}),
     ...(obj.highRiskApproved === true ? { highRiskApproved: true } : {}),
     ...(pausedByCapabilities.length > 0 ? { pausedByCapabilities } : {}),
+    ...(restoreWhenContextEnds ? { restoreWhenContextEnds: true, ...(restoreTrigger ? { restoreTrigger } : {}) } : {}),
   };
 }
 
@@ -727,6 +780,7 @@ export class AutomationRuleStore {
         ...(r.mode === "restart" ? { mode: "restart" } : {}),
         ...(r.highRiskApproved ? { highRiskApproved: true } : {}),
         ...(r.pausedByCapabilities?.length ? { pausedByCapabilities: r.pausedByCapabilities } : {}),
+        ...(r.restoreWhenContextEnds ? { restoreWhenContextEnds: true, ...(r.restoreTrigger ? { restoreTrigger: r.restoreTrigger } : {}) } : {}),
       }));
       this.storage.setItem(AutomationRuleStore.storageKey, JSON.stringify(serializable));
       return true;
@@ -966,25 +1020,25 @@ export interface AutomationHighRiskConfirmation {
   readonly deviceNames: readonly string[];
 }
 
-export function automationRuleHighRiskConfirmation(
-  action: AutomationAction,
+function buildHighRiskConfirmation(
+  deviceIds: readonly string[],
+  isOn: boolean,
   devices: readonly SmartDevice[],
   preference?: LanguagePreference,
 ): AutomationHighRiskConfirmation | null {
-  if (action.kind !== "devices") return null;
   const seen = new Set<string>();
   const highRiskDevices: SmartDevice[] = [];
-  for (const id of action.deviceIds) {
+  for (const id of deviceIds) {
     if (seen.has(id)) continue;
     seen.add(id);
-    if (ManualControlPolicy.requiresConfirmation({ targetId: id, operation: { kind: "power", isOn: action.isOn } }, devices)) {
+    if (ManualControlPolicy.requiresConfirmation({ targetId: id, operation: { kind: "power", isOn } }, devices)) {
       const dev = devices.find((d) => d.id === id);
       if (dev) highRiskDevices.push(dev);
     }
   }
   if (highRiskDevices.length === 0) return null;
   const names = highRiskDevices.map((d) => d.name).join(tr3("、", "、", ", ", undefined, preference));
-  const verb = action.isOn ? tr3("开启", "開啟", "turn on", undefined, preference) : tr3("关闭", "關閉", "close", undefined, preference);
+  const verb = isOn ? tr3("开启", "開啟", "turn on", undefined, preference) : tr3("关闭", "關閉", "close", undefined, preference);
   return {
     title: tr3("确认启用高风险自动化规则？", "確認啟用高風險自動化規則？", "Enable high-risk automation rule?", undefined, preference),
     message: tr3(
@@ -998,6 +1052,21 @@ export function automationRuleHighRiskConfirmation(
     cancelTitle: tr3("取消", "取消", "Cancel", undefined, preference),
     deviceNames: highRiskDevices.map((d) => d.name),
   };
+}
+
+export function automationRuleHighRiskConfirmation(
+  action: AutomationAction,
+  devices: readonly SmartDevice[],
+  preference?: LanguagePreference,
+  restoreWhenContextEnds = false,
+): AutomationHighRiskConfirmation | null {
+  if (action.kind !== "devices") return null;
+  const direct = buildHighRiskConfirmation(action.deviceIds, action.isOn, devices, preference);
+  if (direct) return direct;
+  if (restoreWhenContextEnds && !action.isOn) {
+    return buildHighRiskConfirmation(action.deviceIds, true, devices, preference);
+  }
+  return null;
 }
 
 export interface AutomationExecutionHost {
@@ -1226,7 +1295,7 @@ export async function executeAutomationRule(
     }
   } else if (rule.action.kind === "devices") {
     const policyDevices = options.displayDevices ?? host.devices;
-    if (automationRuleHighRiskConfirmation(rule.action, policyDevices, preference) !== null && !rule.highRiskApproved) {
+    if (automationRuleHighRiskConfirmation(rule.action, policyDevices, preference, rule.restoreWhenContextEnds) !== null && !rule.highRiskApproved) {
       host.replyBanner = {
         text: tr3("高风险自动化规则需在设置中重新确认启用", "高風險自動化規則需在設定中重新確認啟用", "High-risk automation rule requires re-confirmation in Settings", undefined, preference),
         source: tr3("状态感知自动化", "狀態感知自動化", "Context Automation", undefined, preference),
@@ -1336,6 +1405,7 @@ export class AutomationEngine {
   public readonly store: AutomationRuleStore;
   public readonly deduper: AutomationTriggerDeduper;
   public readonly history: AutomationRunHistory;
+  public readonly contextStack: AutomationContextStack;
   private activeRuns = new Map<string, {
     state: AutomationRunState;
     done: Promise<RecordedAutomationRun | null>;
@@ -1352,6 +1422,7 @@ export class AutomationEngine {
     this.store = new AutomationRuleStore(storage);
     this.history = new AutomationRunHistory(storage);
     this.deduper = new AutomationTriggerDeduper(storage);
+    this.contextStack = new AutomationContextStack(storage);
   }
 
   public get snapshot(): SystemContextSnapshot {
@@ -1449,13 +1520,20 @@ export class AutomationEngine {
           reason = "writeGateDenied";
           return null;
         }
-        return await executeAutomationRule(host, rule, {
+        const capture = !options.manual && rule.restoreWhenContextEnds
+          ? this.captureContext(rule, host)
+          : null;
+        const run = await executeAutomationRule(host, rule, {
           ...options,
           nowMs,
           canContinue,
           onSkip: (skip) => { reason = skip; },
           onWrite: () => { wrote = true; },
         });
+        if (run !== null && capture) {
+          this.commitContext(capture, run, host, time);
+        }
+        return run;
       } catch {
         return null;
       } finally {
@@ -1470,6 +1548,190 @@ export class AutomationEngine {
     };
     void execute().then(complete);
     return done;
+  }
+
+  private captureContext(
+    rule: AutomationRule,
+    host: AutomationExecutionHost,
+  ): { readonly ruleId: string; readonly snapshots: readonly AutomationContextSnapshot[] } | null {
+    if (rule.action.kind !== "devices") return null;
+    const snapshots: AutomationContextSnapshot[] = [];
+    for (const id of rule.action.deviceIds) {
+      const device = host.devices.find((d) => d.id === id);
+      if (!device) continue;
+      snapshots.push({
+        deviceId: id,
+        baseline: deviceAutomationContextValue(device),
+        applied: { field: "power", boolValue: rule.action.isOn },
+      });
+    }
+    return snapshots.length > 0 ? { ruleId: rule.id, snapshots } : null;
+  }
+
+  private commitContext(
+    capture: { readonly ruleId: string; readonly snapshots: readonly AutomationContextSnapshot[] },
+    run: RecordedAutomationRun,
+    host: AutomationExecutionHost,
+    timeMs: number,
+  ): void {
+    const succeededDeviceIds = new Set(run.steps.map((step) => step.deviceId));
+    const applied = capture.snapshots.filter((snapshot) => {
+      const device = host.devices.find((d) => d.id === snapshot.deviceId);
+      if (!device) return false;
+      return contextValuesEqual(deviceAutomationContextValue(device), snapshot.applied)
+        || succeededDeviceIds.has(snapshot.deviceId);
+    });
+    this.contextStack.push(capture.ruleId, applied, timeMs);
+  }
+
+  /**
+   * Single deduped entry point for restoring context frames when a paired exit trigger arrives.
+   * Mirrors macOS `AutomationEngine.restoreContextsIfNeeded`.
+   */
+  public async restoreContextsIfNeeded(
+    trigger: AutomationTrigger,
+    host: AutomationExecutionHost,
+    nowMs: number = Date.now(),
+    options: Pick<ExecuteAutomationRuleOptions, "canContinue" | "displayDevices"> & {
+      readonly rules?: readonly AutomationRule[];
+    } = {},
+  ): Promise<number> {
+    if (this.context.isSystemAsleep) return 0;
+    const restoreRules = (options.rules ?? this.store.load()).filter(
+      (r) => r.isEnabled && r.restoreWhenContextEnds === true && r.restoreTrigger === trigger,
+    );
+    if (restoreRules.length === 0) {
+      this.contextStack.pruneExpired(nowMs);
+      return 0;
+    }
+    const ruleIds = new Set(restoreRules.map((r) => r.id));
+    if (!this.contextStack.allFrames.some((f) => ruleIds.has(f.ruleId))) {
+      this.contextStack.pruneExpired(nowMs);
+      return 0;
+    }
+    if (!this.deduper.shouldFire(`contextRestore:${trigger}`, nowMs)) return 0;
+    return await this.restoreContexts(restoreRules, host, nowMs, options);
+  }
+
+  private async restoreContexts(
+    rules: readonly AutomationRule[],
+    host: AutomationExecutionHost,
+    nowMs: number,
+    options: Pick<ExecuteAutomationRuleOptions, "canContinue" | "displayDevices">,
+  ): Promise<number> {
+    if (rules.length === 0) {
+      this.contextStack.pruneExpired(nowMs);
+      return 0;
+    }
+    const preference = host.settings?.interfaceLanguage;
+    const effectivePref = preference && preference !== "system" ? preference : undefined;
+    const startingRevision = host.sourceRevision ?? 0;
+    const live: Record<string, AutomationContextValue> = {};
+    for (const device of host.devices) {
+      live[device.id] = deviceAutomationContextValue(device);
+    }
+    const ruleIds = new Set(rules.map((r) => r.id));
+    const orderedFrames = this.contextStack.allFrames
+      .map((frame, index) => ({ frame, index }))
+      .filter(({ frame }) => ruleIds.has(frame.ruleId))
+      .sort((a, b) => (b.frame.enteredAtMs - a.frame.enteredAtMs) || (b.index - a.index));
+
+    let totalRestored = 0;
+    for (const { frame } of orderedFrames) {
+      if (options.canContinue?.() === false || (host.sourceRevision ?? 0) !== startingRevision) break;
+      const plan = this.contextStack.prepareRestore(frame, live, nowMs);
+      if (!plan) continue;
+      const intents = plan.intents;
+      const policyDevices = options.displayDevices ?? host.devices;
+      // Never turn a high-risk device ON during unattended restore: skip + error banner + clear frame.
+      const restoreNeedsApproval = intents.some((intent) => {
+        if (intent.operation.kind !== "power" || !intent.operation.isOn) return false;
+        const dev = policyDevices.find((d) => d.id === intent.targetId) ?? host.devices.find((d) => d.id === intent.targetId);
+        return dev ? ManualControlPolicy.requiresConfirmation(intent, [dev]) : false;
+      });
+      if (restoreNeedsApproval) {
+        host.replyBanner = {
+          text: tr3(
+            "上下文还原需要确认，已跳过",
+            "上下文還原需要確認，已略過",
+            "Context restore requires confirmation and was skipped",
+            undefined,
+            effectivePref,
+          ),
+          source: tr3("状态感知自动化", "狀態感知自動化", "Context Automation", undefined, effectivePref),
+          isError: true,
+        };
+        host.queueBackgroundRender?.();
+        this.contextStack.commitRestore(plan, new Set(intents.map((i) => i.targetId)));
+        continue;
+      }
+
+      const restoredIds = new Set<string>();
+      let attemptedCount = 0;
+      let succeededCount = 0;
+      for (const intent of intents) {
+        if (options.canContinue?.() === false || (host.sourceRevision ?? 0) !== startingRevision) break;
+        const dev = host.devices.find((d) => d.id === intent.targetId);
+        if (!dev) continue;
+        const liveVal = live[intent.targetId];
+        if (liveVal && liveVal.boolValue === intent.operation.isOn) {
+          restoredIds.add(intent.targetId);
+          continue;
+        }
+        if (!dev.isOnline) {
+          delete live[intent.targetId];
+          continue;
+        }
+        const cmds = commandsForPowerIntent(dev, intent.operation.isOn, policyDevices);
+        if (cmds.length === 0) continue;
+        attemptedCount += 1;
+        let allSucceeded = true;
+        for (const cmd of cmds) {
+          if (options.canContinue?.() === false || (host.sourceRevision ?? 0) !== startingRevision) {
+            allSucceeded = false;
+            break;
+          }
+          if (!(await host.applyCommand(cmd, true, false))) {
+            allSucceeded = false;
+            break;
+          }
+        }
+        if (allSucceeded) {
+          succeededCount += 1;
+          restoredIds.add(intent.targetId);
+          live[intent.targetId] = { field: "power", boolValue: intent.operation.isOn };
+        } else {
+          // Keep older frames for this device intact for retry instead of treating an un-restored
+          // inner frame as a manual takeover.
+          delete live[intent.targetId];
+        }
+      }
+      this.contextStack.commitRestore(plan, restoredIds);
+      totalRestored += succeededCount;
+      if (succeededCount === 0 && attemptedCount > 0) {
+        host.replyBanner = {
+          text: tr3(
+            "上下文还原被安全策略跳过",
+            "上下文還原被安全策略略過",
+            "Context restore skipped by safety policy",
+            undefined,
+            effectivePref,
+          ),
+          source: tr3("状态感知自动化", "狀態感知自動化", "Context Automation", undefined, effectivePref),
+          isError: true,
+        };
+        host.queueBackgroundRender?.();
+      } else if (succeededCount > 0) {
+        if (!host.replyBanner?.isError) {
+          host.replyBanner = {
+            text: tr3("自动化还原上下文", "自動化還原上下文", "Restore automation context", undefined, effectivePref),
+            source: tr3("状态感知自动化", "狀態感知自動化", "Context Automation", undefined, effectivePref),
+          };
+        }
+        host.queueBackgroundRender?.();
+      }
+    }
+    return totalRestored;
   }
 
   private recordSkip(rule: AutomationRule, time: number, reason: AutomationSkipReason): void {
@@ -1510,12 +1772,17 @@ export class AutomationEngine {
       this.passesConditions(rule, nowMs, ssid, auth);
 
     const matchedRules: AutomationRule[] = [];
+    const transitionedTriggers: AutomationTrigger[] = [];
+    const noteTrigger = (trigger: AutomationTrigger): void => {
+      if (!transitionedTriggers.includes(trigger)) transitionedTriggers.push(trigger);
+    };
     const pushRulesFor = (
       trigger: AutomationTrigger,
       dedupeKey: string = trigger,
       cooldownMs: number = AUTOMATION_POLICY.triggerCooldownMs,
       predicate?: (rule: AutomationRule) => boolean,
     ): void => {
+      noteTrigger(trigger);
       const candidates = rules.filter((r) => r.trigger === trigger && (predicate ? predicate(r) : true) && conditionsOk(r));
       matchedRules.push(...this.cooldownAllows(candidates, dedupeKey, nowMs, cooldownMs));
     };
@@ -1545,6 +1812,7 @@ export class AutomationEngine {
         }
         if (event.isLocked === wasLocked) break;
         if (event.isLocked) {
+          noteTrigger("away");
           // away 在锁屏瞬间判定，Wi-Fi 用刚抓取的锁屏快照（对照 macOS
           // `handle(trigger:.away)` 经 `wifiReadingForDispatch` 优先锁屏快照）。
           // 翻转路径的快照刚在上面写入，必然存在。
@@ -1659,6 +1927,7 @@ export class AutomationEngine {
         // 时绝不能制造假的网络转换。
         if (!prevAuthorized || !nextAuth) break;
         if (prevSSID !== null && nextSSID !== prevSSID) {
+          noteTrigger("wifiNetworkLeft");
           for (const rule of rules) {
             if (rule.trigger !== "wifiNetworkLeft") continue;
             if (rule.triggerOptions.wifiSSID && rule.triggerOptions.wifiSSID !== prevSSID) continue;
@@ -1672,6 +1941,7 @@ export class AutomationEngine {
           }
         }
         if (nextSSID !== null && nextSSID !== prevSSID) {
+          noteTrigger("wifiNetworkJoined");
           for (const rule of rules) {
             if (rule.trigger !== "wifiNetworkJoined") continue;
             if (rule.triggerOptions.wifiSSID && rule.triggerOptions.wifiSSID !== nextSSID) continue;
@@ -1766,6 +2036,26 @@ export class AutomationEngine {
     }
 
     const startingRevision = host.sourceRevision ?? 0;
+    if (!this.context.isSystemAsleep && !this.contextStack.isEmpty) {
+      for (const trigger of transitionedTriggers) {
+        const restoreRuleIds = new Set(
+          rules
+            .filter((r) => r.restoreWhenContextEnds === true && r.restoreTrigger === trigger)
+            .map((r) => r.id),
+        );
+        if (restoreRuleIds.size === 0 || !this.contextStack.allFrames.some((f) => restoreRuleIds.has(f.ruleId))) {
+          this.contextStack.pruneExpired(nowMs);
+          continue;
+        }
+        await this.restoreContextsIfNeeded(trigger, host, nowMs, {
+          rules: options.rules,
+          displayDevices: options.displayDevices,
+          canContinue: () =>
+            options.canStartRule?.() !== false && options.canContinue?.() !== false
+            && (host.sourceRevision ?? 0) === startingRevision,
+        });
+      }
+    }
     const runs: RecordedAutomationRun[] = [];
     for (const rule of uniqueRules) {
       const firedAtMs = confirmedLockAtMs !== null && confirmedLockRuleIds.has(rule.id)
@@ -1781,7 +2071,7 @@ export class AutomationEngine {
       const run = await this.runRule(host, rule, { ...options, canContinue, nowMs, firedAtMs });
       if (run) {
         runs.push(run);
-      } else if (options.canStartRule?.() !== false && !options.rules && !rule.highRiskApproved && automationRuleHighRiskConfirmation(rule.action, options.displayDevices ?? host.devices) !== null) {
+      } else if (options.canStartRule?.() !== false && !options.rules && !rule.highRiskApproved && automationRuleHighRiskConfirmation(rule.action, options.displayDevices ?? host.devices, undefined, rule.restoreWhenContextEnds) !== null) {
         this.store.save(this.store.load().map((r) => (r.id === rule.id ? { ...r, isEnabled: false } : r)));
       }
     }

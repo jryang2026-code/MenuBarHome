@@ -314,6 +314,27 @@ export function peekDeviceWriteSeq(host: OptimisticLockHost, deviceId: string): 
   return state.writeSeqs.get(deviceId) ?? 0;
 }
 
+export function getFieldWriteEpoch(
+  host: OptimisticLockHost,
+  deviceId: string,
+  field: string,
+): number | undefined {
+  return ensureHostState(host).fieldWriteEpochs.get(deviceId)?.get(field);
+}
+
+export function recordFieldWriteEpoch(
+  host: OptimisticLockHost,
+  deviceId: string,
+  fields: readonly string[],
+  writeEpoch: number,
+): void {
+  if (fields.length === 0) return;
+  const state = ensureHostState(host);
+  const rowEpochs = state.fieldWriteEpochs.get(deviceId) ?? new Map<string, number>();
+  for (const field of fields) rowEpochs.set(field, writeEpoch);
+  state.fieldWriteEpochs.set(deviceId, rowEpochs);
+}
+
 export function currentDeviceWriteClaim(host: OptimisticLockHost, deviceId: string): DeviceWriteClaim {
   const state = ensureHostState(host);
   return {

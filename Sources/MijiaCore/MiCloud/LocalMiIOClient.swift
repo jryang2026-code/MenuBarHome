@@ -4,6 +4,17 @@ import os
 import Darwin
 #endif
 
+private final class LockedFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+
+    func withLock<T>(_ body: (inout Bool) -> T) -> T {
+        lock.lock()
+        defer { lock.unlock() }
+        return body(&value)
+    }
+}
+
 // MARK: - UDP Transport Seam
 
 public struct MiIOBroadcastReply: Equatable, Sendable {
@@ -58,7 +69,7 @@ enum DarwinBSDMiIOBroadcastScanner {
 
     static func probeBroadcast(packet: Data, port: UInt16, timeout: Duration) async throws -> [MiIOBroadcastReply] {
         try Task.checkCancellation()
-        let cancelFlag = OSAllocatedUnfairLock(initialState: false)
+        let cancelFlag = LockedFlag()
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { cont in
                 broadcastQueue.async {
@@ -70,7 +81,7 @@ enum DarwinBSDMiIOBroadcastScanner {
         } onCancel: { cancelFlag.withLock { $0 = true } }
     }
 
-    private static func performBlockingBroadcast(packet: Data, port: UInt16, timeout: Duration, cancelFlag: OSAllocatedUnfairLock<Bool>) throws -> [MiIOBroadcastReply] {
+    private static func performBlockingBroadcast(packet: Data, port: UInt16, timeout: Duration, cancelFlag: LockedFlag) throws -> [MiIOBroadcastReply] {
         var localIPs: Set<String> = ["0.0.0.0", "127.0.0.1"], broadcastIPs: Set<String> = ["255.255.255.255"]
         var ifap: UnsafeMutablePointer<ifaddrs>?
         if getifaddrs(&ifap) == 0, let first = ifap {
@@ -190,6 +201,7 @@ public actor LocalMiIOClient {
 
     private let logger = Logger(subsystem: "com.jryang1997.MenuBarMijia", category: "LocalMiIO")
     private let transport: any MiIOUDPTransport
+    private let reachabilityTransport: (any MiIOUDPTransport)?
     private let port: UInt16
     private let requestTimeout: Duration
     private let handshakeTimeout: Duration
@@ -254,7 +266,7 @@ public actor LocalMiIOClient {
     }
 
     public init(
-        transport: any MiIOUDPTransport = LocalMiIOClient.defaultTransport(),
+        transport: (any MiIOUDPTransport)? = nil,
         port: UInt16 = 54321,
         requestTimeout: Duration = .milliseconds(1200),
         handshakeTimeout: Duration = .milliseconds(1000),
@@ -265,9 +277,11 @@ public actor LocalMiIOClient {
         maxTotalUnclaimedProbes: Int = 64,
         maxDiscoveryDuration: Duration = .milliseconds(2500),
         discoveryConcurrency: Int = 6,
-        now: @escaping @Sendable () -> Date = { Date() }
+        now: @escaping @Sendable () -> Date = { Date() },
+        reachabilityTransport: (any MiIOUDPTransport)? = nil
     ) {
-        self.transport = transport
+        self.transport = transport ?? Self.defaultTransport()
+        self.reachabilityTransport = reachabilityTransport ?? (transport == nil ? Self.defaultTransport() : nil)
         self.port = port
         self.requestTimeout = requestTimeout
         self.handshakeTimeout = handshakeTimeout
@@ -296,6 +310,40 @@ public actor LocalMiIOClient {
         knownHardwareIdsByDid.removeAll()
         lastRTTMsByDid.removeAll()
         await transport.shutdown()
+        await reachabilityTransport?.shutdown()
+    }
+
+    static func reachabilityDeviceID(_ did: String) -> UInt64? {
+        guard did.utf8.allSatisfy({ (48...57).contains($0) }),
+              let id = UInt64(did),
+              id >> 32 < UInt32.max,
+              UInt32(truncatingIfNeeded: id) != 0,
+              UInt32(truncatingIfNeeded: id) != UInt32.max else { return nil }
+        return id
+    }
+
+    func probeReachability(_ endpoint: MiIODeviceEndpoint) async throws -> Int? {
+        try Task.checkCancellation()
+        guard !isShutDown else { throw MiIOError.shutDown }
+        guard let reachabilityTransport,
+              let expectedID = Self.reachabilityDeviceID(endpoint.did) else { return nil }
+        let host = try validatedHost(endpoint.ip)
+        let token = try validatedToken(endpoint.token)
+        let matches: @Sendable (Data) -> Bool = { packet in
+            guard packet.count == MiIOPacket.headerSize,
+                  let header = try? MiIOPacket.decodeHeader(packet),
+                  header.stamp != UInt32.max else { return false }
+            let replyID = header.unknown == UInt32.max ? UInt64(header.deviceId) : header.deviceId64
+            return replyID == expectedID && MiIOPacket.helloChecksumVerdict(packet, token: token) != .mismatch
+        }
+        let start = ContinuousClock.now
+        // A separate socket keeps hello replies out of the command handshake queue. The BSD
+        // transport only delivers datagrams from the requested IP and port.
+        let response = try await reachabilityTransport.send(
+            MiIOPacket.helloPacket, to: host, port: port, timeout: handshakeTimeout, matching: matches
+        )
+        try Task.checkCancellation()
+        return matches(response) ? Self.milliseconds(since: start) : nil
     }
 
     public func lastRoundTripMs(for did: String) -> Int? { lastRTTMsByDid[did] }

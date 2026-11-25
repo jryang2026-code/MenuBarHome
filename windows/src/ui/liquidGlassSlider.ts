@@ -102,6 +102,22 @@ export function syncLiquidGlassSlider(slider: HTMLInputElement, formattedOverrid
   return val;
 }
 
+const liveDispatchedSliderValues = new WeakMap<HTMLInputElement, number>();
+
+export function markSliderLiveValue(slider: HTMLInputElement, value: number): void {
+  liveDispatchedSliderValues.set(slider, value);
+}
+
+export function consumeSliderLiveValue(slider: HTMLInputElement, value: number): boolean {
+  const prev = liveDispatchedSliderValues.get(slider);
+  liveDispatchedSliderValues.delete(slider);
+  return prev !== undefined && Math.abs(prev - value) < 1e-9;
+}
+
+export function clearSliderLiveValue(slider: HTMLInputElement): void {
+  liveDispatchedSliderValues.delete(slider);
+}
+
 export function bindLiquidGlassSliders(scope: ParentNode): void {
   const clearDragging = (): void => {
     scope.querySelectorAll<HTMLElement>(".cc-liquid-slider.is-dragging").forEach((el) => el.classList.remove("is-dragging"));
@@ -118,12 +134,16 @@ export function bindLiquidGlassSliders(scope: ParentNode): void {
       wrap?.classList.remove("is-dragging");
       syncLiquidGlassSlider(slider);
     };
+    const onCancelRelease = (): void => {
+      clearSliderLiveValue(slider);
+      onRelease();
+    };
     slider.addEventListener("pointerdown", onDrag, { capture: true });
     slider.addEventListener("input", onDrag, { capture: true });
     slider.addEventListener("change", onRelease, { capture: true });
     slider.addEventListener("pointerup", onRelease);
-    slider.addEventListener("pointercancel", onRelease);
-    slider.addEventListener("blur", onRelease);
+    slider.addEventListener("pointercancel", onCancelRelease);
+    slider.addEventListener("blur", onCancelRelease);
     slider.addEventListener("keydown", (e) => {
       const step = Number(slider.getAttribute("data-snap-step") || "0");
       if (!Number.isFinite(step) || step <= 0) return;

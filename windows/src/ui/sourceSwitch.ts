@@ -3,6 +3,7 @@ import type { QRLoginTicket } from "../core/miCloudClient.js";
 import type { MenuMijiaWindowsApp } from "./app.js";
 import type { UndoAction } from "./appTypes.js";
 import { cancelRunningBatch } from "./intentExecution.js";
+import { cancelPendingControlWrites } from "./commandDispatch.js";
 import type { SourceEpoch } from "./sourceEpoch.js";
 import { resetPanelSplitTransientState } from "./panelSplitTiles.js";
 import { abortVoiceInput, clearUndoHoverPause } from "./speechGuard.js";
@@ -66,6 +67,7 @@ export function switchSource(host: SourceSwitchHost, reason: string): void {
   // queued links as belonging to the previous source and cancels them cleanly.
   host.sourceEpoch.advance("source");
   cancelRunningBatch(host, "sourceChanged");
+  cancelPendingControlWrites(app);
   clearUndoHoverPause(app);
   host.timerSnapshot = null;
   host.isSyncingCloud = false;
@@ -99,6 +101,7 @@ export function switchHome(host: SwitchHomeHost): void {
   // Invalidate any in-flight cloud refresh from the previous home so it cannot overwrite the new selection.
   host.sourceEpoch.advance("home");
   dismissPendingMoodPrompts(host as MenuMijiaWindowsApp);
+  cancelPendingControlWrites(host as MenuMijiaWindowsApp);
   // A confirmation armed for the previous home must not survive the switch: its confirm click
   // resolves the pending promise with `false` (and drops the inline buttons) instead of running
   // a scene that may not even exist in the newly selected home.

@@ -52,6 +52,7 @@ enum DoorbellNotificationThumbnail {
                 triedSnapshotProxy = true
                 if let data = await fetchJPEGData(
                     with: snapshotProxyRequest(for: url, store: store),
+                    validateHAEndpoint: HAPlaintextConsent.matchesServerOrigin(url, serverBaseURL: store.serverURLString),
                     until: deadline
                 ) {
                     return writePicture(from: data)
@@ -110,13 +111,22 @@ enum DoorbellNotificationThumbnail {
 
     /// The download is raced against the remaining budget, so a slow camera cannot push the
     /// notification past its deadline; a cancelled download simply yields no picture.
-    private static func fetchJPEGData(with request: URLRequest, until deadline: ContinuousClock.Instant) async -> Data? {
+    private static func fetchJPEGData(
+        with request: URLRequest, validateHAEndpoint: Bool = false, until deadline: ContinuousClock.Instant
+    ) async -> Data? {
         let remaining = ContinuousClock.now.duration(to: deadline)
         guard remaining > .zero else { return nil }
         let session = self.session
         let response = await withTaskGroup(of: (Data, URLResponse)?.self) { group in
             group.addTask {
-                try? await session.data(for: request)
+                do {
+                    if validateHAEndpoint, let url = request.url {
+                        try await HAPlaintextConsent.validateConnectionAddress(url)
+                    }
+                    return try await session.data(for: request)
+                } catch {
+                    return nil
+                }
             }
             group.addTask {
                 try? await Task.sleep(for: remaining)
