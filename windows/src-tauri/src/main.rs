@@ -75,6 +75,7 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 struct TrayAndHotkeyState {
     active_shortcut: Option<Shortcut>,
     shortcut_label: Option<String>,
+    custom_shortcuts: Vec<(Shortcut, String)>,
     update_version: Option<String>,
     live_summary: Option<String>,
 }
@@ -83,10 +84,26 @@ static TRAY_AND_HOTKEY_STATE: LazyLock<RwLock<TrayAndHotkeyState>> = LazyLock::n
     RwLock::new(TrayAndHotkeyState {
         active_shortcut: None,
         shortcut_label: Some("Alt+M".to_string()),
+        custom_shortcuts: Vec::new(),
         update_version: None,
         live_summary: None,
     })
 });
+
+#[derive(Debug, Clone, Deserialize)]
+struct CustomHotkeyRegistration {
+    id: String,
+    shortcut: String,
+}
+
+const MAX_CUSTOM_GLOBAL_SHORTCUTS: usize = 8;
+
+fn custom_hotkey_dispatch_script(binding_id: &str) -> Option<String> {
+    let id_json = serde_json::to_string(binding_id).ok()?;
+    Some(format!(
+        "window.dispatchEvent(new CustomEvent('menumijia:custom-hotkey', {{ detail: {{ id: {id_json} }} }}))"
+    ))
+}
 
 fn is_standalone_function_key(code: Code) -> bool {
     matches!(
@@ -235,6 +252,63 @@ fn set_global_shortcut(app: AppHandle, enabled: bool, shortcut: String) -> Resul
     Ok(())
 }
 
+/// Registers per-device / per-scene global hotkeys (P1-6), keeping the panel toggle shortcut
+/// untouched and returning a map of `binding_id -> error` for any shortcut that could not register.
+#[tauri::command]
+fn set_custom_global_shortcuts(
+    app: AppHandle,
+    bindings: Vec<CustomHotkeyRegistration>,
+) -> Result<HashMap<String, String>, String> {
+    let (panel_shortcut, previous_custom) = {
+        let guard = TRAY_AND_HOTKEY_STATE
+            .read()
+            .map_err(|_| "快捷键状态不可用".to_string())?;
+        (guard.active_shortcut, guard.custom_shortcuts.clone())
+    };
+
+    for (old, _) in previous_custom {
+        if panel_shortcut != Some(old) {
+            let _ = app.global_shortcut().unregister(old);
+        }
+    }
+
+    let mut registered: Vec<(Shortcut, String)> = Vec::new();
+    let mut errors: HashMap<String, String> = HashMap::new();
+    let mut seen: HashSet<Shortcut> = HashSet::new();
+
+    for item in bindings.into_iter().take(MAX_CUSTOM_GLOBAL_SHORTCUTS) {
+        let id = item.id.trim().to_string();
+        if id.is_empty() {
+            continue;
+        }
+        let parsed = match parse_global_shortcut(&item.shortcut) {
+            Ok((shortcut, _)) => shortcut,
+            Err(err) => {
+                errors.insert(id, err);
+                continue;
+            }
+        };
+        if panel_shortcut == Some(parsed) {
+            errors.insert(id, "与呼出面板的全局快捷键冲突，换一个组合。".to_string());
+            continue;
+        }
+        if !seen.insert(parsed) {
+            errors.insert(id, "与已有设备/场景热键重复，换一个组合。".to_string());
+            continue;
+        }
+        if let Err(err) = app.global_shortcut().register(parsed) {
+            errors.insert(id, format!("这个组合已被其他应用占用或无法注册（{err}），换一个再试。"));
+            continue;
+        }
+        registered.push((parsed, id));
+    }
+
+    if let Ok(mut guard) = TRAY_AND_HOTKEY_STATE.write() {
+        guard.custom_shortcuts = registered;
+    }
+    Ok(errors)
+}
+
 fn main() {
     try_forward_startup_url_and_exit();
     let default_shortcut = Shortcut::new(Some(Modifiers::ALT), Code::KeyM);
@@ -250,14 +324,34 @@ fn main() {
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(move |app, shortcut, event| {
-                    if event.state() == ShortcutState::Pressed
-                        && TRAY_AND_HOTKEY_STATE
-                            .read()
-                            .ok()
-                            .and_then(|guard| guard.active_shortcut)
-                            .is_some_and(|active| &active == shortcut)
-                    {
+                    if event.state() != ShortcutState::Pressed {
+                        return;
+                    }
+                    let matched_panel = TRAY_AND_HOTKEY_STATE
+                        .read()
+                        .ok()
+                        .and_then(|guard| guard.active_shortcut)
+                        .is_some_and(|active| &active == shortcut);
+                    if matched_panel {
                         toggle_main_window(app, None, None, false);
+                        return;
+                    }
+                    let matched_binding_id = TRAY_AND_HOTKEY_STATE
+                        .read()
+                        .ok()
+                        .and_then(|guard| {
+                            guard
+                                .custom_shortcuts
+                                .iter()
+                                .find(|(s, _)| s == shortcut)
+                                .map(|(_, id)| id.clone())
+                        });
+                    if let Some(binding_id) = matched_binding_id {
+                        if let Some(script) = custom_hotkey_dispatch_script(&binding_id) {
+                            if let Some(win) = app.get_webview_window("main") {
+                                let _ = win.eval(&script);
+                            }
+                        }
                     }
                 })
                 .build(),
@@ -296,6 +390,7 @@ fn main() {
             start_panel_drag,
             set_update_available,
             set_global_shortcut,
+            set_custom_global_shortcuts,
             set_launch_at_login,
             get_launch_at_login,
             get_env_var,
@@ -1938,6 +2033,7 @@ mod tests {
     fn native_http_timeout_preserves_timed_out_marker_for_long_polling() {
         let _guard = ORIGIN_TEST_LOCK.lock().unwrap();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        let _fixture = crate::network::allow_loopback_fixture(&listener);
         let addr = listener.local_addr().expect("listener addr");
         let server = std::thread::spawn(move || {
             if let Ok((_stream, _peer)) = listener.accept() {

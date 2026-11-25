@@ -66,7 +66,9 @@ import {
   resetPanelSplitTransientState,
   resolveDeviceTileActionLayout,
 } from "./panelSplitTiles.js";
-import { hasAnyConnectedOrSelectedDataSource } from "./appLifecycle.js";
+import { applyCustomGlobalHotkeys, hasAnyConnectedOrSelectedDataSource } from "./appLifecycle.js";
+import { encodeHotkeyTargetKey, normalizeCustomHotkeyBindings } from "./hotkeyBindings.js";
+import { leaveDemoHome } from "./onboardingGuide.js";
 
 function dispatchLiveLanSlider(
   host: MenuMijiaWindowsApp,
@@ -82,7 +84,6 @@ function dispatchLiveLanSlider(
   markSliderLiveValue(slider, value);
   void submitSliderWrite(host, { slotKey, device: dev, command, summary, intent, isLiveInput: true });
 }
-import { leaveDemoHome } from "./onboardingGuide.js";
 
 function confirmHighRiskForHost(
   host: MenuMijiaWindowsApp,
@@ -748,6 +749,67 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
 
     host.root.querySelector("#btn-retry-hotkey")?.addEventListener("click", () => {
       void host.applyGlobalHotkey();
+    });
+
+    host.root.querySelector("#btn-add-custom-hotkey")?.addEventListener("click", () => {
+      const firstDevice = host.devices.find((d) => deviceCanTogglePower(d));
+      host.newCustomHotkeyTargetKey = firstDevice
+        ? encodeHotkeyTargetKey({ kind: "devicePower", deviceId: firstDevice.id })
+        : host.scenes[0]
+          ? encodeHotkeyTargetKey({ kind: "scene", sceneId: host.scenes[0].id })
+          : encodeHotkeyTargetKey({ kind: "quickAction", actionId: "lightsOff" });
+      host.isAddingCustomHotkey = true;
+      host.isRecordingHotkey = false;
+      host.isRecordingCustomHotkeyId = null;
+      host.customHotkeyConflictError = null;
+      host.render();
+    });
+
+    host.root.querySelector<HTMLSelectElement>("#select-custom-hotkey-target")?.addEventListener("change", (e) => {
+      host.newCustomHotkeyTargetKey = (e.target as HTMLSelectElement).value;
+    });
+
+    host.root.querySelector("#btn-record-new-custom-hotkey")?.addEventListener("click", () => {
+      const sel = host.root.querySelector<HTMLSelectElement>("#select-custom-hotkey-target");
+      if (sel?.value) host.newCustomHotkeyTargetKey = sel.value;
+      host.isRecordingHotkey = false;
+      host.isRecordingCustomHotkeyId = host.isRecordingCustomHotkeyId === "__new__" ? null : "__new__";
+      host.customHotkeyConflictError = null;
+      host.render();
+    });
+
+    host.root.querySelector("#btn-cancel-new-custom-hotkey")?.addEventListener("click", () => {
+      host.isAddingCustomHotkey = false;
+      host.isRecordingCustomHotkeyId = null;
+      host.customHotkeyConflictError = null;
+      host.render();
+    });
+
+    host.root.querySelectorAll<HTMLElement>("[data-custom-hotkey-record]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const id = btn.dataset.customHotkeyRecord;
+        if (!id) return;
+        host.isRecordingHotkey = false;
+        host.isRecordingCustomHotkeyId = host.isRecordingCustomHotkeyId === id ? null : id;
+        host.customHotkeyConflictError = null;
+        host.render();
+      });
+    });
+
+    host.root.querySelectorAll<HTMLElement>("[data-custom-hotkey-remove]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const id = btn.dataset.customHotkeyRemove;
+        if (!id) return;
+        if (host.isRecordingCustomHotkeyId === id) host.isRecordingCustomHotkeyId = null;
+        host.settings.customHotkeyBindings = normalizeCustomHotkeyBindings(
+          host.settings.customHotkeyBindings,
+        ).filter((b) => b.id !== id);
+        host.customHotkeyConflictError = null;
+        syncSettingsSaveHint(host, "auto-saved");
+        host.saveSettings();
+        void applyCustomGlobalHotkeys(host);
+        host.render();
+      });
     });
 
     host.root.querySelector("#btn-hide-panel")?.addEventListener("click", () => {
