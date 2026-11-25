@@ -1458,14 +1458,25 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
 
         var req = XiaomiCameraBridge.authorizedURLRequest(for: targetURL)
         req.cachePolicy = .reloadIgnoringLocalCacheData
+        let isHAEndpoint = if let store, store.deviceBackend(for: currentDevice?.id ?? "") == .homeAssistant {
+            HAPlaintextConsent.matchesServerOrigin(targetURL, serverBaseURL: store.serverURLString)
+        } else {
+            false
+        }
         if req.value(forHTTPHeaderField: "Authorization") == nil,
-           let store, store.deviceBackend(for: currentDevice?.id ?? "") == .homeAssistant,
+           let store, isHAEndpoint,
            targetURL.query?.contains("token=") != true,
-           HAPlaintextConsent.matchesServerOrigin(targetURL, serverBaseURL: store.serverURLString),
            HAPlaintextConsent.allowsToken(to: targetURL.absoluteString, defaults: store.userDefaults) {
             let token = store.loadHAToken().trimmingCharacters(in: .whitespacesAndNewlines)
             if !token.isEmpty {
                 req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+            }
+        }
+        if isHAEndpoint {
+            do {
+                try await HAPlaintextConsent.validateConnectionAddress(targetURL)
+            } catch {
+                return nil
             }
         }
         guard let (data, resp) = try? await snapshotSession.data(for: req),

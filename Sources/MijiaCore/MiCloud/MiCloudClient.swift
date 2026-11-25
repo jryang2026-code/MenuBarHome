@@ -171,6 +171,7 @@ public protocol MiCloudAPI: Sendable {
     func lightGroupMembers(groupDids: [String]) async throws -> [String: [String]]
     func getProps(_ keys: [MiotPropKey]) async throws -> [MiotPropKey: JSONValue]
     func setProps(_ writes: [MiotPropWrite]) async throws
+    func setPropVerdicts(_ writes: [MiotPropWrite]) async throws -> [Result<Void, MiCloudError>]
     func action(_ call: MiotActionCall) async throws
     func callAction(_ call: MiotActionCall) async throws -> JSONValue
     func sensorHistory(
@@ -187,6 +188,11 @@ public protocol MiCloudAPI: Sendable {
 }
 
 extension MiCloudAPI {
+    public func setPropVerdicts(_ writes: [MiotPropWrite]) async throws -> [Result<Void, MiCloudError>] {
+        try await setProps(writes)
+        return writes.map { _ in .success(()) }
+    }
+
     public func manualScenes(homeId: String, ownerUid: String) async throws -> [MiCloudScene] { [] }
     public func runManualScene(_ scene: MiCloudScene) async throws { throw MiotCommandError.unsupported(scene.id) }
     public func devices(dids: [String]) async throws -> [MiDeviceRecord] { [] }
@@ -232,6 +238,9 @@ public actor MiCloudClient: MiCloudAPI {
     private let session: MiSession
     private let transport: any MiHTTPTransport
     private let userAgent: String
+    private let rateLimiter: MiCloudRateLimiter
+    private let rateLimitAccount: String
+    @TaskLocal static var isBackgroundWrite = false
     public static let propChunkSize = 100
     private static let emptyHistoryCooldown: TimeInterval = 300
     private var resolvedHistoryRouteByMetric: [String: HistoryRoute] = [:]
@@ -248,10 +257,20 @@ public actor MiCloudClient: MiCloudAPI {
         var key: String
     }
 
-    public init(session: MiSession, transport: any MiHTTPTransport = URLSessionMiTransport(followRedirects: false)) {
+    public init(session: MiSession) {
+        self.init(session: session, transport: URLSessionMiTransport(followRedirects: false), rateLimiter: .shared)
+    }
+
+    public init(session: MiSession, transport: any MiHTTPTransport) {
+        self.init(session: session, transport: transport, rateLimiter: MiCloudRateLimiter())
+    }
+
+    init(session: MiSession, transport: any MiHTTPTransport, rateLimiter: MiCloudRateLimiter) {
         self.session = session
         self.transport = transport
         self.userAgent = Self.makeUserAgent()
+        self.rateLimiter = rateLimiter
+        self.rateLimitAccount = session.historyScopeIdentifier
     }
 
     static func makeUserAgent() -> String {
@@ -274,8 +293,29 @@ public actor MiCloudClient: MiCloudAPI {
 
     /// Signed RC4 POST to `<apiBase>/<api>`; returns the decrypted `result` payload.
     public func request(_ api: String, data: JSONValue) async throws -> JSONValue {
-        try Task.checkCancellation()
-        guard !isShutDown else { throw CancellationError() }
+        try await request(api, data: data, userWrite: false)
+    }
+
+    nonisolated var readCooldown: TimeInterval {
+        rateLimiter.readCooldown(account: rateLimitAccount)
+    }
+
+    func request(_ api: String, data: JSONValue, userWrite: Bool) async throws -> JSONValue {
+        let generation: UInt64
+        admission: while true {
+            try Task.checkCancellation()
+            guard !isShutDown else { throw CancellationError() }
+            switch rateLimiter.admit(account: rateLimitAccount, write: userWrite && !Self.isBackgroundWrite) {
+            case .admitted(let permit):
+                generation = permit
+                break admission
+            case .waitForReadToken(let delay):
+                guard !userWrite else { throw MiCloudError.http(429) }
+                try await Task.sleep(for: .seconds(delay))
+            case .limited:
+                throw MiCloudError.http(429)
+            }
+        }
         let path = "/" + api.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         guard let url = URL(string: session.apiBaseURL + path) else { throw MiCloudError.badResponse("URL") }
         let nonce = MiCloudCrypto.makeNonce()
@@ -306,8 +346,13 @@ public actor MiCloudClient: MiCloudAPI {
             sendTask.cancel()
         }
         do {
-            return try Self.decodeResponse(body, statusCode: http.statusCode, signedNonce: signed)
+            let result = try Self.decodeResponse(body, statusCode: http.statusCode, signedNonce: signed)
+            if !userWrite { rateLimiter.recordReadSuccess(account: rateLimitAccount, generation: generation) }
+            return result
         } catch let error as MiCloudError {
+            if Self.isRateLimitError(error) {
+                rateLimiter.recordLimit(account: rateLimitAccount, retryAfter: http.value(forHTTPHeaderField: "Retry-After"))
+            }
             logger.error("\(path, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
             throw error
         }
@@ -403,10 +448,12 @@ public actor MiCloudClient: MiCloudAPI {
 
     static func shouldRethrowWithoutFallback(_ error: any Error) -> Bool {
         if error is CancellationError { return true }
+        return (error as? MiCloudError) == .sessionExpired || isRateLimitError(error)
+    }
+
+    static func isRateLimitError(_ error: any Error) -> Bool {
         guard let cloudError = error as? MiCloudError else { return false }
         switch cloudError {
-        case .sessionExpired:
-            return true
         case .http(let status):
             return status == 429
         case .api(let code, let message):
@@ -846,19 +893,43 @@ public actor MiCloudClient: MiCloudAPI {
 
     public func setProps(_ writes: [MiotPropWrite]) async throws {
         guard !writes.isEmpty else { return }
+        let result = try await writeProperties(writes)
+        guard let items = result.arrayValue, !items.isEmpty else {
+            throw MiCloudError.badResponse(L10n.tr("设备未返回写入结果", "Device returned no write verdict"))
+        }
+        try Self.checkWriteCodes(items)
+    }
+
+    public func setPropVerdicts(_ writes: [MiotPropWrite]) async throws -> [Result<Void, MiCloudError>] {
+        let result = try await writeProperties(writes)
+        return Self.propertyVerdicts(result, for: writes)
+    }
+
+    private func writeProperties(_ writes: [MiotPropWrite]) async throws -> JSONValue {
         let params: [JSONValue] = writes.map {
             .object([
                 "did": .string($0.did), "siid": .number(Double($0.siid)),
                 "piid": .number(Double($0.piid)), "value": $0.value,
             ])
         }
-        let result = try await request("miotspec/prop/set", data: .object(["params": .array(params)]))
-        // One row per write is the cloud's acknowledgement; no rows means nothing was decided, and
-        // the old zero-iteration loop reported that as a success.
-        guard let items = result.arrayValue, !items.isEmpty else {
-            throw MiCloudError.badResponse(L10n.tr("设备未返回写入结果", "Device returned no write verdict"))
+        return try await request("miotspec/prop/set", data: .object(["params": .array(params)]), userWrite: true)
+    }
+
+    static func propertyVerdicts(_ result: JSONValue, for writes: [MiotPropWrite]) -> [Result<Void, MiCloudError>] {
+        let items = result.arrayValue ?? []
+        return writes.map { write in
+            let matches = items.filter {
+                $0["did"]?.idString == write.did && $0["siid"]?.intValue == write.siid
+                    && $0["piid"]?.intValue == write.piid
+            }
+            guard matches.count == 1, let code = matches[0]["code"]?.intValue else {
+                return .failure(.badResponse(L10n.tr("设备未返回写入结果", "Device returned no write verdict")))
+            }
+            if code >= 0 { return .success(()) }
+            return .failure(.deviceError(
+                code: code, message: L10n.tr("设备未响应或离线", "Device did not respond or is offline")
+            ))
         }
-        try Self.checkWriteCodes(items)
     }
 
     public func action(_ call: MiotActionCall) async throws {
@@ -869,7 +940,7 @@ public actor MiCloudClient: MiCloudAPI {
         let result = try await request("miotspec/action", data: .object(["params": .object([
             "did": .string(call.did), "siid": .number(Double(call.siid)),
             "aiid": .number(Double(call.aiid)), "in": .array(call.inputs),
-        ])]))
+        ])]), userWrite: true)
         try Self.checkActionResult(result)
         return result
     }

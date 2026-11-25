@@ -3,9 +3,17 @@ import os
 #if canImport(Darwin)
 import Darwin
 #endif
-#if canImport(Network)
-import Network
-#endif
+
+private final class LockedFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+
+    func withLock<T>(_ body: (inout Bool) -> T) -> T {
+        lock.lock()
+        defer { lock.unlock() }
+        return body(&value)
+    }
+}
 
 // MARK: - UDP Transport Seam
 
@@ -23,232 +31,25 @@ public struct MiIODeviceCandidate: Equatable, Sendable {
 
 public protocol MiIOUDPTransport: Sendable {
     func send(_ packet: Data, to host: String, port: UInt16, timeout: Duration) async throws -> Data
+    func send(
+        _ packet: Data, to host: String, port: UInt16, timeout: Duration,
+        matching reply: @escaping @Sendable (Data) -> Bool
+    ) async throws -> Data
     func probeBroadcast(_ packet: Data, port: UInt16, timeout: Duration) async throws -> [MiIOBroadcastReply]
     func shutdown() async
 }
 
 extension MiIOUDPTransport {
+    public func send(
+        _ packet: Data, to host: String, port: UInt16, timeout: Duration,
+        matching reply: @escaping @Sendable (Data) -> Bool
+    ) async throws -> Data {
+        try await send(packet, to: host, port: port, timeout: timeout)
+    }
+
     public func probeBroadcast(_ packet: Data, port: UInt16, timeout: Duration) async throws -> [MiIOBroadcastReply] { [] }
     public func shutdown() async {}
 }
-
-#if canImport(Network)
-public actor NWConnectionMiIOUDPTransport: MiIOUDPTransport {
-    private final class PendingCall: @unchecked Sendable {
-        private let lock = NSLock()
-        private var continuation: CheckedContinuation<Data, any Error>?
-        private var connection: NWConnection?
-        private var timeoutTask: Task<Void, Never>?
-        private var didCompleteSendFlag = false
-
-        init(continuation: CheckedContinuation<Data, any Error>, connection: NWConnection) {
-            self.continuation = continuation
-            self.connection = connection
-        }
-
-        var didCompleteSend: Bool { lock.withLock { didCompleteSendFlag } }
-        func markSendCompleted() { lock.withLock { didCompleteSendFlag = true } }
-
-        func attachTimeout(_ task: Task<Void, Never>) {
-            lock.lock()
-            let alreadyDone = continuation == nil
-            if !alreadyDone {
-                timeoutTask = task
-            }
-            lock.unlock()
-            if alreadyDone {
-                task.cancel()
-            }
-        }
-
-        func succeed(_ data: Data) {
-            finish(with: .success(data))
-        }
-
-        func fail(_ error: any Error) {
-            finish(with: .failure(error))
-        }
-
-        private func finish(with result: Result<Data, any Error>) {
-            lock.lock()
-            let cont = continuation
-            let conn = connection
-            let timer = timeoutTask
-            continuation = nil
-            connection = nil
-            timeoutTask = nil
-            lock.unlock()
-
-            timer?.cancel()
-            conn?.stateUpdateHandler = nil
-            conn?.cancel()
-            cont?.resume(with: result)
-        }
-    }
-
-    private let queue = DispatchQueue(label: "com.jryang1997.MenuBarMijia.LocalMiIO.UDP")
-    private var pending: [UUID: PendingCall] = [:]
-    private var isShutDown = false
-
-    public init() {}
-
-    public func send(_ packet: Data, to host: String, port: UInt16, timeout: Duration) async throws -> Data {
-        try Task.checkCancellation()
-        guard !isShutDown else { throw MiIOError.shutDown }
-        let trimmedHost = host.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard LocalMiIOClient.isPrivateRFC1918IPv4(trimmedHost),
-              let nwPort = NWEndpoint.Port(rawValue: port) else {
-            throw MiIOError.invalidAddress(host)
-        }
-        let callID = UUID()
-        let connection = NWConnection(host: NWEndpoint.Host(trimmedHost), port: nwPort, using: .udp)
-
-        return try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Data, any Error>) in
-                let call = PendingCall(continuation: cont, connection: connection)
-                self.register(call, id: callID)
-                let timer = Task { [weak self] in
-                    try? await Task.sleep(for: timeout)
-                    await self?.timeoutCall(id: callID)
-                }
-                call.attachTimeout(timer)
-                let complete: @Sendable (Result<Data, any Error>) -> Void = { [weak self] result in
-                    switch result {
-                    case .success(let data):
-                        call.succeed(data)
-                    case .failure(let error):
-                        call.fail(error)
-                    }
-                    if let actor = self {
-                        Task { await actor.removeCall(id: callID) }
-                    }
-                }
-
-                connection.stateUpdateHandler = { state in
-                    switch state {
-                    case .ready:
-                        connection.send(content: packet, completion: .contentProcessed { sendError in
-                            if let sendError {
-                                let denied = LocalNetworkPermissionClassifier.isDeniedNWConnection(error: sendError, unsatisfiedReason: connection.currentPath?.unsatisfiedReason)
-                                    || LocalNetworkPermissionClassifier.isDeniedConnectionError(sendError, targetHost: trimmedHost)
-                                complete(.failure(denied ? MiIOError.localNetworkDenied : MiIOError.sendFailed))
-                                return
-                            }
-                            call.markSendCompleted()
-                            connection.receiveMessage { content, _, _, receiveError in
-                                if receiveError != nil {
-                                    complete(.failure(MiIOError.timeout))
-                                    return
-                                }
-                                guard let content, !content.isEmpty else {
-                                    complete(.failure(MiIOError.malformedPacket))
-                                    return
-                                }
-                                complete(.success(content))
-                            }
-                        })
-                    case .waiting(let err) where !call.didCompleteSend && LocalNetworkPermissionClassifier.isDeniedNWConnection(error: err, unsatisfiedReason: connection.currentPath?.unsatisfiedReason):
-                        complete(.failure(MiIOError.localNetworkDenied))
-                    case .failed(let err):
-                        if !call.didCompleteSend {
-                            let denied = LocalNetworkPermissionClassifier.isDeniedNWConnection(error: err, unsatisfiedReason: connection.currentPath?.unsatisfiedReason)
-                                || LocalNetworkPermissionClassifier.isDeniedConnectionError(err, targetHost: trimmedHost)
-                            complete(.failure(denied ? MiIOError.localNetworkDenied : MiIOError.sendFailed))
-                        } else {
-                            complete(.failure(MiIOError.timeout))
-                        }
-                    case .cancelled:
-                        complete(.failure(CancellationError()))
-                    default:
-                        break
-                    }
-                }
-                connection.start(queue: queue)
-            }
-        } onCancel: {
-            Task { await self.failCall(id: callID, error: CancellationError()) }
-        }
-    }
-
-    public func probeBroadcast(_ packet: Data, port: UInt16, timeout: Duration) async throws -> [MiIOBroadcastReply] {
-        try Task.checkCancellation()
-        guard !isShutDown else { throw MiIOError.shutDown }
-        #if canImport(Darwin)
-        return try await DarwinBSDMiIOBroadcastScanner.probeBroadcast(packet: packet, port: port, timeout: timeout)
-        #else
-        return []
-        #endif
-    }
-
-    private func register(_ call: PendingCall, id: UUID) {
-        if isShutDown {
-            call.fail(MiIOError.shutDown)
-            return
-        }
-        pending[id] = call
-    }
-
-    private func removeCall(id: UUID) {
-        pending.removeValue(forKey: id)
-    }
-
-    private func timeoutCall(id: UUID) {
-        queue.async { [weak self] in
-            Task { await self?.completeTimeoutOnNetworkQueue(id: id) }
-        }
-    }
-
-    private func completeTimeoutOnNetworkQueue(id: UUID) {
-        if let call = pending.removeValue(forKey: id) {
-            call.fail(call.didCompleteSend ? MiIOError.timeout : MiIOError.sendFailed)
-        }
-    }
-
-    func testTimeoutClassification(simulateQueuedSendCompletionBeforeTimeout: Bool) async -> MiIOError? {
-        let callID = UUID()
-        let connection = NWConnection(host: NWEndpoint.Host("192.168.1.1"), port: 54321, using: .udp)
-        let releaseQueue = DispatchSemaphore(value: 0)
-        do {
-            _ = try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Data, any Error>) in
-                let call = PendingCall(continuation: cont, connection: connection)
-                self.register(call, id: callID)
-                if simulateQueuedSendCompletionBeforeTimeout {
-                    self.queue.async {
-                        releaseQueue.wait()
-                        call.markSendCompleted()
-                    }
-                }
-                Task {
-                    self.timeoutCall(id: callID)
-                    if simulateQueuedSendCompletionBeforeTimeout {
-                        releaseQueue.signal()
-                    }
-                }
-            }
-            return nil
-        } catch let error as MiIOError {
-            return error
-        } catch {
-            return nil
-        }
-    }
-
-    private func failCall(id: UUID, error: any Error) {
-        if let call = pending.removeValue(forKey: id) {
-            call.fail(error)
-        }
-    }
-
-    public func shutdown() async {
-        isShutDown = true
-        let active = Array(pending.values)
-        pending.removeAll()
-        for call in active {
-            call.fail(MiIOError.shutDown)
-        }
-    }
-}
-#endif
 
 #if canImport(Darwin)
 enum DarwinBSDMiIOBroadcastScanner {
@@ -268,7 +69,7 @@ enum DarwinBSDMiIOBroadcastScanner {
 
     static func probeBroadcast(packet: Data, port: UInt16, timeout: Duration) async throws -> [MiIOBroadcastReply] {
         try Task.checkCancellation()
-        let cancelFlag = OSAllocatedUnfairLock(initialState: false)
+        let cancelFlag = LockedFlag()
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { cont in
                 broadcastQueue.async {
@@ -280,7 +81,7 @@ enum DarwinBSDMiIOBroadcastScanner {
         } onCancel: { cancelFlag.withLock { $0 = true } }
     }
 
-    private static func performBlockingBroadcast(packet: Data, port: UInt16, timeout: Duration, cancelFlag: OSAllocatedUnfairLock<Bool>) throws -> [MiIOBroadcastReply] {
+    private static func performBlockingBroadcast(packet: Data, port: UInt16, timeout: Duration, cancelFlag: LockedFlag) throws -> [MiIOBroadcastReply] {
         var localIPs: Set<String> = ["0.0.0.0", "127.0.0.1"], broadcastIPs: Set<String> = ["255.255.255.255"]
         var ifap: UnsafeMutablePointer<ifaddrs>?
         if getifaddrs(&ifap) == 0, let first = ifap {
@@ -400,6 +201,7 @@ public actor LocalMiIOClient {
 
     private let logger = Logger(subsystem: "com.jryang1997.MenuBarMijia", category: "LocalMiIO")
     private let transport: any MiIOUDPTransport
+    private let reachabilityTransport: (any MiIOUDPTransport)?
     private let port: UInt16
     private let requestTimeout: Duration
     private let handshakeTimeout: Duration
@@ -456,15 +258,15 @@ public actor LocalMiIOClient {
     private var isShutDown = false
 
     public static func defaultTransport() -> any MiIOUDPTransport {
-        #if canImport(Network)
-        return NWConnectionMiIOUDPTransport()
+        #if canImport(Darwin)
+        return BSDMiIOUDPTransport()
         #else
         return UnavailableMiIOUDPTransport()
         #endif
     }
 
     public init(
-        transport: any MiIOUDPTransport = LocalMiIOClient.defaultTransport(),
+        transport: (any MiIOUDPTransport)? = nil,
         port: UInt16 = 54321,
         requestTimeout: Duration = .milliseconds(1200),
         handshakeTimeout: Duration = .milliseconds(1000),
@@ -475,9 +277,11 @@ public actor LocalMiIOClient {
         maxTotalUnclaimedProbes: Int = 64,
         maxDiscoveryDuration: Duration = .milliseconds(2500),
         discoveryConcurrency: Int = 6,
-        now: @escaping @Sendable () -> Date = { Date() }
+        now: @escaping @Sendable () -> Date = { Date() },
+        reachabilityTransport: (any MiIOUDPTransport)? = nil
     ) {
-        self.transport = transport
+        self.transport = transport ?? Self.defaultTransport()
+        self.reachabilityTransport = reachabilityTransport ?? (transport == nil ? Self.defaultTransport() : nil)
         self.port = port
         self.requestTimeout = requestTimeout
         self.handshakeTimeout = handshakeTimeout
@@ -506,6 +310,40 @@ public actor LocalMiIOClient {
         knownHardwareIdsByDid.removeAll()
         lastRTTMsByDid.removeAll()
         await transport.shutdown()
+        await reachabilityTransport?.shutdown()
+    }
+
+    static func reachabilityDeviceID(_ did: String) -> UInt64? {
+        guard did.utf8.allSatisfy({ (48...57).contains($0) }),
+              let id = UInt64(did),
+              id >> 32 < UInt32.max,
+              UInt32(truncatingIfNeeded: id) != 0,
+              UInt32(truncatingIfNeeded: id) != UInt32.max else { return nil }
+        return id
+    }
+
+    func probeReachability(_ endpoint: MiIODeviceEndpoint) async throws -> Int? {
+        try Task.checkCancellation()
+        guard !isShutDown else { throw MiIOError.shutDown }
+        guard let reachabilityTransport,
+              let expectedID = Self.reachabilityDeviceID(endpoint.did) else { return nil }
+        let host = try validatedHost(endpoint.ip)
+        let token = try validatedToken(endpoint.token)
+        let matches: @Sendable (Data) -> Bool = { packet in
+            guard packet.count == MiIOPacket.headerSize,
+                  let header = try? MiIOPacket.decodeHeader(packet),
+                  header.stamp != UInt32.max else { return false }
+            let replyID = header.unknown == UInt32.max ? UInt64(header.deviceId) : header.deviceId64
+            return replyID == expectedID && MiIOPacket.helloChecksumVerdict(packet, token: token) != .mismatch
+        }
+        let start = ContinuousClock.now
+        // A separate socket keeps hello replies out of the command handshake queue. The BSD
+        // transport only delivers datagrams from the requested IP and port.
+        let response = try await reachabilityTransport.send(
+            MiIOPacket.helloPacket, to: host, port: port, timeout: handshakeTimeout, matching: matches
+        )
+        try Task.checkCancellation()
+        return matches(response) ? Self.milliseconds(since: start) : nil
     }
 
     public func lastRoundTripMs(for did: String) -> Int? { lastRTTMsByDid[did] }
@@ -754,7 +592,9 @@ public actor LocalMiIOClient {
                     group.addTask {
                         do {
                             let sendStart = ContinuousClock.now
-                            let response = try await transport.send(probe.probePacket, to: probe.sourceIP, port: port, timeout: perProbeTimeout)
+                            let response = try await transport.send(
+                                probe.probePacket, to: probe.sourceIP, port: port, timeout: perProbeTimeout
+                            ) { Self.matchesRPCReply($0, token: probe.tokenData, requestID: probe.reqId) }
                             return .response(probe, response, Self.milliseconds(since: sendStart))
                         } catch let error as MiIOError where error == .shutDown || error == .localNetworkDenied {
                             return .fatal(error)
@@ -875,11 +715,31 @@ public actor LocalMiIOClient {
     }
 
     public func setProps(_ writes: [MiotPropWrite], endpoint: MiIODeviceEndpoint) async throws {
-        guard !writes.isEmpty else { return }
+        _ = try await writeProperties(writes, endpoint: endpoint) { chunk, result in
+            guard let items = result.arrayValue, items.count == chunk.count else {
+                throw MiCloudError.badResponse(L10n.tr("设备未返回写入结果", "Device returned no write verdict"))
+            }
+            try MiCloudClient.checkWriteCodes(items)
+            return []
+        }
+    }
+
+    func setPropVerdicts(_ writes: [MiotPropWrite], endpoint: MiIODeviceEndpoint) async throws -> [Result<Void, MiCloudError>] {
+        try await writeProperties(writes, endpoint: endpoint) { chunk, result in
+            MiCloudClient.propertyVerdicts(result, for: chunk)
+        }
+    }
+
+    private func writeProperties(
+        _ writes: [MiotPropWrite], endpoint: MiIODeviceEndpoint,
+        verdicts: @escaping @Sendable ([MiotPropWrite], JSONValue) throws -> [Result<Void, MiCloudError>]
+    ) async throws -> [Result<Void, MiCloudError>] {
+        guard !writes.isEmpty else { return [] }
         let tokenData = try validatedToken(endpoint.token)
         let host = try validatedHost(endpoint.ip)
         let chunks = MiIOPacket.chunked(writes, maxBatchSize: maxBatchSize)
-        try await enqueueSerialized(did: endpoint.did) {
+        return try await enqueueSerialized(did: endpoint.did) {
+            var outcomes: [Result<Void, MiCloudError>] = []
             for chunk in chunks {
                 try Task.checkCancellation()
                 let params: [JSONValue] = chunk.map {
@@ -897,8 +757,9 @@ public actor LocalMiIOClient {
                     method: "set_properties",
                     params: .array(params)
                 )
-                try Self.checkWriteCodes(result.arrayValue ?? [])
+                outcomes += try verdicts(chunk, result)
             }
+            return outcomes
         }
     }
 
@@ -1028,7 +889,11 @@ public actor LocalMiIOClient {
         let start = ContinuousClock.now
         let response: Data
         do {
-            response = try await transport.send(MiIOPacket.helloPacket, to: host, port: port, timeout: handshakeTimeout)
+            response = try await transport.send(
+                MiIOPacket.helloPacket, to: host, port: port, timeout: handshakeTimeout
+            ) { packet in
+                packet.count == MiIOPacket.headerSize && (try? MiIOPacket.decodeHeader(packet)) != nil
+            }
         } catch is CancellationError {
             throw CancellationError()
         } catch let error as MiIOError {
@@ -1129,7 +994,9 @@ public actor LocalMiIOClient {
         do {
             let responsePacket: Data
             do {
-                responsePacket = try await transport.send(packet, to: host, port: port, timeout: requestTimeout)
+                responsePacket = try await transport.send(packet, to: host, port: port, timeout: requestTimeout) {
+                    Self.matchesRPCReply($0, token: tokenData, requestID: reqId)
+                }
             } catch is CancellationError {
                 throw CancellationError()
             } catch let miio as MiIOError {
@@ -1183,6 +1050,14 @@ public actor LocalMiIOClient {
             throw MiCloudError.deviceError(code: code, message: message)
         }
         return json["result"] ?? .null
+    }
+
+    private static func matchesRPCReply(_ packet: Data, token: Data, requestID: Int) -> Bool {
+        guard let (_, payload) = try? MiIOPacket.decode(packet, token: token),
+              let raw = String(data: payload, encoding: .utf8),
+              let decoded = try? JSONDecoder().decode(JSONValue.self, from: Data(cleanMalformedFirmwareJSON(raw).utf8))
+        else { return false }
+        return decoded["id"]?.intValue == requestID
     }
 
     private static func milliseconds(since start: ContinuousClock.Instant) -> Int {

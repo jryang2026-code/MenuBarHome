@@ -755,5 +755,62 @@ describe("WP3d · Windows 常规与家居连接导航整理", () => {
     pressEscape();
     assert.equal(app.activeSheet, "none");
   });
+
+  it("discovers HA candidates in Settings, fills #settings-ha-url on pick without auto-connecting, and cancels on close", async () => {
+    const calls: Array<{ name: string; args: Record<string, unknown> }> = [];
+    const pendingDiscovery: Array<(value: unknown) => void> = [];
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      value: {
+        invoke: async (name: string, args: Record<string, unknown> = {}) => {
+          calls.push({ name, args });
+          if (name === "discover_home_assistant") {
+            return new Promise((resolve) => {
+              pendingDiscovery.push(resolve);
+            });
+          }
+          return null;
+        },
+      },
+      configurable: true,
+    });
+
+    const app = startDemo();
+    await click("#btn-settings");
+    await click('[data-settings-tab="connection"]');
+    calls.length = 0;
+
+    const discoverBtn = element<HTMLButtonElement>("#btn-settings-discover-ha");
+    assert.match(discoverBtn.textContent ?? "", /在局域网中查找/);
+    assert.equal(calls.filter((c) => c.name === "discover_home_assistant").length, 0);
+
+    type("#settings-ha-token", "settings-secret-token");
+    await click("#btn-settings-discover-ha");
+    assert.equal(calls.filter((c) => c.name === "discover_home_assistant").length, 1);
+    assert.equal(JSON.stringify(calls).includes("settings-secret-token"), false);
+    assert.equal(element<HTMLButtonElement>("#btn-settings-discover-ha").disabled, true);
+
+    pendingDiscovery.shift()?.([
+      { name: "Living HA", host: "192.168.1.88", port: 8123, baseUrl: "http://192.168.1.88:8123" },
+    ]);
+    await setImmediate();
+    await setImmediate();
+
+    const candidate = element<HTMLButtonElement>("[data-settings-ha-candidate]");
+    candidate.click();
+    await setImmediate();
+
+    assert.equal(field("#settings-ha-url").value, "http://192.168.1.88:8123");
+    assert.equal(element<HTMLButtonElement>("#btn-fill-default-ha").disabled, true);
+    assert.equal(element(".cc-settings-save-hint").dataset.saveState, "dirty");
+    assert.equal(app.settings.haBaseURL, "", "picking candidate must not auto-save or auto-connect");
+    assert.equal(calls.some((c) => c.name === "ha_snapshot" || c.name === "set_service_endpoints"), false);
+
+    // Closing Settings while a new discovery is in flight cancels the host discovery task.
+    type("#settings-ha-url", "");
+    type("#settings-ha-token", "");
+    await click("#btn-settings-discover-ha");
+    await click("#btn-close-settings");
+    assert.ok(calls.some((c) => c.name === "cancel_ha_discovery"));
+  });
 });
 

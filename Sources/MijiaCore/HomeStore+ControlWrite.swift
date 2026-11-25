@@ -758,9 +758,13 @@ extension HomeStore {
         let nowDate = optimisticNow()
         let continuousNow = ContinuousClock.now
         session.patches[idx].phase = .inFlight
-        if let lock {
-            let rev = session.patches[idx].lockEntry?.revision ?? session.revision
-            session.patches[idx].lockEntry = makeOptimisticEntry(duration: lock, revision: rev)
+        let renewedLock = lock.map {
+            makeOptimisticEntry(duration: $0, revision: session.patches[idx].lockEntry?.revision ?? session.revision)
+        }
+        session.patches[idx].lockEntry = renewedLock
+        let epoch = renewedLock?.writeEpoch ?? writeEpochNow()
+        for field in session.patches[idx].fields {
+            fieldWriteEpochs[.field(deviceId, field)] = epoch
         }
         manualWriteSessions[deviceId] = session
         syncManualSessionFieldLocks(for: deviceId, session: session, now: nowDate, continuousNow: continuousNow)
@@ -774,6 +778,14 @@ extension HomeStore {
             return
         }
         session.patches[idx].phase = .succeeded
+        let acknowledged = session.patches[idx]
+        session.patches = session.patches.enumerated().compactMap { index, patch in
+            if index < idx, patch.phase == .succeeded, patch.slotKey == acknowledged.slotKey,
+               patch.fields.isSubset(of: acknowledged.fields) {
+                return nil
+            }
+            return patch
+        }
         manualWriteSessions[deviceId] = session
     }
 
@@ -829,8 +841,26 @@ extension HomeStore {
             if rejectWritesBlockedByMiSession() {
                 throw MiSessionWriteBlocked()
             }
-            try await provider.execute(command)
+            if case .setSwitch = command, MiotAddress.parse(command.targetEntityId) != nil {
+                let precedingGate = MiCloudProvider.channelWriteStillAllowed
+                let context = controlContextID
+                let currentProvider = provider
+                let wasLocked = isControlBlockedByScreenLock
+                try await MiCloudProvider.$channelWriteStillAllowed.withValue({ [weak self] in
+                    guard await precedingGate?() != false else { return false }
+                    return await self?.channelWriteAllowed(command, context: context, wasLocked: wasLocked) == true
+                }) {
+                    try await currentProvider.execute(command)
+                }
+            } else {
+                try await provider.execute(command)
+            }
         }
+    }
+
+    private func channelWriteAllowed(_ command: DeviceCommand, context: UUID, wasLocked: Bool) -> Bool {
+        controlContextID == context && (wasLocked || !isControlBlockedByScreenLock)
+            && capabilityUndoRejectionReason(for: command) == nil && !rejectWritesBlockedByMiSession()
     }
 
     /// Shows `updated` now. With a `lock`, stale snapshots cannot overwrite its changed fields until
@@ -1053,9 +1083,7 @@ extension HomeStore {
         return device
     }
 
-    /// A card control's write: show `updated`, send `command` (after `debounceKey`'s quiet period
-    /// when given, so a slider sends only its last value), record `habitIntents` on success, and
-    /// roll back with a toast on failure.
+    /// Show a card change immediately. Slider writes share one pending slot per field.
     func commitManualWrite(
         from previous: SmartDevice,
         to updated: SmartDevice?,
@@ -1213,31 +1241,20 @@ extension HomeStore {
             return
         }
 
+        let replacesPending = debouncedWrites[debounceKey] != nil
+        let markedLightIds = SwitchLightMarks.load(defaults: userDefaults)
+        let hazardous = ManualControlPolicy.requiresConfirmation(.power(true), for: liveDevice, markedLightIds: markedLightIds)
+            || ManualControlPolicy.requiresConfirmation(.power(false), for: liveDevice, markedLightIds: markedLightIds)
+        let lan = !hazardous && sliderUsesLAN(command, device: liveDevice)
         debouncedWrites[debounceKey] = DebouncedWriteState(
             token: token,
             deviceId: deviceId,
             origin: slotOrigin,
             revision: rev,
             fields: patchFields
-        )
-        debounceTasks[debounceKey]?.cancel()
-        debounceTasks[debounceKey] = Task { [weak self] in
-            defer {
-                self?.manualWriteExits &+= 1
-                if let self, self.debouncedWrites[debounceKey]?.token == token {
-                    self.debouncedWrites.removeValue(forKey: debounceKey)
-                    self.debounceTasks.removeValue(forKey: debounceKey)
-                }
-            }
-            let debounceSleep = self?.controlDebounceSleep
-            let debounceInterval = self?.controlDebounceInterval ?? .milliseconds(280)
-            try? await debounceSleep?(debounceInterval)
-            guard !Task.isCancelled,
-                  let self,
-                  self.controlContextID == context,
-                  let state = self.debouncedWrites[debounceKey],
-                  state.token == token else { return }
-            guard self.matchesModalDeviceContext(modalContext) else {
+        ) { [weak self] state in
+            guard let self else { return }
+            guard self.matchesModalDeviceContext(modalContext), !self.rejectControlWhileLocked() else {
                 self.abandonManualSessionPatch(
                     deviceId: deviceId,
                     token: token,
@@ -1288,6 +1305,47 @@ extension HomeStore {
                 self.showControlFailure(error, device: latestFailureDevice, adjustment: true)
             }
         }
+
+        if replacesPending {
+            guard hazardous else { return }
+            debounceTasks[debounceKey]?.cancel()
+        }
+        let preceding = activeSliderWrites[debounceKey].flatMap { $0.context == context ? $0.task : nil }
+        let delay = hazardous || (!lan && preceding == nil) ? controlDebounceInterval : nil
+        let sleep = controlDebounceSleep
+        debounceTasks[debounceKey] = Task { [weak self] in
+            defer { self?.manualWriteExits &+= 1 }
+            if let delay { try? await sleep(delay) }
+            guard !Task.isCancelled else { return }
+            await preceding?.value
+            guard !Task.isCancelled, let self, self.controlContextID == context,
+                  let state = self.debouncedWrites.removeValue(forKey: debounceKey),
+                  let task = self.debounceTasks[debounceKey] else { return }
+            self.activeSliderWrites[debounceKey] = (state.token, context, task)
+            defer {
+                if self.activeSliderWrites[debounceKey]?.token == state.token {
+                    self.activeSliderWrites.removeValue(forKey: debounceKey)
+                    if self.debouncedWrites[debounceKey] == nil {
+                        self.debounceTasks.removeValue(forKey: debounceKey)
+                    }
+                }
+            }
+            let start = self.controlSliderNow()
+            await state.send(state)
+            if lan {
+                let remaining = .milliseconds(100) - start.duration(to: self.controlSliderNow())
+                if remaining > .zero { try? await sleep(remaining) }
+            }
+        }
+    }
+
+    private func sliderUsesLAN(_ command: DeviceCommand, device: SmartDevice) -> Bool {
+        if lgClientServes(device) { return true }
+        if MiotAddress.parse(command.targetEntityId) != nil {
+            return deviceTransportDiagnostics[device.id]?.route == .lan
+        }
+        guard let url = activeHAConfig?.url, let host = URL(string: url)?.host else { return false }
+        return HADiscovery.isAllowedLANDiscoveryHost(host)
     }
 
     func showControlFailure(_ error: Error, device: SmartDevice, adjustment: Bool) {

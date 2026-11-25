@@ -3227,6 +3227,91 @@ summary .cc-mini-caret {
   flex-shrink: 0;
 }
 
+.cc-sensor-sparkline-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 4;
+}
+
+.cc-sensor-sparkline {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  width: 118px;
+  padding: 5px 7px 4px;
+  border-radius: 10px;
+  background: var(--win-control-input-active);
+  border: 1px solid var(--win-card-stroke);
+  box-shadow: var(--win-island-shadow);
+  backdrop-filter: blur(12px);
+  opacity: 0;
+  transform: translateY(2px) scale(0.97);
+  transition:
+    opacity var(--dur-fast) var(--ease-standard),
+    transform var(--dur-fast) var(--ease-decelerate);
+  pointer-events: none;
+}
+
+.cc-sensor-sparkline.is-compact {
+  top: 50%;
+  bottom: auto;
+  right: 6px;
+  width: 112px;
+  padding: 4px 6px 3px;
+  transform: translateY(-50%) scale(0.97);
+}
+
+[data-sensor-card][data-sparkline-active="humidity"] .cc-sensor-sparkline[data-sparkline-metric="humidity"] {
+  left: 8px;
+  right: auto;
+}
+
+.cc-sensor.is-compact[data-sparkline-active="humidity"] .cc-sensor-sparkline[data-sparkline-metric="humidity"] {
+  left: auto;
+  right: 6px;
+}
+
+[data-sensor-card][data-sparkline-active="temperature"] .cc-sensor-sparkline[data-sparkline-metric="temperature"],
+[data-sensor-card][data-sparkline-active="humidity"] .cc-sensor-sparkline[data-sparkline-metric="humidity"],
+[data-sensor-card][data-sparkline-active="pm25"] .cc-sensor-sparkline[data-sparkline-metric="pm25"],
+[data-sensor-card][data-sparkline-active="illuminance"] .cc-sensor-sparkline[data-sparkline-metric="illuminance"],
+[data-sensor-card]:not(.is-expanded):not([data-sparkline-active]):hover .cc-sensor-sparkline.is-primary {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+}
+
+.cc-sensor.is-compact[data-sparkline-active="temperature"] .cc-sensor-sparkline[data-sparkline-metric="temperature"],
+.cc-sensor.is-compact[data-sparkline-active="humidity"] .cc-sensor-sparkline[data-sparkline-metric="humidity"],
+.cc-sensor.is-compact:not(.is-expanded):not([data-sparkline-active]):hover .cc-sensor-sparkline.is-primary {
+  opacity: 1;
+  transform: translateY(-50%) scale(1);
+}
+
+.cc-sensor-sparkline-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+  font-size: 11px;
+  line-height: 14px;
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+
+.cc-sensor-sparkline-range {
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.cc-sensor-sparkline-svg {
+  display: block;
+  width: 100%;
+  height: 20px;
+  overflow: visible;
+}
+
 .cc-hum-ring svg {
   width: 100%;
   height: 100%;
@@ -3884,6 +3969,62 @@ button.cc-footer-label.is-action { color: var(--win-critical); text-decoration: 
 .cc-onboarding-demo-title {
   margin: 0 0 4px;
   font-weight: 600;
+}
+
+.cc-ha-discover-status {
+  margin: 6px 0 0;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--text-secondary);
+}
+
+.cc-ha-discover-status.is-error {
+  color: var(--win-caution, #c87400);
+}
+
+.cc-ha-candidates {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-top: 6px;
+}
+
+.cc-ha-candidate-btn {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 9px;
+  border-radius: var(--r-control);
+  border: 1px solid var(--win-control-stroke);
+  background: var(--win-control-bg);
+  color: var(--text-primary);
+  text-align: left;
+  cursor: pointer;
+}
+
+.cc-ha-candidate-btn:hover {
+  background: var(--win-control-hover);
+}
+
+.cc-ha-candidate-name {
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 16px;
+}
+
+.cc-ha-candidate-url {
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--text-secondary);
+}
+
+.cc-ha-url-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
 }
 
 .cc-camera-stage {

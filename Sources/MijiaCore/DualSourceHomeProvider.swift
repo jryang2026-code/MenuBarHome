@@ -93,7 +93,7 @@ final class DispatchFallbackRecheckTimer: FallbackRecheckTimer, @unchecked Senda
         let stillDesired = lock.withLock { !isInvalidated && desiredID == id }
         guard stillDesired else { return }
         armedOnQueueID = id
-        ensureTimerOnQueue().schedule(deadline: deadline)
+        ensureTimerOnQueue().schedule(deadline: deadline, leeway: .milliseconds(200))
     }
 
     private func disarmIfIdleOnQueue() {
