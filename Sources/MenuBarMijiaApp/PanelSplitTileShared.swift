@@ -215,6 +215,11 @@ struct SplitDeviceTileHeader<Orb: View, Badge: View, QuickBadge: View>: View {
                 .padding(.trailing, max(8, trailingPadding - 2))
                 .padding(.vertical, verticalPadding)
                 .frame(maxWidth: .infinity, minHeight: DesignTokens.minHitTarget, maxHeight: isExpanded ? nil : .infinity, alignment: isHeroTile ? .topLeading : .leading)
+                // The whole name-and-status target lights on hover, so its reach is visible before the click.
+                .background(
+                    Color.primary.opacity(isAdjustHovered && !isEditingLayout ? (colorScheme == .dark ? 0.09 : 0.05) : 0)
+                        .animation(AppleMotion.resolve(.hoverFade, reduceMotion: reduceMotion), value: isAdjustHovered)
+                )
                 .tahoeHoverHitTarget()
                 .contentShape(Rectangle())
             }

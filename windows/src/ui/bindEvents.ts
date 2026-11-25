@@ -1524,6 +1524,7 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
           host.render();
           return;
         }
+        // Cameras keep the name as a way into the live view (tracked in #539 for cross-platform parity).
         if (dev.kind.kind === "camera") {
           openCameraPrimaryForHost(id);
           return;

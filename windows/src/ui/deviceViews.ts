@@ -1538,7 +1538,7 @@ export function renderDeviceTile(dev: SmartDevice, state: DeviceTileViewState): 
              type="button"
              class="cc-tile-body win-pill-caption"
              data-body-device="${id}"
-             title="${actionLayout.kind === "adjustOnly" ? escape(deviceAdjustTooltip(isExpanded)) : kind === "camera" ? t("点击放大打开摄像机实时画面") : hasDrawer ? t("点击展开精细调节") : t("点击切换开关")}"
+             title="${kind === "camera" ? t("点击放大打开摄像机实时画面") : actionLayout.kind === "adjustOnly" || (actionLayout.kind === "split" && hasDrawer) ? escape(deviceAdjustTooltip(isExpanded)) : t("点击切换开关")}"
              aria-label="${escape(dev.name)}，${escape(shownSubtitle)}"
              ${captionA11yAttr}
            >
@@ -1585,7 +1585,7 @@ export function renderDeviceTile(dev: SmartDevice, state: DeviceTileViewState): 
             data-body-device="${id}"
             title="${t("点击收起精细调节")}"
             aria-label="${escape(dev.name)}，${escape(shownSubtitle)}"
-            aria-pressed="${isOn}"
+            aria-expanded="true"
           >
             <div class="cc-tile-title-row">
               <div class="cc-tile-name">${escape(dev.name)}</div>
@@ -1653,9 +1653,9 @@ export function renderDeviceTile(dev: SmartDevice, state: DeviceTileViewState): 
           type="button"
           class="cc-tile-body"
           data-body-device="${id}"
-          title="${actionLayout.kind === "adjustOnly" ? escape(deviceAdjustTooltip(isExpanded)) : kind === "camera" ? t("点击放大打开摄像机实时画面") : hasDrawer ? t("点击展开精细调节") : t("点击切换开关")}"
+          title="${kind === "camera" ? t("点击放大打开摄像机实时画面") : actionLayout.kind === "adjustOnly" || (actionLayout.kind === "split" && hasDrawer) ? escape(deviceAdjustTooltip(isExpanded)) : t("点击切换开关")}"
           aria-label="${escape(dev.name)}，${escape(shownSubtitle)}"
-          ${actionLayout.kind === "adjustOnly" || (actionLayout.kind === "split" && hasDrawer) ? `aria-expanded="${isExpanded}"` : `aria-pressed="${isOn}"`}
+          ${kind === "camera" ? "" : actionLayout.kind === "adjustOnly" || (actionLayout.kind === "split" && hasDrawer) ? `aria-expanded="${isExpanded}"` : `aria-pressed="${isOn}"`}
         >
           <div class="cc-tile-title-row">
             <div class="cc-tile-name">${escape(dev.name)}</div>
