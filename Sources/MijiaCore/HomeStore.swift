@@ -214,6 +214,8 @@ public final class HomeStore {
     public internal(set) var environmentReadings: [EnvironmentReading] = [] {
         didSet { scheduleRaycastSnapshotExport() }
     }
+    public internal(set) var moods: [MoodSnapshot]
+
     public internal(set) var scenes: [HomeScene] = [] {
         didSet {
             if !scenes.isEmpty {
@@ -1351,6 +1353,7 @@ public final class HomeStore {
         let ud = defaults ?? defaultsSuiteName.flatMap { UserDefaults(suiteName: $0) } ?? .standard
         let testEnvironment = (provider != nil || dualSource != nil || defaultsSuiteName != nil || defaults != nil)
         self.userDefaults = ud
+        self.moods = MoodPreferences.load(from: ud)
         self.cameraEventStore = CameraEventStore(
             directory: testEnvironment
                 ? FileManager.default.temporaryDirectory.appendingPathComponent("CameraEvents-\(UUID().uuidString)", isDirectory: true)

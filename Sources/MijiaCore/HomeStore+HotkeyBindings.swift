@@ -73,6 +73,10 @@ extension HomeStore {
             }
             return .cancelled
 
+        case .mood(let id):
+            guard moods.contains(where: { $0.id == id }) else { return .unavailable(label: binding.targetLabel) }
+            return await applyMood(id: id)
+
         case .quickAction(let action):
             guard !devices.isEmpty else {
                 return .unavailable(label: action.title)

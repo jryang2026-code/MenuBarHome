@@ -111,6 +111,7 @@ public enum HotkeyPreferences {
 public enum HotkeyBindingTarget: Equatable, Hashable, Sendable, Codable {
     case devicePower(deviceId: String)
     case scene(sceneId: String)
+    case mood(moodId: String)
     case quickAction(QuickAction)
 
     private enum CodingKeys: String, CodingKey {
@@ -126,6 +127,8 @@ public enum HotkeyBindingTarget: Equatable, Hashable, Sendable, Codable {
             self = .devicePower(deviceId: id)
         case "scene":
             self = .scene(sceneId: id)
+        case "mood":
+            self = .mood(moodId: id)
         case "quickAction":
             guard let action = QuickAction(rawValue: id) else {
                 throw DecodingError.dataCorruptedError(forKey: .id, in: c, debugDescription: "Unknown QuickAction: \(id)")
@@ -145,6 +148,9 @@ public enum HotkeyBindingTarget: Equatable, Hashable, Sendable, Codable {
         case .scene(let sceneId):
             try c.encode("scene", forKey: .kind)
             try c.encode(sceneId, forKey: .id)
+        case .mood(let moodId):
+            try c.encode("mood", forKey: .kind)
+            try c.encode(moodId, forKey: .id)
         case .quickAction(let action):
             try c.encode("quickAction", forKey: .kind)
             try c.encode(action.rawValue, forKey: .id)
@@ -171,23 +177,27 @@ public struct HotkeyBinding: Identifiable, Equatable, Sendable, Codable {
         self.shortcut = shortcut
     }
 
-    public func isTargetAvailable(devices: [SmartDevice], scenes: [HomeScene]) -> Bool {
+    public func isTargetAvailable(devices: [SmartDevice], scenes: [HomeScene], moods: [MoodSnapshot] = []) -> Bool {
         switch target {
         case .devicePower(let deviceId):
             return devices.first(where: { $0.id == deviceId })?.isPrimaryToggleable == true
         case .scene(let sceneId):
             return scenes.contains(where: { $0.id == sceneId })
+        case .mood(let moodId):
+            return moods.contains { $0.id == moodId }
         case .quickAction:
             return !devices.isEmpty
         }
     }
 
-    public func resolvedDisplayName(devices: [SmartDevice], scenes: [HomeScene]) -> String {
+    public func resolvedDisplayName(devices: [SmartDevice], scenes: [HomeScene], moods: [MoodSnapshot] = []) -> String {
         switch target {
         case .devicePower(let deviceId):
             return devices.first(where: { $0.id == deviceId })?.name ?? targetLabel
         case .scene(let sceneId):
             return scenes.first(where: { $0.id == sceneId })?.name ?? targetLabel
+        case .mood(let moodId):
+            return moods.first(where: { $0.id == moodId })?.name ?? targetLabel
         case .quickAction(let action):
             return action.title
         }

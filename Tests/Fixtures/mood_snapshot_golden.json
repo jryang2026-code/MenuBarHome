@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "moods": [
+    {
+      "id": "93397C90-1A8D-4BB7-BFFD-A791EA21D51C",
+      "name": "Reading",
+      "createdAt": "2026-11-24T12:30:00Z",
+      "targets": [
+        {
+          "deviceId": "123456789",
+          "name": "Desk light",
+          "sourceScope": "mi:42",
+          "entityId": "miot:123456789:2",
+          "power": true,
+          "brightness": 40,
+          "colorTemperature": 3200
+        },
+        {
+          "deviceId": "climate.study",
+          "name": "Study AC",
+          "sourceScope": "ha:http://homeassistant.local:8123",
+          "entityId": "climate.study",
+          "hvacMode": "cool",
+          "targetTemperature": 25
+        },
+        {
+          "deviceId": "cover.study",
+          "name": "Study curtain",
+          "sourceScope": "ha:http://homeassistant.local:8123",
+          "entityId": "cover.study",
+          "coverPosition": 80
+        }
+      ]
+    }
+  ]
+}
