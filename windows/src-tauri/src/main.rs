@@ -1938,6 +1938,7 @@ mod tests {
     fn native_http_timeout_preserves_timed_out_marker_for_long_polling() {
         let _guard = ORIGIN_TEST_LOCK.lock().unwrap();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        let _fixture = crate::network::allow_loopback_fixture(&listener);
         let addr = listener.local_addr().expect("listener addr");
         let server = std::thread::spawn(move || {
             if let Ok((_stream, _peer)) = listener.accept() {
