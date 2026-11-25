@@ -757,7 +757,10 @@ export class MiCloudClient {
     return values;
   }
 
-  async getProps(keys: readonly MiotPropKey[]): Promise<Map<string, unknown>> {
+  async getProps(
+    keys: readonly MiotPropKey[],
+    options?: { readonly lanOnly?: boolean },
+  ): Promise<Map<string, unknown>> {
     const values = new Map<string, unknown>();
     const local = this.local;
     if (local) {
@@ -776,6 +779,8 @@ export class MiCloudClient {
       }));
       keys = keys.filter((key) => !values.has(propKeyString(key)));
     }
+    if (options?.lanOnly) return values;
+
     const chunkSize = 100;
     for (let start = 0; start < keys.length; start += chunkSize) {
       const chunk = keys.slice(start, start + chunkSize);
