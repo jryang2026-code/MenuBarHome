@@ -36,6 +36,8 @@ public struct ControlCenterPanel: View {
     /// Persisted fold state for the unified Quick Actions & "For You" suggestions drawer.
     @State var quickDrawerState = PanelQuickDrawerState.shared
     @Bindable private var speech = SpeechInputController.shared
+    /// Optional DDC/CI monitor card; off by default, so the panel is unchanged unless enabled.
+    @State var externalDisplays = ExternalDisplayStore.shared
     @Environment(\.effectiveReduceMotion) var reduceMotion
     @Environment(\.effectiveReduceTransparency) var reduceTransparency
     /// Opens the ⌘, Settings window; the popover no longer hosts the long form (#42).
@@ -102,6 +104,7 @@ public struct ControlCenterPanel: View {
                 prioritySnapshot = .capture(from: store)
                 registerTransientUIHandlers()
                 syncAdaptiveMaximumHeight(notify: true)
+                ExternalDisplayStore.shared.panelDidOpen()
             }
             .onAppear { handlePanelAppear() }
             .onDisappear { handlePanelDidHide() }
@@ -574,6 +577,11 @@ public struct ControlCenterPanel: View {
                             )
                             .transition(.opacity)
                         }
+                    }
+
+                    if !search.isSearching, !isEditingLayout, externalDisplays.showsPanelCard {
+                        ExternalDisplaySectionView(store: externalDisplays, theme: .liquidGlass)
+                            .transition(.opacity)
                     }
 
                     if !search.isSearching, !isEditingLayout {

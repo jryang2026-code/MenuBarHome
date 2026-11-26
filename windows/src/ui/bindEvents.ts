@@ -1,4 +1,5 @@
 import { cancelScheduledCommands, confirmMissedScheduledCommand } from "./scheduledCommands.js";
+import { bindDdcDisplayEvents, getDdcDisplayController } from "./ddcDisplaySection.js";
 import {
   cancelPendingDiffPreview,
   confirmPendingDiffPreview,
@@ -271,6 +272,9 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
   export function bindEvents(host: MenuMijiaWindowsApp): void {
     ensureDrawerLifecycleListeners(host);
     bindLiquidGlassSliders(host.root);
+    const ddc = getDdcDisplayController();
+    ddc.onChange = () => host.render();
+    bindDdcDisplayEvents(host.root, ddc);
     host.root
       .querySelectorAll<HTMLElement>(".cc-room-scroll, .cc-kind-scroll, .cc-settings-tabs")
       .forEach((track) => {

@@ -7136,3 +7136,148 @@ html.is-settings-window[data-native-backdrop="mica"] .cc-popover.scheme-light .c
   .cc-tv-transport, .cc-tv-dpad-key, .cc-tv-dpad-ok, .cc-tv-remote-toggle svg, .cc-tv-seek::-webkit-slider-runnable-track { transition: none; }
   .cc-tv-transport:active, .cc-tv-dpad-key:active, .cc-tv-dpad-ok:active { transform: none; }
 }
+
+/* Optional DDC/CI external display card (ddcDisplaySection.ts). Only rendered when enabled. */
+.cc-ddc-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.cc-ddc-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  border-radius: var(--r-card);
+  border: 1px solid var(--win-card-stroke);
+  background: var(--win-card-bg);
+}
+
+.cc-ddc-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.cc-ddc-icon {
+  display: inline-flex;
+  width: 20px;
+  height: 20px;
+  color: var(--win-accent);
+}
+
+.cc-ddc-icon svg,
+.cc-ddc-refresh svg,
+.cc-ddc-mute svg,
+.cc-ddc-error svg {
+  width: 16px;
+  height: 16px;
+}
+
+.cc-ddc-title {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+}
+
+.cc-ddc-title strong {
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 600;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cc-ddc-title span {
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--text-secondary);
+}
+
+.cc-ddc-refresh,
+.cc-ddc-mute {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 32px;
+  height: 32px;
+  border: 1px solid transparent;
+  border-radius: var(--r-control);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition:
+    background-color var(--dur-fast) var(--ease-standard),
+    color var(--dur-fast) var(--ease-standard);
+}
+
+.cc-ddc-refresh:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.cc-ddc-refresh.is-spinning svg {
+  animation: cc-ddc-spin 0.9s linear infinite;
+}
+
+@keyframes cc-ddc-spin {
+  to { transform: rotate(360deg); }
+}
+
+.cc-ddc-mute {
+  border-color: var(--win-control-stroke);
+  background: var(--win-control-bg);
+}
+
+.cc-ddc-mute.is-active {
+  background: var(--win-accent);
+  border-color: transparent;
+  color: var(--win-text-on-accent);
+}
+
+@media (hover: hover) {
+  .cc-ddc-refresh:hover:not(:disabled),
+  .cc-ddc-mute:hover:not(.is-active) {
+    background: var(--win-subtle-hover);
+    color: var(--text-primary);
+  }
+}
+
+.cc-ddc-inputs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.cc-ddc-volume-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.cc-ddc-volume-row > .cc-slider-group {
+  flex: 1;
+  min-width: 0;
+}
+
+.cc-ddc-error {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 0;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--text-secondary);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cc-ddc-refresh.is-spinning svg { animation: none; }
+  .cc-ddc-refresh,
+  .cc-ddc-mute { transition: none; }
+}
