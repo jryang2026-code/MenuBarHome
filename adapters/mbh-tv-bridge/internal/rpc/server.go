@@ -2,12 +2,14 @@ package rpc
 
 import (
 	"bufio"
+	"com.menubarhome.tv-bridge/internal/driver"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"runtime/debug"
@@ -43,10 +45,11 @@ type Server struct {
 	manifestDigest string
 	out            io.Writer
 	quit           bool
+	devices        map[string]driver.TVDriver
 }
 
 func New(out io.Writer, dataDir string) *Server {
-	return &Server{out: out, dataDir: dataDir, generation: 1, manifestDigest: manifestDigest()}
+	return &Server{out: out, dataDir: dataDir, generation: 1, manifestDigest: manifestDigest(), devices: make(map[string]driver.TVDriver)}
 }
 func manifestDigest() string {
 	b, e := os.ReadFile("adapter-manifest.json")
@@ -76,12 +79,48 @@ func (s *Server) Handle(r Request) Response {
 	}
 	switch r.Method {
 	case "initialize":
+		var p struct {
+			Config struct {
+				Devices []struct {
+					NativeID string `json:"nativeId"`
+					Driver   string `json:"driver"`
+					Host     string `json:"host"`
+					Port     int    `json:"port"`
+				} `json:"devices"`
+			} `json:"config"`
+		}
+		if err := json.Unmarshal(r.Params, &p); err != nil {
+			return errResp(r.ID, -32602, "invalid params")
+		}
+		s.mu.Lock()
 		s.initialized = true
-		return Response{JSONRPC: "2.0", ID: r.ID, Result: map[string]any{"protocolVersion": "0.1", "adapterId": "com.menubarhome.tv-bridge", "adapterVersion": "1.0.0", "manifestDigest": s.manifestDigest, "capabilities": map[string]any{"readOnly": false, "commands": true}}}
+		for _, d := range p.Config.Devices {
+			if d.NativeID == "" || d.Host == "" {
+				continue
+			}
+			addr := d.Host
+			if d.Port > 0 {
+				addr = net.JoinHostPort(d.Host, fmt.Sprint(d.Port))
+			}
+			if drv := driver.ForID(d.Driver, addr); drv != nil {
+				s.devices[d.NativeID] = drv
+			}
+		}
+		s.mu.Unlock()
+		return Response{JSONRPC: "2.0", ID: r.ID, Result: map[string]any{"protocolVersion": "1.0", "adapterId": "com.menubarhome.tv-bridge", "adapterVersion": "1.0.0", "manifestDigest": s.manifestDigest, "capabilities": map[string]any{"readOnly": false, "commands": true}}}
 	case "capabilities":
-		return Response{JSONRPC: "2.0", ID: r.ID, Result: map[string]any{"readOnly": false, "deviceKinds": []string{"television", "mediaPlayer"}}}
+		return Response{JSONRPC: "2.0", ID: r.ID, Result: map[string]any{"readOnly": false, "deviceKinds": []string{"tv", "speaker"}}}
 	case "snapshot":
-		return Response{JSONRPC: "2.0", ID: r.ID, Result: map[string]any{"capturedAt": "now", "devices": []any{}}}
+		devices := make([]map[string]any, 0, len(s.devices))
+		for nativeID, drv := range s.devices {
+			snap, err := drv.Snapshot()
+			if err != nil {
+				devices = append(devices, map[string]any{"nativeId": nativeID, "offline": true})
+				continue
+			}
+			devices = append(devices, map[string]any{"nativeId": nativeID, "snapshot": snap})
+		}
+		return Response{JSONRPC: "2.0", ID: r.ID, Result: map[string]any{"capturedAt": "now", "devices": devices}}
 	case "events.subscribe":
 		return Response{JSONRPC: "2.0", ID: r.ID, Result: map[string]any{"subscriptionId": "sub-1", "acceptedTopics": []string{"stateChanged"}}}
 	case "events.unsubscribe":
@@ -97,15 +136,22 @@ func (s *Server) Handle(r Request) Response {
 		return Response{JSONRPC: "2.0", ID: r.ID, Result: map[string]any{"ok": true}}
 	case "host.contextChanged":
 		var p struct{ PanelVisible, SystemActive bool }
-		if json.Unmarshal(r.Params, &p) == nil && (!p.PanelVisible || !p.SystemActive) {
+		if json.Unmarshal(r.Params, &p) == nil {
 			s.mu.Lock()
-			s.sleeping = true
+			s.sleeping = !p.PanelVisible || !p.SystemActive
+			sleeping := s.sleeping
 			s.mu.Unlock()
-			debug.FreeOSMemory()
+			if sleeping {
+				for _, drv := range s.devices {
+					_ = drv.Sleep()
+				}
+				debug.FreeOSMemory()
+			}
 		}
 		return Response{JSONRPC: "2.0", ID: r.ID, Result: map[string]any{"sleeping": s.sleeping}}
 	case "control.execute":
 		var p struct {
+			NativeID             string         `json:"nativeId"`
 			GrantID              string         `json:"grantId"`
 			CapabilityGeneration int64          `json:"capabilityGeneration"`
 			Verb                 string         `json:"verb"`
@@ -123,6 +169,16 @@ func (s *Server) Handle(r Request) Response {
 		allowed := map[string]bool{"tv.power": true, "tv.wake": true, "tv.screenOff": true, "media.setVolume": true, "media.stepVolume": true, "media.setMute": true, "media.selectSource": true, "media.launchApp": true, "media.playPause": true, "media.play": true, "media.pause": true, "media.stop": true, "media.next": true, "media.previous": true, "media.seek": true, "remote.key": true}
 		if !allowed[p.Verb] {
 			return errResp(r.ID, -32004, "unsupported verb")
+		}
+		drv, ok := s.devices[p.NativeID]
+		if !ok {
+			return errResp(r.ID, -32005, "device unavailable")
+		}
+		if err := drv.Execute(p.Verb, p.Args); err != nil {
+			if strings.Contains(err.Error(), "unsupported") || strings.Contains(err.Error(), "invalid") {
+				return errResp(r.ID, -32004, err.Error())
+			}
+			return errResp(r.ID, -32002, err.Error())
 		}
 		return Response{JSONRPC: "2.0", ID: r.ID, Result: map[string]any{"accepted": true}}
 	case "media.fetchArtwork":

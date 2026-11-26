@@ -3,12 +3,12 @@
   "adapterId": "com.menubarhome.tv-bridge",
   "name": {"zh": "电视桥接", "en": "TV Bridge"},
   "version": "1.0.0",
-  "hostApi": "^0.1.0",
+  "hostApi": "^1.0.0",
   "runtime": {"type": "binary", "entry": "mbh-tv-bridge", "arch": ["arm64", "x86_64"]},
   "platforms": ["macos", "windows"],
   "capabilities": {
     "readOnly": false,
-    "deviceKinds": ["television", "mediaPlayer"],
+    "deviceKinds": ["tv", "speaker"],
     "commands": ["tv.power", "tv.wake", "tv.screenOff", "media.setVolume", "media.stepVolume", "media.setMute", "media.selectSource", "media.launchApp", "media.playPause", "media.play", "media.pause", "media.stop", "media.next", "media.previous", "media.seek", "remote.key"],
     "readings": ["power", "volume", "mute", "source", "nowPlaying"],
     "pushEvents": false

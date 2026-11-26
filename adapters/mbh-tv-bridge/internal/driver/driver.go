@@ -2,12 +2,15 @@ package driver
 
 import (
 	"bytes"
+	"com.menubarhome.tv-bridge/internal/ws"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/tls"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/crc32"
 	"io"
 	"net"
 	"net/http"
@@ -27,8 +30,18 @@ type Snapshot struct {
 	NowPlaying *NowPlaying `json:"nowPlaying,omitempty"`
 }
 type NowPlaying struct {
-	Title, Artist, Album, ArtworkURI string  `json:"title,omitempty"`
-	Duration, Position               float64 `json:"duration,omitempty"`
+	State             string  `json:"state,omitempty"`
+	Title             string  `json:"title,omitempty"`
+	Subtitle          string  `json:"subtitle,omitempty"`
+	AppName           string  `json:"appName,omitempty"`
+	ArtworkURI        string  `json:"artworkURI,omitempty"`
+	DurationSec       float64 `json:"durationSec,omitempty"`
+	PositionSec       float64 `json:"positionSec,omitempty"`
+	PositionUpdatedAt string  `json:"positionUpdatedAt,omitempty"`
+	PlaybackRate      float64 `json:"playbackRate,omitempty"`
+	CanPlayPause      bool    `json:"canPlayPause,omitempty"`
+	CanSeek           bool    `json:"canSeek,omitempty"`
+	CanSkipTrack      bool    `json:"canSkipTrack,omitempty"`
 }
 type TVDriver interface {
 	ID() string
@@ -119,8 +132,20 @@ func (d *Xiaomi) Execute(v string, a map[string]any) error {
 		return e
 	}
 	k := fmt.Sprint(a["key"])
-	_, e := d.client.Get(d.addr + "/controller?action=keyevent&keycode=" + url.QueryEscape(k))
-	return e
+	codes := map[string]string{"up": "up", "down": "down", "left": "left", "right": "right", "select": "enter", "back": "back", "home": "home", "menu": "menu", "volumeUp": "volumeup", "volumeDown": "volumedown", "mute": "mute", "source": "source", "channelUp": "channelup", "channelDown": "channeldown", "playPause": "playpause", "info": "info"}
+	code, ok := codes[k]
+	if !ok {
+		return errors.New("unsupported remote key")
+	}
+	r, e := d.client.Get(d.addr + "/controller?action=keyevent&keycode=" + url.QueryEscape(code))
+	if e != nil {
+		return e
+	}
+	defer r.Body.Close()
+	if r.StatusCode >= 300 {
+		return fmt.Errorf("http status %s", r.Status)
+	}
+	return nil
 }
 
 type Sony struct {
@@ -131,7 +156,20 @@ type Sony struct {
 func NewSony(addr, psk string) *Sony {
 	return &Sony{Base: Base{id: "sony_bravia", addr: strings.TrimRight(addr, "/"), client: httpClient()}, PSK: psk}
 }
-func (d *Sony) Probe() error { _, e := d.client.Get(d.addr + "/sony/system"); return e }
+func (d *Sony) do(req *http.Request) (*http.Response, error) {
+	if d.PSK != "" {
+		req.Header.Set("X-Auth-PSK", d.PSK)
+	}
+	return d.client.Do(req)
+}
+func (d *Sony) Probe() error {
+	req, e := http.NewRequest("GET", d.addr+"/sony/system", nil)
+	if e != nil {
+		return e
+	}
+	_, e = d.do(req)
+	return e
+}
 func (d *Sony) Snapshot() (Snapshot, error) {
 	var x any
 	e := postJSON(d.client, d.addr+"/sony/system", map[string]any{"method": "getPowerStatus", "params": []any{}, "id": 1, "version": "1.0"}, &x)
@@ -140,6 +178,41 @@ func (d *Sony) Snapshot() (Snapshot, error) {
 func (d *Sony) Execute(v string, a map[string]any) error {
 	if e := commandAllowed(v, a); e != nil {
 		return e
+	}
+	method := ""
+	path := "/sony/system"
+	params := []any{}
+	switch v {
+	case "tv.power":
+		method = "setPowerStatus"
+		params = []any{map[string]any{"status": true}}
+	case "tv.screenOff":
+		method = "setPowerStatus"
+		params = []any{map[string]any{"status": false}}
+	case "media.setVolume":
+		path = "/sony/audio"
+		method = "setAudioVolume"
+		params = []any{map[string]any{"volume": fmt.Sprint(a["volume"])}}
+	case "media.setMute":
+		path = "/sony/audio"
+		method = "setAudioMute"
+		params = []any{map[string]any{"status": a["muted"]}}
+	default:
+		return errors.New("unsupported Sony action")
+	}
+	b, _ := json.Marshal(map[string]any{"method": method, "params": params, "id": 1, "version": "1.0"})
+	req, e := http.NewRequest("POST", d.addr+path, bytes.NewReader(b))
+	if e != nil {
+		return e
+	}
+	req.Header.Set("Content-Type", "application/json")
+	r, e := d.do(req)
+	if e != nil {
+		return e
+	}
+	defer r.Body.Close()
+	if r.StatusCode >= 300 {
+		return fmt.Errorf("http status %s", r.Status)
 	}
 	return nil
 }
@@ -164,7 +237,24 @@ func (d *Kodi) Execute(v string, a map[string]any) error {
 	if e := commandAllowed(v, a); e != nil {
 		return e
 	}
-	return nil
+	methods := map[string]string{"media.playPause": "Player.PlayPause", "media.play": "Player.PlayPause", "media.pause": "Player.PlayPause", "media.stop": "Player.Stop", "media.next": "Player.GoNext", "media.previous": "Player.GoPrevious", "media.seek": "Player.Seek", "media.setVolume": "Application.SetVolume", "remote.key": "Input.ExecuteAction"}
+	method, ok := methods[v]
+	if !ok {
+		return errors.New("unsupported Kodi action")
+	}
+	params := map[string]any{}
+	if v == "remote.key" {
+		params["action"] = a["key"]
+	}
+	if v == "media.seek" {
+		params["playerid"] = 1
+		params["value"] = a["position"]
+	}
+	if v == "media.setVolume" {
+		params["volume"] = a["volume"]
+	}
+	var result any
+	return postJSON(d.client, d.addr+"/jsonrpc", map[string]any{"jsonrpc": "2.0", "method": method, "params": params, "id": 1}, &result)
 }
 
 type DLNA struct{ Base }
@@ -172,11 +262,46 @@ type DLNA struct{ Base }
 func NewDLNA(addr string) *DLNA {
 	return &DLNA{Base: Base{id: "dlna_dmr", addr: strings.TrimRight(addr, "/"), client: httpClient()}}
 }
-func (d *DLNA) Probe() error                { return nil }
-func (d *DLNA) Snapshot() (Snapshot, error) { return Snapshot{ID: d.id, Name: "DLNA Renderer"}, nil }
+func (d *DLNA) Probe() error {
+	req, e := http.NewRequest("POST", d.addr, strings.NewReader("<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\"><s:Body/></s:Envelope>"))
+	if e != nil {
+		return e
+	}
+	req.Header.Set("SOAPACTION", "\"urn:schemas-upnp-org:service:AVTransport:1#GetPositionInfo\"")
+	r, e := d.client.Do(req)
+	if e != nil {
+		return e
+	}
+	defer r.Body.Close()
+	if r.StatusCode >= 300 {
+		return fmt.Errorf("http status %s", r.Status)
+	}
+	return nil
+}
+func (d *DLNA) Snapshot() (Snapshot, error) {
+	return Snapshot{ID: d.id, Name: "DLNA Renderer"}, d.Probe()
+}
 func (d *DLNA) Execute(v string, a map[string]any) error {
 	if e := commandAllowed(v, a); e != nil {
 		return e
+	}
+	action := map[string]string{"media.play": "Play", "media.pause": "Pause", "media.stop": "Stop", "media.seek": "Seek"}[v]
+	if action == "" {
+		return errors.New("unsupported DLNA action")
+	}
+	body := fmt.Sprintf("<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\"><s:Body><u:%s xmlns:u=\"urn:schemas-upnp-org:service:AVTransport:1\"><InstanceID>0</InstanceID></u:%s></s:Body></s:Envelope>", action, action)
+	req, e := http.NewRequest("POST", d.addr, strings.NewReader(body))
+	if e != nil {
+		return e
+	}
+	req.Header.Set("SOAPACTION", fmt.Sprintf("\"urn:schemas-upnp-org:service:AVTransport:1#%s\"", action))
+	r, e := d.client.Do(req)
+	if e != nil {
+		return e
+	}
+	defer r.Body.Close()
+	if r.StatusCode >= 300 {
+		return fmt.Errorf("http status %s", r.Status)
 	}
 	return nil
 }
@@ -230,13 +355,43 @@ func (d *TCL) Decrypt(p []byte) ([]byte, error) {
 	cipher.NewCBCDecrypter(c, d.iv).CryptBlocks(o, p)
 	return unpad(o)
 }
-func (d *TCL) Probe() error                { return nil }
+func (d *TCL) Probe() error {
+	c, e := net.DialTimeout("tcp", d.addr, 3*time.Second)
+	if e != nil {
+		return e
+	}
+	d.conn = c
+	_, e = c.Write([]byte("159"))
+	return e
+}
 func (d *TCL) Snapshot() (Snapshot, error) { return Snapshot{ID: d.id, Name: "TCL/FFALCON"}, nil }
 func (d *TCL) Execute(v string, a map[string]any) error {
 	if e := commandAllowed(v, a); e != nil {
 		return e
 	}
-	return nil
+	if d.conn == nil {
+		if e := d.Probe(); e != nil {
+			return e
+		}
+	}
+	codes := map[string]string{"up": "11", "down": "12", "left": "13", "right": "14", "select": "15", "back": "16", "home": "19", "source": "29", "volumeUp": "31", "volumeDown": "32"}
+	k := fmt.Sprint(a["key"])
+	if v == "tv.power" {
+		k = "power"
+	}
+	if k == "power" {
+		codes["power"] = "20"
+	}
+	code, ok := codes[k]
+	if !ok {
+		return errors.New("unsupported TCL key")
+	}
+	enc, e := d.Encrypt([]byte("149>>" + code))
+	if e != nil {
+		return e
+	}
+	_, e = d.conn.Write(enc)
+	return e
 }
 
 type AndroidADB struct {
@@ -267,6 +422,24 @@ func (d *AndroidADB) Execute(v string, a map[string]any) error {
 	if v == "remote.key" && !allowed[k] {
 		return errors.New("unsafe adb key")
 	}
+	if d.conn == nil {
+		if e := d.Probe(); e != nil {
+			return e
+		}
+	}
+	codes := map[string]uint32{"up": 19, "down": 20, "left": 21, "right": 22, "select": 23, "back": 4, "home": 3, "menu": 82, "volumeUp": 24, "volumeDown": 25, "mute": 164, "power": 26}
+	code, ok := codes[k]
+	if !ok {
+		return errors.New("unsafe adb key")
+	}
+	payload := []byte(fmt.Sprintf("shell:input keyevent %d\x00", code))
+	hdr := make([]byte, 24)
+	binary.LittleEndian.PutUint32(hdr[0:4], 0x4e45504f)
+	binary.LittleEndian.PutUint32(hdr[12:16], uint32(len(payload)))
+	binary.LittleEndian.PutUint32(hdr[16:20], crc32.ChecksumIEEE(payload))
+	if _, e := d.conn.Write(append(hdr, payload...)); e != nil {
+		return e
+	}
 	return nil
 }
 
@@ -284,14 +457,27 @@ func (d *LG) Probe() error {
 		_, e := tls.Dial("tcp", d.addr, &tls.Config{InsecureSkipVerify: true})
 		return e
 	}
-	return nil
+	return errors.New("LG websocket disabled")
 }
 func (d *LG) Snapshot() (Snapshot, error) { return Snapshot{ID: d.id, Name: "LG webOS"}, nil }
 func (d *LG) Execute(v string, a map[string]any) error {
 	if e := commandAllowed(v, a); e != nil {
 		return e
 	}
-	return nil
+	if !d.TLS {
+		return errors.New("LG websocket disabled")
+	}
+	c, e := ws.Dial("wss://" + d.addr + "/")
+	if e != nil {
+		return e
+	}
+	defer c.Close()
+	uri := map[string]string{"tv.power": "ssap://system/turnOff", "tv.screenOff": "ssap://com.webos.service.tv.display/turnOffScreen", "media.setVolume": "ssap://audio/setVolume", "media.setMute": "ssap://audio/setMute"}[v]
+	if uri == "" {
+		return errors.New("unsupported LG action")
+	}
+	b, _ := json.Marshal(map[string]any{"id": "1", "type": "request", "uri": uri, "payload": a})
+	return c.WriteText(b)
 }
 
 func ForID(id, addr string) TVDriver {
@@ -324,13 +510,36 @@ type Samsung struct {
 func NewSamsung(addr string) *Samsung {
 	return &Samsung{Base: Base{id: "samsung_tizen", addr: addr, client: httpClient(), sleeping: false}}
 }
-func (d *Samsung) Probe() error                { return nil }
-func (d *Samsung) Snapshot() (Snapshot, error) { return Snapshot{ID: d.id, Name: "Samsung Tizen"}, nil }
+func (d *Samsung) Probe() error {
+	c, e := ws.Dial("wss://" + d.addr + "/")
+	if e != nil {
+		return e
+	}
+	return c.Close()
+}
+func (d *Samsung) Snapshot() (Snapshot, error) {
+	return Snapshot{ID: d.id, Name: "Samsung Tizen"}, d.Probe()
+}
 func (d *Samsung) Execute(v string, a map[string]any) error {
 	if e := commandAllowed(v, a); e != nil {
 		return e
 	}
-	return nil
+	c, e := ws.Dial("wss://" + d.addr + "/")
+	if e != nil {
+		return e
+	}
+	defer c.Close()
+	keys := map[string]string{"up": "KEY_UP", "down": "KEY_DOWN", "left": "KEY_LEFT", "right": "KEY_RIGHT", "select": "KEY_ENTER", "back": "KEY_RETURN", "home": "KEY_HOME", "menu": "KEY_MENU", "volumeUp": "KEY_VOLUP", "volumeDown": "KEY_VOLDOWN", "mute": "KEY_MUTE", "source": "KEY_SOURCE", "power": "KEY_POWER"}
+	key := fmt.Sprint(a["key"])
+	if v == "tv.power" {
+		key = "power"
+	}
+	mapped, ok := keys[key]
+	if !ok {
+		return errors.New("unsupported Samsung key")
+	}
+	b, _ := json.Marshal(map[string]any{"method": "ms.remote.control", "params": map[string]any{"Cmd": "Click", "DataOfCmd": mapped, "TypeOfRemote": "SendRemoteKey", "Option": "false"}})
+	return c.WriteText(b)
 }
 
 var _ cipher.Block
