@@ -899,3 +899,85 @@ describe("WP3d · Windows 常规与家居连接导航整理", () => {
   });
 });
 
+describe("AI provider restore defaults (#542)", () => {
+  it("restores the active built-in provider's default URL and model and updates save state", async () => {
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify({
+      connectionMode: "demo",
+      hasCompletedOnboarding: true,
+      assistantBaseURL: "https://api.deepseek.com/v2",
+      assistantModel: "deepseek-reasoner",
+    }));
+    const app = new MenuMijiaWindowsApp(element("#app"));
+    await click("#btn-settings");
+    await click('[data-settings-tab="assistant"]');
+
+    const restoreBtn = element<HTMLButtonElement>("#btn-restore-ai-provider-defaults");
+    assert.equal(restoreBtn.hidden, false);
+    assert.equal(restoreBtn.textContent, "恢复服务商默认值");
+    assert.equal((element("#settings-ai-provider") as HTMLSelectElement).value, "deepseek");
+    assert.equal(field("#settings-base-url").value, "https://api.deepseek.com/v2");
+    assert.equal(field("#settings-model").value, "deepseek-reasoner");
+
+    // Typing an unsaved API key must not be wiped when restoring URL/model defaults.
+    type("#settings-api-key", "sk-unsaved-deepseek");
+
+    await click("#btn-restore-ai-provider-defaults");
+    assert.equal(field("#settings-base-url").value, "https://api.deepseek.com/v1");
+    assert.equal(field("#settings-model").value, "deepseek-chat");
+    assert.equal(field("#settings-api-key").value, "sk-unsaved-deepseek");
+    assert.equal(element(".cc-settings-save-hint").dataset.saveState, "dirty");
+
+    await click("#btn-save-settings");
+    assert.equal(app.settings.assistantBaseURL, "https://api.deepseek.com/v1");
+    assert.equal(app.settings.assistantModel, "deepseek-chat");
+  });
+
+  it("hides the restore button for custom endpoints across edits and live re-renders, and localizes labels", async () => {
+    const app = startDemo();
+    await click("#btn-settings");
+    await click('[data-settings-tab="assistant"]');
+
+    const restoreBtn = () => element<HTMLButtonElement>("#btn-restore-ai-provider-defaults");
+    assert.equal(restoreBtn().hidden, false);
+
+    // Customizing model on the default provider, then restoring brings draft back to clean.
+    type("#settings-model", "custom-temp-model");
+    assert.equal(element(".cc-settings-save-hint").dataset.saveState, "dirty");
+    await click("#btn-restore-ai-provider-defaults");
+    assert.equal(field("#settings-base-url").value, "https://openrouter.ai/api/v1");
+    assert.equal(field("#settings-model").value, "~typesafe/jev-latest");
+    assert.equal(element(".cc-settings-save-hint").dataset.saveState, "clean");
+
+    // Switching to custom hides the button; typing a custom URL keeps it hidden across live re-renders.
+    await pickProvider("custom");
+    assert.equal(restoreBtn().hidden, true);
+    type("#settings-base-url", "https://proxy.example.com/v1");
+    type("#settings-model", "my-custom-model");
+    app.render();
+    await setImmediate();
+    assert.equal(restoreBtn().hidden, true);
+
+    // Clicking the hidden button programmatically is a no-op for custom.
+    restoreBtn().click();
+    await setImmediate();
+    assert.equal(field("#settings-base-url").value, "https://proxy.example.com/v1");
+    assert.equal(field("#settings-model").value, "my-custom-model");
+
+    // Switching back to a built-in provider reveals the button again.
+    await pickProvider("ollama");
+    assert.equal(restoreBtn().hidden, false);
+
+    // Verify Traditional Chinese and English labels.
+    setLanguage("zh-Hant");
+    app.render();
+    await setImmediate();
+    assert.equal(restoreBtn().textContent, "恢復服務商預設值");
+
+    setLanguage("en");
+    app.render();
+    await setImmediate();
+    assert.equal(restoreBtn().textContent, "Restore Provider Defaults");
+  });
+});
+
+

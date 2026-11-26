@@ -369,7 +369,7 @@ const RAW_SPECS: readonly RawAnchorSpec[] = [
     anchor: "assistantBaseURL",
     section: SEC_ASSISTANT,
     title: ["服务地址", "服務位址", "Service URL"],
-    synonyms: ["AI 服务地址", "接口代理", "高级", "接口地址", "服务地址", "代理", "反代", "中转", "地址", "base url", "endpoint", "proxy", "url", "api url", "systemone", "chat completions", "daili", "jiekou"],
+    synonyms: ["AI 服务地址", "接口代理", "高级", "接口地址", "服务地址", "代理", "反代", "中转", "地址", "恢复服务商默认值", "恢復服務商預設值", "恢复默认", "restore provider defaults", "base url", "endpoint", "proxy", "url", "api url", "systemone", "chat completions", "daili", "jiekou"],
   },
   {
     anchor: "assistantModel",
