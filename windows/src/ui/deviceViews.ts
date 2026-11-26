@@ -4,6 +4,7 @@ import { trText } from "../core/quickActions.js";
 import type { SpeakerTextMode } from "../core/miCloud/speakerActions.js";
 import { renderApplianceDrawer, renderClimateSwingRow, renderCoverDrawer, renderGenericDrawer, renderPlugDrawer, renderSpeakerCommandBar } from "./detailDrawers.js";
 import { renderMoreSettings } from "./facetViews.js";
+import { renderTvMediaSection, tvDrawerHasMedia } from "./tvMediaDrawer.js";
 import {
   deviceCanTogglePower, devicePresentsAsActive, deviceReadout, deviceStatusSummary, hasDetailDrawer,
   localizeAirQuality, localizeApplianceMode, localizeFanPreset, localizeFridgeMode, localizeNightShot,
@@ -473,7 +474,8 @@ function renderPrimaryDrawer(
       const id = escapeHtml(dev.id);
       const showVolume = Boolean(k.volumeWritable) && k.volumePresent !== false;
       const showSources = k.availableSources.length > 0;
-      if (!showVolume && !k.muteSwitchEntityId && !showSources && !k.isPairingPromptActive) return "";
+      const mediaSection = tvDrawerHasMedia(k) ? renderTvMediaSection(dev, k, escapeHtml) : "";
+      if (!showVolume && !k.muteSwitchEntityId && !showSources && !k.isPairingPromptActive && !mediaSection) return "";
       const sourceControls = showSources
         ? k.availableSources.length <= 4
           ? `<div class="cc-segmented-pills">${k.availableSources.map((src) => `<button class="cc-seg-pill ${k.currentSource === src ? "is-active" : ""}" data-tvsource="${id}|${escapeHtml(src)}" aria-pressed="${k.currentSource === src}">${escapeHtml(src)}</button>`).join("")}</div>`
@@ -481,6 +483,7 @@ function renderPrimaryDrawer(
         : "";
       return `<div class="cc-tile-drawer">
           ${k.isPairingPromptActive ? `<div class="cc-slider-label"><span>${t("请在电视上确认配对")}</span></div>` : ""}
+          ${mediaSection}
           ${showVolume ? `<div class="cc-slider-group"><div class="cc-slider-label"><span>${t("音量")}</span><strong>${k.volumePercent}%</strong></div>${renderLiquidGlassSlider({ variant: "drawer", min: 0, max: 100, step: 1, value: k.volumePercent, formattedValue: `${k.volumePercent}%`, leadingIconSvg: SF_ICONS.speakerFill, showDecileTicks: true, inputDataAttrs: `data-volume="${id}"`, ariaAttrs: `aria-label="${t("音量")}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${k.volumePercent}" aria-valuetext="${k.volumePercent}%"` })}</div>` : ""}
           ${k.muteSwitchEntityId ? `<div class="cc-segmented-pills"><button class="cc-seg-pill ${k.isMuted ? "is-active" : ""}" data-speakermute="${id}" aria-pressed="${k.isMuted}">${k.isMuted ? t("静音：开") : t("静音：关")}</button></div>` : ""}
           ${sourceControls}

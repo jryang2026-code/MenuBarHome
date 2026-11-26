@@ -352,6 +352,13 @@ public struct TVSpec: Equatable, Sendable {
     public var powerWritable: Bool
     public var volumeWritable: Bool
     public var volumePresent: Bool
+    /// What the TV is playing; nil keeps the drawer exactly as before Now Playing existed.
+    public var playback: MediaPlaybackState?
+    /// Home Assistant `remote.*` on the same device, the target of `remoteSendKey`.
+    public var remoteEntityId: String?
+    public var supportsRemotePad: Bool
+    /// `TVRemoteKey.rawValue` → MIoT action address (`did/siid#aiid`) on a Xiaomi TV.
+    public var miotRemoteActions: [String: String]
 
     public init(
         mediaEntityId: String,
@@ -368,8 +375,16 @@ public struct TVSpec: Equatable, Sendable {
         powerOffActionId: String? = nil,
         powerWritable: Bool = true,
         volumeWritable: Bool = true,
-        volumePresent: Bool = true
+        volumePresent: Bool = true,
+        playback: MediaPlaybackState? = nil,
+        remoteEntityId: String? = nil,
+        supportsRemotePad: Bool = false,
+        miotRemoteActions: [String: String] = [:]
     ) {
+        self.playback = playback
+        self.remoteEntityId = remoteEntityId
+        self.supportsRemotePad = supportsRemotePad
+        self.miotRemoteActions = miotRemoteActions
         self.mediaEntityId = mediaEntityId
         self.state = state
         self.volumePercent = volumePercent
@@ -1383,7 +1398,9 @@ public struct SmartDevice: Identifiable, Equatable, Sendable {
         case .speaker(let s):
             [s.mediaEntityId, s.muteSwitchEntityId, s.sleepModeEntityId,
              s.ttsNotifyEntityId, s.directiveNotifyEntityId, s.playMusicButtonId, s.stopAlarmButtonId]
-        case .tv(let s): [s.mediaEntityId, s.muteSwitchEntityId, s.turnOnButtonId, s.powerOnActionId, s.powerOffActionId]
+        case .tv(let s):
+            [s.mediaEntityId, s.muteSwitchEntityId, s.turnOnButtonId, s.powerOnActionId, s.powerOffActionId, s.remoteEntityId]
+                + s.miotRemoteActions.keys.sorted().map { s.miotRemoteActions[$0] }
         case .camera(let s): [s.entityId, s.motionDetectionEntityId, s.streamEntityId]
         case .sensor: []
         case .cover(let s): [s.entityId]
@@ -1517,7 +1534,7 @@ public struct SmartDevice: Identifiable, Equatable, Sendable {
         case .tv(let spec):
             return spec.powerWritable || (spec.volumeWritable && spec.volumePresent)
                 || spec.muteSwitchEntityId != nil || !spec.availableSources.isEmpty
-                || spec.isPairingPromptActive
+                || spec.isPairingPromptActive || spec.playback != nil || spec.supportsRemotePad
         case .plug(let s):
             return s.powerWatts != nil || s.energyKwh != nil || s.childLockEntityId != nil
         case .sensor:
@@ -1728,11 +1745,20 @@ public enum DeviceCommand: Equatable, Sendable {
     /// Generic MIoT action from a 更多设置 button. Feeding actions carry their input values in
     /// spec order (#7); a no-argument action sends an empty list.
     case callMiotAction(entityId: String, arguments: [JSONValue])
+    case mediaPlayPause(entityId: String)
+    case mediaNextTrack(entityId: String)
+    case mediaPreviousTrack(entityId: String)
+    case mediaSeek(entityId: String, positionSec: Double)
+    /// HA `remote.send_command`, or a MIoT action address from `TVSpec.miotRemoteActions`.
+    case remoteSendKey(entityId: String, key: TVRemoteKey)
 
     var isIdempotentForAccountFallback: Bool {
         switch self {
-        case .pressButton, .sendNotifyMessage, .vacuumAction, .callMiotAction, .activateScene:
+        case .pressButton, .sendNotifyMessage, .vacuumAction, .callMiotAction, .activateScene,
+             .mediaPlayPause, .mediaNextTrack, .mediaPreviousTrack, .remoteSendKey:
             return false
+        case .mediaSeek:
+            return true
         case .setLightPower, .setLightBrightness, .setLightColorTemp, .setLightEffect,
              .setClimatePower, .setClimateMode, .setClimateTemperature, .setClimateFanMode, .setClimateSwingMode,
              .setFanPower, .setFanPercentage, .setFanPresetMode, .setFanOscillating,

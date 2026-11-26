@@ -7051,3 +7051,88 @@ html.is-settings-window[data-native-backdrop="mica"] .cc-popover.scheme-light .c
   .cc-room-browse-menu { opacity: 0; transform: translateY(-4px) scale(0.98); }
   .cc-diff-preview-card { opacity: 0; transform: translateY(-4px); }
 }
+
+/* TV Now Playing + remote pad (mirrors macOS TVDetailDrawer) */
+.cc-tv-nowplaying { display: flex; flex-direction: column; gap: 8px; }
+.cc-tv-np-row { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.cc-tv-artwork {
+  flex: none; width: 46px; height: 46px; border-radius: 9px;
+  display: grid; place-items: center; color: var(--win-accent);
+  background: linear-gradient(135deg, color-mix(in srgb, var(--win-accent) 32%, transparent), color-mix(in srgb, var(--win-accent) 12%, transparent));
+  border: 1px solid var(--win-control-stroke);
+}
+.cc-tv-artwork svg { width: 20px; height: 20px; }
+.cc-tv-np-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.cc-tv-np-title { font-size: 13px; font-weight: 600; color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cc-tv-np-meta { display: flex; align-items: center; gap: 5px; min-width: 0; }
+.cc-tv-np-sub { font-size: 11px; color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cc-tv-np-app {
+  flex: none; font-size: 10px; font-weight: 600; color: var(--win-accent); padding: 1px 6px; border-radius: var(--r-pill);
+  background: color-mix(in srgb, var(--win-accent) 14%, transparent);
+}
+.cc-tv-transport-row { display: flex; align-items: center; gap: 2px; flex: none; }
+.cc-tv-transport {
+  width: 28px; height: 28px; display: grid; place-items: center; border: 0; border-radius: var(--r-control);
+  background: transparent; color: var(--text-primary); cursor: pointer;
+  transition: background-color var(--dur-fast) var(--ease-standard), transform var(--dur-faster) var(--ease-standard);
+}
+.cc-tv-transport svg { width: 13px; height: 13px; }
+.cc-tv-transport.is-primary svg { width: 17px; height: 17px; }
+.cc-tv-transport:hover { background: var(--win-subtle-hover); }
+.cc-tv-transport:active { transform: scale(0.92); }
+.cc-tv-progress { display: flex; flex-direction: column; gap: 3px; }
+.cc-tv-times { display: flex; justify-content: space-between; font-size: 10px; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+.cc-tv-track { height: 3px; border-radius: var(--r-pill); background: var(--win-control-stroke); overflow: hidden; }
+.cc-tv-fill { height: 100%; background: var(--win-accent); border-radius: inherit; }
+.cc-tv-seek {
+  --tv-progress: 0%;
+  appearance: none; -webkit-appearance: none; width: 100%; height: 14px; margin: 0; background: transparent; cursor: pointer;
+}
+.cc-tv-seek::-webkit-slider-runnable-track {
+  height: 4px; border-radius: var(--r-pill);
+  background: linear-gradient(to right, var(--win-accent) var(--tv-progress), var(--win-control-stroke) var(--tv-progress));
+  transition: height var(--dur-fast) var(--ease-standard);
+}
+.cc-tv-seek:hover::-webkit-slider-runnable-track, .cc-tv-seek:active::-webkit-slider-runnable-track { height: 7px; }
+.cc-tv-seek::-webkit-slider-thumb {
+  -webkit-appearance: none; width: 12px; height: 12px; margin-top: -4px; border-radius: 50%;
+  background: var(--win-text-on-accent); border: 2px solid var(--win-accent); opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease-standard);
+}
+.cc-tv-seek:hover::-webkit-slider-thumb, .cc-tv-seek:focus-visible::-webkit-slider-thumb, .cc-tv-seek:active::-webkit-slider-thumb { opacity: 1; }
+.cc-tv-remote { display: flex; flex-direction: column; gap: 8px; }
+.cc-tv-remote-toggle {
+  display: flex; align-items: center; justify-content: space-between; border: 0; background: transparent; padding: 2px 0;
+  font-size: 12px; font-weight: 600; color: var(--text-primary); cursor: pointer;
+}
+.cc-tv-remote-toggle svg { width: 12px; height: 12px; color: var(--text-secondary); transition: transform var(--dur-fast) var(--ease-standard); }
+.cc-tv-remote.is-open .cc-tv-remote-toggle svg { transform: rotate(90deg); }
+.cc-tv-remote-body { display: flex; align-items: center; justify-content: center; gap: 18px; }
+.cc-tv-dpad {
+  position: relative; width: 104px; height: 104px; border-radius: 50%; flex: none;
+  background: var(--win-control-bg); border: 1px solid var(--win-control-stroke);
+}
+.cc-tv-dpad-key, .cc-tv-dpad-ok {
+  position: absolute; display: grid; place-items: center; border: 0; background: transparent; color: var(--text-primary); cursor: pointer;
+  transition: transform var(--dur-faster) var(--ease-standard), opacity var(--dur-faster) var(--ease-standard);
+}
+.cc-tv-dpad-key { width: 30px; height: 30px; }
+.cc-tv-dpad-key svg { width: 14px; height: 14px; }
+.cc-tv-dpad-key.is-up { top: 4px; left: 37px; }
+.cc-tv-dpad-key.is-down { bottom: 4px; left: 37px; }
+.cc-tv-dpad-key.is-left { left: 4px; top: 37px; }
+.cc-tv-dpad-key.is-right { right: 4px; top: 37px; }
+.cc-tv-dpad-ok {
+  top: 32px; left: 32px; width: 40px; height: 40px; border-radius: 50%; font-size: 12px; font-weight: 700;
+  background: color-mix(in srgb, var(--win-accent) 18%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--win-accent) 35%, transparent);
+}
+.cc-tv-dpad-key:active:not(:disabled), .cc-tv-dpad-ok:active:not(:disabled) { transform: scale(0.9); opacity: 0.7; }
+.cc-tv-dpad-key:disabled, .cc-tv-dpad-ok:disabled { opacity: 0.25; cursor: default; }
+.cc-tv-remote-col { display: flex; flex-direction: column; gap: 8px; }
+.cc-tv-side-key { display: grid; place-items: center; width: 40px; padding: 5px 0; }
+.cc-tv-side-key svg { width: 14px; height: 14px; }
+@media (prefers-reduced-motion: reduce) {
+  .cc-tv-transport, .cc-tv-dpad-key, .cc-tv-dpad-ok, .cc-tv-remote-toggle svg, .cc-tv-seek::-webkit-slider-runnable-track { transition: none; }
+  .cc-tv-transport:active, .cc-tv-dpad-key:active, .cc-tv-dpad-ok:active { transform: none; }
+}
