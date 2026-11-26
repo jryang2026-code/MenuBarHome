@@ -161,7 +161,10 @@ extension HomeStore {
     /// in-memory home only — nothing is sent over the network (#47).
     @discardableResult
     public func runAutomation(
-        intents: [DeviceIntent], title: String, canContinue: (() -> Bool)? = nil
+        intents: [DeviceIntent],
+        title: String,
+        shouldSkipIntent: ((DeviceIntent) -> Bool)? = nil,
+        canContinue: (() -> Bool)? = nil
     ) async -> AutomationExecutionOutcome {
         let plan = IntentPlan(intents: intents, reply: title, source: .local)
         let generation = automationGeneration
@@ -190,7 +193,7 @@ extension HomeStore {
         let resultPlan = await MiCloudClient.$isBackgroundWrite.withValue(true) {
             await executeIntentPlan(
                 plan, recordedUtterance: nil, origin: .automation, automationGeneration: generation,
-                automationCanContinue: canContinue
+                automationCanContinue: canContinue, automationShouldSkipIntent: shouldSkipIntent
             ) { attempted, succeeded, failed, offline in
                 executed = (attempted, succeeded, failed, offline)
             }

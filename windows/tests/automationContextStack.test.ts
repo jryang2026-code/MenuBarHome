@@ -199,8 +199,33 @@ describe("AutomationEngine context restore parity", () => {
     await engine.dispatchEvent(host, { kind: "focusModeChanged", enabled: false }, { nowMs: 1_800_000_010_000 });
     assert.equal(commands.length, 1);
     assert.equal(host.replyBanner?.isError, true);
-    assert.match(host.replyBanner?.text ?? "", /上下文还原需要确认|Context restore requires confirmation/);
+    assert.match(host.replyBanner?.text ?? "", /跳过 1 台需要重新开启的高风险设备/);
     assert.equal(engine.contextStack.isEmpty, true);
+  });
+
+  it("restores a light even when the same frame contains a blocked heater write", async () => {
+    const engine = new AutomationEngine(new MemoryStorage());
+    engine.primeFocusModeBaseline(false);
+    engine.store.save([createAutomationRule({
+      trigger: "focusModeEnabled", action: { kind: "devices", deviceIds: ["heater", "lamp"], isOn: false },
+      highRiskApproved: true, restoreWhenContextEnds: true,
+    })]);
+    const { host, commands } = makeHost([makeHighRiskPlug("heater", true), makeLight("lamp", true)]);
+    const entered = 1_800_000_000_000;
+    await engine.dispatchEvent(host, { kind: "focusModeChanged", enabled: true }, { nowMs: entered });
+    assert.equal(engine.contextStack.count, 1);
+
+    const exited = entered + 10_000;
+    await engine.dispatchEvent(host, { kind: "focusModeChanged", enabled: false }, { nowMs: exited });
+    assert.deepEqual(commands, [
+      { kind: "setSwitch", entityId: "switch.heater", isOn: false },
+      { kind: "setLightPower", entityId: "light.lamp", isOn: false },
+      { kind: "setLightPower", entityId: "light.lamp", isOn: true },
+    ]);
+    assert.equal(host.replyBanner?.isError, true);
+    assert.equal(engine.contextStack.isEmpty, true);
+    assert.equal(await engine.restoreContextsIfNeeded("focusModeDisabled", host, exited + 70_000), 0);
+    assert.equal(commands.length, 3);
   });
 
   it("restores nested frames newest-first (strict LIFO) and retains frames on failed restore for retry", async () => {
