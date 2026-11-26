@@ -1,0 +1,31 @@
+{
+  "description": "v0 stdio JSON-RPC 2.0 initialize failure: adapter rejects an unsupported protocol version with a JSON-RPC error instead of a result",
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 6,
+    "method": "initialize",
+    "params": {
+      "protocolVersion": "9.0",
+      "supportedProtocolVersions": [
+        "0.1",
+        "9.0"
+      ],
+      "hostVersion": "1.5.0",
+      "locale": "zh-Hans",
+      "adapterId": "com.example.aqara-lan-readonly",
+      "dataDir": "/Users/example/Library/Application Support/MenuBarMijia/adapters/com.example.aqara-lan-readonly/data"
+    }
+  },
+  "response": {
+    "jsonrpc": "2.0",
+    "id": 6,
+    "error": {
+      "code": -32004,
+      "message": "Unsupported protocol version 9.0",
+      "data": {
+        "adapterCode": "unsupported",
+        "retryable": false
+      }
+    }
+  }
+}

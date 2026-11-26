@@ -46,10 +46,11 @@ struct AutomationContextEngineTests {
 
     private func makeStore(
         lightOn: Bool = true,
-        scenes: [HomeScene] = []
+        scenes: [HomeScene] = [],
+        devices: [SmartDevice]? = nil
     ) async throws -> (HomeStore, MockHomeProvider) {
         let mock = MockHomeProvider(snapshot: SynthesizedHome(
-            devices: [Self.studyLight(isOn: lightOn)],
+            devices: devices ?? [Self.studyLight(isOn: lightOn)],
             scenes: scenes
         ))
         let store = HomeStore(
@@ -77,11 +78,12 @@ struct AutomationContextEngineTests {
         defaults: UserDefaults,
         lightOn: Bool = true,
         scenes: [HomeScene] = [],
+        devices: [SmartDevice]? = nil,
         calendar: Calendar = .current,
         environment: AutomationEnvironmentProbe = Self.unlockedEnvironment,
         elapsedTime: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
     ) async throws -> (AutomationEngine, HomeStore, MockHomeProvider, FakeMacContextProvider) {
-        let (store, mock) = try await makeStore(lightOn: lightOn, scenes: scenes)
+        let (store, mock) = try await makeStore(lightOn: lightOn, scenes: scenes, devices: devices)
         let ruleStore = AutomationRuleStore(defaults: defaults)
         ruleStore.save(rules)
         try #require(ruleStore.load() == rules)
@@ -376,6 +378,50 @@ struct AutomationContextEngineTests {
         await provider.emit(MacContextSnapshot(isFocusActive: false), at: start.addingTimeInterval(20))
         #expect(await mock.executedCommands == [onCommand(), offCommand()])
         #expect(AutomationContextStack(defaults: defaults, now: start.addingTimeInterval(20)).isEmpty)
+    }
+
+    @Test("Context exit restores lights and consumes blocked heater writes", arguments: [
+        ["light_study", "heater"], ["heater"], ["light_study"]
+    ])
+    func contextRestoreSkipsOnlyHighRiskPowerOn(ids: [String]) async throws {
+        let defaults = InMemoryUserDefaults()
+        let heater = SmartDevice(
+            id: "heater", name: "卧室取暖器插座", roomId: "bedroom", roomName: "卧室",
+            model: "chuangmi.plug.212a01", isOnline: true,
+            kind: .plug(PlugSpec(switchEntityId: "switch.heater", isOn: true))
+        )
+        let devices = [Self.studyLight(), heater].filter { ids.contains($0.id) }
+        let rule = AutomationRule(
+            trigger: .focusModeEnabled,
+            action: .devices(ids: ids, isOn: false),
+            highRiskApproved: true,
+            restoreWhenContextEnds: true,
+            restoreTrigger: .focusModeDisabled
+        )
+        let (engine, store, mock, provider) = try await makeEngine(
+            rules: [rule], defaults: defaults, devices: devices
+        )
+        defer { withExtendedLifetime(engine) { store.stop() } }
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+
+        await provider.emit(MacContextSnapshot(isFocusActive: false), at: start)
+        await provider.emit(MacContextSnapshot(isFocusActive: true), at: start.addingTimeInterval(10))
+        var expected = [DeviceCommand]()
+        if ids.contains(Self.lightId) { expected.append(offCommand()) }
+        if ids.contains(heater.id) { expected.append(.setSwitch(entityId: "switch.heater", isOn: false)) }
+        #expect(await mock.executedCommands == expected)
+        #expect(AutomationContextStack(defaults: defaults, now: start.addingTimeInterval(10)).count == 1)
+        store.dismissToast()
+
+        let exit = start.addingTimeInterval(20)
+        await provider.emit(MacContextSnapshot(isFocusActive: false), at: exit)
+        if ids.contains(Self.lightId) { expected.append(onCommand()) }
+        #expect(await mock.executedCommands == expected)
+        #expect(AutomationContextStack(defaults: defaults, now: exit).isEmpty)
+        #expect((store.toastNotice?.isError == true) == ids.contains(heater.id))
+
+        await engine.handle(trigger: .focusModeDisabled, at: exit.addingTimeInterval(70))
+        #expect(await mock.executedCommands == expected)
     }
 
     @Test("Power, disconnect and battery-threshold rules each run")

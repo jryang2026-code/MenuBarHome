@@ -1923,6 +1923,7 @@ extension HomeStore {
         automationGeneration: UInt64? = nil,
         timerGeneration: UInt64? = nil,
         automationCanContinue: (() -> Bool)? = nil,
+        automationShouldSkipIntent: ((DeviceIntent) -> Bool)? = nil,
         onAutomationCompletion: ((Int, Int, Int, Bool) -> Void)? = nil
     ) async -> IntentPlan {
         if origin.blocksWhileScreenLocked, isControlBlockedByScreenLock {
@@ -1966,6 +1967,7 @@ extension HomeStore {
             // A switch stops the next step without cancelling a write already sent to the provider.
             for intent in plan.intents {
                 guard context == controlContextID, runtimeAllowsWrites() else { break }
+                if automationShouldSkipIntent?(intent) == true { continue }
                 outcomes.append(await apply(intent, context: context))
             }
         } else {

@@ -440,6 +440,18 @@ struct MacContextAutomationTests {
         #expect(!AutomationTrigger.frontmostAppLeft.usesMacContextObserver)
     }
 
+    @Test("Context restore supports reverse triggers and preserves one-way end mappings")
+    func defaultRestoreTriggers() {
+        #expect(AutomationTrigger.cameraNotInUse.defaultRestoreTrigger == .cameraInUse)
+        #expect(AutomationTrigger.microphoneNotInUse.defaultRestoreTrigger == .microphoneInUse)
+        #expect(AutomationTrigger.focusModeDisabled.defaultRestoreTrigger == .focusModeEnabled)
+        #expect(AutomationTrigger.powerDisconnected.defaultRestoreTrigger == .powerConnected)
+        #expect(AutomationTrigger.frontmostAppLeft.defaultRestoreTrigger == .frontmostAppBecame)
+        #expect(AutomationTrigger.externalDisplayConnected.defaultRestoreTrigger == .externalDisplayDisconnected)
+        #expect(AutomationTrigger.wifiNetworkJoined.defaultRestoreTrigger == .wifiNetworkLeft)
+        #expect(AutomationTrigger.scheduledTime.defaultRestoreTrigger == nil)
+    }
+
     @Test("Built-in meeting and movie templates create disabled rules with restore enabled and no pre-selected devices")
     func templatesCreateDisabledRestoreRulesWithoutDevices() throws {
         let meetingRules = AutomationRuleTemplate.meeting.makeRules()

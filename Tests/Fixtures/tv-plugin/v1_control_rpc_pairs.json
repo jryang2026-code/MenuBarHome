@@ -1,0 +1,220 @@
+{
+  "description": "ADR-0024 v1 TV and media JSON-RPC 2.0 pairs. Each case states the expected observable result.",
+  "protocolVersion": "1.0",
+  "adapterId": "com.menubarhome.tv-bridge",
+  "cases": [
+    {
+      "name": "control-execute-valid",
+      "expect": "accept",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "control.execute",
+        "params": {
+          "grantId": "grant-tv-0001",
+          "capabilityGeneration": 7,
+          "nativeId": "livingroom-tv",
+          "verb": "input.select",
+          "args": { "source": "HDMI1" }
+        }
+      },
+      "response": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": { "accepted": true, "applied": true }
+      }
+    },
+    {
+      "name": "control-execute-missing-grant",
+      "expect": "reject",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "control.execute",
+        "params": {
+          "capabilityGeneration": 7,
+          "nativeId": "livingroom-tv",
+          "verb": "power.set",
+          "args": { "isOn": false }
+        }
+      },
+      "response": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "error": {
+          "code": -32004,
+          "message": "missing grantId",
+          "data": { "adapterCode": "unsupported", "retryable": false }
+        }
+      }
+    },
+    {
+      "name": "control-execute-closed-verb",
+      "expect": "reject",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "control.execute",
+        "params": {
+          "grantId": "grant-tv-0003",
+          "capabilityGeneration": 7,
+          "nativeId": "livingroom-tv",
+          "verb": "rawCommand",
+          "args": { "payload": "anything" }
+        }
+      },
+      "response": {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "error": {
+          "code": -32004,
+          "message": "verb not in closed table",
+          "data": { "adapterCode": "unsupported", "retryable": false }
+        }
+      }
+    },
+    {
+      "name": "host-context-changed",
+      "expect": "accept",
+      "request": {
+        "jsonrpc": "2.0",
+        "method": "host.contextChanged",
+        "params": {
+          "scope": "adapter:com.menubarhome.tv-bridge",
+          "active": false,
+          "reason": "panelClosed"
+        }
+      },
+      "response": null
+    },
+    {
+      "name": "events-media-playback-changed",
+      "expect": "accept",
+      "request": {
+        "jsonrpc": "2.0",
+        "method": "events.mediaPlaybackChanged",
+        "params": {
+          "nativeId": "livingroom-tv",
+          "playbackState": "playing",
+          "title": "Live concert",
+          "artist": "Example artist",
+          "durationSec": 3600,
+          "positionSec": 1234,
+          "canSeek": true,
+          "artworkPath": "artwork/2026/11/cover-001.jpg",
+          "ts": "2026-11-26T10:00:00Z"
+        }
+      },
+      "response": null
+    },
+    {
+      "name": "events-media-playback-no-seek",
+      "expect": "accept",
+      "request": {
+        "jsonrpc": "2.0",
+        "method": "events.mediaPlaybackChanged",
+        "params": {
+          "nativeId": "livingroom-tv",
+          "playbackState": "paused",
+          "title": "Native streaming app",
+          "canSeek": false,
+          "ts": "2026-11-26T10:00:05Z"
+        }
+      },
+      "response": null
+    },
+    {
+      "name": "media-fetch-artwork-valid",
+      "expect": "accept",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": 7,
+        "method": "media.fetchArtwork",
+        "params": {
+          "nativeId": "livingroom-tv",
+          "path": "artwork/2026/11/cover-001.jpg",
+          "maxBytes": 262144
+        }
+      },
+      "response": {
+        "jsonrpc": "2.0",
+        "id": 7,
+        "result": { "mimeType": "image/jpeg", "bytesBase64": "AP_PLACEHOLDER" }
+      }
+    },
+    {
+      "name": "media-fetch-artwork-traversal",
+      "expect": "reject",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": 8,
+        "method": "media.fetchArtwork",
+        "params": {
+          "nativeId": "livingroom-tv",
+          "path": "../../etc/passwd",
+          "maxBytes": 262144
+        }
+      },
+      "response": {
+        "jsonrpc": "2.0",
+        "id": 8,
+        "error": {
+          "code": -32602,
+          "message": "artwork path traversal rejected",
+          "data": { "adapterCode": "unknown", "retryable": false }
+        }
+      }
+    },
+    {
+      "name": "pairing-begin-valid",
+      "expect": "accept",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": 9,
+        "method": "pairing.begin",
+        "params": { "nativeId": "livingroom-tv", "method": "tvUserConsent" }
+      },
+      "response": {
+        "jsonrpc": "2.0",
+        "id": 9,
+        "result": {
+          "pairingId": "pair-tv-0009",
+          "instructions": ["在电视上确认 MenuBarHome 连接请求。"]
+        }
+      }
+    },
+    {
+      "name": "pairing-submit-valid",
+      "expect": "accept",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": 10,
+        "method": "pairing.submit",
+        "params": {
+          "pairingId": "pair-tv-0009",
+          "inputs": { "userConfirmation": "approved-on-device" }
+        }
+      },
+      "response": {
+        "jsonrpc": "2.0",
+        "id": 10,
+        "result": { "paired": true, "nativeId": "livingroom-tv" }
+      }
+    },
+    {
+      "name": "pairing-cancel-valid",
+      "expect": "accept",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": 11,
+        "method": "pairing.cancel",
+        "params": { "pairingId": "pair-tv-0009", "reason": "userCancelled" }
+      },
+      "response": {
+        "jsonrpc": "2.0",
+        "id": 11,
+        "result": { "cancelled": true }
+      }
+    }
+  ]
+}
