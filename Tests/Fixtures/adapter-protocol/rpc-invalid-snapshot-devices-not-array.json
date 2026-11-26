@@ -1,0 +1,18 @@
+{
+  "description": "Invalid snapshot whose devices field is not an array (must be rejected)",
+  "sourceScope": "adapter:com.example.aqara-lan-readonly",
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 5,
+    "method": "snapshot",
+    "params": {}
+  },
+  "response": {
+    "jsonrpc": "2.0",
+    "id": 5,
+    "result": {
+      "capturedAt": "2026-11-24T05:10:00Z",
+      "devices": "none"
+    }
+  }
+}

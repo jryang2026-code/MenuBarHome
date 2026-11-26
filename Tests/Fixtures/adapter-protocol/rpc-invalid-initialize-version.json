@@ -1,0 +1,59 @@
+{
+  "description": "Invalid v0 initialize handshake selecting a protocolVersion outside the host supported set (must be rejected)",
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "initialize",
+    "params": {
+      "protocolVersion": "0.1",
+      "supportedProtocolVersions": [
+        "0.1"
+      ],
+      "hostVersion": "1.5.0",
+      "locale": "zh-Hans",
+      "adapterId": "com.example.aqara-lan-readonly",
+      "dataDir": "/Users/example/Library/Application Support/MenuBarMijia/adapters/com.example.aqara-lan-readonly/data",
+      "config": {
+        "gatewayHost": "192.168.1.50"
+      },
+      "leases": [
+        {
+          "accountId": "lan-gateway-1",
+          "leaseId": "lease-20261124-001",
+          "kind": "lanToken",
+          "value": "ephemeral-lease-placeholder",
+          "expiresAt": "2026-11-24T06:00:00Z"
+        }
+      ]
+    }
+  },
+  "response": {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "result": {
+      "protocolVersion": "9.0",
+      "adapterId": "com.example.aqara-lan-readonly",
+      "adapterVersion": "0.1.0",
+      "manifestDigest": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "capabilities": {
+        "readOnly": true,
+        "deviceKinds": [
+          "sensor",
+          "light"
+        ],
+        "readings": [
+          "temperature",
+          "humidity",
+          "battery"
+        ],
+        "alerts": [
+          "leak",
+          "smoke",
+          "gas"
+        ],
+        "pushEvents": true,
+        "history": false
+      }
+    }
+  }
+}

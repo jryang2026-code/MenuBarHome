@@ -168,6 +168,13 @@
                 "key": { "type": "string", "pattern": "^[a-zA-Z][a-zA-Z0-9_-]{0,31}$" },
                 "inputType": { "type": "string", "enum": ["text", "secret", "url"] },
                 "writeOnly": { "type": "boolean" }
+              },
+              "if": {
+                "properties": { "inputType": { "const": "secret" } },
+                "required": ["inputType"]
+              },
+              "then": {
+                "properties": { "writeOnly": { "const": true } }
               }
             }
           }
@@ -368,7 +375,10 @@
                 "properties": {
                   "type": { "type": "string", "enum": ["string", "number", "integer", "boolean"] },
                   "title": { "type": "string", "minLength": 1, "maxLength": 64 },
-                  "writeOnly": { "type": "boolean" }
+                  "writeOnly": {
+                    "type": "boolean",
+                    "description": "对应 auth[].prompts 中 inputType=secret 的配置项必须为 true，宿主与校验脚本据此拒绝回显长期密钥。"
+                  }
                 }
               }
             }
