@@ -737,9 +737,12 @@ public struct ControlCenterPanel: View {
                 .accessibilityLabel(Text(listening
                     ? L10n.tr("停止聆听", "Stop listening")
                     : L10n.tr("语音输入", "Voice input")))
-                .panelHelp(listening
-                    ? L10n.tr("停止聆听并执行", "Stop listening and run")
-                    : L10n.tr("语音输入（快捷键 V，或长按 \(HotkeySettingsState.shared.shortcut.displayString) / 菜单栏图标）", "Voice input (Shortcut V, or hold \(HotkeySettingsState.shared.shortcut.displayString) / menu bar icon)"))
+                .panelHelp(ControlCenterPanel.voiceButtonHelp(
+                    listening: listening,
+                    globalHotkeyEnabled: store.enableGlobalHotkey,
+                    isGlobalHotkeyRegistered: HotkeySettingsState.shared.isRegistered,
+                    shortcutDisplay: HotkeySettingsState.shared.shortcut.displayString
+                ))
             }
         }
         .padding(.leading, 12)
@@ -1099,5 +1102,30 @@ enum PanelSearchKeyboard {
         Task { @MainActor in
             await store.runAssistantCommand(utterance, preferDiffPreview: true)
         }
+    }
+}
+
+extension ControlCenterPanel {
+    /// Hover help for the omnibar voice button (shared with `ClassicControlCenterPanel`).
+    /// Mentions holding the global hotkey only when it is enabled and registered with Carbon.
+    static func voiceButtonHelp(
+        listening: Bool,
+        globalHotkeyEnabled: Bool,
+        isGlobalHotkeyRegistered: Bool,
+        shortcutDisplay: String
+    ) -> String {
+        if listening {
+            return L10n.tr("停止聆听并执行", "Stop listening and run")
+        }
+        if globalHotkeyEnabled && isGlobalHotkeyRegistered {
+            return L10n.tr(
+                "语音输入（快捷键 V，或长按 \(shortcutDisplay) / 菜单栏图标）",
+                "Voice input (Shortcut V, or hold \(shortcutDisplay) / menu bar icon)"
+            )
+        }
+        return L10n.tr(
+            "语音输入（快捷键 V，或长按菜单栏图标）",
+            "Voice input (Shortcut V, or hold menu bar icon)"
+        )
     }
 }
