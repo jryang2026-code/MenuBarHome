@@ -249,6 +249,8 @@ export function restoreSettingsDraft(
     const preset = inferAssistantPreset(baseEl.value);
     const providerEl = root.querySelector<HTMLSelectElement>("#settings-ai-provider");
     if (providerEl) providerEl.value = preset.id;
+    const restoreDefaultsBtn = root.querySelector<HTMLButtonElement>("#btn-restore-ai-provider-defaults");
+    if (restoreDefaultsBtn) restoreDefaultsBtn.hidden = preset.id === "custom";
     const apiKeyEl = root.querySelector<HTMLInputElement>("#settings-api-key");
     if (apiKeyEl) {
       apiKeyEl.placeholder = preset.keyPlaceholder;
@@ -1135,6 +1137,9 @@ function renderAssistantPanel(ctx: SettingsViewContext): string {
         <span id="settings-env-import-status" class="cc-field-hint" style="margin: 0;"></span>
       </div>
       <div class="cc-update-row" style="margin-top: 6px; gap: 6px; flex-wrap: wrap;">
+        <button type="button" class="cc-inline-pill" id="btn-restore-ai-provider-defaults" ${currentPreset.id === "custom" ? "hidden" : ""}>${ctx.escapeHtml(
+          tr3("恢复服务商默认值", "恢復服務商預設值", "Restore Provider Defaults"),
+        )}</button>
         <button type="button" class="cc-inline-pill" id="btn-remove-ai-provider">${t("移除此服务商")}</button>
       </div>
     </div>

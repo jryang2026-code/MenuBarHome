@@ -1544,6 +1544,9 @@ export function bindSettingsEvents(host: SettingsEventsHost): void {
   });
 
   const providerSelect = host.root.querySelector<HTMLSelectElement>("#settings-ai-provider");
+  const restoreProviderDefaultsBtn = host.root.querySelector<HTMLButtonElement>(
+    "#btn-restore-ai-provider-defaults",
+  );
   providerSelect?.addEventListener("change", () => {
     const presetId = providerSelect.value;
     const preset = ASSISTANT_PROVIDER_PRESETS.find((p) => p.id === presetId);
@@ -1577,6 +1580,26 @@ export function bindSettingsEvents(host: SettingsEventsHost): void {
       }
     }
 
+    if (restoreProviderDefaultsBtn) restoreProviderDefaultsBtn.hidden = preset.id === "custom";
+    syncSettingsSaveHint(host, "draft");
+  });
+
+  restoreProviderDefaultsBtn?.addEventListener("click", () => {
+    const baseEl = host.root.querySelector<HTMLInputElement>("#settings-base-url");
+    const modelEl = host.root.querySelector<HTMLInputElement>("#settings-model");
+    const apiKeyEl = host.root.querySelector<HTMLInputElement>("#settings-api-key");
+    const selectedId = providerSelect?.value;
+    const preset =
+      (selectedId ? ASSISTANT_PROVIDER_PRESETS.find((p) => p.id === selectedId) : undefined) ??
+      inferAssistantPreset(baseEl?.value ?? host.settings.assistantBaseURL);
+    if (!preset || preset.id === "custom") return;
+    if (baseEl) baseEl.value = preset.defaultBaseURL;
+    if (modelEl) modelEl.value = preset.defaultModel;
+    if (apiKeyEl) {
+      apiKeyEl.placeholder = preset.keyPlaceholder;
+      host.syncKeyFieldWithEndpoint(apiKeyEl, preset.defaultBaseURL);
+    }
+    restoreProviderDefaultsBtn.hidden = false;
     syncSettingsSaveHint(host, "draft");
   });
 
@@ -1610,6 +1633,7 @@ export function bindSettingsEvents(host: SettingsEventsHost): void {
     const inferred = inferAssistantPreset(target.value);
     const providerEl = host.root.querySelector<HTMLSelectElement>("#settings-ai-provider");
     if (providerEl) providerEl.value = inferred.id;
+    if (restoreProviderDefaultsBtn) restoreProviderDefaultsBtn.hidden = inferred.id === "custom";
     if (apiKeyEl) {
       apiKeyEl.placeholder = inferred.keyPlaceholder;
       host.syncKeyFieldWithEndpoint(apiKeyEl, target.value);
