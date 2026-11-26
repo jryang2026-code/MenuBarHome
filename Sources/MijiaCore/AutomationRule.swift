@@ -76,7 +76,7 @@ public enum AutomationTrigger: String, CaseIterable, Codable, Identifiable, Send
     public var id: String { rawValue }
 
     /// The natural end signal for a lasting context. One-shot and asymmetric triggers have no
-    /// paired exit, so Settings does not offer context restoration for them.
+    /// paired exit.
     public var pairedContextTrigger: AutomationTrigger? {
         switch self {
         case .cameraInUse: return .cameraNotInUse
@@ -165,17 +165,12 @@ public enum AutomationTrigger: String, CaseIterable, Codable, Identifiable, Send
         }
     }
 
-    /// Paired exit trigger used when `AutomationRule.restoreWhenContextEnds` is enabled.
+    /// End trigger used by Settings for a device rule with context restoration.
     public var defaultRestoreTrigger: AutomationTrigger? {
         switch self {
-        case .cameraInUse: return .cameraNotInUse
-        case .microphoneInUse: return .microphoneNotInUse
-        case .frontmostAppBecame: return .frontmostAppLeft
-        case .focusModeEnabled: return .focusModeDisabled
         case .externalDisplayConnected: return .externalDisplayDisconnected
-        case .powerConnected: return .powerDisconnected
         case .wifiNetworkJoined: return .wifiNetworkLeft
-        default: return nil
+        default: return pairedContextTrigger
         }
     }
 

@@ -310,7 +310,7 @@ struct AutomationSettingsSection: View {
                         .foregroundStyle(DesignTokens.secondaryText)
                         .lineLimit(1)
                 }
-                if case .devices = rule.action, let exitTrigger = rule.trigger.pairedContextTrigger {
+                if case .devices = rule.action, let exitTrigger = rule.trigger.defaultRestoreTrigger {
                     Toggle(
                         L10n.tr("情境结束后还原", "Restore when the context ends"),
                         isOn: Binding(
@@ -319,8 +319,6 @@ struct AutomationSettingsSection: View {
                                 guard var current = store.automationRuleStore.load().first(where: { $0.id == rule.id }) else { return }
                                 current.restoreWhenContextEnds = enabled
                                 current.restoreTrigger = enabled ? exitTrigger : nil
-                                // Restoring a turn-off rule turns devices back on, so it asks the same
-                                // high-risk question as the editor's copy of this switch.
                                 if current.isEnabled, enabled,
                                    let confirmation = current.highRiskConfirmation(devices: store.devices),
                                    !current.highRiskApproved {
@@ -367,27 +365,6 @@ struct AutomationSettingsSection: View {
                     }
                     if case .devices(let ids, let isOn) = rule.action {
                         ruleDevicesEditor(rule: rule, selectedIDs: Set(ids), isOn: isOn)
-                    }
-                    // The row above already shows this switch when the trigger has a paired exit.
-                    if rule.trigger.pairedContextTrigger == nil,
-                       let defaultRestore = rule.trigger.defaultRestoreTrigger,
-                       case .devices = rule.action {
-                        Toggle(L10n.tr("情境结束后还原", "Restore when the context ends"), isOn: Binding(
-                            get: { rule.restoreWhenContextEnds },
-                            set: { enabled in
-                                guard var current = store.automationRuleStore.load().first(where: { $0.id == rule.id }) else { return }
-                                current.restoreWhenContextEnds = enabled
-                                current.restoreTrigger = enabled ? defaultRestore : nil
-                                if current.isEnabled, enabled,
-                                   let confirmation = current.highRiskConfirmation(devices: store.devices),
-                                   !current.highRiskApproved {
-                                    guard confirmHighRiskRule(confirmation) else { return }
-                                    current.highRiskApproved = true
-                                }
-                                update(current)
-                            }
-                        ))
-                        .toggleStyle(.checkbox)
                     }
                     if rule.trigger == .scheduledTime {
                         scheduleEditor(Binding(
@@ -761,7 +738,7 @@ struct AutomationSettingsSection: View {
 
             triggerOptionsEditor
 
-            if newActionKind == .devices, let exitTrigger = newTrigger.pairedContextTrigger {
+            if newActionKind == .devices, let exitTrigger = newTrigger.defaultRestoreTrigger {
                 Toggle(
                     isOn: $newRestoreWhenContextEnds,
                     label: {
@@ -778,6 +755,13 @@ struct AutomationSettingsSection: View {
                 ))
                 .font(.system(size: DesignTokens.TypeSize.caption))
                 .foregroundStyle(DesignTokens.secondaryText)
+                Text(L10n.tr(
+                    "还原时会跳过需要重新开启的高风险设备。",
+                    "Restore skips high-risk devices that would need to be turned back on."
+                ))
+                .font(.system(size: DesignTokens.TypeSize.caption))
+                .foregroundStyle(DesignTokens.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
             }
 
             actionEditor
@@ -984,12 +968,6 @@ struct AutomationSettingsSection: View {
             frontmostAppEditor($newFrontmostAppBundleID)
         default:
             EmptyView()
-        }
-
-        if newTrigger.defaultRestoreTrigger != nil && newActionKind == .devices {
-            Toggle(L10n.tr("情境结束后还原", "Restore when the context ends"), isOn: $newRestoreWhenContextEnds)
-                .toggleStyle(.checkbox)
-                .font(.system(size: DesignTokens.TypeSize.caption))
         }
 
         if let permission = newTrigger.requiredPermission {
