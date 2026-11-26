@@ -7,11 +7,10 @@ cd "$ROOT"
 rm -rf "$out"; mkdir -p "$out"
 for target in "darwin arm64" "darwin amd64" "windows amd64"; do
   set -- $target; os=$1; arch=$2; ext=""; [ "$os" = windows ] && ext=.exe
-  name="mbh-tv-bridge-${os}-${arch}${ext}"
-  CGO_ENABLED=0 GOOS=$os GOARCH=$arch "$GO_BIN" build -trimpath -ldflags='-s -w' -o "$out/$name" "$ROOT/cmd/mbh-tv-bridge"
-  (cd "$out" && shasum -a 256 "$name" > "$name.sha256")
-  size=$(wc -c < "$out/$name" | tr -d ' '); echo "$name $size bytes"
+  platform="${os}-${arch}"; mkdir -p "$out/$platform"; name="mbh-tv-bridge${ext}"
+  CGO_ENABLED=0 GOOS=$os GOARCH=$arch "$GO_BIN" build -trimpath -ldflags='-s -w' -o "$out/$platform/$name" "$ROOT/cmd/mbh-tv-bridge"
+  cp "$ROOT/adapter-manifest.json" "$out/$platform/adapter-manifest.json"
+  (cd "$out/$platform" && shasum -a 256 "$name" > "$name.sha256" && shasum -a 256 adapter-manifest.json > adapter-manifest.json.sha256)
+  size=$(wc -c < "$out/$platform/$name" | tr -d ' '); echo "$platform/$name $size bytes"
 done
-cp "$ROOT/adapter-manifest.json" "$out/adapter-manifest.json"
-(cd "$out" && shasum -a 256 adapter-manifest.json > adapter-manifest.json.sha256)
 if [ "${1:-}" = --check ]; then rm -rf "$out"; fi

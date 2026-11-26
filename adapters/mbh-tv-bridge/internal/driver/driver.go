@@ -5,12 +5,10 @@ import (
 	"com.menubarhome.tv-bridge/internal/ws"
 	"crypto/aes"
 	"crypto/cipher"
-	"crypto/tls"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"hash/crc32"
 	"io"
 	"net"
 	"net/http"
@@ -35,7 +33,7 @@ type NowPlaying struct {
 	Title             string  `json:"title,omitempty"`
 	Subtitle          string  `json:"subtitle,omitempty"`
 	AppName           string  `json:"appName,omitempty"`
-	ArtworkURI        string  `json:"artworkURI,omitempty"`
+	ArtworkURI        string  `json:"artworkURL,omitempty"`
 	DurationSec       float64 `json:"durationSec,omitempty"`
 	PositionSec       float64 `json:"positionSec,omitempty"`
 	PositionUpdatedAt string  `json:"positionUpdatedAt,omitempty"`
@@ -57,6 +55,13 @@ type Base struct {
 	client   *http.Client
 	mu       sync.Mutex
 	sleeping bool
+}
+
+func ensureHTTPBase(addr string) string {
+	if strings.HasPrefix(addr, "http://") || strings.HasPrefix(addr, "https://") {
+		return strings.TrimRight(addr, "/")
+	}
+	return "http://" + strings.TrimRight(addr, "/")
 }
 
 func (b *Base) ID() string     { return b.id }
@@ -107,7 +112,7 @@ func commandAllowed(verb string, args map[string]any) error {
 type Xiaomi struct{ Base }
 
 func NewXiaomi(addr string) *Xiaomi {
-	return &Xiaomi{Base: Base{id: "xiaomi_6095", addr: strings.TrimRight(addr, "/"), client: httpClient()}}
+	return &Xiaomi{Base: Base{id: "xiaomi_6095", addr: ensureHTTPBase(addr), client: httpClient()}}
 }
 func (d *Xiaomi) Probe() error {
 	var x any
@@ -129,8 +134,16 @@ func (d *Xiaomi) Execute(v string, a map[string]any) error {
 		if !strings.HasPrefix(s, "hdmi") {
 			return errors.New("invalid source")
 		}
-		_, e := d.client.Get(d.addr + "/controller?action=changesource&source=" + url.QueryEscape(s))
-		return e
+		r, e := d.client.Get(d.addr + "/controller?action=changesource&source=" + url.QueryEscape(s))
+		if e != nil {
+			return e
+		}
+		defer r.Body.Close()
+		_, _ = io.Copy(io.Discard, r.Body)
+		if r.StatusCode >= 300 {
+			return fmt.Errorf("http status %s", r.Status)
+		}
+		return nil
 	}
 	k := fmt.Sprint(a["key"])
 	codes := map[string]string{"up": "up", "down": "down", "left": "left", "right": "right", "select": "enter", "back": "back", "home": "home", "menu": "menu", "volumeUp": "volumeup", "volumeDown": "volumedown", "mute": "mute", "source": "source", "channelUp": "channelup", "channelDown": "channeldown", "playPause": "playpause", "info": "info"}
@@ -155,7 +168,7 @@ type Sony struct {
 }
 
 func NewSony(addr, psk string) *Sony {
-	return &Sony{Base: Base{id: "sony_bravia", addr: strings.TrimRight(addr, "/"), client: httpClient()}, PSK: psk}
+	return &Sony{Base: Base{id: "sony_bravia", addr: ensureHTTPBase(addr), client: httpClient()}, PSK: psk}
 }
 func (d *Sony) do(req *http.Request) (*http.Response, error) {
 	if d.PSK != "" {
@@ -244,7 +257,7 @@ func (d *Sony) Execute(v string, a map[string]any) error {
 type Kodi struct{ Base }
 
 func NewKodi(addr string) *Kodi {
-	return &Kodi{Base: Base{id: "kodi_jsonrpc", addr: strings.TrimRight(addr, "/"), client: httpClient()}}
+	return &Kodi{Base: Base{id: "kodi_jsonrpc", addr: ensureHTTPBase(addr), client: httpClient()}}
 }
 func (d *Kodi) Probe() error {
 	var x any
@@ -304,7 +317,7 @@ func (d *Kodi) Execute(v string, a map[string]any) error {
 type DLNA struct{ Base }
 
 func NewDLNA(addr string) *DLNA {
-	return &DLNA{Base: Base{id: "dlna_dmr", addr: strings.TrimRight(addr, "/"), client: httpClient()}}
+	return &DLNA{Base: Base{id: "dlna_dmr", addr: ensureHTTPBase(addr), client: httpClient()}}
 }
 func (d *DLNA) Probe() error {
 	req, e := http.NewRequest("POST", d.addr, strings.NewReader("<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\"><s:Body/></s:Envelope>"))
@@ -434,7 +447,17 @@ func (d *TCL) Probe() error {
 	_, e = c.Write([]byte("159"))
 	return e
 }
-func (d *TCL) Snapshot() (Snapshot, error) { return Snapshot{ID: d.id, Name: "TCL/FFALCON"}, nil }
+func (d *TCL) Snapshot() (Snapshot, error) {
+	d.mu.Lock()
+	active := d.conn != nil
+	d.mu.Unlock()
+	if !active {
+		if e := d.Probe(); e != nil {
+			return Snapshot{}, e
+		}
+	}
+	return Snapshot{ID: d.id, Name: "TCL/FFALCON"}, nil
+}
 func (d *TCL) Execute(v string, a map[string]any) error {
 	if e := commandAllowed(v, a); e != nil {
 		return e
@@ -466,8 +489,17 @@ func (d *TCL) Execute(v string, a map[string]any) error {
 
 type AndroidADB struct {
 	Base
-	mu   sync.Mutex
-	conn net.Conn
+	mu      sync.Mutex
+	conn    net.Conn
+	localID uint32
+}
+
+func adbChecksum(p []byte) uint32 {
+	var sum uint32
+	for _, b := range p {
+		sum += uint32(b)
+	}
+	return sum
 }
 
 func (d *AndroidADB) Sleep() error {
@@ -508,9 +540,11 @@ func (d *AndroidADB) Probe() error {
 		h := make([]byte, 24)
 		binary.LittleEndian.PutUint32(h[0:4], 0x4e584e43)
 		binary.LittleEndian.PutUint32(h[4:8], 0x01000000)
-		binary.LittleEndian.PutUint32(h[12:16], 0)
-		binary.LittleEndian.PutUint32(h[20:24], 0xb1a7bdbc)
-		if _, e = c.Write(h); e != nil {
+		payload := []byte("host::\x00")
+		binary.LittleEndian.PutUint32(h[12:16], uint32(len(payload)))
+		binary.LittleEndian.PutUint32(h[16:20], adbChecksum(payload))
+		binary.LittleEndian.PutUint32(h[20:24], 0x4e584e43^0xffffffff)
+		if _, e = c.Write(append(h, payload...)); e != nil {
 			_ = c.Close()
 			d.mu.Lock()
 			d.conn = nil
@@ -520,7 +554,17 @@ func (d *AndroidADB) Probe() error {
 	}
 	return e
 }
-func (d *AndroidADB) Snapshot() (Snapshot, error) { return Snapshot{ID: d.id, Name: "Android TV"}, nil }
+func (d *AndroidADB) Snapshot() (Snapshot, error) {
+	d.mu.Lock()
+	active := d.conn != nil
+	d.mu.Unlock()
+	if !active {
+		if e := d.Probe(); e != nil {
+			return Snapshot{}, e
+		}
+	}
+	return Snapshot{ID: d.id, Name: "Android TV"}, nil
+}
 func (d *AndroidADB) Execute(v string, a map[string]any) error {
 	if e := commandAllowed(v, a); e != nil {
 		return e
@@ -543,8 +587,13 @@ func (d *AndroidADB) Execute(v string, a map[string]any) error {
 	payload := []byte(fmt.Sprintf("shell:input keyevent %d\x00", code))
 	hdr := make([]byte, 24)
 	binary.LittleEndian.PutUint32(hdr[0:4], 0x4e45504f)
+	d.localID++
+	if d.localID == 0 {
+		d.localID = 1
+	}
+	binary.LittleEndian.PutUint32(hdr[4:8], d.localID)
 	binary.LittleEndian.PutUint32(hdr[12:16], uint32(len(payload)))
-	binary.LittleEndian.PutUint32(hdr[16:20], crc32.ChecksumIEEE(payload))
+	binary.LittleEndian.PutUint32(hdr[16:20], adbChecksum(payload))
 	binary.LittleEndian.PutUint32(hdr[20:24], 0x4e45504f^0xffffffff)
 	if _, e := d.conn.Write(append(hdr, payload...)); e != nil {
 		_ = d.conn.Close()
@@ -564,16 +613,21 @@ func NewLG(addr string, tlsOn bool) *LG {
 	return &LG{Base: Base{id: "lg_webos", addr: addr, client: httpClient(), sleeping: false}, TLS: tlsOn}
 }
 func (d *LG) Probe() error {
-	if d.TLS {
-		c, e := tls.DialWithDialer(&net.Dialer{Timeout: 3 * time.Second}, "tcp", d.addr, &tls.Config{InsecureSkipVerify: true, ServerName: strings.Split(d.addr, ":")[0]})
-		if c != nil {
-			defer c.Close()
-		}
+	if !d.TLS {
+		return errors.New("LG websocket disabled")
+	}
+	c, e := ws.Dial("wss://" + d.addr + "/")
+	if e != nil {
 		return e
 	}
-	return errors.New("LG websocket disabled")
+	return c.Close()
 }
-func (d *LG) Snapshot() (Snapshot, error) { return Snapshot{ID: d.id, Name: "LG webOS"}, nil }
+func (d *LG) Snapshot() (Snapshot, error) {
+	if e := d.Probe(); e != nil {
+		return Snapshot{}, e
+	}
+	return Snapshot{ID: d.id, Name: "LG webOS"}, nil
+}
 func (d *LG) Execute(v string, a map[string]any) error {
 	if e := commandAllowed(v, a); e != nil {
 		return e
@@ -614,6 +668,22 @@ func ForID(id, addr string) TVDriver {
 		return NewKodi(addr)
 	}
 	return nil
+}
+func ForConfig(id, addr, credential string) TVDriver {
+	switch id {
+	case "sony_bravia":
+		return NewSony(addr, credential)
+	case "lg_webos":
+		d := NewLG(addr, true)
+		d.ClientKey = credential
+		return d
+	case "samsung_tizen":
+		d := NewSamsung(addr)
+		d.Token = credential
+		return d
+	default:
+		return ForID(id, addr)
+	}
 }
 
 type Samsung struct {

@@ -56,10 +56,13 @@ type Server struct {
 	devices        map[string]driver.TVDriver
 	usedGrants     map[string]struct{}
 	grantOrder     []string
+	readOnly       bool
+	meta           map[string]deviceMeta
 }
+type deviceMeta struct{ name, roomName, mac, kind string }
 
 func New(out io.Writer, dataDir string) *Server {
-	return &Server{out: out, dataDir: dataDir, generation: 1, manifestDigest: manifestDigest(), devices: make(map[string]driver.TVDriver), usedGrants: make(map[string]struct{})}
+	return &Server{out: out, dataDir: dataDir, generation: 1, manifestDigest: manifestDigest(), devices: make(map[string]driver.TVDriver), usedGrants: make(map[string]struct{}), meta: make(map[string]deviceMeta)}
 }
 func manifestDigest() string {
 	paths := []string{}
@@ -109,12 +112,14 @@ func (s *Server) Handle(r Request) Response {
 			Supported            []string `json:"supportedProtocolVersions"`
 			Config               struct {
 				Devices []struct {
-					NativeID string `json:"nativeId"`
-					Driver   string `json:"driver"`
-					Host     string `json:"host"`
-					Port     int    `json:"port"`
-					Name     string `json:"name"`
-					MAC      string `json:"mac"`
+					NativeID   string `json:"nativeId"`
+					Driver     string `json:"driver"`
+					Host       string `json:"host"`
+					Port       int    `json:"port"`
+					Name       string `json:"name"`
+					MAC        string `json:"mac"`
+					RoomName   string `json:"roomName"`
+					Credential string `json:"credential"`
 				} `json:"devices"`
 			} `json:"config"`
 		}
@@ -134,8 +139,13 @@ func (s *Server) Handle(r Request) Response {
 			if d.Port > 0 {
 				addr = net.JoinHostPort(d.Host, fmt.Sprint(d.Port))
 			}
-			if drv := driver.ForID(d.Driver, addr); drv != nil {
+			if drv := driver.ForConfig(d.Driver, addr, d.Credential); drv != nil {
 				s.devices[d.NativeID] = drv
+				name := d.Name
+				if name == "" {
+					name = d.NativeID
+				}
+				s.meta[d.NativeID] = deviceMeta{name: name, roomName: d.RoomName, mac: d.MAC, kind: "tv"}
 			}
 		}
 		s.mu.Unlock()
@@ -147,21 +157,40 @@ func (s *Server) Handle(r Request) Response {
 			}
 		}
 		commands := []string{"tv.power", "tv.wake", "tv.screenOff", "media.setVolume", "media.stepVolume", "media.setMute", "media.selectSource", "media.launchApp", "media.playPause", "media.play", "media.pause", "media.stop", "media.next", "media.previous", "media.seek", "remote.key"}
+		s.readOnly = readOnly
 		if readOnly {
 			commands = []string{}
 		}
 		return Response{JSONRPC: "2.0", ID: r.ID, Result: map[string]any{"protocolVersion": version, "adapterId": "com.menubarhome.tv-bridge", "adapterVersion": "1.0.0", "manifestDigest": s.manifestDigest, "capabilities": map[string]any{"readOnly": readOnly, "deviceKinds": []string{"tv", "speaker"}, "commands": commands, "pushEvents": false}}}
 	case "capabilities":
-		return Response{JSONRPC: "2.0", ID: r.ID, Result: map[string]any{"readOnly": false, "deviceKinds": []string{"tv", "speaker"}}}
+		cmds := []string{"tv.power", "tv.wake", "tv.screenOff", "media.setVolume", "media.stepVolume", "media.setMute", "media.selectSource", "media.launchApp", "media.playPause", "media.play", "media.pause", "media.stop", "media.next", "media.previous", "media.seek", "remote.key"}
+		if s.readOnly {
+			cmds = []string{}
+		}
+		return Response{JSONRPC: "2.0", ID: r.ID, Result: map[string]any{"readOnly": s.readOnly, "deviceKinds": []string{"tv", "speaker"}, "commands": cmds, "readings": []string{"power", "volume", "mute", "source", "nowPlaying"}, "alerts": []string{}, "pushEvents": false, "history": false}}
 	case "snapshot":
 		devices := make([]map[string]any, 0, len(s.devices))
 		for nativeID, drv := range s.devices {
 			snap, err := drv.Snapshot()
 			if err != nil {
-				devices = append(devices, map[string]any{"nativeId": nativeID, "name": nativeID, "kind": "tv", "online": false, "identity": map[string]any{"macAddresses": []string{}, "uniqueIds": []string{nativeID}}})
+				m := s.meta[nativeID]
+				macs := []string{}
+				if m.mac != "" {
+					macs = []string{m.mac}
+				}
+				devices = append(devices, map[string]any{"nativeId": nativeID, "name": m.name, "roomName": m.roomName, "kind": m.kind, "online": false, "supportsRemotePad": true, "identity": map[string]any{"macAddresses": macs, "uniqueIds": []string{nativeID}}})
 				continue
 			}
-			devices = append(devices, map[string]any{"nativeId": nativeID, "name": snap.Name, "kind": "tv", "online": true, "identity": map[string]any{"macAddresses": []string{}, "uniqueIds": []string{nativeID}}, "state": snap.Power, "volume": snap.Volume, "muted": snap.Muted, "source": snap.Source, "nowPlaying": snap.NowPlaying})
+			m := s.meta[nativeID]
+			name := m.name
+			if name == "" {
+				name = snap.Name
+			}
+			macs := []string{}
+			if m.mac != "" {
+				macs = []string{m.mac}
+			}
+			devices = append(devices, map[string]any{"nativeId": nativeID, "name": name, "roomName": m.roomName, "kind": m.kind, "online": true, "supportsRemotePad": true, "identity": map[string]any{"macAddresses": macs, "uniqueIds": []string{nativeID}}, "state": snap.Power, "volume": snap.Volume, "muted": snap.Muted, "source": snap.Source, "nowPlaying": snap.NowPlaying})
 		}
 		return Response{JSONRPC: "2.0", ID: r.ID, Result: map[string]any{"capturedAt": "now", "devices": devices}}
 	case "events.subscribe":
@@ -202,6 +231,9 @@ func (s *Server) Handle(r Request) Response {
 		}
 		return Response{JSONRPC: "2.0", ID: r.ID, Result: map[string]any{"sleeping": s.sleeping}}
 	case "control.execute":
+		if s.readOnly {
+			return errResp(r.ID, -32004, "read-only protocol")
+		}
 		var p struct {
 			NativeID             string         `json:"nativeId"`
 			GrantID              string         `json:"grantId"`

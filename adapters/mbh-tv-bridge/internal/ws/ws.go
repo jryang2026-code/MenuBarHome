@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"crypto/rand"
 	"crypto/sha1"
-	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
@@ -96,14 +95,10 @@ func DialWithFingerprint(raw, expected string) (*Conn, error) {
 	if !strings.EqualFold(upgrade, "websocket") || !strings.Contains(strings.ToLower(connection), "upgrade") || accept == "" {
 		return closeOnErr(errors.New("invalid websocket handshake headers"))
 	}
-	sum := sha256.New()
-	sum.Write([]byte(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"))
-	expectedAccept := base64.StdEncoding.EncodeToString(sum.Sum(nil)) // corrected below with SHA-1
 	h := sha1Bytes([]byte(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"))
 	if accept != base64.StdEncoding.EncodeToString(h) {
 		return closeOnErr(errors.New("websocket accept mismatch"))
 	}
-	_ = expectedAccept
 	_ = c.SetDeadline(time.Time{})
 	return &Conn{Conn: c, r: br}, nil
 }
