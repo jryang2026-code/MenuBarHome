@@ -1,5 +1,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod ddc_ci;
+use ddc_ci::{ddc_list_displays, ddc_set_brightness, ddc_set_input_source, ddc_set_volume, ddc_set_mute};
+
 mod home_assistant;
 mod ha_discovery;
 mod camera;
@@ -371,6 +374,11 @@ fn main() {
             miio_discover,
             miio_shutdown,
             native_http,
+            ddc_list_displays,
+            ddc_set_brightness,
+            ddc_set_input_source,
+            ddc_set_volume,
+            ddc_set_mute,
             set_service_endpoints,
             secure_store_get,
             secure_store_set,
