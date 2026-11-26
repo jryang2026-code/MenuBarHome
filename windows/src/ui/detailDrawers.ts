@@ -1,3 +1,4 @@
+import { bindTvMediaEvents } from "./tvMediaDrawer.js";
 import { haRoundedInt } from "../core/haDomains.js";
 import { currentLanguage, t, tr3 } from "../core/i18n.js";
 import {
@@ -949,6 +950,7 @@ export function bindDetailDrawerEvents(
 
   bindSpeakerCommandBars(host, confirmHighRisk);
   bindCollapsedInlineSliders(host, confirmHighRisk);
+  bindTvMediaEvents(host);
 }
 
 function bindCollapsedInlineSliders(

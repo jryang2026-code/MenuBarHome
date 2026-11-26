@@ -60,6 +60,7 @@ import {
   type ConnectionsAndDiagHost,
 } from "./connectionsAndDiagView.js";
 import { renderEnergySettingsSection, type HostEnergySession } from "./energySettingsView.js";
+import { getDdcDisplayController, renderDdcSettingsSection } from "./ddcDisplaySection.js";
 import { readAskWhenUnsure } from "./settings.js";
 
 /** The five Settings categories aligned with macOS System Settings. */
@@ -1323,6 +1324,7 @@ function renderSafetyPanel(ctx: SettingsViewContext): string {
     </div>
 
     ${renderEnergySettingsSection(ctx)}
+    ${renderDdcSettingsSection(getDdcDisplayController(), (raw) => ctx.escapeHtml(raw))}
     ${renderAutomationAndSafetySettingsSections(ctx)}
 
     <div class="cc-settings-group-card">

@@ -1090,6 +1090,11 @@ public actor HAWebSocketProvider: HomeProvider {
                 400,
                 L10n.tr("该控件需要米家云端连接", "This control needs the Xiaomi cloud backend")
             )
+        case .remoteSendKey(let eid, _) where !eid.hasPrefix("remote."):
+            throw HomeProviderError.serviceCallFailed(
+                400,
+                L10n.tr("该控件需要米家云端连接", "This control needs the Xiaomi cloud backend")
+            )
         default:
             break
         }
@@ -1407,6 +1412,27 @@ public actor HAWebSocketProvider: HomeProvider {
             return ("media_player", "select_source", [
                 "entity_id": eid,
                 "source": source
+            ])
+
+        case .mediaPlayPause(let eid):
+            return ("media_player", "media_play_pause", ["entity_id": eid])
+
+        case .mediaNextTrack(let eid):
+            return ("media_player", "media_next_track", ["entity_id": eid])
+
+        case .mediaPreviousTrack(let eid):
+            return ("media_player", "media_previous_track", ["entity_id": eid])
+
+        case .mediaSeek(let eid, let position):
+            return ("media_player", "media_seek", [
+                "entity_id": eid,
+                "seek_position": position.isFinite ? max(0, position) : 0
+            ])
+
+        case .remoteSendKey(let eid, let key):
+            return ("remote", "send_command", [
+                "entity_id": eid,
+                "command": key.homeAssistantCommand
             ])
 
         case .pressButton(let eid):

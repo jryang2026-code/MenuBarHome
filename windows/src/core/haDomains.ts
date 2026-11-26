@@ -14,7 +14,9 @@ import type {
   FacetRange,
   FacetTarget,
   SmartDevice,
+  TvRemoteKey,
 } from "./models.js";
+import { isTvRemoteKey, playbackFromHomeAssistant } from "./mediaPlayback.js";
 
 export type HARow = Record<string, unknown>;
 
@@ -538,7 +540,9 @@ export function buildMediaPlayerKind(
     const availableSources = features === null || (features & 2048) !== 0 ? haStrings(a.source_list) : [];
     const turnOnButtonId = eids.find((eid) => eid.startsWith("button.") && eid.includes("turn_on")) ?? null;
     const muteSw = eids.find((eid) => eid.startsWith("switch.") && eid.includes("mute")) ?? null;
-    for (const id of [mediaId, turnOnButtonId, muteSw]) if (id) claimed.add(id);
+    const remoteId = eids.find((eid) => eid.startsWith("remote.") && isHAStateAvailable(states.get(eid))) ?? null;
+    for (const id of [mediaId, turnOnButtonId, muteSw, remoteId]) if (id) claimed.add(id);
+    const playback = online ? playbackFromHomeAssistant(st.state, a) : null;
     const isMuted = muteSw ? states.get(muteSw)?.state === "on" : Boolean(a.is_volume_muted);
     const muteSwitchEntityId = muteSw ?? (supportsMute ? `${mediaId}#mute` : null);
     const rawState = st.state.trim().toLowerCase();
@@ -549,6 +553,8 @@ export function buildMediaPlayerKind(
         kind: "tv", mediaEntityId: mediaId, state: rawState || st.state, volumePercent: volPct,
         isMuted, muteSwitchEntityId, currentSource, availableSources, turnOnButtonId,
         powerWritable: online && supportsPowerToggle, volumeWritable, ...(rawVol === null ? { volumePresent: false } : {}),
+        ...(playback ? { playback } : {}),
+        ...(remoteId ? { remoteEntityId: remoteId, supportsRemotePad: true } : {}),
       },
     };
   }
@@ -1386,6 +1392,16 @@ export function cachedExtendedKind(k: HARow): DeviceKind {
         ...(k.powerOffActionId !== undefined ? { powerOffActionId: nullStr(k.powerOffActionId) } : {}),
         ...(k.powerWritable !== undefined ? { powerWritable: reqBool(k.powerWritable) } : {}),
         volumeWritable: reqBool(k.volumeWritable), ...(k.volumePresent !== undefined ? { volumePresent: reqBool(k.volumePresent) } : {}),
+        ...(typeof k.remoteEntityId === "string" ? { remoteEntityId: k.remoteEntityId } : {}),
+        ...(k.supportsRemotePad === true ? { supportsRemotePad: true } : {}),
+        ...(k.miotRemoteActions && typeof k.miotRemoteActions === "object"
+          ? {
+            miotRemoteActions: Object.fromEntries(
+              Object.entries(k.miotRemoteActions as Record<string, unknown>)
+                .filter(([key, value]) => isTvRemoteKey(key) && typeof value === "string"),
+            ) as Partial<Record<TvRemoteKey, string>>,
+          }
+          : {}),
       };
     case "humidifier":
       return {
