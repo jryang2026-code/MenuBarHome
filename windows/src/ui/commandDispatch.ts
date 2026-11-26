@@ -6,6 +6,7 @@ import { miSceneAccount } from "../core/miCloud/scenes.js";
 import { requestMiSceneConfirmation } from "./sceneConfirmation.js";
 import { isWorkstationLockBlockingControl } from "./transport.js";
 import { recordWorkstationLockBlock } from "./speechGuard.js";
+import { getTVBridgeController, isTVBridgeDeviceId } from "./tvBridgeSection.js";
 import type { MenuMijiaWindowsApp } from "./app.js";
 import type { UndoAction } from "./appTypes.js";
 import {
@@ -1233,6 +1234,11 @@ export async function applyCommand(
     renderHostImmediate(host);
     return false;
   }
+  if (isTVBridgeDeviceId(command.entityId)) {
+    return applyTVBridgeCommand(host, command, allowWhileLocked, {
+      sourceRevision, homeRevision, revalidateBeforeSend: options?.revalidateBeforeSend,
+    });
+  }
   const claim = targetDeviceId !== null ? claimDeviceWrite(host, targetDeviceId) : null;
   const roomGroupCover = options?.roomGroupCover === true;
   const coverWrite = beginCoverOptimisticWrite(host, command, roomGroupCover);
@@ -1454,6 +1460,65 @@ export async function applyCommand(
  * 更多设置 row count: a plug's auxiliary control lives on a sibling service (#5), so the drawer
  * address must resolve to the card even though the card's main switch has another one.
  */
+/**
+ * Optional TV bridge rows (ADR-0026) never reach the Mi or HA provider. `applyCommand` has already
+ * run the capability gate and the offline check; the lock, the switch, the row and the gate are
+ * checked again right before `control.execute`, after the bridge may have spent time starting.
+ */
+async function applyTVBridgeCommand(
+  host: MenuMijiaWindowsApp,
+  command: DeviceCommand,
+  allowWhileLocked: boolean,
+  origin: { readonly sourceRevision: number; readonly homeRevision: number; readonly revalidateBeforeSend?: (() => string | null) | undefined },
+): Promise<boolean> {
+  const bridge = getTVBridgeController();
+  const deviceId = command.entityId.split("#")[0] ?? command.entityId;
+  const fail = (text: string): false => {
+    host.replyBanner = { text, source: t("控制失败"), isError: true };
+    renderHostImmediate(host);
+    return false;
+  };
+  // "" cancels quietly (a source/home switch or the lock); any other text is shown as the failure.
+  const refusal = async (): Promise<string | null> => {
+    if (origin.sourceRevision !== host.sourceRevision || origin.homeRevision !== host.homeRevision) return "";
+    const confirmation = origin.revalidateBeforeSend?.() ?? null;
+    if (confirmation !== null) return confirmation;
+    if (!allowWhileLocked && (await isWorkstationLockBlockingControl(host))) {
+      recordWorkstationLockBlock(host);
+      return "";
+    }
+    const dev = host.devices.find((d) => d.id === deviceId);
+    if (!bridge.enabled || !dev || !dev.isOnline) {
+      return controlFailureUserMessage(null, {
+        deviceName: dev ? displayNameForDevice(host, dev) : deviceId,
+        isDeviceOnline: false,
+        languagePreference: host.settings.interfaceLanguage,
+      }) ?? t("控制失败");
+    }
+    return evaluateDeviceEntityWriteGate({
+      targetKind: "device",
+      targetIdOrEntityId: command.entityId,
+      resolvedActiveDeviceId: deviceId,
+      context: buildHostCapabilityContext(host),
+      rejectUnknown: true,
+      languagePreference: host.settings?.interfaceLanguage,
+    });
+  };
+  const early = await refusal();
+  if (early !== null) return early === "" ? false : fail(early);
+  let late: string | null = null;
+  try {
+    await bridge.execute(command, async () => {
+      late = await refusal();
+      return late === null;
+    });
+    return true;
+  } catch {
+    if (late !== null) return late === "" ? false : fail(late);
+    return fail(tr3("电视桥接未能执行该操作，请检查电视网络或插件状态", "電視橋接未能執行該操作，請檢查電視網路或外掛狀態", "The TV bridge couldn't run that action. Check the TV's network or the plugin status"));
+  }
+}
+
 export function deviceOwningEntityId(
   devices: readonly SmartDevice[],
   facets: Readonly<Record<string, readonly FacetControl[]>>,

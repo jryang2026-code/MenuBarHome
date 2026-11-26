@@ -44,6 +44,7 @@ import { normalizeGlobalShortcut, recordShortcutFromKeyEvent, tr3 } from "./pane
 import { APP_VERSION } from "./appConstants.js";
 import { invokeTauriVoid } from "./transport.js";
 import { getDdcDisplayController } from "./ddcDisplaySection.js";
+import { getTVBridgeController } from "./tvBridgeSection.js";
 import { homeAssistantIdentity } from "../core/homeAssistant.js";
 import { loadSettings, stripCredentialFieldsFromStoredCopies, evaluateLegacyOnboardingMigration, writeSettingsForStorage } from "./settings.js";
 import { normalizeSettingsTab, type SettingsTab } from "./settingsViews.js";
@@ -1218,6 +1219,7 @@ export function disposeAppLifecycle(host: object): void {
   const state = hostLifecycles.get(host);
   if (!state || state.disposed) return;
   state.disposed = true;
+  void getTVBridgeController().dispose();
   clearTimerInterval(state, host);
   clearRecoveryListeners(state);
   clearKeyListeners(state);
@@ -1264,6 +1266,8 @@ export function bindLifecycleRecovery(
     if ((ownerDoc as { readonly visibilityState?: string }).visibilityState === "hidden") {
       // Clearing the flags is not enough: the mounted dialog/expanded list must leave the DOM too.
       if (collapseActivityStackOnHide(host)) host.render?.();
+      // Optional TV bridge: lets the bridge sleep; a no-op while switched off.
+      getTVBridgeController().onPanelHidden();
     } else {
       notifyPanelWakeLifecycle(host);
     }
@@ -1283,6 +1287,7 @@ export function bindLifecycleRecovery(
     controller.trigger("focus");
     // Optional DDC/CI monitor card: lists displays on show, and does nothing while switched off.
     getDdcDisplayController().onPanelShown();
+    getTVBridgeController().onPanelShown();
   };
   const onOnline = () => {
     if (state.disposed || !isLifecycleHostAttached(host)) {

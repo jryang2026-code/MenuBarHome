@@ -286,6 +286,7 @@ extension HomeStore {
         guard next != pollingContext else { return }
         pollingContext = next
         pushPollingContext()
+        adapterPollingContextHandler?(next)
     }
 
     /// Re-derives the context after a preference that decides one of its decay inputs changes, and
@@ -621,6 +622,7 @@ extension HomeStore {
             }
             if rooms != nextRooms { rooms = nextRooms }
             if homes != snapshot.homes { homes = snapshot.homes }
+            builtInHardwareIds = snapshot.deviceIdentities.compactMapValues { $0.macAddresses.isEmpty ? nil : $0.macAddresses }
             if environmentReadings != snapshot.environmentReadings {
                 environmentReadings = snapshot.environmentReadings
                 maybeRefreshProactiveSuggestionsInBackground()
@@ -795,7 +797,7 @@ extension HomeStore {
             let facetsChanged = deviceFacets != nextFacets
             if facetsChanged { deviceFacets = nextFacets }
 
-            let nextDevices = devicesWithAliases(merged + genericCameraCards)
+            let nextDevices = devicesWithAliases(merged + genericCameraCards + adapterCards(excluding: merged))
             let devicesChanged = devices != nextDevices
             if devicesChanged {
                 devices = nextDevices

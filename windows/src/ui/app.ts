@@ -206,6 +206,9 @@ import {
   type PendingMoodConfirmationPrompt,
 } from "./moods.js";
 import type { HotkeyExecutionOutcome } from "./hotkeyBindings.js";
+import { getTVBridgeController, isTVBridgeDeviceId, nonHijackingTVBridgeRows } from "./tvBridgeSection.js";
+
+const NO_BRIDGED_DEVICES: readonly SmartDevice[] = Object.freeze([]);
 
 export { undoBannerMs, undoDeviceCount } from "./undoTracker.js";
 
@@ -246,7 +249,12 @@ export class MenuMijiaWindowsApp {
   private _devices: SmartDevice[] = [];
   // Reading `devices` must return the same array until `_devices` or the camera flag changes, so
   // identity checks such as the energy-history clear marker hold while cameras are filtered (#330).
-  private filteredDevicesCache: { readonly source: SmartDevice[]; readonly devices: SmartDevice[] } | null = null;
+  private filteredDevicesCache: {
+    readonly source: SmartDevice[];
+    readonly bridged: readonly SmartDevice[];
+    readonly camerasOn: boolean;
+    readonly devices: SmartDevice[];
+  } | null = null;
   private devicesMutationScheduled = false;
   public energySession: HostEnergySession = createDefaultHostEnergySession();
   public autoSafetySession: HostAutoSafetySession = createDefaultHostAutoSafetySession();
@@ -274,17 +282,28 @@ export class MenuMijiaWindowsApp {
   public lockProbeInFlight = false;
   public lastSessionFingerprint: string | null = null;
   public get devices(): SmartDevice[] {
-    if (this.cameraLive?.cameraCategoryEnabled !== false) return this._devices;
-    if (this.filteredDevicesCache?.source !== this._devices) {
+    const camerasOn = this.cameraLive?.cameraCategoryEnabled !== false;
+    // Optional TV bridge rows (ADR-0026) follow the built-in rows; empty while the plugin is off.
+    const bridged = this.settings?.connectionMode === "demo" ? NO_BRIDGED_DEVICES : getTVBridgeController().panelDevices;
+    if (camerasOn && bridged.length === 0) return this._devices;
+    const cache = this.filteredDevicesCache;
+    if (cache?.source !== this._devices || cache.bridged !== bridged || cache.camerasOn !== camerasOn) {
+      const base = camerasOn ? this._devices : this._devices.filter((device) => device.kind.kind !== "camera");
       this.filteredDevicesCache = {
         source: this._devices,
-        devices: this._devices.filter((device) => device.kind.kind !== "camera"),
+        bridged,
+        camerasOn,
+        devices: bridged.length === 0 ? base : [...base, ...nonHijackingTVBridgeRows(bridged, base, {
+          macsFor: (row) => getTVBridgeController().macsFor(row.id),
+        })],
       };
     }
-    return this.filteredDevicesCache.devices;
+    return this.filteredDevicesCache!.devices;
   }
   public set devices(next: SmartDevice[]) {
-    this._devices = next;
+    this._devices = next.some((device) => isTVBridgeDeviceId(device.id))
+      ? next.filter((device) => !isTVBridgeDeviceId(device.id))
+      : next;
     notifyEnergyDevicesMutated(this);
     if (!this.devicesMutationScheduled) {
       this.devicesMutationScheduled = true;

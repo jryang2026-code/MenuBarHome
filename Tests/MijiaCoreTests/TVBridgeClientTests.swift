@@ -70,3 +70,34 @@ extension TVBridgeClientTests {
         let closeCount = await transport.closeCount; let running = await manager.isRunning; XCTAssertEqual(closeCount, 0); XCTAssertTrue(running)
     }
 }
+
+extension TVBridgeClientTests {
+    func testMismatchedResponseIdTearsDownTransport() async throws {
+        let transport = MockTVBridgeTransport { frame in
+            if frame.method == "initialize" { return TVBridgeFrame(id: frame.id, result: Data("{}".utf8)) }
+            return TVBridgeFrame(id: "someone-else", result: Data("{}".utf8))
+        }
+        let manager = TVBridgePluginManager(config: TVBridgeConfig(isEnabled: true), transport: transport)
+        try await manager.startIfNeeded()
+        do { try await manager.healthPing(); XCTFail("expected invalid frame") } catch TVBridgeError.invalidFrame { } catch { XCTFail("unexpected error \(error)") }
+        let closeCount = await transport.closeCount
+        let running = await manager.isRunning
+        XCTAssertEqual(closeCount, 1)
+        XCTAssertFalse(running)
+    }
+
+    func testTransportFailureTearsDownTransport() async throws {
+        struct Broken: Error {}
+        let transport = MockTVBridgeTransport { frame in
+            if frame.method == "initialize" { return TVBridgeFrame(id: frame.id, result: Data("{}".utf8)) }
+            throw Broken()
+        }
+        let manager = TVBridgePluginManager(config: TVBridgeConfig(isEnabled: true), transport: transport)
+        try await manager.startIfNeeded()
+        do { try await manager.healthPing(); XCTFail("expected transport error") } catch is Broken { } catch { XCTFail("unexpected error \(error)") }
+        let closeCount = await transport.closeCount
+        let running = await manager.isRunning
+        XCTAssertEqual(closeCount, 1)
+        XCTAssertFalse(running)
+    }
+}

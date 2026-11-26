@@ -15,9 +15,9 @@ extension HomeStore {
     }
 
     func refreshGenericCameraCards() {
-        let native = devices.filter { !$0.id.hasPrefix(GenericCameraSource.devicePrefix) }
-        guard !genericCameras.isEmpty || native.count != devices.count else { return }
-        let next = devicesWithAliases(native + genericCameraCards)
+        let native = devices.filter { !$0.id.hasPrefix(GenericCameraSource.devicePrefix) && !Self.isAdapterDeviceId($0.id) }
+        guard !genericCameras.isEmpty || !adapterDevices.isEmpty || native.count != devices.count else { return }
+        let next = devicesWithAliases(native + genericCameraCards + adapterCards(excluding: native))
         if devices != next { devices = next }
     }
 

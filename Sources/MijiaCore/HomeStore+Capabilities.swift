@@ -685,7 +685,7 @@ extension HomeStore {
 
     private func isHAExclusivelyOwnedRow(_ device: SmartDevice) -> Bool {
         if homeBackend == .demo { return false }
-        if lgClientServes(device) || device.id == LGWebOSProtocol.deviceId { return false }
+        if lgClientServes(device) || device.id == LGWebOSProtocol.deviceId || Self.isAdapterDeviceId(device.id) { return false }
         if hasEnabledMiSource && pairedDeviceIDs.contains(device.id) { return false }
         if deviceBackends[device.id] == .homeAssistant { return true }
         if deviceBackends[device.id] == .xiaomiCloud { return false }
@@ -1732,6 +1732,7 @@ extension HomeStore {
 
     func inferSource(for device: SmartDevice) -> (ConnectionCapabilityID?, String) {
         if device.id.hasPrefix(GenericCameraSource.devicePrefix) { return (nil, "local") }
+        if Self.isAdapterDeviceId(device.id) { return (nil, "local") }
         if lgClientServes(device) || device.id == LGWebOSProtocol.deviceId { return (nil, "lan:lg-webos") }
         let haManaged = hasHASource || explicitlyDisabledConnections.contains(.homeAssistant)
         let miManaged = !miAccounts.isEmpty || hasMiSource || explicitlyDisabledConnections.contains(.xiaomiCloud)

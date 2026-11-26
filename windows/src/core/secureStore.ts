@@ -26,13 +26,15 @@ export const WIN32_CRED_MAX_BLOB_BYTES = 2560;
 export type AssistantPresetCredentialName = `assistant_api_key_${string}`;
 export type MiAccountCredentialName = `mi_session_${string}`;
 export type GenericCameraCredentialName = `generic-camera:${string}`;
+export type TVBridgeCredentialName = `tv-bridge:${string}`;
 export type SecureCredentialName =
   | "mi_session"
   | "ha_token"
   | "assistant_api_key"
   | AssistantPresetCredentialName
   | MiAccountCredentialName
-  | GenericCameraCredentialName;
+  | GenericCameraCredentialName
+  | TVBridgeCredentialName;
 
 export function genericCameraCredentialName(cameraId: string): GenericCameraCredentialName {
   const cleaned = cameraId.trim();
@@ -62,6 +64,15 @@ export function parseGenericCameraCredential(raw: string | null): GenericCameraC
   } catch {
     return null;
   }
+}
+
+/** A TV bridge pairing secret (Sony PSK / LG client key / Samsung token), keyed by the TV's native id. */
+export function tvBridgeCredentialName(nativeId: string): TVBridgeCredentialName {
+  const cleaned = nativeId.trim();
+  if (!/^[A-Za-z0-9_-]{1,64}$/.test(cleaned)) {
+    throw new Error(`Invalid TV bridge credential id: ${nativeId}`);
+  }
+  return `tv-bridge:${cleaned}`;
 }
 
 export function assistantApiKeyCredentialName(presetId: string): AssistantPresetCredentialName {

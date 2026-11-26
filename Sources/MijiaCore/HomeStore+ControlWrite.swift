@@ -833,7 +833,13 @@ extension HomeStore {
         if let reason = haCommandWriteRejection(for: command.targetEntityId) {
             throw CapabilityControlBlockedError(reason: reason)
         }
-        if homeBackend != .demo, LGWebOSProtocol.isLGEntity(command.targetEntityId), let lgClient = lgWebOSClient {
+        if Self.isAdapterDeviceId(command.targetEntityId) {
+            // Out-of-process adapter rows (ADR-0026) never fall through to the Mi or HA provider.
+            guard homeBackend != .demo, !isControlBlockedByScreenLock, let adapterCommandHandler else {
+                throw MiotCommandError.unsupported(command.targetEntityId)
+            }
+            try await adapterCommandHandler(command)
+        } else if homeBackend != .demo, LGWebOSProtocol.isLGEntity(command.targetEntityId), let lgClient = lgWebOSClient {
             try await lgClient.execute(command)
         } else {
             // The guard sits on the Mi provider call, not on every command: a LAN TV write does
@@ -1078,7 +1084,7 @@ extension HomeStore {
     func controllableDevice(_ deviceId: String) -> SmartDevice? {
         if rejectDeviceWriteIfCapabilityDisabled(deviceId: deviceId) != nil { return nil }
         guard let device = devices.first(where: { $0.id == deviceId }) else { return nil }
-        guard !rejectWritesBlockedByMiSession(needsMi: !lgClientServes(device)) else { return nil }
+        guard !rejectWritesBlockedByMiSession(needsMi: !servedWithoutMiSession(device)) else { return nil }
         guard !rejectControlWhileLocked() else { return nil }
         return device
     }
@@ -1099,7 +1105,7 @@ extension HomeStore {
         guard let liveDevice = devices.first(where: { $0.id == previous.id }),
               liveDevice.accountId == previous.accountId,
               lgClientServes(liveDevice) == lgClientServes(previous),
-              !rejectWritesBlockedByMiSession(needsMi: !lgClientServes(liveDevice)),
+              !rejectWritesBlockedByMiSession(needsMi: !servedWithoutMiSession(liveDevice)),
               !rejectControlWhileLocked() else { return }
         guard liveDevice.isOnline else {
             showToast(ControlFailure.deviceOffline.message(deviceName: liveDevice.name, adjustment: debounceKey != nil), isError: true)

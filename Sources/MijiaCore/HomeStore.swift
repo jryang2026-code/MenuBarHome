@@ -1006,6 +1006,16 @@ public final class HomeStore {
     public internal(set) var genericCameras: [GenericCameraSource] = []
     public internal(set) var genericCameraRevision = 0
     public var onGenericCameraChanged: ((String) -> Void)?
+    /// Rows reported by an optional out-of-process adapter (ADR-0026 TV bridge). Built-in rows win.
+    public internal(set) var adapterDevices: [SmartDevice] = []
+    /// Normalized MACs an adapter reported per row id, matched against `builtInHardwareIds`.
+    @ObservationIgnored public internal(set) var adapterHardwareIds: [String: [String]] = [:]
+    /// Normalized MACs of built-in rows from the last snapshot's pairing evidence.
+    @ObservationIgnored var builtInHardwareIds: [String: [String]] = [:]
+    /// Sends a command whose target is an `adapter:` row. Installed by the app while an adapter is on.
+    @ObservationIgnored public var adapterCommandHandler: (@MainActor (DeviceCommand) async throws -> Void)?
+    /// Told about every panel/system/low-power change so an adapter can poll, sleep or stop.
+    @ObservationIgnored public var adapterPollingContextHandler: (@MainActor (PollingContext) -> Void)?
     public var onOpenCameraLiveView: ((SmartDevice) -> Void)?
     public internal(set) var activeLiveCameraDeviceId: String?
     public static let cameraStreamURLsKey = ViewPreferenceKeys.cameraStreamURLs

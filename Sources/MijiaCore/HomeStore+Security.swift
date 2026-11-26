@@ -94,7 +94,7 @@ extension HomeStore {
               lgClientServes(current) == captured.lgServed else {
             return nil
         }
-        guard !rejectWritesBlockedByMiSession(needsMi: !lgClientServes(current)) else { return nil }
+        guard !rejectWritesBlockedByMiSession(needsMi: !servedWithoutMiSession(current)) else { return nil }
         guard !rejectControlWhileLocked() else { return nil }
         if requireOnline, !current.isOnline {
             if showOfflineToast {

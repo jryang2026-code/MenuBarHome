@@ -161,7 +161,7 @@ extension HomeStore {
     ) -> Task<Bool, Never>? {
         if rejectDeviceWriteIfCapabilityDisabled(deviceId: device.id) != nil { return nil }
         // A tap on an LG TV is answered over the LAN, so the expired Mi session does not refuse it.
-        guard !rejectWritesBlockedByMiSession(needsMi: !lgClientServes(device)) else { return nil }
+        guard !rejectWritesBlockedByMiSession(needsMi: !servedWithoutMiSession(device)) else { return nil }
         guard let idx = devices.firstIndex(where: { $0.id == device.id }) else { return nil }
         let initial = devices[idx]
         guard initial.isOnline else {

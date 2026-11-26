@@ -27,6 +27,8 @@ struct MenuBarMijiaApp: App {
         HotkeyAndNotificationManager.shared.start(with: sharedStore)
         SystemActivityMonitor.shared.start(with: sharedStore)
         AutomationEngine.shared.start(with: sharedStore)
+        // Optional TV bridge (ADR-0026); off by default, and nothing runs until it is turned on.
+        TVBridgeStore.shared.attach(to: sharedStore)
         XiaomiCameraBridge.scrubStaleConfigOnLaunch()
         Task { await XiaomiCameraBridge.shared.scrubStaleConfigOnStartup() }
         CameraLivePanelController.shared.install(with: sharedStore)
@@ -142,6 +144,8 @@ final class MenuBarMijiaAppDelegate: NSObject, NSApplicationDelegate, Observable
     func applicationWillTerminate(_ notification: Notification) {
         LayoutUIState.shared.commitRoomOrderIfNeeded()
         XiaomiCameraBridge.scrubStaleConfigOnLaunch()
+        // Never leave an orphaned mbh-tv-bridge behind; a no-op while the plugin is off.
+        TVBridgeStore.shared.shutdownNow()
     }
 }
 
