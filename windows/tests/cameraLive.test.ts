@@ -396,7 +396,7 @@ describe("CameraLiveController dual-lens, gateway, manual IP, rotation & multi-c
       ],
     });
     await waitFor(() => document.querySelector('[data-body-device="cam-dual"]') !== null);
-    await click('[data-body-device="cam-dual"]');
+    await click('[data-open-camera="cam-dual"]');
     await waitFor(() => ctx.frameSrcs.includes("cam_mjpeg_camdual"));
 
     const pills = Array.from(document.querySelectorAll<HTMLElement>("[data-cameralens]"));
@@ -447,7 +447,7 @@ describe("CameraLiveController dual-lens, gateway, manual IP, rotation & multi-c
       ],
     });
     await waitFor(() => document.querySelector('[data-body-device="cam-mwc11"]') !== null);
-    await click('[data-body-device="cam-mwc11"]');
+    await click('[data-open-camera="cam-mwc11"]');
 
     // Neither camera nor hub has a cloud LAN IP yet -> manual LAN IP fallback appears
     await waitFor(() => document.querySelector("#camera-local-ip-input") !== null);
@@ -508,7 +508,7 @@ describe("CameraLiveController dual-lens, gateway, manual IP, rotation & multi-c
       ],
     });
     await waitFor(() => document.querySelector('[data-body-device="cam-rot"]') !== null);
-    await click('[data-body-device="cam-rot"]');
+    await click('[data-open-camera="cam-rot"]');
     await waitFor(() => document.querySelector("#cc-camera-live-img") !== null);
     assertMissing(document.querySelector(".cc-camera-switcher"));
 
@@ -573,7 +573,7 @@ describe("CameraLiveController dual-lens, gateway, manual IP, rotation & multi-c
       ],
     });
     await waitFor(() => document.querySelector('[data-body-device="cam-a"]') !== null);
-    await click('[data-body-device="cam-a"]');
+    await click('[data-open-camera="cam-a"]');
     await waitFor(() => ctx.frameSrcs.includes("cam_mjpeg_cama"));
 
     const switcherButtons = Array.from(document.querySelectorAll<HTMLElement>("[data-cameraswitch]"));
@@ -615,7 +615,7 @@ describe("CameraLiveController dual-lens, gateway, manual IP, rotation & multi-c
       },
     });
     await waitFor(() => document.querySelector('[data-body-device="cam-race"]') !== null);
-    await click('[data-body-device="cam-race"]');
+    await click('[data-open-camera="cam-race"]');
     await waitFor(() => ctx.frameSrcs.includes("cam_mjpeg_camrace"));
 
     // Click telephoto (channel 1), wait until start_xiaomi_camera_bridge is in-flight, then immediately switch back to wide (channel 0)
@@ -652,7 +652,7 @@ describe("CameraLiveController dual-lens, gateway, manual IP, rotation & multi-c
       ],
     });
     await waitFor(() => document.querySelector('[data-body-device="cam-mwc11"]') !== null);
-    await click('[data-body-device="cam-mwc11"]');
+    await click('[data-open-camera="cam-mwc11"]');
     await waitFor(() => document.querySelector("#camera-local-ip-input") !== null);
 
     // Typing an in-progress draft survives background host.render()
@@ -722,7 +722,7 @@ describe("CameraLiveController dual-lens, gateway, manual IP, rotation & multi-c
       ],
     });
     await waitFor(() => document.querySelector('[data-body-device="cam-a"]') !== null);
-    await click('[data-body-device="cam-a"]');
+    await click('[data-open-camera="cam-a"]');
     await waitFor(() => ctx.bridgeCalls.length === 1 && ctx.frameSrcs.includes("cam_mjpeg_huba_cama"));
     assert.equal(ctx.bridgeCalls[0]?.["did"], "hub-a");
     assert.equal(ctx.bridgeCalls[0]?.["localIp"], "192.168.1.91");
@@ -766,7 +766,7 @@ describe("CameraLiveController dual-lens, gateway, manual IP, rotation & multi-c
       ],
     });
     await waitFor(() => document.querySelector('[data-body-device="cam-shared"]') !== null);
-    await click('[data-body-device="cam-shared"]');
+    await click('[data-open-camera="cam-shared"]');
 
     // Shared home camera falls back to synthesized hub-shared (never hijacking hub-own and never failing with missing_hub)
     await waitFor(() => document.querySelector("#camera-local-ip-input") !== null);
@@ -796,7 +796,7 @@ describe("CameraLiveController dual-lens, gateway, manual IP, rotation & multi-c
       hlsBridgeResult: () => "",
     });
     await waitFor(() => document.querySelector('[data-body-device="cam-hls"]') !== null);
-    await click('[data-body-device="cam-hls"]');
+    await click('[data-open-camera="cam-hls"]');
     await waitFor(() => ctx.bridgeCalls.length === 1);
 
     await click("#btn-toggle-camera-url");
@@ -824,7 +824,7 @@ describe("CameraLiveController dual-lens, gateway, manual IP, rotation & multi-c
       ],
     });
     await waitFor(() => document.querySelector('[data-body-device="cam-p2p-url"]') !== null);
-    await click('[data-body-device="cam-p2p-url"]');
+    await click('[data-open-camera="cam-p2p-url"]');
     await waitFor(() => ctx.bridgeCalls.length === 1);
     const stopsBefore = ctx.p2pStopsByDid.get("cam-p2p-url") ?? 0;
 
@@ -861,7 +861,7 @@ describe("CameraLiveController dual-lens, gateway, manual IP, rotation & multi-c
       },
     });
     await waitFor(() => document.querySelector('[data-body-device="cam-reconnect"]') !== null);
-    await click('[data-body-device="cam-reconnect"]');
+    await click('[data-open-camera="cam-reconnect"]');
     await waitFor(() => ctx.bridgeCalls.length === 1);
 
     await click("#btn-reload-camera-live");
@@ -909,7 +909,7 @@ describe("CameraLiveController dual-lens, gateway, manual IP, rotation & multi-c
     const deviceListBefore = ctx.getDeviceListCalls();
     const homeRoomBefore = ctx.getHomeRoomCalls();
 
-    await click('[data-body-device="cam-cached"]');
+    await click('[data-open-camera="cam-cached"]');
     await waitFor(() => ctx.bridgeCalls.length === 1);
 
     assert.equal(ctx.bridgeCalls[0]?.["did"], "hub-cached");
@@ -1160,7 +1160,7 @@ describe("CameraLiveController dual-lens, gateway, manual IP, rotation & multi-c
       return origInvoke<T>(name, args);
     };
 
-    await click('[data-body-device="cam-cb"]');
+    await click('[data-open-camera="cam-cb"]');
     await waitFor(() => Boolean(ctrl.liveCameraError && ctrl.liveCameraError.includes("熔断")));
 
     let copied = "";
@@ -1208,7 +1208,7 @@ describe("CameraLiveController dual-lens, gateway, manual IP, rotation & multi-c
     ctrl.cameraFrameGiveUpMs = 40;
     ctrl.cameraFrameRetryMs = 5;
 
-    await click('[data-body-device="cam-bo"]');
+    await click('[data-open-camera="cam-bo"]');
     await waitFor(() => ctrl.liveCameraMode === "mjpeg" && attempts >= 5);
     assert.equal(ctrl.liveCameraError, null);
     ctrl.closeCameraLiveView();
@@ -1255,13 +1255,13 @@ describe("CameraLiveController dual-lens, gateway, manual IP, rotation & multi-c
       ],
     });
     await waitFor(() => document.querySelector('[data-body-device="cam-audio"]') !== null);
-    await click('[data-body-device="cam-audio"]');
+    await click('[data-open-camera="cam-audio"]');
     await waitFor(() => ctx.bridgeCalls.length === 1);
     assert.equal(ctx.bridgeCalls[0]?.["audioEnabled"], false);
     ctx.app.cameraLive.closeCameraLiveView();
 
     // Switch to a video URL whose metadata reports 0 audio tracks -> HUD falls back to video-only badge
-    await click('[data-body-device="cam-audio"]');
+    await click('[data-open-camera="cam-audio"]');
     await click("#btn-toggle-camera-url");
     element<HTMLInputElement>("#camera-stream-url-input").value = "https://example.com/silent.mp4";
     await click("#btn-save-camera-url");
@@ -1276,7 +1276,7 @@ describe("CameraLiveController dual-lens, gateway, manual IP, rotation & multi-c
 
     // Default WebView2 fallback without audioTracks: delayed audio (0 bytes while unmuted) must not clear user's unmute choice,
     // while positive decoded audio bytes confirms an audio track.
-    await click('[data-body-device="cam-audio"]');
+    await click('[data-open-camera="cam-audio"]');
     await click("#btn-toggle-camera-url");
     element<HTMLInputElement>("#camera-stream-url-input").value = "https://example.com/delayed-audio.mp4";
     await click("#btn-save-camera-url");

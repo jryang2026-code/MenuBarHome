@@ -134,8 +134,8 @@ function toggleSelection(host: MenuMijiaWindowsApp): void {
   const device = host.devices.find((item) => item.id === id);
   if (!device?.isOnline || host.waitingDeviceIds.has(device.id) || host.valuesAreStale) return;
   const card = selectedTile(host);
-  const toggle = card?.querySelector<HTMLButtonElement>("[data-toggle-device]");
-  if (toggle) toggle.click();
+  const primary = card?.querySelector<HTMLButtonElement>("[data-toggle-device], [data-open-camera]");
+  if (primary) primary.click();
   else card?.querySelector<HTMLButtonElement>("[data-body-device], [data-expand-device]")?.click();
 }
 

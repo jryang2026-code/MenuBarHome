@@ -2420,11 +2420,11 @@ describe("Smart camera support and live view (#97)", () => {
       cameraStreamURLs: { "camera.living_cam": "https://example.com/live.m3u8" },
     }));
     const app = new MenuMijiaWindowsApp(element("#app"));
-    await click('[data-body-device="camera.living_cam"]');
+    await click('[data-open-camera="camera.living_cam"]');
     await waitFor(() => bridges.length === 1);
-    await click('[data-body-device="camera.living_cam"]');
+    await click('[data-open-camera="camera.living_cam"]');
     await click("#btn-close-camera-live");
-    await click('[data-body-device="camera.living_cam"]');
+    await click('[data-open-camera="camera.living_cam"]');
     releaseBridge("cam_mjpeg_living");
     await waitFor(() => document.querySelector("#cc-camera-live-img") !== null);
     assert.equal(bridges.length, 1, "reopening must reveal the existing handshake without stopping the camera");
@@ -2466,7 +2466,7 @@ describe("Smart camera support and live view (#97)", () => {
       cameraStreamURLs: { "camera.living_cam": "https://example.com/live.m3u8" },
     }));
     const app = new MenuMijiaWindowsApp(element("#app"));
-    await click('[data-body-device="camera.living_cam"]');
+    await click('[data-open-camera="camera.living_cam"]');
     const video = element("#cc-camera-video") as HTMLVideoElement;
     video.currentTime = 42;
     await click("#cc-camera-mute");
@@ -2475,7 +2475,7 @@ describe("Smart camera support and live view (#97)", () => {
     assert.equal(video.currentTime, 42);
     assert.equal(video.muted, false);
     await click("#btn-close-camera-live");
-    await click('[data-body-device="camera.living_cam"]');
+    await click('[data-open-camera="camera.living_cam"]');
     assert.ok(element("#cc-camera-video") === video);
     assert.equal(video.currentTime, 42);
     assert.equal(video.muted, false);
@@ -2514,7 +2514,7 @@ describe("Smart camera support and live view (#97)", () => {
       cameraStreamURLs: { "camera.living_cam": "https://example.com/frame.jpeg" },
     }));
     const app = new MenuMijiaWindowsApp(element("#app"));
-    await click('[data-body-device="camera.living_cam"]');
+    await click('[data-open-camera="camera.living_cam"]');
     const image = element("#cc-camera-live-img");
     app.render();
     assert.ok(element("#cc-camera-live-img") === image);
@@ -2540,8 +2540,8 @@ describe("Smart camera support and live view (#97)", () => {
     const app = new MenuMijiaWindowsApp(element("#app"));
     assert.match(tile("camera.living_cam"), /监控中 · 自动夜视 · 侦测开 · 点击看画面/);
 
-    // Clicking the camera card body opens the enlarged live camera view modal.
-    await click('[data-body-device="camera.living_cam"]');
+    // Clicking the camera orb opens the enlarged live camera view modal.
+    await click('[data-open-camera="camera.living_cam"]');
     assert.ok(document.querySelector(".cc-camera-live-sheet"), "live camera modal should open on click");
     assert.match(document.body.textContent ?? "", /实时看护小窗预览/);
 
@@ -2555,7 +2555,7 @@ describe("Smart camera support and live view (#97)", () => {
     await click("#btn-close-camera-live");
     const backdropAfterClose = element(".cc-camera-live-sheet").closest(".cc-sheet-backdrop") as HTMLElement;
     assert.equal(backdropAfterClose.style.display, "none");
-    await click('[data-body-device="camera.living_cam"]');
+    await click('[data-open-camera="camera.living_cam"]');
     const backdropAfterReopen = element(".cc-camera-live-sheet").closest(".cc-sheet-backdrop") as HTMLElement;
     assert.equal(backdropAfterReopen.style.display, "");
     assert.match(document.body.textContent ?? "", /实时看护小窗预览/);
@@ -2612,7 +2612,7 @@ describe("Smart camera support and live view (#97)", () => {
       ],
     }));
     new MenuMijiaWindowsApp(element("#app"));
-    await click('[data-body-device="camera.living_cam"]');
+    await click('[data-open-camera="camera.living_cam"]');
 
     const values = Array.from(
       document.querySelectorAll<HTMLElement>("[data-cameraquality]"),
@@ -2642,7 +2642,7 @@ describe("Smart camera support and live view (#97)", () => {
       hasCompletedOnboarding: true,
     }));
     new MenuMijiaWindowsApp(element("#app"));
-    await click('[data-body-device="camera.living_cam"]');
+    await click('[data-open-camera="camera.living_cam"]');
     await click("#btn-toggle-camera-url");
     const input = element("#camera-stream-url-input") as HTMLInputElement;
     input.value = "https://localhost:8443/live.m3u8";
@@ -2654,7 +2654,7 @@ describe("Smart camera support and live view (#97)", () => {
 
     document.body.innerHTML = '<div id="app"></div>';
     new MenuMijiaWindowsApp(element("#app"));
-    await click('[data-body-device="camera.living_cam"]');
+    await click('[data-open-camera="camera.living_cam"]');
     assert.equal(
       (element("#cc-camera-video") as HTMLVideoElement).getAttribute("src"),
       "https://127.0.0.1:8443/live.m3u8",
@@ -2678,7 +2678,7 @@ describe("Smart camera support and live view (#97)", () => {
       hasCompletedOnboarding: true,
     }));
     const app = new MenuMijiaWindowsApp(element("#app"));
-    await click('[data-body-device="camera.living_cam"]');
+    await click('[data-open-camera="camera.living_cam"]');
     assert.equal(textOf("#cc-camera-audio-badge"), "仅画面");
     assertMissing(document.querySelector("#cc-camera-mute"));
     await click("#btn-toggle-camera-url");
@@ -2728,7 +2728,7 @@ describe("Smart camera support and live view (#97)", () => {
       hasCompletedOnboarding: true,
     }));
     const app = new MenuMijiaWindowsApp(element("#app"));
-    await click('[data-body-device="camera.living_cam"]');
+    await click('[data-open-camera="camera.living_cam"]');
     await click("#btn-toggle-camera-url");
     (element("#camera-stream-url-input") as HTMLInputElement).value = "https://example.com/live.m3u8";
     await click("#btn-save-camera-url");
@@ -2740,7 +2740,7 @@ describe("Smart camera support and live view (#97)", () => {
     await waitFor(() => document.querySelector(".cc-camera-live-sheet") === null);
     assert.equal(app.cameraLive.liveCameraMuted, true, "teardown returns the camera to its muted default");
 
-    await click('[data-body-device="camera.living_cam"]');
+    await click('[data-open-camera="camera.living_cam"]');
     const video = element("#cc-camera-video") as HTMLVideoElement;
     assert.equal(video.muted, true);
     assert.equal(element("#cc-camera-mute").getAttribute("aria-pressed"), "true");
@@ -2800,7 +2800,7 @@ describe("Smart camera support and live view (#97)", () => {
     );
     new MenuMijiaWindowsApp(element("#app"));
     await waitFor(() => document.querySelector('[data-body-device="dev_cam"]') !== null);
-    await click('[data-body-device="dev_cam"]');
+    await click('[data-open-camera="dev_cam"]');
     await waitFor(() => bridgedCalls.length === 1);
     assert.deepEqual(bridgedCalls[0], {
       did: "dev_cam",
@@ -2842,7 +2842,7 @@ describe("Smart camera support and live view (#97)", () => {
       hasCompletedOnboarding: true,
     }));
     new MenuMijiaWindowsApp(element("#app"));
-    await click('[data-body-device="camera.living_cam"]');
+    await click('[data-open-camera="camera.living_cam"]');
     await click("#btn-toggle-camera-url");
     (element("#camera-stream-url-input") as HTMLInputElement).value = "http://127.0.0.1:8080/live.m3u8";
     await click("#btn-save-camera-url");
@@ -2870,7 +2870,7 @@ describe("Smart camera support and live view (#97)", () => {
     const framesBeforeReopen = frameCalls.length;
     document.body.innerHTML = '<div id="app"></div>';
     new MenuMijiaWindowsApp(element("#app"));
-    await click('[data-body-device="camera.living_cam"]');
+    await click('[data-open-camera="camera.living_cam"]');
     await waitFor(() => frameCalls.length > framesBeforeReopen && document.querySelector("#cc-camera-live-img") !== null);
     assert.equal(frameCalls.at(-1), "cam");
     assert.equal(
@@ -2901,7 +2901,7 @@ describe("Smart camera support and live view (#97)", () => {
     }));
     const app = new MenuMijiaWindowsApp(element("#app"));
     app.cameraKeepAliveMs = 20;
-    await click('[data-body-device="camera.living_cam"]');
+    await click('[data-open-camera="camera.living_cam"]');
     await click("#btn-toggle-camera-url");
     (element("#camera-stream-url-input") as HTMLInputElement).value = "http://127.0.0.1:8080/live.m3u8";
     await click("#btn-save-camera-url");
@@ -2992,7 +2992,7 @@ describe("Smart camera support and live view (#97)", () => {
     );
     new MenuMijiaWindowsApp(element("#app"));
     await waitFor(() => document.querySelector('[data-body-device="cam-1"]') !== null);
-    await click('[data-body-device="cam-1"]');
+    await click('[data-open-camera="cam-1"]');
     await waitFor(() => actionCalls.some((c) => c.siid === 9 && c.aiid === 1) && !sessionActive);
     assert.ok(document.querySelector(".cc-camera-live-sheet"), "modal remains open showing error state");
     assert.equal(sessionActive, false, "failure cleanup released the started P2P session");
@@ -3084,7 +3084,7 @@ describe("Smart camera support and live view (#97)", () => {
     );
     new MenuMijiaWindowsApp(element("#app"));
     await waitFor(() => document.querySelector('[data-body-device="cam-1"]') !== null);
-    await click('[data-body-device="cam-1"]');
+    await click('[data-open-camera="cam-1"]');
     await waitFor(() => document.querySelector("#cc-camera-stage") !== null);
     assert.equal(
       document.querySelectorAll("[data-cameraquality]").length,
@@ -3218,7 +3218,7 @@ describe("Smart camera support and live view (#97)", () => {
     app.cameraLive.cameraFrameRetryMs = options.retryMs;
     app.cameraLive.cameraActiveFrameGapMs = 10;
     await waitFor(() => document.querySelector('[data-body-device="cam-1"]') !== null);
-    await click('[data-body-device="cam-1"]');
+    await click('[data-open-camera="cam-1"]');
     return { bridgeCalls, stopBridgeCalls, frameSrcs, p2pStarts, p2pStops, controller: app.cameraLive };
   }
 
@@ -3353,7 +3353,7 @@ describe("Smart camera support and live view (#97)", () => {
 
     await click("#btn-close-camera-live");
     assert.equal(sheetVisible(), false);
-    await click('[data-body-device="cam-1"]');
+    await click('[data-open-camera="cam-1"]');
 
     assert.equal(sheetVisible(), true, "reopening must reveal the live modal");
     assert.equal(live.p2pStops.count, stopsBeforeReopen, "reopening must not stop the session that is still starting");

@@ -686,7 +686,7 @@ describe("Wave 2 — A1 Camera Adaptive Frame Pacing (>5fps), Fast Switch, HUD M
     await waitFor(() => app !== null && app.devices.length === 2, 2_000);
 
     const tOpenA = performance.now();
-    await click('[data-body-device="cam-a"]');
+    await click('[data-open-camera="cam-a"]');
     await waitFor(() => app?.cameraLive.liveCameraMode === "mjpeg");
     assert.ok(performance.now() - tOpenA < 850, "initial open skips same-session cooldown");
 
@@ -734,7 +734,7 @@ describe("Wave 2 — A1 Camera Adaptive Frame Pacing (>5fps), Fast Switch, HUD M
     app = new MenuMijiaWindowsApp(element("#app"));
     app.cameraKeepAliveMs = 5_000;
 
-    await click('[data-body-device="camera.living_cam"]');
+    await click('[data-open-camera="camera.living_cam"]');
     const demoBadge = element("#cc-camera-audio-badge");
     assert.equal(demoBadge.textContent, "仅画面");
     assert.equal(demoBadge.dataset.videoOnlyReason, "demo");

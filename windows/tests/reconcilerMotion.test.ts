@@ -216,7 +216,7 @@ describe("Keyed DOM Reconciler & Fluent Motion Pipeline", () => {
     };
 
     try {
-      element<HTMLElement>('[data-body-device="camera.living_cam"]').click();
+      element<HTMLElement>('[data-open-camera="camera.living_cam"]').click();
       await setImmediate();
       resolvers.length = 0;
 
@@ -231,7 +231,7 @@ describe("Keyed DOM Reconciler & Fluent Motion Pipeline", () => {
       assert.equal(backdrop.style.display, "");
       assert.ok(element("#cc-camera-live-img") === imgBefore);
 
-      element<HTMLElement>('[data-body-device="camera.living_cam"]').click();
+      element<HTMLElement>('[data-open-camera="camera.living_cam"]').click();
       await setImmediate();
       assert.equal(cancelled >= 1, true);
       assert.equal(backdrop.style.display, "");

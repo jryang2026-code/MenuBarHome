@@ -435,6 +435,85 @@ describe("WP5b-2 · 4-way tile action layout, hit zones, a11y, camera lock guard
     assert.match(el(".cc-camera-live-sheet").textContent ?? "", /锁定/);
   });
 
+  it("aligns camera tile clicks with macOS: name expands detail drawer (with live view button), orb opens live view, and drawerless camera name falls back to live view (#539)", async () => {
+    const splitCam = makeCamera("cam-split", "客厅摄像头", {
+      isOnline: true,
+      isOn: true,
+      streamEntityId: null,
+    });
+    const primaryCam: SmartDevice = {
+      id: "cam-primary",
+      name: "门口监控",
+      roomId: "entry",
+      roomName: "玄关",
+      model: "chuangmi.camera.ipc019",
+      isOnline: true,
+      kind: {
+        kind: "camera",
+        entityId: "camera.front",
+        isOn: true,
+        powerWritable: false,
+        nightShot: null,
+        availableNightShots: [],
+        motionDetectionEntityId: null,
+        isMotionDetectionOn: null,
+        streamEntityId: null,
+      },
+    };
+    const { host } = startApp([splitCam, primaryCam]);
+
+    assert.deepEqual(resolveDeviceTileActionLayout(splitCam, []), {
+      kind: "split",
+      primary: "openCamera",
+    });
+    assert.deepEqual(resolveDeviceTileActionLayout(primaryCam, []), {
+      kind: "primaryOnly",
+      primary: "openCamera",
+    });
+
+    for (const theme of ["fluent", "classic"] as const) {
+      host.setPanelTheme(theme);
+      host.expandedDeviceId = null;
+      host.cameraLive.closeCameraLiveView();
+      host.render();
+
+      // Split camera: name area expands detail drawer instead of opening live view
+      const splitBody = el<HTMLButtonElement>('[data-body-device="cam-split"]');
+      assert.equal(splitBody.getAttribute("aria-expanded"), "false");
+      assert.equal(splitBody.hasAttribute("aria-pressed"), false);
+      splitBody.click();
+      await flushImmediate();
+      assert.equal(host.expandedDeviceId, "cam-split");
+      assert.equal(document.querySelector(".cc-camera-live-sheet"), null);
+
+      // Detail drawer still provides entry into live view via [data-camera-live]
+      const drawerLiveBtn = el<HTMLButtonElement>('[data-camera-live="cam-split"]');
+      drawerLiveBtn.click();
+      await flushImmediate();
+      assert.ok(document.querySelector(".cc-camera-live-sheet"));
+      host.cameraLive.closeCameraLiveView();
+
+      // Collapse drawer, then verify tile orb [data-open-camera] opens live view directly
+      host.expandedDeviceId = null;
+      host.render();
+      el<HTMLButtonElement>('[data-tile-id="cam-split"] [data-open-camera="cam-split"]').click();
+      await flushImmediate();
+      assert.equal(host.expandedDeviceId, null);
+      assert.ok(document.querySelector(".cc-camera-live-sheet"));
+      host.cameraLive.closeCameraLiveView();
+
+      // Drawerless (primaryOnly) camera: name area falls back to opening live view
+      const primaryBody = el<HTMLButtonElement>('[data-body-device="cam-primary"]');
+      assert.equal(primaryBody.hasAttribute("aria-expanded"), false);
+      assert.equal(primaryBody.hasAttribute("aria-pressed"), false);
+      primaryBody.click();
+      await flushImmediate();
+      assert.equal(host.expandedDeviceId, null);
+      assert.ok(document.querySelector(".cc-camera-live-sheet"));
+      host.cameraLive.closeCameraLiveView();
+    }
+  });
+
   it("preserves two-step high-risk protection on compact split tiles and [data-high-risk-confirm] inside drawers (ui.md:178)", async () => {
     const heater = makeHeaterClimate("heater-bed", "卧室取暖器");
     const { host, commands } = startApp([heater], {

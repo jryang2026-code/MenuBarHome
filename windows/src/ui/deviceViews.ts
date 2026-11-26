@@ -1475,6 +1475,23 @@ export function renderDeviceTile(dev: SmartDevice, state: DeviceTileViewState): 
             </button>`;
   };
 
+  const bodyOpensDrawer =
+    actionLayout.kind === "adjustOnly" || (actionLayout.kind === "split" && hasDrawer);
+  const bodyOpensCamera =
+    !bodyOpensDrawer &&
+    (actionLayout.kind === "primaryOnly" || actionLayout.kind === "split") &&
+    actionLayout.primary === "openCamera";
+  const bodyTitle = bodyOpensDrawer
+    ? escape(deviceAdjustTooltip(isExpanded))
+    : bodyOpensCamera
+      ? t("点击放大打开摄像机实时画面")
+      : t("点击切换开关");
+  const bodyA11yAttr = bodyOpensDrawer
+    ? `aria-expanded="${isExpanded}"`
+    : bodyOpensCamera
+      ? ""
+      : `aria-pressed="${isOn}"`;
+
   if (isCapsule) {
     const pillClass =
       actionLayout.kind === "split"
@@ -1516,13 +1533,6 @@ export function renderDeviceTile(dev: SmartDevice, state: DeviceTileViewState): 
               : `<span class="cc-tile-orb win-pill-toggle" title="${escape(dev.name)}" aria-hidden="true">${svg}</span>`
             : `<span class="cc-tile-orb win-pill-toggle" title="${escape(dev.name)}" aria-hidden="true">${svg}</span>`;
 
-    const captionA11yAttr =
-      kind === "camera"
-        ? ""
-        : actionLayout.kind === "adjustOnly" || (actionLayout.kind === "split" && hasDrawer)
-          ? `aria-expanded="${isExpanded}"`
-          : `aria-pressed="${isOn}"`;
-
     const captionHtml =
       actionLayout.kind === "readOnly"
         ? `<div
@@ -1538,9 +1548,9 @@ export function renderDeviceTile(dev: SmartDevice, state: DeviceTileViewState): 
              type="button"
              class="cc-tile-body win-pill-caption"
              data-body-device="${id}"
-             title="${kind === "camera" ? t("点击放大打开摄像机实时画面") : actionLayout.kind === "adjustOnly" || (actionLayout.kind === "split" && hasDrawer) ? escape(deviceAdjustTooltip(isExpanded)) : t("点击切换开关")}"
+             title="${bodyTitle}"
              aria-label="${escape(dev.name)}，${escape(shownSubtitle)}"
-             ${captionA11yAttr}
+             ${bodyA11yAttr}
            >
              <div class="cc-tile-name">${escape(dev.name)}</div>
              <div class="cc-tile-status" title="${escape(shownSubtitle)}">${escape(shownSubtitle)}</div>
@@ -1653,9 +1663,9 @@ export function renderDeviceTile(dev: SmartDevice, state: DeviceTileViewState): 
           type="button"
           class="cc-tile-body"
           data-body-device="${id}"
-          title="${kind === "camera" ? t("点击放大打开摄像机实时画面") : actionLayout.kind === "adjustOnly" || (actionLayout.kind === "split" && hasDrawer) ? escape(deviceAdjustTooltip(isExpanded)) : t("点击切换开关")}"
+          title="${bodyTitle}"
           aria-label="${escape(dev.name)}，${escape(shownSubtitle)}"
-          ${kind === "camera" ? "" : actionLayout.kind === "adjustOnly" || (actionLayout.kind === "split" && hasDrawer) ? `aria-expanded="${isExpanded}"` : `aria-pressed="${isOn}"`}
+          ${bodyA11yAttr}
         >
           <div class="cc-tile-title-row">
             <div class="cc-tile-name">${escape(dev.name)}</div>
