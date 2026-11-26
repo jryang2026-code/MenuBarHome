@@ -1,0 +1,20 @@
+{
+  "description": "v0 stdio JSON-RPC 2.0 snapshot with no discovered devices is a valid full snapshot",
+  "sourceScope": "adapter:com.example.aqara-lan-readonly",
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 4,
+    "method": "snapshot",
+    "params": {}
+  },
+  "response": {
+    "jsonrpc": "2.0",
+    "id": 4,
+    "result": {
+      "capturedAt": "2026-11-24T05:10:00Z",
+      "cursor": "rev-43",
+      "rooms": [],
+      "devices": []
+    }
+  }
+}

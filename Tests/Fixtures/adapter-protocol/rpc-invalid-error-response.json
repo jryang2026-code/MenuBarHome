@@ -1,0 +1,22 @@
+{
+  "description": "Invalid JSON-RPC error response whose data.adapterCode disagrees with error.code (must be rejected)",
+  "sourceScope": "adapter:com.example.aqara-lan-readonly",
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 8,
+    "method": "snapshot",
+    "params": {}
+  },
+  "response": {
+    "jsonrpc": "2.0",
+    "id": 8,
+    "error": {
+      "code": -32004,
+      "message": "Unsupported method",
+      "data": {
+        "adapterCode": "unknown",
+        "retryable": false
+      }
+    }
+  }
+}

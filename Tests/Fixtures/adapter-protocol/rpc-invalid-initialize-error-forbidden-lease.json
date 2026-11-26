@@ -1,0 +1,41 @@
+{
+  "description": "Invalid initialize error fixture carrying a long-lived refreshToken lease (must be rejected even without result)",
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 6,
+    "method": "initialize",
+    "params": {
+      "protocolVersion": "9.0",
+      "supportedProtocolVersions": [
+        "0.1",
+        "9.0"
+      ],
+      "hostVersion": "1.5.0",
+      "locale": "zh-Hans",
+      "adapterId": "com.example.aqara-lan-readonly",
+      "dataDir": "/Users/example/Library/Application Support/MenuBarMijia/adapters/com.example.aqara-lan-readonly/data",
+      "leases": [
+        {
+          "accountId": "lan-gateway-1",
+          "leaseId": "lease-20261124-001",
+          "kind": "oauthAccess",
+          "value": "ephemeral-lease-placeholder",
+          "expiresAt": "2026-11-24T06:00:00Z",
+          "refreshToken": "long-lived-secret-must-not-be-sent"
+        }
+      ]
+    }
+  },
+  "response": {
+    "jsonrpc": "2.0",
+    "id": 6,
+    "error": {
+      "code": -32004,
+      "message": "Unsupported protocol version 9.0",
+      "data": {
+        "adapterCode": "unsupported",
+        "retryable": false
+      }
+    }
+  }
+}
