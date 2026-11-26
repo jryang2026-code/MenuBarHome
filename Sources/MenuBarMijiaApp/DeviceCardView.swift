@@ -1123,6 +1123,10 @@ public struct DeviceCardView: View {
                 }
             }
 
+            if TVDetailDrawer.hasContent(spec) {
+                TVDetailDrawer(device: device, spec: spec, store: store, accent: accent, classic: false)
+            }
+
             if showMute || showVolume {
                 HStack(spacing: 8) {
                     if showMute {

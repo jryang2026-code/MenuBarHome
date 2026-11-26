@@ -745,6 +745,8 @@ public enum MiotSynthesizer {
             $0.property.isWritable ? "\(MiotAddress.make(did: r.did, siid: $0.service.iid))#mute" : nil
         }
 
+        let remoteActions = tvRemoteActions(r)
+
         return .tv(TVSpec(
             mediaEntityId: MiotAddress.make(did: r.did, siid: s.iid),
             state: state,
@@ -757,8 +759,30 @@ public enum MiotSynthesizer {
             powerOffActionId: powerOffActionId,
             powerWritable: powerWritable,
             volumeWritable: volume?.property.isWritable == true,
-            volumePresent: rawVolume != nil
+            volumePresent: rawVolume != nil,
+            supportsRemotePad: !remoteActions.isEmpty,
+            miotRemoteActions: remoteActions
         ))
+    }
+
+    /// Services whose zero-argument key actions the TV remote pad may call.
+    static let tvRemoteServiceNames: Set<String> = ["remote-control", "television", "stb"]
+
+    /// `TVRemoteKey.rawValue` → action address for each key a Xiaomi TV publishes as a no-argument action.
+    static func tvRemoteActions(_ r: MiotReader) -> [String: String] {
+        var result: [String: String] = [:]
+        let services = r.spec.services.filter { tvRemoteServiceNames.contains($0.shortName) }
+        for key in TVRemoteKey.allCases {
+            for service in services {
+                if let action = service.actions.first(where: {
+                    $0.inputProperties.isEmpty && key.miotActionNames.contains($0.shortName)
+                }) {
+                    result[key.rawValue] = MiotAddress.makeAction(did: r.did, siid: service.iid, aiid: action.iid)
+                    break
+                }
+            }
+        }
+        return result
     }
 
     static func buildSpeaker(_ r: MiotReader, _ s: MiotService) -> DeviceKind {

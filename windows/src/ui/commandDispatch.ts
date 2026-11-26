@@ -1503,6 +1503,8 @@ function kindOwnsEntity(kind: DeviceKind, entityId: string): boolean {
         kind.turnOnButtonId,
         kind.powerOnActionId,
         kind.powerOffActionId,
+        kind.remoteEntityId,
+        ...Object.values(kind.miotRemoteActions ?? {}),
       ].includes(entityId);
     case "humidifier":
       return kind.entityId === entityId;

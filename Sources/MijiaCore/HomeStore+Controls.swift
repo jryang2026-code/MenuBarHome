@@ -2243,6 +2243,59 @@ extension HomeStore {
         )
     }
 
+    // MARK: TV Now Playing & remote pad
+
+    public enum MediaTransport: Sendable { case playPause, next, previous }
+
+    /// Play/pause and track skip. The TV reports the resulting state; nothing is shown ahead of it.
+    public func sendMediaTransport(_ deviceId: String, _ transport: MediaTransport) {
+        guard let device = controllableDevice(deviceId), case .tv(let s) = device.kind,
+              let playback = s.playback else { return }
+        let command: DeviceCommand
+        switch transport {
+        case .playPause:
+            guard playback.canPlayPause else { return }
+            command = .mediaPlayPause(entityId: s.mediaEntityId)
+        case .next:
+            guard playback.canSkipTrack else { return }
+            command = .mediaNextTrack(entityId: s.mediaEntityId)
+        case .previous:
+            guard playback.canSkipTrack else { return }
+            command = .mediaPreviousTrack(entityId: s.mediaEntityId)
+        }
+        commitManualWrite(from: device, to: nil, command: command, lock: nil)
+    }
+
+    /// One seek per finished drag; the drawer's `MediaSeekGuard` holds the bar on the target meanwhile.
+    public func seekMedia(_ deviceId: String, toSeconds target: Double) {
+        guard target.isFinite,
+              let device = controllableDevice(deviceId), case .tv(let s) = device.kind,
+              let playback = s.playback, playback.canSeek,
+              let duration = playback.durationSec, duration > 0 else { return }
+        let clamped = min(max(target, 0), duration)
+        commitManualWrite(from: device, to: nil, command: .mediaSeek(entityId: s.mediaEntityId, positionSec: clamped), lock: nil)
+    }
+
+    /// A Xiaomi TV's own key action wins; otherwise the paired Home Assistant `remote.*`.
+    public func sendTVRemoteKey(_ deviceId: String, key: TVRemoteKey) {
+        guard let device = controllableDevice(deviceId), case .tv(let s) = device.kind,
+              s.supportsRemotePad else { return }
+        let command: DeviceCommand
+        if let action = s.miotRemoteActions[key.rawValue] {
+            command = .remoteSendKey(entityId: action, key: key)
+        } else if let remote = s.remoteEntityId {
+            command = .remoteSendKey(entityId: remote, key: key)
+        } else {
+            return
+        }
+        if let reason = miotCommandWriteRejection(for: command.targetEntityId)
+            ?? haCommandWriteRejection(for: command.targetEntityId) {
+            showToast(reason.userMessage, isError: true)
+            return
+        }
+        commitManualWrite(from: device, to: nil, command: command, lock: nil)
+    }
+
     @discardableResult
     public func sendSpeakerText(_ deviceId: String, text: String, asDirective: Bool) -> Bool {
         if rejectDeviceWriteIfCapabilityDisabled(deviceId: deviceId) != nil { return false }

@@ -191,7 +191,35 @@ export interface TvSpec {
   readonly powerWritable?: boolean;
   readonly volumeWritable: boolean;
   volumePresent?: boolean;
+  /** What the TV is playing; absent keeps the drawer exactly as before Now Playing existed. */
+  readonly playback?: MediaPlaybackState | null;
+  /** Home Assistant `remote.*` on the same device, the target of `remoteSendKey`. */
+  readonly remoteEntityId?: string | null;
+  readonly supportsRemotePad?: boolean;
+  /** `TvRemoteKey` → MIoT action address on a Xiaomi TV. */
+  readonly miotRemoteActions?: Readonly<Partial<Record<TvRemoteKey, string>>>;
 }
+
+/** Mirrors macOS `MediaPlaybackState`; dates are epoch milliseconds. */
+export interface MediaPlaybackState {
+  readonly state: "playing" | "paused" | "buffering" | "idle" | "off";
+  readonly title: string | null;
+  readonly subtitle: string | null;
+  readonly appName: string | null;
+  readonly artworkURL: string | null;
+  readonly durationSec: number | null;
+  readonly positionSec: number | null;
+  readonly positionUpdatedAt: number | null;
+  readonly playbackRate: number;
+  readonly canPlayPause: boolean;
+  readonly canSeek: boolean;
+  readonly canSkipTrack: boolean;
+}
+
+export const TV_REMOTE_KEYS = [
+  "up", "down", "left", "right", "select", "back", "home", "menu", "volumeUp", "volumeDown", "mute", "source",
+] as const;
+export type TvRemoteKey = (typeof TV_REMOTE_KEYS)[number];
 
 interface HumidifierSpec {
   readonly kind: "humidifier";
@@ -444,7 +472,13 @@ export type DeviceCommand =
   | { readonly kind: "pressButton"; readonly entityId: string; readonly arguments?: readonly unknown[] }
   /** A generic 更多设置 write (#5); `entityId` is the service address and `piid` its property. */
   | { readonly kind: "setMiotProperty"; readonly entityId: string; readonly piid: number; readonly value: unknown }
-  | { readonly kind: "activateScene"; readonly entityId: string };
+  | { readonly kind: "activateScene"; readonly entityId: string }
+  | { readonly kind: "mediaPlayPause"; readonly entityId: string }
+  | { readonly kind: "mediaNextTrack"; readonly entityId: string }
+  | { readonly kind: "mediaPreviousTrack"; readonly entityId: string }
+  | { readonly kind: "mediaSeek"; readonly entityId: string; readonly positionSec: number }
+  /** HA `remote.send_command`, or a MIoT action address from `miotRemoteActions`. */
+  | { readonly kind: "remoteSendKey"; readonly entityId: string; readonly key: TvRemoteKey };
 
 export type IntentOperation =
   | { readonly kind: "power"; readonly isOn: boolean }
@@ -739,7 +773,9 @@ export function hasDetailDrawer(device: SmartDevice, facets: readonly FacetContr
       return (
         kind.volumeWritable ||
         Boolean(kind.muteSwitchEntityId) ||
-        kind.availableSources.length > 0
+        kind.availableSources.length > 0 ||
+        Boolean(kind.playback) ||
+        kind.supportsRemotePad === true
       );
     case "humidifier":
       return (

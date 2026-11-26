@@ -466,8 +466,13 @@ export function inverseCommands(dev: SmartDevice, command: DeviceCommand): Devic
       return [];
     case "setMiotProperty":
     case "activateScene":
+    case "mediaPlayPause":
+    case "mediaNextTrack":
+    case "mediaPreviousTrack":
+    case "mediaSeek":
+    case "remoteSendKey":
       // An appliance programme write and a 更多设置 write carry no previous
-      // value on the card, so undo does not offer them (#5).
+      // value on the card, so undo does not offer them (#5). Media and remote keys are one-shot.
       return [];
     default: {
       const exhaustive: never = command;
