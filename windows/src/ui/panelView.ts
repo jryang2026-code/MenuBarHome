@@ -27,6 +27,7 @@ import { renderProactiveInlinePill } from "./proactive.js";
 import { renderEditLayoutToolbar, renderHiddenDevicesTray } from "./roomOrderEditor.js";
 import { effectivePanelHomeTitle, getCachedUnsupportedDeviceCountOnHost } from "./connectionsAndDiagView.js";
 import { syncEnergyHostOnRender } from "./energySettingsView.js";
+import { getDdcDisplayController, renderDdcPanelSection } from "./ddcDisplaySection.js";
 import { syncSensorHistoryHost } from "./sensorHistoryView.js";
 import { getPanelThemeProfile } from "./panelTheme.js";
 import { renderMoodActionsRow } from "./moods.js";
@@ -259,6 +260,7 @@ export function renderPanel(host: MenuMijiaWindowsApp): void {
           ${renderEditLayoutToolbar(host)}
           ${host.renderDeviceGrid()}
           ${renderHiddenDevicesTray(host)}
+          ${renderDdcPanelSection(getDdcDisplayController(), (raw) => host.escapeHtml(raw))}
           ${renderUnsupportedDevicesQuietRow(host)}
         </main>`;
   const verboseFooter = isVerboseConnectionFooter(resolveConnectionStatus(host));
