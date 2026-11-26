@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
+import { afterEach, describe, it } from "node:test";
+import type { Window } from "happy-dom";
 
 import { HomeAssistantSynthesizer, haServiceCall } from "../src/core/homeAssistant.js";
 import { setLanguage } from "../src/core/i18n.js";
@@ -13,7 +14,24 @@ import { MiotCommandMapper } from "../src/core/miCloud/command.js";
 import type { MiotDeviceSpec } from "../src/core/miCloud/spec.js";
 import { MiotSynthesizer } from "../src/core/miCloud/synthesis.js";
 import { hasDetailDrawer, type MediaPlaybackState, type SmartDevice, type TvSpec } from "../src/core/models.js";
-import { renderTvMediaSection, tvDrawerHasMedia } from "../src/ui/tvMediaDrawer.js";
+import type { MenuMijiaWindowsApp } from "../src/ui/app.js";
+import {
+  bindTvMediaEvents,
+  disposeTvMediaEvents,
+  renderTvMediaSection,
+  tvDrawerHasMedia,
+  tvProgressTickerActive,
+} from "../src/ui/tvMediaDrawer.js";
+import { closeTestWindow, mountTestWindow } from "./uiHarness.js";
+
+let activeDom: Window | null = null;
+
+afterEach(async () => {
+  if (activeDom) {
+    await closeTestWindow(activeDom);
+    activeDom = null;
+  }
+});
 
 const ANCHOR = Date.UTC(2027, 0, 15, 8, 0, 0);
 
@@ -197,5 +215,50 @@ describe("TV Now Playing and remote pad (macOS TVMediaPlaybackTests parity)", ()
     const readOnly = renderTvMediaSection(dev, { ...kind, playback: playback({ title: "x", durationSec: 60, positionSec: 1 }) }, escapeHtml);
     assert.match(readOnly, /role="progressbar"/);
     assert.doesNotMatch(readOnly, /data-tvseek/);
+  });
+
+  it("progress ticker stops when hidden, restarts on visible, and is cleared by dispose", () => {
+    setLanguage("zh-Hans");
+    const dom = mountTestWindow({ stubInterval: false });
+    activeDom = dom;
+    const intervals = new Map<number, () => void>();
+    let nextId = 1;
+    Object.defineProperty(dom, "setInterval", {
+      configurable: true,
+      value: (fn: () => void) => { const id = nextId++; intervals.set(id, fn); return id; },
+    });
+    Object.defineProperty(dom, "clearInterval", { configurable: true, value: (id: number) => intervals.delete(id) });
+    let visibility: "visible" | "hidden" = "visible";
+    Object.defineProperty(dom.document, "visibilityState", { configurable: true, get: () => visibility });
+
+    const kind: TvSpec = {
+      kind: "tv", mediaEntityId: "media_player.tv", state: "playing", volumePercent: 20,
+      currentSource: null, availableSources: [], volumeWritable: false,
+      playback: playback({ title: "News", durationSec: 600, positionSec: 30, positionUpdatedAt: Date.now(), canSeek: true }),
+    };
+    const dev = { id: "tv", name: "客厅电视", roomId: "r", roomName: "客厅", model: "tv", isOnline: true, kind } as SmartDevice;
+    const root = document.getElementById("app") as HTMLElement;
+    root.innerHTML = renderTvMediaSection(dev, kind, escapeHtml);
+    const host = { root, devices: [dev], executeSingleCommand: async () => {}, render: () => {} } as unknown as MenuMijiaWindowsApp;
+
+    bindTvMediaEvents(host);
+    assert.equal(tvProgressTickerActive(host), true);
+    assert.equal(intervals.size, 1);
+
+    visibility = "hidden";
+    for (const fn of [...intervals.values()]) fn();
+    assert.equal(tvProgressTickerActive(host), false, "a hidden window stops the clock");
+    assert.equal(intervals.size, 0);
+
+    visibility = "visible";
+    dom.document.dispatchEvent(new dom.Event("visibilitychange"));
+    assert.equal(tvProgressTickerActive(host), true, "a playing bar resumes when visible again");
+    assert.equal(intervals.size, 1);
+
+    disposeTvMediaEvents(host);
+    assert.equal(tvProgressTickerActive(host), false);
+    assert.equal(intervals.size, 0);
+    dom.document.dispatchEvent(new dom.Event("visibilitychange"));
+    assert.equal(intervals.size, 0, "dispose removes the visibility listener");
   });
 });

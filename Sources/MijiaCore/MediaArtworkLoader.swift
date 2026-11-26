@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 #if canImport(FoundationNetworking)
 import FoundationNetworking
@@ -40,6 +41,12 @@ public actor MediaArtworkLoader {
         return request
     }
 
+    /// SHA-256 of origin + path, so the entity token in `?token=` never sits in the cache.
+    public static func cacheKey(artworkPath: String, serverBaseURL: String) -> String {
+        let raw = "\(HAWebSocketProvider.normalizeBaseURL(serverBaseURL))|\(artworkPath)"
+        return SHA256.hash(data: Data(raw.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+
     public func cached(_ key: String) -> Data? {
         guard let data = cache[key] else { return nil }
         touch(key)
@@ -55,7 +62,7 @@ public actor MediaArtworkLoader {
     }
 
     public func load(artworkPath: String, serverBaseURL: String, bearerToken: String?, allowsBearer: Bool) async -> Data? {
-        let key = "\(HAWebSocketProvider.normalizeBaseURL(serverBaseURL))|\(artworkPath)"
+        let key = Self.cacheKey(artworkPath: artworkPath, serverBaseURL: serverBaseURL)
         if let hit = cached(key) { return hit }
         guard let request = Self.request(
             artworkPath: artworkPath, serverBaseURL: serverBaseURL,

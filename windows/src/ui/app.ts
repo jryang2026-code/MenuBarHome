@@ -143,6 +143,7 @@ import { switchHome, switchSource } from "./sourceSwitch.js";
 import { bindPersistentUndoEvents, undoTrackerFor } from "./undoTracker.js";
 import { getHostApplyCommand, getUnsupportedLightEffects, markCloudValuesFresh, markCloudValuesStale, pruneUnsupportedLightEffectsOnHost, setCustomApplyCommand } from "./commandDispatch.js";
 import { getSpeakerDrawerItemState } from "./detailDrawers.js";
+import { disposeTvMediaEvents } from "./tvMediaDrawer.js";
 import { activeRoomOptions } from "./roomOrderEditor.js";
 import { buildHostCapabilityContext, foldGrouped, getHostHaLifecyclePhase, haCacheIfEnabled, isDualSourceEnabled, isHostHaEnabled, isHostMiSessionEnabled, refreshDevices, refreshHADevices, resolveHostMiSelectionState } from "./cloudRefresh.js";
 import { hasSecondaryMiAccountsInIndex, miAccountId } from "../core/miAccountsStore.js";
@@ -1139,6 +1140,7 @@ export class MenuMijiaWindowsApp {
       this.cameraLive.closeCameraLiveView();
     }
     this.cameraLive.discardRetainedCloudSessions();
+    disposeTvMediaEvents(this);
   }
 
   /** The tray popover hides when it loses focus, so focus means it is on screen. */

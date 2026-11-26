@@ -152,24 +152,63 @@ function updateProgressElement(host: MenuMijiaWindowsApp, el: HTMLElement, now: 
   return p.state === "playing" || guard.pendingTargetSec !== null;
 }
 
-const tickers = new WeakMap<MenuMijiaWindowsApp, number>();
+interface TickerState {
+  interval: number | null;
+  readonly onVisibility: () => void;
+}
+
+const tickers = new WeakMap<MenuMijiaWindowsApp, TickerState>();
+
+function tickerState(host: MenuMijiaWindowsApp): TickerState {
+  let state = tickers.get(host);
+  if (!state) {
+    // Coming back from a hidden window restarts a bar that is still playing.
+    const onVisibility = (): void => {
+      if (document.visibilityState === "visible" && host.root.querySelector("[data-tv-progress]")) {
+        ensureProgressTicker(host);
+      }
+    };
+    state = { interval: null, onVisibility };
+    tickers.set(host, state);
+    document.addEventListener("visibilitychange", onVisibility);
+  }
+  return state;
+}
+
+function stopTicker(state: TickerState): void {
+  if (state.interval !== null) window.clearInterval(state.interval);
+  state.interval = null;
+}
 
 /** Ticks only while a bar is on screen, the window is visible and something is moving (#208). */
 function ensureProgressTicker(host: MenuMijiaWindowsApp): void {
-  if (tickers.has(host)) return;
+  const state = tickerState(host);
+  if (state.interval !== null) return;
   const tick = (): void => {
-    const bars = host.root.querySelectorAll<HTMLElement>("[data-tv-progress]");
     let moving = false;
-    if (document.visibilityState === "visible") {
+    if (document.visibilityState === "visible" && host.root.isConnected) {
       const now = Date.now();
-      bars.forEach((el) => { if (updateProgressElement(host, el, now)) moving = true; });
+      host.root.querySelectorAll<HTMLElement>("[data-tv-progress]").forEach((el) => {
+        if (updateProgressElement(host, el, now)) moving = true;
+      });
     }
-    if (!moving) {
-      window.clearInterval(tickers.get(host));
-      tickers.delete(host);
-    }
+    if (!moving) stopTicker(state);
   };
-  tickers.set(host, window.setInterval(tick, 250));
+  state.interval = window.setInterval(tick, 250);
+}
+
+/** Whether a progress interval is live for this host (tests and dispose checks). */
+export function tvProgressTickerActive(host: MenuMijiaWindowsApp): boolean {
+  return (tickers.get(host)?.interval ?? null) !== null;
+}
+
+/** Stops the progress interval and the visibility listener; called from `MenuMijiaWindowsApp.dispose()`. */
+export function disposeTvMediaEvents(host: MenuMijiaWindowsApp): void {
+  const state = tickers.get(host);
+  if (!state) return;
+  stopTicker(state);
+  document.removeEventListener("visibilitychange", state.onVisibility);
+  tickers.delete(host);
 }
 
 function send(host: MenuMijiaWindowsApp, dev: SmartDevice, command: DeviceCommand, summary: string): void {

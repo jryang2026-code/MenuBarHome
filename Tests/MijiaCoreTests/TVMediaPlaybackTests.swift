@@ -117,6 +117,16 @@ struct TVMediaPlaybackTests {
         #expect(!plain.supportsRemotePad)
     }
 
+    @Test("Artwork cache key is a digest that never carries the entity token")
+    func artworkCacheKeyIsRedacted() {
+        let path = "/api/media_player_proxy/media_player.tv?token=secret-entity-token&cache=1"
+        let key = MediaArtworkLoader.cacheKey(artworkPath: path, serverBaseURL: "http://ha.local:8123")
+        #expect(key.count == 64)
+        #expect(!key.contains("secret-entity-token") && !key.contains("token"))
+        #expect(key == MediaArtworkLoader.cacheKey(artworkPath: path, serverBaseURL: "http://ha.local:8123/"))
+        #expect(key != MediaArtworkLoader.cacheKey(artworkPath: path + "2", serverBaseURL: "http://ha.local:8123"))
+    }
+
     @Test("HA service mapping for transport, seek and remote keys")
     func mapsHomeAssistantServices() {
         let seek = HAWebSocketProvider.mapCommandToService(.mediaSeek(entityId: "media_player.tv", positionSec: 61.5))
