@@ -15,6 +15,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -167,12 +168,35 @@ func (d *Sony) Probe() error {
 	if e != nil {
 		return e
 	}
-	_, e = d.do(req)
-	return e
+	r, e := d.do(req)
+	if e != nil {
+		return e
+	}
+	defer r.Body.Close()
+	if r.StatusCode >= 300 {
+		return fmt.Errorf("http status %s", r.Status)
+	}
+	return nil
 }
 func (d *Sony) Snapshot() (Snapshot, error) {
+	b, _ := json.Marshal(map[string]any{"method": "getPowerStatus", "params": []any{}, "id": 1, "version": "1.0"})
+	req, er := http.NewRequest("POST", d.addr+"/sony/system", bytes.NewReader(b))
+	if er != nil {
+		return Snapshot{}, er
+	}
+	req.Header.Set("Content-Type", "application/json")
+	r, er := d.do(req)
+	if er != nil {
+		return Snapshot{}, er
+	}
+	defer r.Body.Close()
 	var x any
-	e := postJSON(d.client, d.addr+"/sony/system", map[string]any{"method": "getPowerStatus", "params": []any{}, "id": 1, "version": "1.0"}, &x)
+	var e error
+	if r.StatusCode >= 300 {
+		e = fmt.Errorf("http status %s", r.Status)
+	} else {
+		e = json.NewDecoder(r.Body).Decode(&x)
+	}
 	return Snapshot{ID: d.id, Name: "Sony Bravia"}, e
 }
 func (d *Sony) Execute(v string, a map[string]any) error {
@@ -242,7 +266,16 @@ func (d *Kodi) Execute(v string, a map[string]any) error {
 	if !ok {
 		return errors.New("unsupported Kodi action")
 	}
-	params := map[string]any{}
+	params := map[string]any{"playerid": 1}
+	if v == "media.play" {
+		params["play"] = true
+	}
+	if v == "media.pause" {
+		params["play"] = false
+	}
+	if v == "media.playPause" {
+		params["play"] = "toggle"
+	}
 	if v == "remote.key" {
 		params["action"] = a["key"]
 	}
@@ -253,8 +286,19 @@ func (d *Kodi) Execute(v string, a map[string]any) error {
 	if v == "media.setVolume" {
 		params["volume"] = a["volume"]
 	}
-	var result any
-	return postJSON(d.client, d.addr+"/jsonrpc", map[string]any{"jsonrpc": "2.0", "method": method, "params": params, "id": 1}, &result)
+	var result struct {
+		Error *struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := postJSON(d.client, d.addr+"/jsonrpc", map[string]any{"jsonrpc": "2.0", "method": method, "params": params, "id": 1}, &result); err != nil {
+		return err
+	}
+	if result.Error != nil {
+		return fmt.Errorf("kodi error %d: %s", result.Error.Code, result.Error.Message)
+	}
+	return nil
 }
 
 type DLNA struct{ Base }
@@ -289,7 +333,13 @@ func (d *DLNA) Execute(v string, a map[string]any) error {
 	if action == "" {
 		return errors.New("unsupported DLNA action")
 	}
-	body := fmt.Sprintf("<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\"><s:Body><u:%s xmlns:u=\"urn:schemas-upnp-org:service:AVTransport:1\"><InstanceID>0</InstanceID></u:%s></s:Body></s:Envelope>", action, action)
+	args := "<InstanceID>0</InstanceID>"
+	if action == "Seek" {
+		seconds, _ := strconv.ParseFloat(fmt.Sprint(a["position"]), 64)
+		total := int(seconds)
+		args += fmt.Sprintf("<Unit>REL_TIME</Unit><Target>%02d:%02d:%02d</Target>", total/3600, (total/60)%60, total%60)
+	}
+	body := fmt.Sprintf("<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\"><s:Body><u:%s xmlns:u=\"urn:schemas-upnp-org:service:AVTransport:1\">%s</u:%s></s:Body></s:Envelope>", action, args, action)
 	req, e := http.NewRequest("POST", d.addr, strings.NewReader(body))
 	if e != nil {
 		return e
@@ -310,6 +360,26 @@ type TCL struct {
 	Base
 	conn    net.Conn
 	key, iv []byte
+}
+
+func (d *TCL) Sleep() error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.sleeping = true
+	if d.conn != nil {
+		_ = d.conn.Close()
+		d.conn = nil
+	}
+	return nil
+}
+func (d *TCL) Close() error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.conn != nil {
+		_ = d.conn.Close()
+		d.conn = nil
+	}
+	return nil
 }
 
 func NewTCL(addr string) *TCL {
@@ -400,15 +470,53 @@ type AndroidADB struct {
 	conn net.Conn
 }
 
+func (d *AndroidADB) Sleep() error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.conn != nil {
+		_ = d.conn.Close()
+		d.conn = nil
+	}
+	d.sleeping = true
+	return nil
+}
+func (d *AndroidADB) Close() error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.conn != nil {
+		_ = d.conn.Close()
+		d.conn = nil
+	}
+	return nil
+}
+
 func NewAndroidADB(addr string) *AndroidADB {
 	return &AndroidADB{Base: Base{id: "android_adb", addr: addr, client: httpClient(), sleeping: false}}
 }
 func (d *AndroidADB) Probe() error {
+	d.mu.Lock()
+	if d.conn != nil {
+		_ = d.conn.Close()
+		d.conn = nil
+	}
+	d.mu.Unlock()
 	c, e := net.DialTimeout("tcp", d.addr, 2*time.Second)
 	if e == nil {
 		d.mu.Lock()
 		d.conn = c
 		d.mu.Unlock()
+		h := make([]byte, 24)
+		binary.LittleEndian.PutUint32(h[0:4], 0x4e584e43)
+		binary.LittleEndian.PutUint32(h[4:8], 0x01000000)
+		binary.LittleEndian.PutUint32(h[12:16], 0)
+		binary.LittleEndian.PutUint32(h[20:24], 0xb1a7bdbc)
+		if _, e = c.Write(h); e != nil {
+			_ = c.Close()
+			d.mu.Lock()
+			d.conn = nil
+			d.mu.Unlock()
+			return e
+		}
 	}
 	return e
 }
@@ -437,7 +545,10 @@ func (d *AndroidADB) Execute(v string, a map[string]any) error {
 	binary.LittleEndian.PutUint32(hdr[0:4], 0x4e45504f)
 	binary.LittleEndian.PutUint32(hdr[12:16], uint32(len(payload)))
 	binary.LittleEndian.PutUint32(hdr[16:20], crc32.ChecksumIEEE(payload))
+	binary.LittleEndian.PutUint32(hdr[20:24], 0x4e45504f^0xffffffff)
 	if _, e := d.conn.Write(append(hdr, payload...)); e != nil {
+		_ = d.conn.Close()
+		d.conn = nil
 		return e
 	}
 	return nil
@@ -454,7 +565,10 @@ func NewLG(addr string, tlsOn bool) *LG {
 }
 func (d *LG) Probe() error {
 	if d.TLS {
-		_, e := tls.Dial("tcp", d.addr, &tls.Config{InsecureSkipVerify: true})
+		c, e := tls.DialWithDialer(&net.Dialer{Timeout: 3 * time.Second}, "tcp", d.addr, &tls.Config{InsecureSkipVerify: true, ServerName: strings.Split(d.addr, ":")[0]})
+		if c != nil {
+			defer c.Close()
+		}
 		return e
 	}
 	return errors.New("LG websocket disabled")

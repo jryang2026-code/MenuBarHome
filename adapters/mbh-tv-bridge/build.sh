@@ -12,4 +12,6 @@ for target in "darwin arm64" "darwin amd64" "windows amd64"; do
   (cd "$out" && shasum -a 256 "$name" > "$name.sha256")
   size=$(wc -c < "$out/$name" | tr -d ' '); echo "$name $size bytes"
 done
+cp "$ROOT/adapter-manifest.json" "$out/adapter-manifest.json"
+(cd "$out" && shasum -a 256 adapter-manifest.json > adapter-manifest.json.sha256)
 if [ "${1:-}" = --check ]; then rm -rf "$out"; fi
