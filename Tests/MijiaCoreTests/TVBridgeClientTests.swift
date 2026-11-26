@@ -51,3 +51,9 @@ extension TVBridgeClientTests {
         do { try await manager.healthPing(); XCTFail("expected RPC error") } catch TVBridgeError.rpcError(let code, let message) { XCTAssertEqual(code, -32004); XCTAssertEqual(message, "offline") } catch { XCTFail("unexpected error \(error)") }
     }
 }
+
+extension TVBridgeClientTests {
+    func testInvalidJSONRPCVersionIsRejected() throws {
+        XCTAssertThrowsError(try TVBridgeFrame.decodeForTesting(Data("{\"jsonrpc\":\"1.0\",\"id\":\"x\"}".utf8)))
+    }
+}
