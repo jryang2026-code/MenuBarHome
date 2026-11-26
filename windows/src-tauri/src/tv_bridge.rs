@@ -43,11 +43,24 @@ fn verify_sha256(path: &Path, expected: &str) -> Result<(), String> {
 fn data_and_manifest_paths(binary_path: &Path) -> Result<(PathBuf, PathBuf), String> {
     let data_dir = std::env::var_os("MBH_DATA_DIR")
         .map(PathBuf::from)
-        .unwrap_or_else(|| binary_path.parent().unwrap_or_else(|| Path::new(".")).to_path_buf());
+        .unwrap_or_else(|| {
+            std::env::var_os("LOCALAPPDATA")
+                .map(|local| PathBuf::from(local).join("MenuBarHome").join("TVBridge"))
+                .unwrap_or_else(|| std::env::temp_dir().join("menubarhome-tv-bridge"))
+        });
+    let data_dir = std::path::absolute(data_dir)
+        .map_err(|error| format!("无法解析 MBH_DATA_DIR：{error}"))?;
     fs::create_dir_all(&data_dir).map_err(|error| format!("创建 MBH_DATA_DIR 失败：{error}"))?;
     let manifest_path = std::env::var_os("MBH_MANIFEST_PATH")
         .map(PathBuf::from)
-        .unwrap_or_else(|| data_dir.join("adapter-manifest.json"));
+        .unwrap_or_else(|| {
+            binary_path
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .join("adapter-manifest.json")
+        });
+    let manifest_path = std::path::absolute(manifest_path)
+        .map_err(|error| format!("无法解析 MBH_MANIFEST_PATH：{error}"))?;
     validate_regular_file(&manifest_path, "adapter-manifest.json")?;
     let manifest = fs::read_to_string(&manifest_path)
         .map_err(|error| format!("读取 adapter-manifest.json 失败：{error}"))?;
@@ -80,6 +93,16 @@ fn validate_request(frame: &str) -> Result<String, String> {
         .and_then(Value::as_str)
         .map(str::to_string)
         .ok_or_else(|| "请求帧 id 必须是字符串".to_string())
+}
+
+fn prepare_request(frame: Value) -> Result<(String, String), String> {
+    let frame_json = match frame {
+        Value::String(text) => text,
+        value => serde_json::to_string(&value)
+            .map_err(|error| format!("序列化 TV bridge 请求失败：{error}"))?,
+    };
+    let request_id = validate_request(&frame_json)?;
+    Ok((frame_json, request_id))
 }
 
 fn validate_response(frame: &[u8], request_id: &str) -> Result<String, String> {
@@ -120,7 +143,8 @@ fn read_limited_line(reader: &mut BufReader<ChildStdout>) -> io::Result<Vec<u8>>
 
 #[tauri::command]
 pub(crate) fn tv_bridge_start(binary_path: String, expected_sha256: Option<String>) -> Result<(), String> {
-    let binary_path = PathBuf::from(binary_path);
+    let binary_path = std::path::absolute(binary_path)
+        .map_err(|error| format!("无法解析 TV bridge 二进制路径：{error}"))?;
     validate_regular_file(&binary_path, "TV bridge 二进制")?;
     if let Some(expected) = expected_sha256.as_deref() {
         verify_sha256(&binary_path, expected)?;
@@ -131,6 +155,7 @@ pub(crate) fn tv_bridge_start(binary_path: String, expected_sha256: Option<Strin
 
     let mut command = Command::new(&binary_path);
     command
+        .current_dir(&data_dir)
         .env_clear()
         .env("MBH_DATA_DIR", &data_dir)
         .env("MBH_MANIFEST_PATH", &manifest_path)
@@ -168,15 +193,9 @@ pub(crate) fn tv_bridge_start(binary_path: String, expected_sha256: Option<Strin
 }
 
 #[tauri::command]
-pub(crate) fn tv_bridge_request(frame_json: String) -> Result<String, String> {
+pub(crate) fn tv_bridge_request(frame: Value) -> Result<String, String> {
+    let (frame_json, request_id) = prepare_request(frame)?;
     let mut guard = TV_BRIDGE.lock().map_err(|_| "TV bridge 状态不可用".to_string())?;
-    let request_id = match validate_request(&frame_json) {
-        Ok(request_id) => request_id,
-        Err(error) => {
-            kill_process(&mut guard);
-            return Err(error);
-        }
-    };
     let write_result = {
         let bridge = guard.as_mut().ok_or_else(|| "TV bridge 尚未启动".to_string())?;
         writeln!(bridge.stdin, "{frame_json}").and_then(|_| bridge.stdin.flush())
@@ -219,6 +238,22 @@ pub(crate) fn tv_bridge_shutdown() -> Result<(), String> {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn prepares_rpc_requests_from_objects_and_strings() {
+        let object = serde_json::json!({"jsonrpc": "2.0", "id": "x", "method": "list"});
+        let (frame, id) = prepare_request(object.clone()).unwrap();
+        assert_eq!(serde_json::from_str::<Value>(&frame).unwrap(), object);
+        assert_eq!(id, "x");
+
+        let raw = r#"{ "jsonrpc": "2.0", "id": "y" }"#;
+        assert_eq!(
+            prepare_request(Value::String(raw.to_string())).unwrap(),
+            (raw.to_string(), "y".to_string())
+        );
+        assert!(prepare_request(serde_json::json!({"jsonrpc": "2.0", "id": 1})).is_err());
+        assert!(prepare_request(Value::String(format!("{raw}\n"))).is_err());
+    }
 
     #[test]
     fn frame_limit_and_rpc_validation_are_enforced() {
