@@ -57,3 +57,16 @@ extension TVBridgeClientTests {
         XCTAssertThrowsError(try TVBridgeFrame.decodeForTesting(Data("{\"jsonrpc\":\"1.0\",\"id\":\"x\"}".utf8)))
     }
 }
+
+extension TVBridgeClientTests {
+    func testRPCErrorPreservesRunningTransport() async throws {
+        let transport = MockTVBridgeTransport { frame in
+            if frame.method == "initialize" { return TVBridgeFrame(id: frame.id, result: Data("{}".utf8)) }
+            return TVBridgeFrame(id: frame.id, error: TVBridgeRPCError(code: -32005, message: "device unavailable"))
+        }
+        let manager = TVBridgePluginManager(config: TVBridgeConfig(isEnabled: true), transport: transport)
+        try await manager.startIfNeeded()
+        do { try await manager.healthPing(); XCTFail("expected rpc error") } catch TVBridgeError.rpcError { } catch { XCTFail("unexpected error") }
+        let closeCount = await transport.closeCount; let running = await manager.isRunning; XCTAssertEqual(closeCount, 0); XCTAssertTrue(running)
+    }
+}
