@@ -1524,13 +1524,12 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
           host.render();
           return;
         }
-        // Cameras keep the name as a way into the live view (tracked in #539 for cross-platform parity).
-        if (dev.kind.kind === "camera") {
-          openCameraPrimaryForHost(id);
-          return;
-        }
         if (actionLayout.kind === "primaryOnly") {
-          toggleDeviceById(id);
+          if (actionLayout.primary === "openCamera") {
+            openCameraPrimaryForHost(id);
+          } else {
+            toggleDeviceById(id);
+          }
           return;
         }
         if (actionLayout.kind === "adjustOnly") {
@@ -1540,11 +1539,14 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
           }
           return;
         }
-        // `split`: one rule on every card and both themes, as on macOS — the orb switches, the name
-        // and status open the drawer; a card without a drawer lets the body switch too.
+        // `split`: one rule on every card and both themes, as on macOS — the orb runs the primary
+        // action (switch power or open live camera), the name and status open the drawer; a card
+        // without a drawer falls back to its primary action.
         if (hasDetailDrawer(dev, facets)) {
           host.expandedDeviceId = host.expandedDeviceId === id ? null : id;
           host.render();
+        } else if (actionLayout.primary === "openCamera") {
+          openCameraPrimaryForHost(id);
         } else if (deviceCanTogglePower(dev)) {
           toggleDeviceById(id);
         }
