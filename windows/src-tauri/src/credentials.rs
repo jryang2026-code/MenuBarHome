@@ -28,7 +28,10 @@ pub(crate) fn allowed_credential_name(name: &str) -> Result<&str, String> {
             return Ok(name);
         }
     }
-    if let Some(suffix) = name.strip_prefix("generic-camera:") {
+    if let Some(suffix) = name
+        .strip_prefix("generic-camera:")
+        .or_else(|| name.strip_prefix("tv-bridge:"))
+    {
         if !suffix.is_empty()
             && suffix.len() <= 64
             && suffix
@@ -218,5 +221,21 @@ mod tests {
         assert!(allowed_credential_name("generic-camera:a:b").is_err());
         assert!(allowed_credential_name("generic-camera:a b").is_err());
         assert!(allowed_credential_name(&format!("generic-camera:{}", "a".repeat(65))).is_err());
+    }
+
+    #[test]
+    fn allows_constrained_tv_bridge_credential_targets() {
+        let target = "tv-bridge:living-room_TV01";
+        assert_eq!(allowed_credential_name(target).ok(), Some(target));
+        let longest_target = format!("tv-bridge:{}", "a".repeat(64));
+        assert_eq!(
+            allowed_credential_name(&longest_target).ok(),
+            Some(longest_target.as_str())
+        );
+        assert!(allowed_credential_name("tv-bridge:../other").is_err());
+        assert!(allowed_credential_name("tv-bridge:").is_err());
+        assert!(allowed_credential_name("tv-bridge:a:b").is_err());
+        assert!(allowed_credential_name("tv-bridge:a b").is_err());
+        assert!(allowed_credential_name(&format!("tv-bridge:{}", "a".repeat(65))).is_err());
     }
 }
