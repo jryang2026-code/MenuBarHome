@@ -812,9 +812,12 @@ public struct ClassicControlCenterPanel: View {
                 .accessibilityLabel(Text(listening
                     ? L10n.tr("停止聆听", "Stop listening")
                     : L10n.tr("语音输入", "Voice input")))
-                .panelHelp(listening
-                    ? L10n.tr("停止聆听并执行", "Stop listening and run")
-                    : L10n.tr("语音输入（快捷键 V，或长按 \(HotkeySettingsState.shared.shortcut.displayString) / 菜单栏图标）", "Voice input (Shortcut V, or hold \(HotkeySettingsState.shared.shortcut.displayString) / menu bar icon)"))
+                .panelHelp(ControlCenterPanel.voiceButtonHelp(
+                    listening: listening,
+                    globalHotkeyEnabled: store.enableGlobalHotkey,
+                    isGlobalHotkeyRegistered: HotkeySettingsState.shared.isRegistered,
+                    shortcutDisplay: HotkeySettingsState.shared.shortcut.displayString
+                ))
             }
         }
         .padding(.leading, 10)
