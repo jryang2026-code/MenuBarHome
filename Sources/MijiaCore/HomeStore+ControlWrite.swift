@@ -1084,7 +1084,7 @@ extension HomeStore {
     func controllableDevice(_ deviceId: String) -> SmartDevice? {
         if rejectDeviceWriteIfCapabilityDisabled(deviceId: deviceId) != nil { return nil }
         guard let device = devices.first(where: { $0.id == deviceId }) else { return nil }
-        guard !rejectWritesBlockedByMiSession(needsMi: !lgClientServes(device) && !Self.isAdapterDeviceId(device.id)) else { return nil }
+        guard !rejectWritesBlockedByMiSession(needsMi: !servedWithoutMiSession(device)) else { return nil }
         guard !rejectControlWhileLocked() else { return nil }
         return device
     }
@@ -1105,7 +1105,7 @@ extension HomeStore {
         guard let liveDevice = devices.first(where: { $0.id == previous.id }),
               liveDevice.accountId == previous.accountId,
               lgClientServes(liveDevice) == lgClientServes(previous),
-              !rejectWritesBlockedByMiSession(needsMi: !lgClientServes(liveDevice) && !Self.isAdapterDeviceId(liveDevice.id)),
+              !rejectWritesBlockedByMiSession(needsMi: !servedWithoutMiSession(liveDevice)),
               !rejectControlWhileLocked() else { return }
         guard liveDevice.isOnline else {
             showToast(ControlFailure.deviceOffline.message(deviceName: liveDevice.name, adjustment: debounceKey != nil), isError: true)

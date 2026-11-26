@@ -144,6 +144,8 @@ final class MenuBarMijiaAppDelegate: NSObject, NSApplicationDelegate, Observable
     func applicationWillTerminate(_ notification: Notification) {
         LayoutUIState.shared.commitRoomOrderIfNeeded()
         XiaomiCameraBridge.scrubStaleConfigOnLaunch()
+        // Never leave an orphaned mbh-tv-bridge behind; a no-op while the plugin is off.
+        TVBridgeStore.shared.shutdownNow()
     }
 }
 

@@ -565,6 +565,18 @@ export function buildIndexedCapabilityDevices(input: HostCapabilityContextInput)
   const seenIds = new Set<string>();
   for (const dev of input.devices) {
     if (seenIds.has(dev.id)) continue;
+    if (dev.id.startsWith("adapter:")) {
+      // Optional out-of-process adapter rows (ADR-0026) are a local source: no Mi account or HA
+      // scope owns them, but a closed device type still blocks them.
+      seenIds.add(dev.id);
+      indexedDevices.push({
+        id: dev.id, name: dev.name, category: deviceCategoryForDevice(dev), connection: null, sourceScope: "local",
+        isSourceAvailable: true,
+        upstreamHiddenOrDisabled: false, participatesInAllOff: joinsAllOff(dev, input.allOffOverrides ?? {}),
+        safetySignals: [], readKeys: [dev.id], safetyReadKeys: [],
+      });
+      continue;
+    }
     const route = input.dualRoutes?.[dev.id];
     const miOwner = resolveDeviceMiAccountOwner({
       device: dev,

@@ -86,6 +86,10 @@ final class TVBridgeStore {
     @ObservationIgnored private var refreshTask: Task<Void, Never>?
     @ObservationIgnored private var backgroundTasks: [UUID: Task<Void, Never>] = [:]
     @ObservationIgnored private var panelVisible = false
+    /// One-shot stop after the panel closes; cancelled when it reopens. Never set while off or stopped.
+    @ObservationIgnored private var idleTask: Task<Void, Never>?
+    /// `nil` waits `config.idleShutdownSeconds`; tests pass a short delay.
+    @ObservationIgnored private let idleDelay: Duration?
     @ObservationIgnored private weak var home: HomeStore?
     /// Bumped on every disable or config change so an in-flight snapshot cannot repopulate the panel.
     @ObservationIgnored private var generation = 0
@@ -103,8 +107,10 @@ final class TVBridgeStore {
         defaults: UserDefaults = .standard,
         secrets: Secrets = .keychain,
         binaryCandidates: @escaping () -> [String] = TVBridgeStore.defaultBinaryCandidates,
+        idleDelay: Duration? = nil,
         makeManager: @escaping ManagerFactory = TVBridgeStore.liveManager
     ) {
+        self.idleDelay = idleDelay
         self.defaults = defaults
         self.secrets = secrets
         self.binaryCandidates = binaryCandidates
@@ -223,22 +229,31 @@ final class TVBridgeStore {
         let token = generation
         isRefreshing = true
         let task = Task { [weak self] in
+            guard let self, token == self.generation, self.config.isEnabled else { return }
             let result: Result<[SmartDevice], Error>
             do { result = .success(try await manager.snapshot()) } catch { result = .failure(error) }
+            // Switched off or reconfigured while starting: the retired manager must not keep a process.
+            guard token == self.generation, self.config.isEnabled else {
+                await manager.shutdown()
+                return
+            }
             let running = await manager.isRunning
-            self?.finishRefresh(result, running: running, token: token)
+            let hardwareIds = await manager.hardwareIdentifiers
+            self.finishRefresh(result, running: running, hardwareIds: hardwareIds, token: token)
         }
         refreshTask = task
         return task
     }
 
-    private func finishRefresh(_ result: Result<[SmartDevice], Error>, running: Bool, token: Int) {
-        guard token == generation else { return }
+    private func finishRefresh(
+        _ result: Result<[SmartDevice], Error>, running: Bool, hardwareIds: [String: [String]], token: Int
+    ) {
+        guard token == generation, config.isEnabled else { return }
         refreshTask = nil
         isRefreshing = false
         switch result {
         case .success(let rows):
-            publish(rows.map(Self.routable))
+            publish(rows.map(Self.routable), hardwareIds: hardwareIds)
             status = running ? .running : idleStatus
         case .failure(let error):
             publish([])
@@ -248,7 +263,9 @@ final class TVBridgeStore {
 
     func pollingContextChanged(_ context: PollingContext) {
         let opened = context.panelVisible && !panelVisible
+        let closed = !context.panelVisible && panelVisible
         panelVisible = context.panelVisible
+        if context.panelVisible { cancelIdleShutdown() }
         guard config.isEnabled else { return }
         if let manager {
             let bridgeContext = TVBridgePollingContext(
@@ -257,8 +274,11 @@ final class TVBridgeStore {
             track { [weak self] in
                 await manager.updatePollingContext(bridgeContext)
                 let running = await manager.isRunning
-                guard let self, self.manager === manager, !running, self.status == .running else { return }
-                self.status = self.idleStatus
+                guard let self, self.manager === manager else { return }
+                if !running, self.status == .running { self.status = self.idleStatus }
+                // `host.contextChanged` alone never fires again once the panel stays shut, so the
+                // idle stop is a timer of its own.
+                if closed, running, !self.panelVisible, self.config.isEnabled { self.scheduleIdleShutdown(manager) }
             }
         }
         if opened { refresh() }
@@ -325,7 +345,40 @@ final class TVBridgeStore {
     /// Lets tests (and teardown) wait for queued bridge work.
     func waitForPendingWork() async {
         await refreshTask?.value
-        while let task = backgroundTasks.values.first { await task.value }
+        while let task = backgroundTasks.values.first ?? idleTask { await task.value }
+    }
+
+    /// App quit: stop the child process before the app goes away, waiting at most `timeout`.
+    func shutdownNow(timeout: TimeInterval = 1) {
+        generation += 1
+        cancelIdleShutdown()
+        refreshTask?.cancel()
+        refreshTask = nil
+        guard let manager else { return }
+        self.manager = nil
+        let done = DispatchSemaphore(value: 0)
+        Task.detached {
+            await manager.shutdown()
+            done.signal()
+        }
+        _ = done.wait(timeout: .now() + timeout)
+    }
+
+    private func scheduleIdleShutdown(_ manager: TVBridgePluginManager) {
+        cancelIdleShutdown()
+        let delay = idleDelay ?? .seconds(config.idleShutdownSeconds)
+        idleTask = Task { [weak self] in
+            try? await Task.sleep(for: delay)
+            guard !Task.isCancelled, let self, self.manager === manager, !self.panelVisible else { return }
+            self.idleTask = nil
+            await manager.shutdown()
+            if self.manager === manager, self.status == .running { self.status = self.idleStatus }
+        }
+    }
+
+    private func cancelIdleShutdown() {
+        idleTask?.cancel()
+        idleTask = nil
     }
 
     // MARK: - Internals
@@ -347,9 +400,13 @@ final class TVBridgeStore {
         refreshTask?.cancel()
         refreshTask = nil
         isRefreshing = false
+        cancelIdleShutdown()
         if let old = manager {
             manager = nil
-            track { await old.shutdown() }
+            // Disable the retired manager first, so a start already in flight cannot bring it back.
+            var retired = next
+            retired.isEnabled = false
+            track { await old.updateConfig(retired) }
         }
         if !next.isEnabled { publish([]) }
         status = idleStatus
@@ -368,9 +425,9 @@ final class TVBridgeStore {
         return created
     }
 
-    private func publish(_ rows: [SmartDevice]) {
+    private func publish(_ rows: [SmartDevice], hardwareIds: [String: [String]] = [:]) {
         devices = rows
-        home?.setAdapterDevices(rows)
+        home?.setAdapterDevices(rows, hardwareIds: hardwareIds)
     }
 
     private func track(_ work: @escaping @MainActor () async -> Void) {

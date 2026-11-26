@@ -3,7 +3,9 @@ import type { DeviceCommand, SmartDevice } from "../core/models.js";
 import {
   defaultTVBridgeConfig,
   mapTVBridgeCommand,
+  normalizeTVBridgeMac,
   projectTVBridgeDevice,
+  tvBridgeDescriptorMacs,
   TVBridgeLifecycle,
   type TVBridgeCommand,
   type TVBridgeConfig,
@@ -58,12 +60,32 @@ export function routableTVBridgeDevice(device: SmartDevice): SmartDevice {
 
 const normalizedName = (name: string): string => name.toLowerCase().replace(/[\s\p{P}]/gu, "");
 
-/** ADR-0024 §5.3: a built-in row with the same id or TV name keeps the card. */
-export function nonHijackingTVBridgeRows(bridged: readonly SmartDevice[], builtIn: readonly SmartDevice[]): SmartDevice[] {
+export interface TVBridgeDedupeOptions {
+  /** Normalized MACs the bridge reported for a row. */
+  readonly macsFor?: (row: SmartDevice) => readonly string[];
+  /** Hardware identifiers (MACs, dids, unique ids) the host knows for a built-in row; defaults to its id. */
+  readonly builtInIdentifiers?: (device: SmartDevice) => readonly string[];
+}
+
+/**
+ * ADR-0024 §5.3: the built-in row always keeps the card. A bridged row is a duplicate when a built-in
+ * row has its id, the same normalized TV name, or the same MAC among its identifiers.
+ */
+export function nonHijackingTVBridgeRows(
+  bridged: readonly SmartDevice[],
+  builtIn: readonly SmartDevice[],
+  options: TVBridgeDedupeOptions = {},
+): SmartDevice[] {
   const native = builtIn.filter((d) => !isTVBridgeDeviceId(d.id));
   const ids = new Set(native.map((d) => d.id));
   const tvNames = new Set(native.filter((d) => d.kind.kind === "tv").map((d) => normalizedName(d.name)));
-  return bridged.filter((d) => !ids.has(d.id) && !tvNames.has(normalizedName(d.name)));
+  const identifiers = options.builtInIdentifiers ?? ((d: SmartDevice) => [d.id]);
+  const hexIds = native.flatMap((d) => identifiers(d)).map((raw) => raw.toLowerCase().replace(/[^0-9a-f]/g, ""));
+  return bridged.filter((d) => {
+    if (ids.has(d.id) || tvNames.has(normalizedName(d.name))) return false;
+    const macs = (options.macsFor?.(d) ?? []).map(normalizeTVBridgeMac).filter((m): m is string => m !== null);
+    return !macs.some((mac) => hexIds.some((hex) => hex.includes(mac)));
+  });
 }
 
 export function toTVBridgeCommand(command: DeviceCommand): { deviceId: string; command: TVBridgeCommand } | null {
@@ -140,6 +162,8 @@ export interface TVBridgeControllerDeps {
   readonly storage?: TVBridgeStorage | null;
   readonly secrets?: TVBridgeSecrets;
   readonly onChange?: () => void;
+  /** Delay before an idle bridge stops after the panel hides; defaults to `idleShutdownSeconds`. */
+  readonly idleShutdownMs?: number;
 }
 
 export interface TVBridgeDeviceInput { name: string; roomName: string; driver: TVBridgeDriver; host: string; port?: number; macAddress?: string; secret?: string }
@@ -156,19 +180,28 @@ export class TVBridgeController {
   private lifecycle: TVBridgeLifecycle | null = null;
   private refreshing: Promise<void> | null = null;
   private readonly pending = new Set<Promise<unknown>>();
+  /** Bumped by every dispose and config change; a start or snapshot from an older epoch is dropped. */
   private generation = 0;
+  private starting: Promise<TVBridgeLifecycle> | null = null;
+  private idleTimer: ReturnType<typeof setTimeout> | null = null;
+  private readonly idleShutdownMs: number | undefined;
+  private panelVisible = false;
+  private hardwareIds = new Map<string, readonly string[]>();
 
   constructor(deps: TVBridgeControllerDeps = {}) {
     this.storage = deps.storage === undefined ? defaultStorage() : deps.storage;
     this.invokeFn = deps.invoke === undefined ? defaultInvoke() : deps.invoke;
     this.secrets = deps.secrets ?? defaultSecrets();
     this.onChange = deps.onChange ?? (() => undefined);
+    this.idleShutdownMs = deps.idleShutdownMs;
     this.config = loadConfig(this.storage);
     this.status = this.idleStatus();
   }
 
   get enabled(): boolean { return this.config.isEnabled }
   get isRefreshing(): boolean { return this.refreshing !== null }
+  /** Normalized MACs for a bridged row, from its snapshot and its configured `macAddress`. */
+  macsFor(deviceId: string): readonly string[] { return this.hardwareIds.get(deviceId) ?? [] }
 
   setEnabled(enabled: boolean): void {
     if (enabled === this.config.isEnabled) return;
@@ -217,15 +250,22 @@ export class TVBridgeController {
 
   /** Panel shown: refresh. A no-op while off. */
   onPanelShown(): void {
+    this.panelVisible = true;
+    this.clearIdleTimer();
     if (!this.config.isEnabled) return;
     this.track(this.contextChanged({ panelVisible: true, systemActive: true, lowPower: false }));
     void this.refresh();
   }
 
-  /** Panel hidden: let the bridge sleep (and stop after its idle window). A no-op while off. */
+  /**
+   * Panel hidden: let the bridge sleep, then stop it once the idle window passes. `host.contextChanged`
+   * never fires again while the panel stays shut, so the stop is a one-shot timer of its own. A no-op
+   * (and no timer) while off or not running.
+   */
   onPanelHidden(): void {
-    if (!this.config.isEnabled || !this.lifecycle) return;
-    this.track(this.contextChanged({ panelVisible: false, systemActive: false, lowPower: false }));
+    this.panelVisible = false;
+    if (!this.config.isEnabled || !this.lifecycle?.isRunning) return;
+    this.track(this.contextChanged({ panelVisible: false, systemActive: false, lowPower: false }).then(() => this.scheduleIdleShutdown()));
   }
 
   refresh(): Promise<void> {
@@ -246,11 +286,13 @@ export class TVBridgeController {
       let failure: unknown = null;
       try {
         const result = (await this.request("snapshot", {})) as { devices?: TVBridgeDeviceDescriptor[] } | null;
-        rows = (result?.devices ?? []).map((d) => routableTVBridgeDevice(projectTVBridgeDevice(d)));
+        const descriptors = result?.devices ?? [];
+        rows = descriptors.map((d) => routableTVBridgeDevice(projectTVBridgeDevice(d)));
+        if (token === this.generation) this.hardwareIds = this.hardwareIdsFrom(descriptors);
       } catch (error) {
         failure = error;
       }
-      if (token !== this.generation) return;
+      if (token !== this.generation || !this.config.isEnabled) return;
       this.refreshing = null;
       this.error = failure === null ? null : friendlyError(failure);
       this.status = failure === null ? "running" : "failed";
@@ -261,12 +303,16 @@ export class TVBridgeController {
     return run;
   }
 
-  async execute(command: DeviceCommand): Promise<void> {
+  /** `stillAllowed` runs after the bridge is up and right before the write; `false` sends nothing. */
+  async execute(command: DeviceCommand, stillAllowed?: () => Promise<boolean>): Promise<void> {
     if (!this.config.isEnabled) throw new Error("TV bridge is off");
     const routed = toTVBridgeCommand(command);
     if (!routed) throw new Error("Unsupported TV bridge command");
     const frame = mapTVBridgeCommand(routed.command, routed.deviceId, 1);
-    await this.request(frame.method ?? "control.execute", frame.params);
+    await this.request(frame.method ?? "control.execute", frame.params, async () => {
+      const allowed = stillAllowed ? await stillAllowed() : true;
+      if (!allowed || !this.config.isEnabled) throw new Error("TV bridge write refused");
+    });
     this.lifecycle?.touch();
     void this.refresh();
   }
@@ -274,6 +320,8 @@ export class TVBridgeController {
   async dispose(): Promise<void> {
     this.generation += 1;
     this.refreshing = null;
+    this.starting = null;
+    this.clearIdleTimer();
     const lifecycle = this.lifecycle;
     this.lifecycle = null;
     if (lifecycle) await lifecycle.shutdown().catch(() => undefined);
@@ -305,7 +353,38 @@ export class TVBridgeController {
 
   private publish(rows: readonly SmartDevice[]): void {
     this.panelDevices = rows.length === 0 ? EMPTY : rows;
+    if (rows.length === 0) this.hardwareIds = new Map();
     this.onChange();
+  }
+
+  private hardwareIdsFrom(descriptors: readonly TVBridgeDeviceDescriptor[]): Map<string, readonly string[]> {
+    const ids = new Map<string, readonly string[]>();
+    for (const d of descriptors) {
+      const configured = normalizeTVBridgeMac(this.config.devices.find((c) => c.nativeId === d.nativeId)?.macAddress);
+      const macs = [...new Set([...tvBridgeDescriptorMacs(d), ...(configured ? [configured] : [])])];
+      if (macs.length > 0) ids.set(`${TV_BRIDGE_DEVICE_PREFIX}${d.nativeId}`, macs);
+    }
+    return ids;
+  }
+
+  private scheduleIdleShutdown(): void {
+    this.clearIdleTimer();
+    const lifecycle = this.lifecycle;
+    if (!this.config.isEnabled || this.panelVisible || !lifecycle?.isRunning) return;
+    const delay = this.idleShutdownMs ?? this.config.idleShutdownSeconds * 1000;
+    this.idleTimer = setTimeout(() => {
+      this.idleTimer = null;
+      if (this.lifecycle !== lifecycle || this.panelVisible) return;
+      this.lifecycle = null;
+      this.track(lifecycle.shutdown().catch(() => undefined));
+      if (this.status === "running") this.status = this.idleStatus();
+      this.onChange();
+    }, delay);
+  }
+
+  private clearIdleTimer(): void {
+    if (this.idleTimer !== null) clearTimeout(this.idleTimer);
+    this.idleTimer = null;
   }
 
   private track(task: Promise<unknown>): void {
@@ -317,32 +396,56 @@ export class TVBridgeController {
     return this.lifecycle?.contextChanged(context).catch(() => { this.lifecycle = null; }) ?? Promise.resolve();
   }
 
-  private async ensureStarted(): Promise<TVBridgeLifecycle> {
-    if (this.lifecycle?.isRunning) return this.lifecycle;
+  private ensureStarted(): Promise<TVBridgeLifecycle> {
+    if (this.lifecycle?.isRunning) return Promise.resolve(this.lifecycle);
+    if (this.starting) return this.starting;
+    const run = this.start().finally(() => {
+      if (this.starting === run) this.starting = null;
+    });
+    this.starting = run;
+    return run;
+  }
+
+  /**
+   * Launches the process and sends `initialize`. If the switch goes off or the config changes while
+   * either await is pending, or `initialize` fails, the process is shut down and nothing is kept.
+   */
+  private async start(): Promise<TVBridgeLifecycle> {
+    const epoch = this.generation;
+    const stale = () => epoch !== this.generation || !this.config.isEnabled;
     const invoke = this.invokeFn;
     if (!invoke) throw new Error("command tv_bridge_start not found");
-    await invoke("tv_bridge_start", { binaryPath: this.config.binaryPath, expectedSha256: this.config.expectedBinarySHA256 ?? null });
     const send = async (frame: TVBridgeFrame): Promise<TVBridgeFrame> => {
       const reply = await invoke("tv_bridge_request", { frame });
       const parsed = (typeof reply === "string" ? JSON.parse(reply) : reply) as TVBridgeFrame | null;
       if (!parsed || parsed.id !== frame.id) throw new Error("Invalid TV bridge frame");
       return parsed;
     };
+    await invoke("tv_bridge_start", { binaryPath: this.config.binaryPath, expectedSha256: this.config.expectedBinarySHA256 ?? null });
+    try {
+      if (stale()) throw new Error("TV bridge switched off while starting");
+      const devices = await Promise.all(this.config.devices.map(async (d) => {
+        const credential = d.credentialSlot ? await this.secrets.get(d.credentialSlot) : null;
+        const { credentialSlot: _slot, macAddress, ...rest } = d;
+        return { ...rest, ...(macAddress ? { mac: macAddress } : {}), ...(credential ? { credential } : {}) };
+      }));
+      if (stale()) throw new Error("TV bridge switched off while starting");
+      const init = await send({ jsonrpc: "2.0", id: crypto.randomUUID(), method: "initialize", params: { supportedProtocolVersions: ["1.0"], capabilityGeneration: 1, config: { devices } } });
+      if (init.error) throw new Error(typeof init.error === "string" ? init.error : init.error.message);
+      if (stale()) throw new Error("TV bridge switched off while starting");
+    } catch (error) {
+      await invoke("tv_bridge_shutdown").catch(() => undefined);
+      throw error;
+    }
     const lifecycle = new TVBridgeLifecycle({ request: send, close: async () => { await invoke("tv_bridge_shutdown"); } }, this.config.idleShutdownSeconds);
-    const devices = await Promise.all(this.config.devices.map(async (d) => {
-      const credential = d.credentialSlot ? await this.secrets.get(d.credentialSlot) : null;
-      const { credentialSlot: _slot, macAddress, ...rest } = d;
-      return { ...rest, ...(macAddress ? { mac: macAddress } : {}), ...(credential ? { credential } : {}) };
-    }));
-    const init = await send({ jsonrpc: "2.0", id: crypto.randomUUID(), method: "initialize", params: { supportedProtocolVersions: ["1.0"], capabilityGeneration: 1, config: { devices } } });
-    if (init.error) throw new Error(typeof init.error === "string" ? init.error : init.error.message);
     lifecycle.markStarted();
     this.lifecycle = lifecycle;
     return lifecycle;
   }
 
-  private async request(method: string, params: unknown): Promise<unknown> {
+  private async request(method: string, params: unknown, beforeSend?: () => Promise<void>): Promise<unknown> {
     const lifecycle = await this.ensureStarted();
+    await beforeSend?.();
     const invoke = this.invokeFn!;
     const frame: TVBridgeFrame = { jsonrpc: "2.0", id: crypto.randomUUID(), method, params };
     let reply: TVBridgeFrame;
@@ -366,6 +469,10 @@ let shared: TVBridgeController | null = null;
 export function getTVBridgeController(): TVBridgeController {
   shared ??= new TVBridgeController();
   return shared;
+}
+
+export function setTVBridgeControllerForTesting(controller: TVBridgeController | null): void {
+  shared = controller;
 }
 
 type Escape = (raw: string) => string;

@@ -622,6 +622,7 @@ extension HomeStore {
             }
             if rooms != nextRooms { rooms = nextRooms }
             if homes != snapshot.homes { homes = snapshot.homes }
+            builtInHardwareIds = snapshot.deviceIdentities.compactMapValues { $0.macAddresses.isEmpty ? nil : $0.macAddresses }
             if environmentReadings != snapshot.environmentReadings {
                 environmentReadings = snapshot.environmentReadings
                 maybeRefreshProactiveSuggestionsInBackground()

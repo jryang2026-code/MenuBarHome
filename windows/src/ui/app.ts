@@ -293,7 +293,9 @@ export class MenuMijiaWindowsApp {
         source: this._devices,
         bridged,
         camerasOn,
-        devices: bridged.length === 0 ? base : [...base, ...nonHijackingTVBridgeRows(bridged, base)],
+        devices: bridged.length === 0 ? base : [...base, ...nonHijackingTVBridgeRows(bridged, base, {
+          macsFor: (row) => getTVBridgeController().macsFor(row.id),
+        })],
       };
     }
     return this.filteredDevicesCache!.devices;

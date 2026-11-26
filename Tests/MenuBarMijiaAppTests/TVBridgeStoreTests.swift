@@ -14,6 +14,8 @@ struct TVBridgeStoreTests {
         var secrets: [String: String] = [:]
         var managersMade = 0
         let transport: MockTVBridgeTransport
+        /// Replaces `transport` for tests that need to hold a request open.
+        var customTransport: (any TVBridgeTransport)?
 
         init(snapshot: String = #"{"capturedAt":"now","devices":[{"nativeId":"tv-a","name":"卧室电视","online":true,"state":"on","volume":20,"muted":false}]}"#) {
             defaults = UserDefaults(suiteName: suite)!
@@ -25,7 +27,7 @@ struct TVBridgeStoreTests {
             }
         }
 
-        func makeStore() -> TVBridgeStore {
+        func makeStore(idleDelay: Duration? = nil) -> TVBridgeStore {
             TVBridgeStore(
                 defaults: defaults,
                 secrets: .init(
@@ -36,10 +38,12 @@ struct TVBridgeStoreTests {
                     }
                 ),
                 binaryCandidates: { [] },
+                idleDelay: idleDelay,
                 makeManager: { [unowned self] config, credentials in
                     self.managersMade += 1
                     return TVBridgePluginManager(
-                        config: config, transport: self.transport, credentialResolver: { credentials[$0] }
+                        config: config, transport: self.customTransport ?? self.transport,
+                        credentialResolver: { credentials[$0] }
                     )
                 }
             )
@@ -50,8 +54,8 @@ struct TVBridgeStoreTests {
         deinit { UserDefaults.standard.removePersistentDomain(forName: suite) }
     }
 
-    private func enabledStore(_ harness: Harness) -> TVBridgeStore {
-        let store = harness.makeStore()
+    private func enabledStore(_ harness: Harness, idleDelay: Duration? = nil) -> TVBridgeStore {
+        let store = harness.makeStore(idleDelay: idleDelay)
         store.setEnabled(true)
         store.setBinaryPath("/usr/local/bin/mbh-tv-bridge")
         store.addDevice(name: "卧室电视", roomName: "卧室", driver: .kodi_jsonrpc, host: "192.168.1.9",
@@ -202,7 +206,113 @@ struct TVBridgeStoreTests {
         #expect(store.refresh() == nil)
         #expect(harness.managersMade == 0)
     }
+
+    @Test("A bridged TV with a built-in TV's MAC stays hidden even under another name")
+    func sameMACBuiltInWins() {
+        let spec = TVSpec(mediaEntityId: "m", state: "on", volumePercent: 10)
+        let builtIn = SmartDevice(id: "media_player.living", name: "客厅大屏", roomId: "r", roomName: "客厅",
+                                  model: "tv", isOnline: true, kind: .tv(spec))
+        let byEvidence = SmartDevice(id: "adapter:com.menubarhome.tv-bridge:a", name: "Sony KD-65", roomId: "r",
+                                     roomName: "客厅", model: "tv", isOnline: true, kind: .tv(spec))
+        let byId = SmartDevice(id: "miot_aabbccddeeff", name: "卧室电视", roomId: "r", roomName: "卧室",
+                               model: "tv", isOnline: true, kind: .tv(spec))
+        let byIdBridged = SmartDevice(id: "adapter:com.menubarhome.tv-bridge:b", name: "Bedroom LG", roomId: "r",
+                                      roomName: "卧室", model: "tv", isOnline: true, kind: .tv(spec))
+        let unique = SmartDevice(id: "adapter:com.menubarhome.tv-bridge:c", name: "书房电视", roomId: "r",
+                                 roomName: "书房", model: "tv", isOnline: true, kind: .tv(spec))
+        let rows = HomeStore.nonHijackingAdapterRows(
+            [byEvidence, byIdBridged, unique], builtIn: [builtIn, byId],
+            adapterMACs: [byEvidence.id: ["11:22:33:44:55:66"], byIdBridged.id: ["AA-BB-CC-DD-EE-FF"], unique.id: ["010203040506"]],
+            builtInMACs: [builtIn.id: ["112233445566"]]
+        )
+        #expect(rows.map(\.id) == [unique.id])
+    }
+
+    @Test("Snapshot MACs from identity.macAddresses or macAddress reach the home, normalized")
+    func snapshotHardwareIds() async throws {
+        let harness = Harness(snapshot: #"{"capturedAt":"now","devices":[{"nativeId":"tv-a","name":"卧室电视","online":true,"identity":{"macAddresses":["AA:BB:CC:DD:EE:FF"]}},{"nativeId":"tv-b","name":"书房电视","online":true,"macAddress":"11-22-33-44-55-66"}]}"#)
+        let store = enabledStore(harness)
+        let home = HomeStore(provider: SilentProvider(), defaultsSuiteName: harness.suite + ".home")
+        defer { UserDefaults.standard.removePersistentDomain(forName: harness.suite + ".home") }
+        store.attach(to: home)
+        await store.refresh()?.value
+        #expect(home.adapterHardwareIds["adapter:com.menubarhome.tv-bridge:tv-a"] == ["aabbccddeeff"])
+        #expect(home.adapterHardwareIds["adapter:com.menubarhome.tv-bridge:tv-b"] == ["112233445566"])
+    }
+
+    @Test("Closing the panel stops an idle bridge once the idle delay passes; reopening cancels it")
+    func idleShutdownAfterPanelCloses() async throws {
+        let harness = Harness()
+        let store = enabledStore(harness, idleDelay: .milliseconds(20))
+        store.pollingContextChanged(PollingContext(panelVisible: true))
+        await store.waitForPendingWork()
+        #expect(await harness.transport.closeCount == 0)
+
+        store.pollingContextChanged(PollingContext(panelVisible: false, systemActive: true))
+        store.pollingContextChanged(PollingContext(panelVisible: true))
+        await store.waitForPendingWork()
+        #expect(await harness.transport.closeCount == 0, "reopening must cancel the idle stop")
+
+        store.pollingContextChanged(PollingContext(panelVisible: false, systemActive: true))
+        await store.waitForPendingWork()
+        #expect(await harness.transport.closeCount == 1)
+        #expect(await harness.methods().last == "shutdown")
+    }
+
+    @Test("Turning the bridge off while it is still starting stops the process and leaves no rows")
+    func disableDuringStart() async throws {
+        let harness = Harness()
+        let gated = GatedTransport()
+        harness.customTransport = gated
+        let store = enabledStore(harness)
+        let home = HomeStore(provider: SilentProvider(), defaultsSuiteName: harness.suite + ".home")
+        defer { UserDefaults.standard.removePersistentDomain(forName: harness.suite + ".home") }
+        store.attach(to: home)
+        let refresh = try #require(store.refresh())
+        await gated.waitForInitialize()
+
+        store.setEnabled(false)
+        await store.waitForPendingWork()
+        #expect(await gated.closeCount == 1)
+        await gated.release()
+        await refresh.value
+        await store.waitForPendingWork()
+        #expect(await gated.closeCount == 1)
+        #expect(await !gated.methods.contains("snapshot"))
+        #expect(store.devices.isEmpty)
+        #expect(home.adapterDevices.isEmpty)
+        #expect(store.status == .disabled)
+    }
 }
+
+/// Holds `initialize` open until released, so a test can switch the bridge off mid-start.
+private actor GatedTransport: TVBridgeTransport {
+    private(set) var methods: [String] = []
+    private(set) var closeCount = 0
+    private var released = false
+    private var gate: CheckedContinuation<Void, Never>?
+
+    func request(_ frame: TVBridgeFrame) async throws -> TVBridgeFrame {
+        methods.append(frame.method ?? "")
+        if frame.method == "initialize", !released {
+            await withCheckedContinuation { gate = $0 }
+        }
+        return TVBridgeFrame(id: frame.id, result: Data("{}".utf8))
+    }
+
+    func waitForInitialize() async {
+        while !methods.contains("initialize") { await Task.yield() }
+    }
+
+    func release() {
+        released = true
+        gate?.resume()
+        gate = nil
+    }
+
+    func close() async { closeCount += 1 }
+}
+
 
 private actor SilentProvider: HomeProvider {
     nonisolated func events() -> AsyncStream<HomeProviderEvent> { AsyncStream { _ in } }

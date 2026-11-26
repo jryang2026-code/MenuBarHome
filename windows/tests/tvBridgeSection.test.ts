@@ -5,13 +5,18 @@ import type { Window } from "happy-dom";
 import { closeTestWindow, installCssEscape, mountTestWindow } from "./uiHarness.js";
 import { setLanguage } from "../src/core/i18n.js";
 import type { SmartDevice, TvSpec } from "../src/core/models.js";
-import type { TVBridgeFrame } from "../src/core/tvBridgePlugin.js";
+import { tvBridgeDescriptorMacs, type TVBridgeFrame } from "../src/core/tvBridgePlugin.js";
+import { MenuMijiaWindowsApp } from "../src/ui/app.js";
+import { STORAGE_KEY } from "../src/ui/appConstants.js";
+import { applyCommand } from "../src/ui/commandDispatch.js";
+import { DEVICE_CATEGORY_IDS } from "../src/core/capabilityManifest.js";
 import {
   TV_BRIDGE_STORAGE_KEY,
   TVBridgeController,
   bindTVBridgeEvents,
   nonHijackingTVBridgeRows,
   renderTVBridgeSettingsSection,
+  setTVBridgeControllerForTesting,
   toTVBridgeCommand,
   type TVBridgeSecrets,
   type TVBridgeStorage,
@@ -35,14 +40,18 @@ function memorySecrets(): TVBridgeSecrets & { data: Map<string, string> } {
   };
 }
 
-function recordingInvoke() {
+const DEFAULT_ROWS: readonly Record<string, unknown>[] = [{ nativeId: "tv-a", name: "卧室电视", online: true, state: "on", volume: 20, muted: false }];
+
+function recordingInvoke(options: { rows?: readonly Record<string, unknown>[]; startGate?: Promise<void>; failInitialize?: boolean } = {}) {
   const calls: { cmd: string; frame?: TVBridgeFrame; args?: Record<string, unknown> }[] = [];
   const invoke = async (cmd: string, args?: Record<string, unknown>) => {
     const frame = args?.frame as TVBridgeFrame | undefined;
     calls.push({ cmd, frame, args });
+    if (cmd === "tv_bridge_start" && options.startGate) await options.startGate;
     if (cmd !== "tv_bridge_request" || !frame) return null;
+    if (frame.method === "initialize" && options.failInitialize) return { jsonrpc: "2.0", id: frame.id, error: { code: -32099, message: "boom" } };
     const result = frame.method === "snapshot"
-      ? { capturedAt: "now", devices: [{ nativeId: "tv-a", name: "卧室电视", online: true, state: "on", volume: 20, muted: false }] }
+      ? { capturedAt: "now", devices: options.rows ?? DEFAULT_ROWS }
       : {};
     return { jsonrpc: "2.0", id: frame.id, result };
   };
@@ -55,11 +64,14 @@ function tv(id: string, name: string): SmartDevice {
   return { id, name, roomId: "r", roomName: "客厅", model: "tv", isOnline: true, kind };
 }
 
-async function enabledController() {
+async function enabledController(options: Parameters<typeof recordingInvoke>[0] & { idleShutdownMs?: number } = {}) {
   const storage = memoryStorage();
   const secrets = memorySecrets();
-  const rec = recordingInvoke();
-  const ctrl = new TVBridgeController({ storage, secrets, invoke: rec.invoke });
+  const rec = recordingInvoke(options);
+  const ctrl = new TVBridgeController({
+    storage, secrets, invoke: rec.invoke,
+    ...(options.idleShutdownMs === undefined ? {} : { idleShutdownMs: options.idleShutdownMs }),
+  });
   ctrl.setEnabled(true);
   ctrl.setBinaryPath("C:\\Tools\\mbh-tv-bridge.exe");
   await ctrl.addDevice({ name: "卧室电视", roomName: "卧室", driver: "kodi_jsonrpc", host: "192.168.1.9" });
@@ -201,5 +213,102 @@ describe("TV bridge section", () => {
     await ctrl.settle();
     assert.equal(ctrl.status, "failed");
     assert.match(ctrl.error ?? "", /更新应用/);
+  });
+
+  it("keeps a built-in TV with the same MAC under another name; the bridge card never doubles it", async () => {
+    assert.deepEqual(tvBridgeDescriptorMacs({ nativeId: "a", name: "x", identity: { macAddresses: ["AA:BB:CC:DD:EE:FF"] }, macAddress: "aa-bb-cc-dd-ee-ff" }), ["aabbccddeeff"]);
+    const living = tv("media_player.living", "客厅大屏");
+    const miot = tv("miot_112233445566", "卧室电视");
+    const bySame = tv("adapter:com.menubarhome.tv-bridge:a", "Sony KD-65");
+    const byId = tv("adapter:com.menubarhome.tv-bridge:b", "Bedroom LG");
+    const unique = tv("adapter:com.menubarhome.tv-bridge:c", "书房电视");
+    const macs: Record<string, string[]> = { [bySame.id]: ["AA:BB:CC:DD:EE:FF"], [byId.id]: ["11-22-33-44-55-66"], [unique.id]: ["010203040506"] };
+    const rows = nonHijackingTVBridgeRows([bySame, byId, unique], [living, miot], {
+      macsFor: (row) => macs[row.id] ?? [],
+      builtInIdentifiers: (d) => (d.id === living.id ? [d.id, "aa:bb:cc:dd:ee:ff"] : [d.id]),
+    });
+    assert.deepEqual(rows.map((d) => d.id), [unique.id]);
+
+    const { ctrl } = await enabledController({ rows: [{ nativeId: "tv-a", name: "Sony KD-65", online: true, identity: { macAddresses: ["11:22:33:44:55:66"] } }] });
+    assert.deepEqual(ctrl.macsFor(ID), ["112233445566"]);
+    assert.deepEqual(nonHijackingTVBridgeRows(ctrl.panelDevices, [miot], { macsFor: (row) => ctrl.macsFor(row.id) }), []);
+  });
+
+  it("runs bridge writes through the capability gate: a closed TV type sends no tv_bridge_request", async () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ connectionMode: "demo", hasCompletedOnboarding: true, autoCheckUpdates: false }));
+    const { ctrl, rec } = await enabledController();
+    setTVBridgeControllerForTesting(ctrl);
+    try {
+      const root = win.document.querySelector("#app") as unknown as HTMLElement;
+      const app = new MenuMijiaWindowsApp(root);
+      app.settings.connectionMode = "homeAssistant";
+      assert.ok(app.devices.some((d) => d.id === ID), "the bridged TV joins the panel rows");
+
+      assert.equal(app.setEnabledDeviceCategories(DEVICE_CATEGORY_IDS.filter((id) => id !== "tv")), true);
+      const before = rec.calls.length;
+      assert.equal(await applyCommand(app, { kind: "mediaPlayPause", entityId: ID }), false);
+      assert.equal(rec.calls.slice(before).filter((c) => c.cmd === "tv_bridge_request").length, 0);
+      assert.equal(app.replyBanner?.isError, true);
+
+      assert.equal(app.setEnabledDeviceCategories([...DEVICE_CATEGORY_IDS]), true);
+      assert.equal(await applyCommand(app, { kind: "mediaPlayPause", entityId: ID }), true);
+      assert.equal(rec.calls.slice(before).filter((c) => c.frame?.method === "control.execute").length, 1);
+    } finally {
+      setTVBridgeControllerForTesting(null);
+    }
+  });
+
+  it("re-checks right before the write and sends nothing once the switch is off", async () => {
+    const { ctrl, rec } = await enabledController();
+    await assert.rejects(ctrl.execute({ kind: "mediaPlayPause", entityId: ID }, async () => {
+      ctrl.setEnabled(false);
+      return true;
+    }));
+    await ctrl.settle();
+    assert.equal(rec.calls.filter((c) => c.frame?.method === "control.execute").length, 0);
+  });
+
+  it("stops an idle bridge after the panel hides, and reopening cancels the timer", async () => {
+    const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+    const { ctrl, rec } = await enabledController({ idleShutdownMs: 5 });
+    ctrl.onPanelShown();
+    await ctrl.settle();
+    ctrl.onPanelHidden();
+    await ctrl.settle();
+    ctrl.onPanelShown();
+    await wait(25);
+    await ctrl.settle();
+    assert.ok(!rec.methods().includes("tv_bridge_shutdown"), "reopening must cancel the idle stop");
+
+    ctrl.onPanelHidden();
+    await ctrl.settle();
+    await wait(25);
+    await ctrl.settle();
+    assert.deepEqual(rec.methods().slice(-2), ["shutdown", "tv_bridge_shutdown"]);
+  });
+
+  it("shuts the process down when the switch goes off mid-start or initialize fails, and keeps no rows", async () => {
+    let release!: () => void;
+    const startGate = new Promise<void>((resolve) => { release = resolve; });
+    const rec = recordingInvoke({ startGate });
+    const ctrl = new TVBridgeController({ storage: memoryStorage(), secrets: memorySecrets(), invoke: rec.invoke });
+    ctrl.setEnabled(true);
+    ctrl.setBinaryPath("C:\\Tools\\mbh-tv-bridge.exe");
+    const adding = ctrl.addDevice({ name: "卧室电视", roomName: "", driver: "kodi_jsonrpc", host: "192.168.1.9" });
+    await adding;
+    assert.equal(rec.methods().at(-1), "tv_bridge_start");
+    ctrl.setEnabled(false);
+    release();
+    await ctrl.settle();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(rec.methods().at(-1), "tv_bridge_shutdown");
+    assert.ok(!rec.methods().includes("snapshot"));
+    assert.equal(ctrl.panelDevices.length, 0);
+    assert.equal(ctrl.status, "disabled");
+
+    const failed = await enabledController({ failInitialize: true });
+    assert.deepEqual(failed.rec.methods(), ["tv_bridge_start", "initialize", "tv_bridge_shutdown"]);
+    assert.equal(failed.ctrl.panelDevices.length, 0);
+    assert.equal(failed.ctrl.status, "failed");
   });
 });
