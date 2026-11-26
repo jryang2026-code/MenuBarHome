@@ -34,6 +34,10 @@ ADAPTER_ERROR_CODES = {
     -32005: "deviceOffline",
     -32099: "unknown",
     -32601: "unsupported",
+    -32700: "unknown",
+    -32600: "unknown",
+    -32602: "unknown",
+    -32603: "unknown",
 }
 
 ALLOWED_LEASE_KINDS = frozenset({"oauthAccess", "lanToken"})
@@ -88,6 +92,10 @@ def validate_against_schema(value: Any, schema: dict[str, Any], path: str = "$")
     if "enum" in schema:
         if not any(type(value) is type(opt) and value == opt for opt in schema["enum"]):
             errs.append(f"{path}: 值 {value!r} 不在允许集合 {schema['enum']!r} 内")
+
+    if isinstance(schema.get("if"), dict) and not validate_against_schema(value, schema["if"], path):
+        if isinstance(schema.get("then"), dict):
+            errs.extend(validate_against_schema(value, schema["then"], path))
 
     if isinstance(value, str):
         if "minLength" in schema and len(value) < schema["minLength"]:
@@ -170,6 +178,53 @@ def validate_manifest(manifest: Any, schema: dict[str, Any]) -> list[str]:
                 extra_hosts = sorted(set(vendor_hosts) - set(net["internet"]))
                 if extra_hosts:
                     errs.append(f"$.vendor.hosts 含未在 permissions.network.internet 声明的主机: {', '.join(extra_hosts)}")
+
+        secret_prompt_keys: set[str] = set()
+        auth_entries = manifest.get("auth")
+        if isinstance(auth_entries, list):
+            for entry in auth_entries:
+                if not isinstance(entry, dict) or not isinstance(entry.get("prompts"), list):
+                    continue
+                for prompt in entry["prompts"]:
+                    if (isinstance(prompt, dict) and prompt.get("inputType") == "secret"
+                            and isinstance(prompt.get("key"), str)):
+                        secret_prompt_keys.add(prompt["key"])
+        ui = manifest.get("ui")
+        config_props: dict[str, Any] = {}
+        if isinstance(ui, dict):
+            config_schema = ui.get("configSchema")
+            if isinstance(config_schema, dict) and isinstance(config_schema.get("properties"), dict):
+                config_props = config_schema["properties"]
+        for key in sorted(secret_prompt_keys & set(config_props)):
+            prop = config_props[key]
+            if not isinstance(prop, dict) or prop.get("writeOnly") is not True:
+                errs.append(f"$.ui.configSchema.properties.{key}: 对应 inputType=secret 的配置项必须 writeOnly: true")
+    return errs
+
+
+def validate_rpc_error(error: Any, name: str, path: str) -> list[str]:
+    errs: list[str] = []
+    if not isinstance(error, dict):
+        errs.append(f"{name}: {path} 必须是对象")
+        return errs
+
+    code = error.get("code")
+    valid_code = isinstance(code, int) and not isinstance(code, bool)
+    if not valid_code:
+        errs.append(f"{name}: {path}.code 必须是整数")
+    message = error.get("message")
+    if not isinstance(message, str) or not message:
+        errs.append(f"{name}: {path}.message 必须是非空字符串")
+
+    expected_adapter_code = ADAPTER_ERROR_CODES.get(code) if valid_code else None
+    if expected_adapter_code is None:
+        errs.append(f"{name}: {path}.code {code!r} 未对齐 AdapterErrorCode")
+    else:
+        data = error.get("data")
+        if not isinstance(data, dict) or data.get("adapterCode") != expected_adapter_code:
+            errs.append(f"{name}: {path}.data.adapterCode 应为 {expected_adapter_code!r}")
+        elif not isinstance(data.get("retryable"), bool):
+            errs.append(f"{name}: {path}.data.retryable 必须是布尔值")
     return errs
 
 
@@ -192,31 +247,35 @@ def validate_rpc_pair(fixture: Any, schema: dict[str, Any], name: str) -> list[s
     if method not in V0_ALLOWED_METHODS:
         errs.append(f"{name}: 非法 v0 方法 {method!r}")
 
-    if "result" not in resp and "error" not in resp:
+    has_result = "result" in resp
+    has_error = "error" in resp
+    if not has_result and not has_error:
         errs.append(f"{name}: response 必须包含 result 或 error")
-    if "result" in resp and "error" in resp:
+    if has_result and has_error:
         errs.append(f"{name}: response 不能同时包含 result 与 error")
 
-    allowed_kinds = set(schema["properties"]["capabilities"]["properties"]["deviceKinds"]["items"]["enum"])
-    allowed_alerts = set(schema["properties"]["capabilities"]["properties"]["alerts"]["items"]["enum"])
+    # 错误响应只走 JSON-RPC error 校验，不要求 result 的业务字段。
+    if has_error:
+        errs.extend(validate_rpc_error(resp["error"], name, "response.error"))
+
+    # 请求参数与夹具元数据不依赖 result，错误响应也必须校验。
+    if method == "snapshot":
+        scope = fixture.get("sourceScope")
+        if not isinstance(scope, str) or not scope.startswith("adapter:"):
+            errs.append(f"{name}: snapshot 夹具必须声明 adapter:<id> 格式的 sourceScope")
 
     if method == "initialize":
         params = req.get("params")
-        result = resp.get("result")
-        if not isinstance(params, dict) or not isinstance(result, dict):
-            errs.append(f"{name}: initialize 需要对象 params 与 result")
+        if not isinstance(params, dict):
+            errs.append(f"{name}: initialize.params 必须是对象")
         else:
             for req_field in ("protocolVersion", "supportedProtocolVersions", "hostVersion", "adapterId", "dataDir"):
                 if req_field not in params:
                     errs.append(f"{name}: initialize.params 缺少 {req_field!r}")
-            for res_field in ("protocolVersion", "adapterId", "adapterVersion", "manifestDigest", "capabilities"):
-                if res_field not in result:
-                    errs.append(f"{name}: initialize.result 缺少 {res_field!r}")
-            if params.get("adapterId") != result.get("adapterId"):
-                errs.append(f"{name}: initialize 响应 adapterId 与请求不一致")
-            digest = result.get("manifestDigest")
-            if not isinstance(digest, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
-                errs.append(f"{name}: manifestDigest 格式非法")
+            supported = params.get("supportedProtocolVersions")
+            if (not isinstance(supported, list) or not supported
+                    or not all(isinstance(v, str) for v in supported)):
+                errs.append(f"{name}: initialize.params.supportedProtocolVersions 必须是非空字符串数组")
             leases = params.get("leases", [])
             if not isinstance(leases, list):
                 errs.append(f"{name}: leases 必须是数组")
@@ -233,67 +292,76 @@ def validate_rpc_pair(fixture: Any, schema: dict[str, Any], name: str) -> list[s
                     for lf in ("accountId", "leaseId", "value", "expiresAt"):
                         if not isinstance(lease.get(lf), str) or not lease[lf]:
                             errs.append(f"{name}: leases[{idx}] 缺少非空字段 {lf!r}")
-            caps = result.get("capabilities")
-            caps_schema = schema["properties"]["capabilities"]
-            forbidden = frozenset(schema.get("x-forbiddenKeys", []))
-            errs.extend(validate_against_schema(caps, caps_schema, f"{name}.response.result.capabilities"))
-            errs.extend(find_forbidden_keys(caps, forbidden, f"{name}.response.result.capabilities"))
 
-    if method == "snapshot":
-        scope = fixture.get("sourceScope")
-        if not isinstance(scope, str) or not scope.startswith("adapter:"):
-            errs.append(f"{name}: snapshot 夹具必须声明 adapter:<id> 格式的 sourceScope")
-        result = resp.get("result")
-        if not isinstance(result, dict):
-            errs.append(f"{name}: snapshot.result 必须是对象")
-        else:
-            if not isinstance(result.get("capturedAt"), str) or not result["capturedAt"]:
-                errs.append(f"{name}: snapshot.result.capturedAt 必须是非空字符串")
-            devices = result.get("devices")
-            if not isinstance(devices, list) or not devices:
-                errs.append(f"{name}: snapshot.result.devices 必须是非空数组")
+    if has_result:
+        if method == "initialize":
+            result = resp.get("result")
+            if not isinstance(result, dict):
+                errs.append(f"{name}: initialize.result 必须是对象")
             else:
-                for idx, dev in enumerate(devices):
-                    if not isinstance(dev, dict):
-                        errs.append(f"{name}: devices[{idx}] 必须是对象")
-                        continue
-                    for df in ("nativeId", "name", "kind", "online", "identity"):
-                        if df not in dev:
-                            errs.append(f"{name}: devices[{idx}] 缺少 {df!r}")
-                    if dev.get("kind") not in allowed_kinds:
-                        errs.append(f"{name}: devices[{idx}].kind 非法: {dev.get('kind')!r}")
-                    signals = dev.get("safetySignals", [])
-                    if not isinstance(signals, list):
-                        errs.append(f"{name}: devices[{idx}].safetySignals 必须是数组")
-                    else:
-                        for sidx, sig in enumerate(signals):
-                            if not isinstance(sig, dict):
-                                errs.append(f"{name}: devices[{idx}].safetySignals[{sidx}] 必须是对象")
-                                continue
-                            if sig.get("kind") not in allowed_alerts:
-                                errs.append(f"{name}: devices[{idx}].safetySignals[{sidx}].kind 非法")
-                            bad_sig_keys = sorted(set(sig) & FORBIDDEN_SIGNAL_KEYS)
-                            if bad_sig_keys:
-                                errs.append(f"{name}: safetySignals[{sidx}] 禁止携带策略字段: {', '.join(bad_sig_keys)}")
+                for res_field in ("protocolVersion", "adapterId", "adapterVersion", "manifestDigest", "capabilities"):
+                    if res_field not in result:
+                        errs.append(f"{name}: initialize.result 缺少 {res_field!r}")
+                params = req.get("params")
+                if isinstance(params, dict) and params.get("adapterId") != result.get("adapterId"):
+                    errs.append(f"{name}: initialize 响应 adapterId 与请求不一致")
+                digest = result.get("manifestDigest")
+                if not isinstance(digest, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+                    errs.append(f"{name}: manifestDigest 格式非法")
+                supported = params.get("supportedProtocolVersions") if isinstance(params, dict) else None
+                negotiated = result.get("protocolVersion")
+                if (isinstance(supported, list) and supported
+                        and all(isinstance(v, str) for v in supported)):
+                    if negotiated not in supported:
+                        errs.append(f"{name}: initialize 协商的 protocolVersion {negotiated!r} 不在宿主 supportedProtocolVersions {supported!r} 中")
+                caps = result.get("capabilities")
+                caps_schema = schema["properties"]["capabilities"]
+                forbidden = frozenset(schema.get("x-forbiddenKeys", []))
+                errs.extend(validate_against_schema(caps, caps_schema, f"{name}.response.result.capabilities"))
+                errs.extend(find_forbidden_keys(caps, forbidden, f"{name}.response.result.capabilities"))
+
+        if method == "snapshot":
+            allowed_kinds = set(schema["properties"]["capabilities"]["properties"]["deviceKinds"]["items"]["enum"])
+            allowed_alerts = set(schema["properties"]["capabilities"]["properties"]["alerts"]["items"]["enum"])
+            result = resp.get("result")
+            if not isinstance(result, dict):
+                errs.append(f"{name}: snapshot.result 必须是对象")
+            else:
+                if not isinstance(result.get("capturedAt"), str) or not result["capturedAt"]:
+                    errs.append(f"{name}: snapshot.result.capturedAt 必须是非空字符串")
+                devices = result.get("devices")
+                if not isinstance(devices, list):
+                    errs.append(f"{name}: snapshot.result.devices 必须是数组（允许空数组）")
+                else:
+                    for idx, dev in enumerate(devices):
+                        if not isinstance(dev, dict):
+                            errs.append(f"{name}: devices[{idx}] 必须是对象")
+                            continue
+                        for df in ("nativeId", "name", "kind", "online", "identity"):
+                            if df not in dev:
+                                errs.append(f"{name}: devices[{idx}] 缺少 {df!r}")
+                        if dev.get("kind") not in allowed_kinds:
+                            errs.append(f"{name}: devices[{idx}].kind 非法: {dev.get('kind')!r}")
+                        signals = dev.get("safetySignals", [])
+                        if not isinstance(signals, list):
+                            errs.append(f"{name}: devices[{idx}].safetySignals 必须是数组")
+                        else:
+                            for sidx, sig in enumerate(signals):
+                                if not isinstance(sig, dict):
+                                    errs.append(f"{name}: devices[{idx}].safetySignals[{sidx}] 必须是对象")
+                                    continue
+                                if sig.get("kind") not in allowed_alerts:
+                                    errs.append(f"{name}: devices[{idx}].safetySignals[{sidx}].kind 非法")
+                                bad_sig_keys = sorted(set(sig) & FORBIDDEN_SIGNAL_KEYS)
+                                if bad_sig_keys:
+                                    errs.append(f"{name}: safetySignals[{sidx}] 禁止携带策略字段: {', '.join(bad_sig_keys)}")
 
     err_sample = fixture.get("errorResponseExample")
     if err_sample is not None:
         if not isinstance(err_sample, dict) or err_sample.get("jsonrpc") != "2.0":
             errs.append(f"{name}: errorResponseExample 必须是合法 JSON-RPC 2.0 对象")
         else:
-            err_obj = err_sample.get("error")
-            if not isinstance(err_obj, dict):
-                errs.append(f"{name}: errorResponseExample.error 必须是对象")
-            else:
-                code = err_obj.get("code")
-                data = err_obj.get("data")
-                expected_adapter_code = ADAPTER_ERROR_CODES.get(code)
-                if expected_adapter_code is None:
-                    errs.append(f"{name}: errorResponseExample.error.code {code!r} 未对齐 AdapterErrorCode")
-                elif not isinstance(data, dict) or data.get("adapterCode") != expected_adapter_code:
-                    errs.append(f"{name}: errorResponseExample.error.data.adapterCode 应为 {expected_adapter_code!r}")
-                elif not isinstance(data.get("retryable"), bool):
-                    errs.append(f"{name}: errorResponseExample.error.data.retryable 必须是布尔值")
+            errs.extend(validate_rpc_error(err_sample.get("error"), name, "errorResponseExample.error"))
 
     return errs
 
@@ -438,6 +506,116 @@ def run_self_test() -> None:
         pass
     else:
         raise AssertionError("duplicate JSON keys must raise ValueError")
+
+    # 9. inputType=secret 的 prompt 与对应 configSchema 属性必须 writeOnly
+    secret_prompt_bad = copy.deepcopy(valid)
+    secret_prompt_bad["auth"][0]["prompts"][0]["writeOnly"] = False
+    assert any("writeOnly" in e for e in validate_manifest(secret_prompt_bad, schema)), (
+        "secret prompt with writeOnly=false must fail"
+    )
+    secret_config_bad = copy.deepcopy(valid)
+    secret_config_bad["ui"]["configSchema"]["properties"]["lanKey"]["writeOnly"] = False
+    assert any("lanKey" in e for e in validate_manifest(secret_config_bad, schema)), (
+        "config property for secret prompt must be writeOnly"
+    )
+    invalid_secret = load_strict_json(
+        (FIXTURES_DIR / "manifest-invalid-secret-readback.json").read_text(encoding="utf-8")
+    )
+    assert validate_manifest(invalid_secret, schema), "secret readback fixture must fail"
+
+    # 10. 空设备快照合法；devices 非数组仍拒绝
+    empty_snap = load_strict_json((FIXTURES_DIR / "rpc-snapshot-empty-pair.json").read_text(encoding="utf-8"))
+    assert validate_rpc_pair(empty_snap, schema, "self-test-empty-snap") == []
+    bad_devices = copy.deepcopy(snap)
+    bad_devices["response"]["result"]["devices"] = "none"
+    assert validate_rpc_pair(bad_devices, schema, "self-test-bad-devices"), "devices must be an array"
+    invalid_devices = load_strict_json(
+        (FIXTURES_DIR / "rpc-invalid-snapshot-devices-not-array.json").read_text(encoding="utf-8")
+    )
+    assert validate_rpc_pair(invalid_devices, schema, "rpc-invalid-snapshot-devices-not-array.json"), (
+        "non-array devices fixture must fail"
+    )
+
+    # 11. 协商的 protocolVersion 必须落在宿主支持集合内
+    bad_version = load_strict_json(
+        (FIXTURES_DIR / "rpc-invalid-initialize-version.json").read_text(encoding="utf-8")
+    )
+    assert any("protocolVersion" in e for e in validate_rpc_pair(bad_version, schema, "rpc-invalid-initialize-version.json")), (
+        "negotiated version outside host offer must fail"
+    )
+
+    # 12. error 响应独立校验；成功分支的 result 形状检查不作用于错误路径
+    init_error = load_strict_json((FIXTURES_DIR / "rpc-initialize-error-pair.json").read_text(encoding="utf-8"))
+    assert validate_rpc_pair(init_error, schema, "self-test-init-error") == []
+    snap_error = load_strict_json((FIXTURES_DIR / "rpc-snapshot-error-pair.json").read_text(encoding="utf-8"))
+    assert validate_rpc_pair(snap_error, schema, "self-test-snap-error") == []
+    invalid_error = load_strict_json(
+        (FIXTURES_DIR / "rpc-invalid-error-response.json").read_text(encoding="utf-8")
+    )
+    assert validate_rpc_pair(invalid_error, schema, "rpc-invalid-error-response.json"), (
+        "mismatched adapterCode in error response must fail"
+    )
+    missing_message = copy.deepcopy(snap_error)
+    missing_message["response"]["error"].pop("message")
+    assert any("message" in e for e in validate_rpc_pair(missing_message, schema, "self-test-missing-message")), (
+        "error response must carry a message"
+    )
+
+    # 13. 错误响应路径仍校验请求侧与夹具元数据，不因缺少 result 放行秘密字段。
+    invalid_scope = load_strict_json(
+        (FIXTURES_DIR / "rpc-invalid-snapshot-error-source-scope.json").read_text(encoding="utf-8")
+    )
+    assert any("sourceScope" in e for e in validate_rpc_pair(invalid_scope, schema, "rpc-invalid-snapshot-error-source-scope.json")), (
+        "invalid sourceScope in snapshot error fixture must fail"
+    )
+    missing_scope = copy.deepcopy(snap_error)
+    missing_scope.pop("sourceScope")
+    assert any("sourceScope" in e for e in validate_rpc_pair(missing_scope, schema, "self-test-snap-error-missing-scope")), (
+        "missing sourceScope in snapshot error fixture must fail"
+    )
+    invalid_lease = load_strict_json(
+        (FIXTURES_DIR / "rpc-invalid-initialize-error-forbidden-lease.json").read_text(encoding="utf-8")
+    )
+    lease_errs = validate_rpc_pair(invalid_lease, schema, "rpc-invalid-initialize-error-forbidden-lease.json")
+    assert any("leases[0]" in e and "refreshToken" in e for e in lease_errs), (
+        "refreshToken lease in initialize error fixture must fail"
+    )
+    missing_req_field = copy.deepcopy(init_error)
+    missing_req_field["request"]["params"].pop("dataDir")
+    assert any("dataDir" in e for e in validate_rpc_pair(missing_req_field, schema, "self-test-init-error-missing-field")), (
+        "missing initialize request field must fail on error path"
+    )
+    invalid_leases_shape = copy.deepcopy(init_error)
+    invalid_leases_shape["request"]["params"]["leases"] = "oauthAccess"
+    assert any("leases" in e for e in validate_rpc_pair(invalid_leases_shape, schema, "self-test-init-error-bad-leases")), (
+        "non-array leases must fail on error path"
+    )
+    invalid_lease_kind = copy.deepcopy(init_error)
+    invalid_lease_kind["request"]["params"]["leases"] = [
+        {
+            "accountId": "lan-gateway-1",
+            "leaseId": "lease-20261124-001",
+            "kind": "apiKey",
+            "value": "ephemeral-lease-placeholder",
+            "expiresAt": "2026-11-24T06:00:00Z",
+        }
+    ]
+    assert any("kind" in e for e in validate_rpc_pair(invalid_lease_kind, schema, "self-test-init-error-bad-kind")), (
+        "invalid lease kind must fail on error path"
+    )
+    empty_lease_field = copy.deepcopy(init_error)
+    empty_lease_field["request"]["params"]["leases"] = [
+        {
+            "accountId": "lan-gateway-1",
+            "leaseId": "lease-20261124-001",
+            "kind": "lanToken",
+            "value": "",
+            "expiresAt": "2026-11-24T06:00:00Z",
+        }
+    ]
+    assert any("leases[0]" in e for e in validate_rpc_pair(empty_lease_field, schema, "self-test-init-error-empty-field")), (
+        "empty required lease field must fail on error path"
+    )
 
     print("✅ check_adapter_protocol.py 自检通过！")
 

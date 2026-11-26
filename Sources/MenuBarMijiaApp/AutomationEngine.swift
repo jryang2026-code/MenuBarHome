@@ -977,40 +977,43 @@ final class AutomationEngine {
         let frames = contextStack.allFrames
             .filter { ruleIDs.contains($0.ruleID) }
             .sorted { $0.enteredAt > $1.enteredAt }
+        var skippedHighRiskIDs = Set<String>()
+        func requiresRestoreConfirmation(_ intent: DeviceIntent) -> Bool {
+            guard case .power(true) = intent.operation else { return false }
+            return ManualControlPolicy.requiresConfirmation(intent, devices: store.devices)
+        }
         for frame in frames {
             guard let plan = contextStack.prepareRestore(frame: frame, liveValues: live, at: time) else { continue }
-            let intents = plan.intents
-            // A restore is still an unattended write. Never turn a high-risk device back on
-            // without the same explicit approval required by the original automation rule.
-            let restoreNeedsApproval = intents.contains { intent in
-                guard case .power(true) = intent.operation else { return false }
-                return store.devices.first(where: { $0.id == intent.targetId }).map {
-                    ManualControlPolicy.requiresConfirmation(intent, devices: [$0])
-                } ?? false
+            var blockedIDs = Set<String>()
+            func skipHighRiskIntent(_ intent: DeviceIntent) -> Bool {
+                guard requiresRestoreConfirmation(intent) else { return false }
+                blockedIDs.insert(intent.targetId)
+                return true
             }
-            if restoreNeedsApproval {
-                store.showToast(
-                    L10n.tr("上下文还原需要确认，已跳过", "Context restore requires confirmation and was skipped"),
-                    isError: true
-                )
-                // The safety gate must not leave a pending frame that can later turn the device on
-                // without a fresh, explicit decision. Drop the whole plan without issuing writes.
-                contextStack.commitRestore(plan, restoredDeviceIDs: Set(intents.map(\.targetId)))
+            let executableIntents = plan.intents.filter { !skipHighRiskIntent($0) }
+            // Consume skipped power-ons so a later exit cannot retry them unattended.
+            if !blockedIDs.isEmpty {
+                contextStack.commitRestore(plan, restoredDeviceIDs: blockedIDs)
+            }
+            guard !executableIntents.isEmpty else {
+                skippedHighRiskIDs.formUnion(blockedIDs)
                 continue
             }
+
             let outcome = await store.runAutomation(
-                intents: intents,
+                intents: executableIntents,
                 title: L10n.tr("自动化还原上下文", "Restore automation context"),
-                canContinue: { true }
+                shouldSkipIntent: skipHighRiskIntent
             )
-            let restoredIDs = Set(intents.compactMap { intent -> String? in
+            skippedHighRiskIDs.formUnion(blockedIDs)
+            let restoredIDs = Set(executableIntents.compactMap { intent -> String? in
                 guard case .power(let value) = intent.operation,
                       store.devices.first(where: { $0.id == intent.targetId })?.automationContextValue()
                         == AutomationContextValue(field: .power, boolValue: value) else { return nil }
                 return intent.targetId
             })
-            contextStack.commitRestore(plan, restoredDeviceIDs: restoredIDs)
-            for intent in intents where restoredIDs.contains(intent.targetId) {
+            contextStack.commitRestore(plan, restoredDeviceIDs: restoredIDs.union(blockedIDs))
+            for intent in executableIntents where restoredIDs.contains(intent.targetId) {
                 if case .power(let value) = intent.operation {
                     live[intent.targetId] = AutomationContextValue(field: .power, boolValue: value)
                 }
@@ -1021,6 +1024,16 @@ final class AutomationEngine {
                     isError: true
                 )
             }
+        }
+        if !skippedHighRiskIDs.isEmpty {
+            store.showToast(
+                L10n.format(
+                    "还原时已跳过 %@ 台需要重新开启的高风险设备",
+                    "Restore skipped %@ high-risk device(s) that would have been turned back on",
+                    String(skippedHighRiskIDs.count)
+                ),
+                isError: true
+            )
         }
     }
 

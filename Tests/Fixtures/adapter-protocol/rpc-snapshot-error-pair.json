@@ -1,0 +1,22 @@
+{
+  "description": "v0 stdio JSON-RPC 2.0 snapshot failure: expired upstream lease returned as a JSON-RPC error without result or devices",
+  "sourceScope": "adapter:com.example.aqara-lan-readonly",
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 7,
+    "method": "snapshot",
+    "params": {}
+  },
+  "response": {
+    "jsonrpc": "2.0",
+    "id": 7,
+    "error": {
+      "code": -32001,
+      "message": "Upstream lease expired",
+      "data": {
+        "adapterCode": "authExpired",
+        "retryable": false
+      }
+    }
+  }
+}

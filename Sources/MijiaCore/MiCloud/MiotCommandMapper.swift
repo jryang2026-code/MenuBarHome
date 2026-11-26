@@ -104,6 +104,10 @@ public enum MiotCommandMapper {
             case .pressButton where action.inputProperties.isEmpty
                 && (["play-music", "stop-alarm"].contains(action.shortName) || isApplianceAction || isTvPowerAction):
                 inputs = []
+            case .remoteSendKey(_, let key) where action.inputProperties.isEmpty
+                && MiotSynthesizer.tvRemoteServiceNames.contains(service.shortName)
+                && key.miotActionNames.contains(action.shortName):
+                inputs = []
             case .sendNotifyMessage(_, let text):
                 let expected = action.shortName == "play-text" ? ["text-content"]
                     : action.shortName == "execute-text-directive" ? ["text-content", "silent-execution"] : []
@@ -254,7 +258,8 @@ public enum MiotCommandMapper {
 
         case .setClimateSwingMode,
              .pressButton, .sendNotifyMessage, .activateScene,
-             .setMiotProperty, .callMiotAction, .setHumidity:
+             .setMiotProperty, .callMiotAction, .setHumidity,
+             .mediaPlayPause, .mediaNextTrack, .mediaPreviousTrack, .mediaSeek, .remoteSendKey:
             throw MiotCommandError.unsupported(String(describing: command).components(separatedBy: "(").first ?? "")
         }
     }
@@ -468,7 +473,9 @@ extension DeviceCommand {
              .setHumidity(let id, _),
              .vacuumAction(let id, _), .mediaSetVolume(let id, _), .mediaSelectSource(let id, _),
              .pressButton(let id), .sendNotifyMessage(let id, _), .activateScene(let id),
-             .setMiotProperty(let id, _, _), .callMiotAction(let id, _):
+             .setMiotProperty(let id, _, _), .callMiotAction(let id, _),
+             .mediaPlayPause(let id), .mediaNextTrack(let id), .mediaPreviousTrack(let id),
+             .mediaSeek(let id, _), .remoteSendKey(let id, _):
             return id
         }
     }

@@ -29,3 +29,4 @@
 | [0023](0023-host-owned-builtin-capabilities.md) | 2026-11-18 | 已接受 | 宿主统一持有内置能力选择、生命周期、引用判决与写入门，保留 ADR-0020 封闭后端并排除第三方代码插件。 |
 | [0024](0024-out-of-process-adapter-protocol.md) | 2026-11-24 | Proposed | 进程外适配器协议 v0 契约（stdio JSON-RPC 2.0、只读方法集、manifest Schema、短期凭据租约与宿主安全不变量，不含运行时代码）。 |
 | [0025](0025-mi-lan-push.md) | 2026-11-24 | Proposed | 仅记录 `miIO.sub` 局域网推送的发现与待确认问题，本阶段不实现。 |
+| [0026](0026-tv-and-display-plugin-architecture.md) | 2026-11-26 | Proposed | 跨品牌电视与外接显示器采用宿主内置能力、Go 单二进制主插件与可选 Apple TV 插件双轨架构，并定义共享协议目录和 v1 受控写入边界。 |

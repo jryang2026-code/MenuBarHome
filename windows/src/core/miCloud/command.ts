@@ -12,6 +12,7 @@ import {
 } from "./spec.js";
 import { rawFromPercent } from "./percentScale.js";
 import { isSpeakerTextAction, mapSpeakerActionInputs } from "./speakerActions.js";
+import { isTvRemoteKey, MIOT_REMOTE_ACTION_NAMES, TV_REMOTE_SERVICE_NAMES } from "../mediaPlayback.js";
 import { APPLIANCE_SERVICE_NAMES, coverSubtype } from "./synthesis.js";
 
 export type MiotWrite =
@@ -95,6 +96,20 @@ export const MiotCommandMapper = {
   map(command: DeviceCommand, spec: MiotDeviceSpec): MiotWrite {
     // A mains breaker is read-only whatever the spec allows: no path may switch it (#265).
     if (isMainsBreaker(spec)) throw new Error("Unsupported device: electronic-valve");
+    if (command.kind === "remoteSendKey") {
+      // Only a no-argument key action on a TV service whose short name matches the key.
+      const action = parseMiotActionAddress(command.entityId);
+      const actionService = action ? spec.services.find((s) => s.iid === action.siid) : undefined;
+      const declared = action ? actionService?.actions.find((a) => a.iid === action.aiid) : undefined;
+      if (!action || !actionService || !declared
+        || !isTvRemoteKey(command.key)
+        || !TV_REMOTE_SERVICE_NAMES.includes(miotShortName(actionService.type))
+        || (declared.in?.length ?? 0) !== 0
+        || !MIOT_REMOTE_ACTION_NAMES[command.key].includes(miotShortName(declared.type))) {
+        throw new Error(`Unsupported remote key: ${command.entityId}`);
+      }
+      return { kind: "action", call: { did: action.did, siid: action.siid, aiid: action.aiid, inputs: [] } };
+    }
     if (command.kind === "pressButton") {
       // An action carries its own address (`miot-action:did:siid:aiid`), optionally with inputs (#7).
       const action = parseMiotActionAddress(command.entityId);
@@ -612,6 +627,11 @@ export const MiotCommandMapper = {
       }
       case "activateScene":
         throw new Error("Scenes are not Miot device properties");
+      case "mediaPlayPause":
+      case "mediaNextTrack":
+      case "mediaPreviousTrack":
+      case "mediaSeek":
+        throw new Error("Unsupported command: media transport needs Home Assistant");
       default: {
         const _exhaustive: never = command;
         return _exhaustive;

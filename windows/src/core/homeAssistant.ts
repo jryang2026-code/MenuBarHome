@@ -37,6 +37,7 @@ import type { CapabilityIndexedDevice, SafetySignalKind } from "./capabilityRefe
 import { t } from "./i18n.js";
 import { sha256 } from "./miCloudCrypto.js";
 import { normalizedKelvinBounds } from "./miCloud/synthesis.js";
+import { HA_REMOTE_COMMAND, isTvRemoteKey } from "./mediaPlayback.js";
 import {
   deviceEnvironmentReading,
   environmentReadingPriority,
@@ -1366,6 +1367,21 @@ export function haServiceCall(command: DeviceCommand): HaServiceCall {
     case "activateScene":
       if (domain === "button") return call("press");
       return call("turn_on");
+    case "mediaPlayPause":
+      return call("media_play_pause");
+    case "mediaNextTrack":
+      return call("media_next_track");
+    case "mediaPreviousTrack":
+      return call("media_previous_track");
+    case "mediaSeek": {
+      const pos = finiteCmdNumber(command.positionSec);
+      return call("media_seek", { seek_position: Math.max(0, pos) });
+    }
+    case "remoteSendKey":
+      if (domain !== "remote" || !isTvRemoteKey(command.key)) {
+        throw new Error("Remote keys go to a Home Assistant remote entity");
+      }
+      return call("send_command", { command: HA_REMOTE_COMMAND[command.key] });
   }
 }
 

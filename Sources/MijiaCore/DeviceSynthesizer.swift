@@ -1582,7 +1582,13 @@ public enum DeviceSynthesizer {
                 let src = st.attributes["source"]?.stringValue
                 let srcs = st.attributes["source_list"]?.stringArrayValue ?? []
                 let turnOnBtn = eids.first(where: { $0.hasPrefix("button.") && $0.contains("turn_on") })
-                for id in [mediaId, turnOnBtn].compactMap({ $0 }) { claimed.insert(id) }
+                let remoteId = eids.first(where: { $0.hasPrefix("remote.") && states[$0]?.isAvailable == true })
+                for id in [mediaId, turnOnBtn, remoteId].compactMap({ $0 }) { claimed.insert(id) }
+                let playback = st.isAvailable
+                    ? MediaPlaybackState.fromHomeAssistant(
+                        state: st.state, attributes: st.attributes, parseDate: HAHomeSnapshot.parseLastChanged
+                    )
+                    : nil
                 return SmartDevice(
                     id: deviceId,
                     name: name,
@@ -1599,7 +1605,10 @@ public enum DeviceSynthesizer {
                             availableSources: srcs,
                             turnOnButtonId: turnOnBtn,
                             volumeWritable: volumeWritable,
-                            volumePresent: volumePresent
+                            volumePresent: volumePresent,
+                            playback: playback,
+                            remoteEntityId: remoteId,
+                            supportsRemotePad: remoteId != nil
                         )
                     )
                 )

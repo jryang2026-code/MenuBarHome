@@ -46,6 +46,8 @@ import { CLAIM_LADDER, DEVICE_CLAIMS, claimAllows, preferredClaimServices } from
 import { facetAlertText, facetValue, genericSymbolName, genericTypeTitle } from "../miotFacetText.js";
 import { percentFromRaw } from "./percentScale.js";
 import { resolveSpeakerActionIds } from "./speakerActions.js";
+import { MIOT_REMOTE_ACTION_NAMES, TV_REMOTE_SERVICE_NAMES } from "../mediaPlayback.js";
+import { TV_REMOTE_KEYS, type TvRemoteKey } from "../models.js";
 
 export function exposesWrite(access: readonly string[] | undefined): boolean {
   return Boolean(access?.includes("write"));
@@ -1501,6 +1503,7 @@ export const MiotSynthesizer = {
       const availableSources = exposesWrite(input?.prop.access) ? (input?.prop.valueList?.map((i) => i.description) ?? []) : [];
       const rawVolume = volume && typeof volume.val === "number" && Number.isFinite(volume.val) ? volume.val : null;
       const powerWritable = exposesWrite(on?.prop.access) || powerOnActionId !== null || powerOffActionId !== null;
+      const miotRemoteActions = tvRemoteActions(did, spec);
       return {
         kind: "tv", mediaEntityId: makeMiotAddress(did, primaryService.iid), state,
         volumePercent: rawVolume !== null && volume ? percentFromRaw(rawVolume, volume.prop, "proportional") : 0,
@@ -1508,6 +1511,7 @@ export const MiotSynthesizer = {
         muteSwitchEntityId: mute && exposesWrite(mute.prop.access) ? `${makeMiotAddress(did, mute.service.iid)}#mute` : null,
         currentSource, availableSources, powerOnActionId, powerOffActionId, powerWritable,
         volumeWritable: exposesWrite(volume?.prop.access), ...readOnlyFlags({ volumePresent: rawVolume !== null }),
+        ...(Object.keys(miotRemoteActions).length > 0 ? { supportsRemotePad: true, miotRemoteActions } : {}),
       };
     }
 
@@ -2024,3 +2028,21 @@ export const MiotSynthesizer = {
     return null;
   },
 };
+
+/** `TvRemoteKey` → action address for each key a Xiaomi TV publishes as a no-argument action. */
+export function tvRemoteActions(did: string, spec: MiotDeviceSpec): Partial<Record<TvRemoteKey, string>> {
+  const result: Partial<Record<TvRemoteKey, string>> = {};
+  const services = spec.services.filter((s) => TV_REMOTE_SERVICE_NAMES.includes(miotShortName(s.type)));
+  for (const key of TV_REMOTE_KEYS) {
+    for (const service of services) {
+      const action = service.actions.find(
+        (a) => (a.in?.length ?? 0) === 0 && MIOT_REMOTE_ACTION_NAMES[key].includes(miotShortName(a.type)),
+      );
+      if (action) {
+        result[key] = makeMiotActionAddress(did, service.iid, action.iid);
+        break;
+      }
+    }
+  }
+  return result;
+}
