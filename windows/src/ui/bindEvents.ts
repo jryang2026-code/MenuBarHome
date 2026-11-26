@@ -1,5 +1,6 @@
 import { cancelScheduledCommands, confirmMissedScheduledCommand } from "./scheduledCommands.js";
 import { bindDdcDisplayEvents, getDdcDisplayController } from "./ddcDisplaySection.js";
+import { bindTVBridgeEvents, getTVBridgeController } from "./tvBridgeSection.js";
 import {
   cancelPendingDiffPreview,
   confirmPendingDiffPreview,
@@ -275,6 +276,9 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
     const ddc = getDdcDisplayController();
     ddc.onChange = () => host.render();
     bindDdcDisplayEvents(host.root, ddc);
+    const tvBridge = getTVBridgeController();
+    tvBridge.onChange = () => host.render();
+    bindTVBridgeEvents(host.root, tvBridge);
     host.root
       .querySelectorAll<HTMLElement>(".cc-room-scroll, .cc-kind-scroll, .cc-settings-tabs")
       .forEach((track) => {

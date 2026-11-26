@@ -1,0 +1,473 @@
+import { tr3 } from "../core/i18n.js";
+import type { DeviceCommand, SmartDevice } from "../core/models.js";
+import {
+  defaultTVBridgeConfig,
+  mapTVBridgeCommand,
+  projectTVBridgeDevice,
+  TVBridgeLifecycle,
+  type TVBridgeCommand,
+  type TVBridgeConfig,
+  type TVBridgeDeviceConfig,
+  type TVBridgeDeviceDescriptor,
+  type TVBridgeDriver,
+  type TVBridgeFrame,
+  type TVBridgePollingContext,
+} from "../core/tvBridgePlugin.js";
+import { secureStoreDelete, secureStoreGet, secureStoreSet, tvBridgeCredentialName } from "../core/secureStore.js";
+
+/**
+ * Optional multi-brand TV bridge (ADR-0026), the Windows twin of macOS `TVBridgeStore`. Off by
+ * default: while off it makes zero `tv_bridge_*` IPC calls, adds no panel rows and runs no timer.
+ * Pairing secrets go to the OS credential store (`tv-bridge:<nativeId>`); the saved config holds
+ * only the slot name. Rows join `host.devices` behind every built-in row and never replace one.
+ */
+export const TV_BRIDGE_STORAGE_KEY = "tv_bridge_config_v1";
+export const TV_BRIDGE_DEVICE_PREFIX = "adapter:com.menubarhome.tv-bridge:";
+
+export type TVBridgeInvoke = (cmd: string, args?: Record<string, unknown>) => Promise<unknown>;
+export interface TVBridgeStorage { getItem(key: string): string | null; setItem(key: string, value: string): void }
+export interface TVBridgeSecrets {
+  get(slot: string): Promise<string | null>;
+  set(slot: string, value: string): Promise<void>;
+  delete(slot: string): Promise<void>;
+}
+export type TVBridgeStatus = "disabled" | "missingBinary" | "idle" | "running" | "failed";
+
+export const TV_BRIDGE_DRIVERS: readonly { id: TVBridgeDriver; label: [string, string, string]; port: number; secret?: [string, string, string] }[] = [
+  { id: "xiaomi_6095", label: ["小米 / Redmi 电视", "小米 / Redmi 電視", "Xiaomi / Redmi TV"], port: 6095 },
+  { id: "tcl_tnscreen", label: ["雷鸟 / TCL", "雷鳥 / TCL", "FFalcon / TCL"], port: 6553 },
+  { id: "android_adb", label: ["海信 / 创维等安卓电视（ADB）", "海信 / 創維等安卓電視（ADB）", "Hisense / Skyworth Android TV (ADB)"], port: 5555 },
+  { id: "lg_webos", label: ["LG webOS", "LG webOS", "LG webOS"], port: 3001, secret: ["配对密钥（Client Key）", "配對金鑰（Client Key）", "Client key"] },
+  { id: "sony_bravia", label: ["索尼 Bravia", "索尼 Bravia", "Sony Bravia"], port: 80, secret: ["预共享密钥（PSK）", "預共享金鑰（PSK）", "Pre-shared key (PSK)"] },
+  { id: "samsung_tizen", label: ["三星 Tizen", "三星 Tizen", "Samsung Tizen"], port: 8002, secret: ["访问令牌（Token）", "存取權杖（Token）", "Access token"] },
+  { id: "dlna_dmr", label: ["DLNA", "DLNA", "DLNA"], port: 1900 },
+  { id: "kodi_jsonrpc", label: ["Kodi", "Kodi", "Kodi"], port: 8080 },
+];
+
+const EMPTY: readonly SmartDevice[] = Object.freeze([]);
+
+export function isTVBridgeDeviceId(id: string): boolean {
+  return id.startsWith(TV_BRIDGE_DEVICE_PREFIX);
+}
+
+/** Every drawer/card control targets the row id; mute is addressed as `<id>#mute`. */
+export function routableTVBridgeDevice(device: SmartDevice): SmartDevice {
+  if (device.kind.kind !== "tv") return device;
+  return { ...device, kind: { ...device.kind, mediaEntityId: device.id, remoteEntityId: device.id, muteSwitchEntityId: `${device.id}#mute` } };
+}
+
+const normalizedName = (name: string): string => name.toLowerCase().replace(/[\s\p{P}]/gu, "");
+
+/** ADR-0024 §5.3: a built-in row with the same id or TV name keeps the card. */
+export function nonHijackingTVBridgeRows(bridged: readonly SmartDevice[], builtIn: readonly SmartDevice[]): SmartDevice[] {
+  const native = builtIn.filter((d) => !isTVBridgeDeviceId(d.id));
+  const ids = new Set(native.map((d) => d.id));
+  const tvNames = new Set(native.filter((d) => d.kind.kind === "tv").map((d) => normalizedName(d.name)));
+  return bridged.filter((d) => !ids.has(d.id) && !tvNames.has(normalizedName(d.name)));
+}
+
+export function toTVBridgeCommand(command: DeviceCommand): { deviceId: string; command: TVBridgeCommand } | null {
+  const [deviceId = "", control] = command.entityId.split("#", 2);
+  if (!isTVBridgeDeviceId(deviceId)) return null;
+  const mapped: TVBridgeCommand | null = (() => {
+    switch (command.kind) {
+      case "setSwitch": return control === "mute" ? { kind: "setMute", isMuted: command.isOn } : control === undefined ? { kind: "power", isOn: command.isOn } : null;
+      case "pressButton": return control === "power.on" ? { kind: "power", isOn: true } : control === "power.off" ? { kind: "power", isOn: false } : null;
+      case "mediaSetVolume": return { kind: "setVolume", level: command.level };
+      case "mediaSelectSource": return { kind: "selectSource", source: command.source };
+      case "mediaPlayPause": return { kind: "playPause" };
+      case "mediaNextTrack": return { kind: "next" };
+      case "mediaPreviousTrack": return { kind: "previous" };
+      case "mediaSeek": return { kind: "seek", seconds: command.positionSec };
+      case "remoteSendKey": return { kind: "remoteKey", key: command.key };
+      default: return null;
+    }
+  })();
+  return mapped ? { deviceId, command: mapped } : null;
+}
+
+function defaultStorage(): TVBridgeStorage | null {
+  try {
+    return typeof localStorage === "undefined" ? null : localStorage;
+  } catch {
+    return null;
+  }
+}
+
+function defaultInvoke(): TVBridgeInvoke | null {
+  const tauri = typeof window === "undefined" ? undefined : window.__TAURI_INTERNALS__;
+  return tauri?.invoke ? (cmd, args) => tauri.invoke(cmd, args) : null;
+}
+
+/** The OS credential store, with a session-only fallback while the native slot is not available. */
+function defaultSecrets(): TVBridgeSecrets {
+  const memory = new Map<string, string>();
+  return {
+    async get(slot) {
+      try { return (await secureStoreGet(tvBridgeCredentialName(slot))) ?? memory.get(slot) ?? null; } catch { return memory.get(slot) ?? null; }
+    },
+    async set(slot, value) {
+      try { await secureStoreSet(tvBridgeCredentialName(slot), value); memory.delete(slot); } catch { memory.set(slot, value); }
+    },
+    async delete(slot) {
+      memory.delete(slot);
+      try { await secureStoreDelete(tvBridgeCredentialName(slot)); } catch { /* nothing stored natively */ }
+    },
+  };
+}
+
+function loadConfig(storage: TVBridgeStorage | null): TVBridgeConfig {
+  try {
+    const raw = storage?.getItem(TV_BRIDGE_STORAGE_KEY);
+    const parsed = raw ? (JSON.parse(raw) as Partial<TVBridgeConfig>) : null;
+    if (!parsed || typeof parsed !== "object") return defaultTVBridgeConfig();
+    return { ...defaultTVBridgeConfig(), ...parsed, isEnabled: parsed.isEnabled === true, devices: Array.isArray(parsed.devices) ? parsed.devices : [] };
+  } catch {
+    return defaultTVBridgeConfig();
+  }
+}
+
+function friendlyError(error: unknown): string {
+  const text = String((error as { message?: unknown })?.message ?? error ?? "");
+  if (/not found|unknown command|not allowed|command .* not/i.test(text)) {
+    return tr3("当前版本尚未包含电视桥接组件，请更新应用后再试", "目前版本尚未包含電視橋接元件，請更新應用程式後再試", "This build doesn't include the TV bridge yet. Update the app and try again");
+  }
+  return tr3("无法启动或连接 mbh-tv-bridge.exe，请检查二进制路径与电视网络", "無法啟動或連線 mbh-tv-bridge.exe，請檢查執行檔路徑與電視網路", "Couldn't start or reach mbh-tv-bridge.exe. Check the binary path and the TV's network");
+}
+
+export interface TVBridgeControllerDeps {
+  readonly invoke?: TVBridgeInvoke | null;
+  readonly storage?: TVBridgeStorage | null;
+  readonly secrets?: TVBridgeSecrets;
+  readonly onChange?: () => void;
+}
+
+export interface TVBridgeDeviceInput { name: string; roomName: string; driver: TVBridgeDriver; host: string; port?: number; macAddress?: string; secret?: string }
+
+export class TVBridgeController {
+  private readonly storage: TVBridgeStorage | null;
+  private readonly invokeFn: TVBridgeInvoke | null;
+  private readonly secrets: TVBridgeSecrets;
+  onChange: () => void;
+  config: TVBridgeConfig;
+  status: TVBridgeStatus;
+  error: string | null = null;
+  panelDevices: readonly SmartDevice[] = EMPTY;
+  private lifecycle: TVBridgeLifecycle | null = null;
+  private refreshing: Promise<void> | null = null;
+  private readonly pending = new Set<Promise<unknown>>();
+  private generation = 0;
+
+  constructor(deps: TVBridgeControllerDeps = {}) {
+    this.storage = deps.storage === undefined ? defaultStorage() : deps.storage;
+    this.invokeFn = deps.invoke === undefined ? defaultInvoke() : deps.invoke;
+    this.secrets = deps.secrets ?? defaultSecrets();
+    this.onChange = deps.onChange ?? (() => undefined);
+    this.config = loadConfig(this.storage);
+    this.status = this.idleStatus();
+  }
+
+  get enabled(): boolean { return this.config.isEnabled }
+  get isRefreshing(): boolean { return this.refreshing !== null }
+
+  setEnabled(enabled: boolean): void {
+    if (enabled === this.config.isEnabled) return;
+    this.apply({ ...this.config, isEnabled: enabled });
+  }
+
+  setBinaryPath(path: string): void {
+    const binaryPath = path.trim() || undefined;
+    if (binaryPath !== this.config.binaryPath) this.apply({ ...this.config, binaryPath });
+  }
+
+  setExpectedSHA256(digest: string): void {
+    const expectedBinarySHA256 = digest.trim().toLowerCase() || undefined;
+    if (expectedBinarySHA256 !== this.config.expectedBinarySHA256) this.apply({ ...this.config, expectedBinarySHA256 });
+  }
+
+  async addDevice(input: TVBridgeDeviceInput): Promise<boolean> {
+    const name = input.name.trim();
+    const host = input.host.trim();
+    if (!name || !host || (input.port !== undefined && !(Number.isInteger(input.port) && input.port >= 1 && input.port <= 65535))) return false;
+    const nativeId = `tv-${crypto.randomUUID().slice(0, 8)}`;
+    const needsSecret = TV_BRIDGE_DRIVERS.some((d) => d.id === input.driver && d.secret);
+    const secret = input.secret?.trim();
+    let credentialSlot: string | undefined;
+    if (needsSecret && secret) {
+      credentialSlot = nativeId;
+      try { await this.secrets.set(credentialSlot, secret); } catch { return false; }
+    }
+    const mac = input.macAddress?.trim();
+    const device: TVBridgeDeviceConfig = {
+      nativeId, driver: input.driver, host, name, roomName: input.roomName.trim(),
+      ...(input.port === undefined ? {} : { port: input.port }),
+      ...(mac ? { macAddress: mac } : {}),
+      ...(credentialSlot ? { credentialSlot } : {}),
+    };
+    this.apply({ ...this.config, devices: [...this.config.devices, device] });
+    return true;
+  }
+
+  async removeDevice(nativeId: string): Promise<void> {
+    const removed = this.config.devices.find((d) => d.nativeId === nativeId);
+    if (!removed) return;
+    if (removed.credentialSlot) { try { await this.secrets.delete(removed.credentialSlot); } catch { /* best effort */ } }
+    this.apply({ ...this.config, devices: this.config.devices.filter((d) => d.nativeId !== nativeId) });
+  }
+
+  /** Panel shown: refresh. A no-op while off. */
+  onPanelShown(): void {
+    if (!this.config.isEnabled) return;
+    this.track(this.contextChanged({ panelVisible: true, systemActive: true, lowPower: false }));
+    void this.refresh();
+  }
+
+  /** Panel hidden: let the bridge sleep (and stop after its idle window). A no-op while off. */
+  onPanelHidden(): void {
+    if (!this.config.isEnabled || !this.lifecycle) return;
+    this.track(this.contextChanged({ panelVisible: false, systemActive: false, lowPower: false }));
+  }
+
+  refresh(): Promise<void> {
+    if (!this.config.isEnabled) return Promise.resolve();
+    if (this.refreshing) return this.refreshing;
+    if (!this.config.binaryPath) {
+      this.status = "missingBinary";
+      this.onChange();
+      return Promise.resolve();
+    }
+    if (this.config.devices.length === 0) {
+      this.publish(EMPTY);
+      return Promise.resolve();
+    }
+    const token = this.generation;
+    const run = (async () => {
+      let rows: readonly SmartDevice[] = EMPTY;
+      let failure: unknown = null;
+      try {
+        const result = (await this.request("snapshot", {})) as { devices?: TVBridgeDeviceDescriptor[] } | null;
+        rows = (result?.devices ?? []).map((d) => routableTVBridgeDevice(projectTVBridgeDevice(d)));
+      } catch (error) {
+        failure = error;
+      }
+      if (token !== this.generation) return;
+      this.refreshing = null;
+      this.error = failure === null ? null : friendlyError(failure);
+      this.status = failure === null ? "running" : "failed";
+      this.publish(rows);
+    })();
+    this.refreshing = run;
+    this.onChange();
+    return run;
+  }
+
+  async execute(command: DeviceCommand): Promise<void> {
+    if (!this.config.isEnabled) throw new Error("TV bridge is off");
+    const routed = toTVBridgeCommand(command);
+    if (!routed) throw new Error("Unsupported TV bridge command");
+    const frame = mapTVBridgeCommand(routed.command, routed.deviceId, 1);
+    await this.request(frame.method ?? "control.execute", frame.params);
+    this.lifecycle?.touch();
+    void this.refresh();
+  }
+
+  async dispose(): Promise<void> {
+    this.generation += 1;
+    this.refreshing = null;
+    const lifecycle = this.lifecycle;
+    this.lifecycle = null;
+    if (lifecycle) await lifecycle.shutdown().catch(() => undefined);
+  }
+
+  async settle(): Promise<void> {
+    while (this.refreshing || this.pending.size > 0) await Promise.all([this.refreshing, ...this.pending]);
+  }
+
+  private idleStatus(): TVBridgeStatus {
+    if (!this.config.isEnabled) return "disabled";
+    return this.config.binaryPath ? "idle" : "missingBinary";
+  }
+
+  private apply(next: TVBridgeConfig): void {
+    this.config = next;
+    try {
+      this.storage?.setItem(TV_BRIDGE_STORAGE_KEY, JSON.stringify(next));
+    } catch {
+      // Blocked storage: the change still holds for this session.
+    }
+    this.track(this.dispose());
+    this.error = null;
+    this.status = this.idleStatus();
+    if (!next.isEnabled) this.panelDevices = EMPTY;
+    this.onChange();
+    if (next.isEnabled) void this.refresh();
+  }
+
+  private publish(rows: readonly SmartDevice[]): void {
+    this.panelDevices = rows.length === 0 ? EMPTY : rows;
+    this.onChange();
+  }
+
+  private track(task: Promise<unknown>): void {
+    this.pending.add(task);
+    void task.finally(() => this.pending.delete(task));
+  }
+
+  private contextChanged(context: TVBridgePollingContext): Promise<void> {
+    return this.lifecycle?.contextChanged(context).catch(() => { this.lifecycle = null; }) ?? Promise.resolve();
+  }
+
+  private async ensureStarted(): Promise<TVBridgeLifecycle> {
+    if (this.lifecycle?.isRunning) return this.lifecycle;
+    const invoke = this.invokeFn;
+    if (!invoke) throw new Error("command tv_bridge_start not found");
+    await invoke("tv_bridge_start", { binaryPath: this.config.binaryPath, expectedSha256: this.config.expectedBinarySHA256 ?? null });
+    const send = async (frame: TVBridgeFrame): Promise<TVBridgeFrame> => {
+      const reply = await invoke("tv_bridge_request", { frame });
+      const parsed = (typeof reply === "string" ? JSON.parse(reply) : reply) as TVBridgeFrame | null;
+      if (!parsed || parsed.id !== frame.id) throw new Error("Invalid TV bridge frame");
+      return parsed;
+    };
+    const lifecycle = new TVBridgeLifecycle({ request: send, close: async () => { await invoke("tv_bridge_shutdown"); } }, this.config.idleShutdownSeconds);
+    const devices = await Promise.all(this.config.devices.map(async (d) => {
+      const credential = d.credentialSlot ? await this.secrets.get(d.credentialSlot) : null;
+      const { credentialSlot: _slot, macAddress, ...rest } = d;
+      return { ...rest, ...(macAddress ? { mac: macAddress } : {}), ...(credential ? { credential } : {}) };
+    }));
+    const init = await send({ jsonrpc: "2.0", id: crypto.randomUUID(), method: "initialize", params: { supportedProtocolVersions: ["1.0"], capabilityGeneration: 1, config: { devices } } });
+    if (init.error) throw new Error(typeof init.error === "string" ? init.error : init.error.message);
+    lifecycle.markStarted();
+    this.lifecycle = lifecycle;
+    return lifecycle;
+  }
+
+  private async request(method: string, params: unknown): Promise<unknown> {
+    const lifecycle = await this.ensureStarted();
+    const invoke = this.invokeFn!;
+    const frame: TVBridgeFrame = { jsonrpc: "2.0", id: crypto.randomUUID(), method, params };
+    let reply: TVBridgeFrame;
+    try {
+      const raw = await invoke("tv_bridge_request", { frame });
+      reply = (typeof raw === "string" ? JSON.parse(raw) : raw) as TVBridgeFrame;
+      if (!reply || reply.id !== frame.id) throw new Error("Invalid TV bridge frame");
+    } catch (error) {
+      if (this.lifecycle === lifecycle) this.lifecycle = null;
+      await lifecycle.shutdown().catch(() => undefined);
+      throw error;
+    }
+    if (reply.error) throw new Error(typeof reply.error === "string" ? reply.error : reply.error.message);
+    lifecycle.touch();
+    return reply.result;
+  }
+}
+
+let shared: TVBridgeController | null = null;
+
+export function getTVBridgeController(): TVBridgeController {
+  shared ??= new TVBridgeController();
+  return shared;
+}
+
+type Escape = (raw: string) => string;
+
+/** Settings → 常规 card, below the DDC/CI card. */
+export function renderTVBridgeSettingsSection(ctrl: TVBridgeController, esc: Escape): string {
+  const title = tr3("多品牌电视桥接插件（可选）", "多品牌電視橋接外掛（選用）", "Multi-brand TV Bridge (Optional)");
+  const hint = tr3(
+    "支持小米 / Redmi、雷鸟 / TCL、海信 / 创维等安卓电视（ADB）、LG webOS、索尼 Bravia、三星 Tizen、DLNA 与 Kodi。插件在独立进程中运行，未开启时零后台开销；已由 Home Assistant 或米家接入的同一台电视始终由内置来源控制。",
+    "支援小米 / Redmi、雷鳥 / TCL、海信 / 創維等安卓電視（ADB）、LG webOS、索尼 Bravia、三星 Tizen、DLNA 與 Kodi。外掛在獨立行程中執行，未開啟時零背景開銷；已由 Home Assistant 或米家接入的同一台電視始終由內建來源控制。",
+    "Supports Xiaomi / Redmi, FFalcon / TCL, Hisense / Skyworth Android TVs (ADB), LG webOS, Sony Bravia, Samsung Tizen, DLNA and Kodi. The plugin runs in its own process and nothing runs while this is off; a TV already connected through Home Assistant or Xiaomi Home stays on the built-in source.",
+  );
+  let body = "";
+  if (ctrl.enabled) {
+    const status: Record<TVBridgeStatus, string> = {
+      disabled: tr3("未启用", "未啟用", "Off"),
+      missingBinary: tr3("未配置 mbh-tv-bridge.exe 路径", "未設定 mbh-tv-bridge.exe 路徑", "mbh-tv-bridge.exe path not set"),
+      idle: tr3("待命：打开面板时连接电视", "待命：開啟面板時連線電視", "Idle: connects when the panel opens"),
+      running: tr3("运行中", "執行中", "Running"),
+      failed: ctrl.error ?? tr3("报错", "錯誤", "Error"),
+    };
+    const rows = ctrl.config.devices.map((d) => {
+      const driver = TV_BRIDGE_DRIVERS.find((x) => x.id === d.driver);
+      return `<li class="cc-field-row" data-tvbridge-device="${esc(d.nativeId)}"><span>${esc(d.name)} · ${esc(driver ? tr3(...driver.label) : d.driver)} · ${esc(d.host)}</span>
+        <button type="button" class="cc-btn-secondary" data-tvbridge-remove="${esc(d.nativeId)}">${esc(tr3("移除", "移除", "Remove"))}</button></li>`;
+    }).join("");
+    const options = TV_BRIDGE_DRIVERS.map((d) => `<option value="${d.id}" data-port="${d.port}" data-secret="${d.secret ? esc(tr3(...d.secret)) : ""}">${esc(tr3(...d.label))}</option>`).join("");
+    body = `
+        <div class="cc-field-row" style="margin-top: 6px;">
+          <input type="text" data-tvbridge-binary placeholder="C:\\Tools\\mbh-tv-bridge.exe" value="${esc(ctrl.config.binaryPath ?? "")}" aria-label="${esc(tr3("mbh-tv-bridge.exe 路径", "mbh-tv-bridge.exe 路徑", "mbh-tv-bridge.exe path"))}" />
+          <input type="text" data-tvbridge-sha placeholder="${esc(tr3("SHA-256 校验值（可选）", "SHA-256 校驗值（選用）", "SHA-256 digest (optional)"))}" value="${esc(ctrl.config.expectedBinarySHA256 ?? "")}" />
+        </div>
+        <div class="cc-field-row">
+          <p class="cc-field-hint" data-tvbridge-status="${ctrl.status}" style="margin: 0;">${esc(status[ctrl.status])}</p>
+          <button type="button" class="cc-btn-secondary" data-tvbridge-refresh ${ctrl.isRefreshing ? "disabled" : ""}>${esc(tr3("立即刷新", "立即重新整理", "Refresh Now"))}</button>
+        </div>
+        <ul class="cc-tvbridge-devices" style="list-style: none; margin: 6px 0; padding: 0;">${rows || `<li class="cc-field-hint">${esc(tr3("尚未添加电视", "尚未新增電視", "No TVs added yet"))}</li>`}</ul>
+        <form class="cc-field" data-tvbridge-form>
+          <input name="name" required placeholder="${esc(tr3("名称，如 客厅电视", "名稱，如 客廳電視", "Name, e.g. Living Room TV"))}" />
+          <input name="room" placeholder="${esc(tr3("房间", "房間", "Room"))}" />
+          <select name="driver" data-tvbridge-driver>${options}</select>
+          <input name="host" required placeholder="${esc(tr3("IP 地址", "IP 位址", "IP address"))}" />
+          <input name="port" inputmode="numeric" data-tvbridge-port placeholder="${esc(tr3("端口，默认 {p}", "連接埠，預設 {p}", "Port, default {p}").replace("{p}", String(TV_BRIDGE_DRIVERS[0]!.port)))}" />
+          <input name="mac" placeholder="${esc(tr3("MAC 地址（可选）", "MAC 位址（選用）", "MAC address (optional)"))}" />
+          <input name="secret" type="password" autocomplete="off" data-tvbridge-secret hidden />
+          <button type="submit" class="cc-btn-secondary">${esc(tr3("添加电视", "新增電視", "Add TV"))}</button>
+        </form>`;
+  }
+  return `
+    <div class="cc-settings-group-card" data-tvbridge-settings>
+      <div class="cc-field" data-settings-anchor="tvBridge">
+        <div class="cc-field-row">
+          <div>
+            <label for="settings-tv-bridge">${esc(title)}</label>
+            <p class="cc-field-hint" style="margin: 2px 0 0 0;">${esc(hint)}</p>
+          </div>
+          <input id="settings-tv-bridge" type="checkbox" data-tvbridge-toggle ${ctrl.enabled ? "checked" : ""} />
+        </div>${body}
+      </div>
+    </div>`;
+}
+
+const boundRoots = new WeakSet<HTMLElement>();
+
+/** Delegated listeners on the app root; safe to call after every render. */
+export function bindTVBridgeEvents(root: HTMLElement, ctrl: TVBridgeController): void {
+  if (boundRoots.has(root)) return;
+  boundRoots.add(root);
+  root.addEventListener("click", (event) => {
+    const target = (event.target as Element | null)?.closest<HTMLElement>("[data-tvbridge-refresh], [data-tvbridge-remove]");
+    if (!target || !root.contains(target)) return;
+    if (target.dataset.tvbridgeRemove) void ctrl.removeDevice(target.dataset.tvbridgeRemove);
+    else void ctrl.refresh();
+  });
+  root.addEventListener("change", (event) => {
+    const input = event.target as HTMLInputElement | HTMLSelectElement | null;
+    if (!input) return;
+    if (input.matches("[data-tvbridge-toggle]")) ctrl.setEnabled((input as HTMLInputElement).checked);
+    else if (input.matches("[data-tvbridge-binary]")) ctrl.setBinaryPath(input.value);
+    else if (input.matches("[data-tvbridge-sha]")) ctrl.setExpectedSHA256(input.value);
+    else if (input.matches("[data-tvbridge-driver]")) {
+      const option = (input as HTMLSelectElement).selectedOptions[0];
+      const form = input.closest("form");
+      const port = form?.querySelector<HTMLInputElement>("[data-tvbridge-port]");
+      const secret = form?.querySelector<HTMLInputElement>("[data-tvbridge-secret]");
+      if (port) port.placeholder = tr3("端口，默认 {p}", "連接埠，預設 {p}", "Port, default {p}").replace("{p}", option?.dataset.port ?? "");
+      if (secret) {
+        secret.hidden = !option?.dataset.secret;
+        secret.placeholder = option?.dataset.secret ?? "";
+        if (secret.hidden) secret.value = "";
+      }
+    }
+  });
+  root.addEventListener("submit", (event) => {
+    const form = (event.target as Element | null)?.closest<HTMLFormElement>("[data-tvbridge-form]");
+    if (!form) return;
+    event.preventDefault();
+    const field = (name: string) => (form.elements.namedItem(name) as HTMLInputElement | null)?.value ?? "";
+    const port = field("port").trim();
+    void ctrl.addDevice({
+      name: field("name"), roomName: field("room"), driver: field("driver") as TVBridgeDriver, host: field("host"),
+      ...(port ? { port: Number(port) } : {}), macAddress: field("mac"), secret: field("secret"),
+    });
+  });
+}

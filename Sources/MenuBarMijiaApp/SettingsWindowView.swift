@@ -1151,6 +1151,7 @@ private struct GeneralSettingsTab: View {
             AutomationSettingsSection(store: store)
             EnergySettingsSection(store: store)
             ExternalDisplaySettingsSection(displays: ExternalDisplayStore.shared)
+            TVBridgeSettingsSection(bridge: TVBridgeStore.shared)
         }
         .task { await HotkeyAndNotificationManager.shared.refreshNotificationPermission() }
         .onAppear {

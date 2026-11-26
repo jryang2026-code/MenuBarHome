@@ -286,6 +286,7 @@ extension HomeStore {
         guard next != pollingContext else { return }
         pollingContext = next
         pushPollingContext()
+        adapterPollingContextHandler?(next)
     }
 
     /// Re-derives the context after a preference that decides one of its decay inputs changes, and
@@ -795,7 +796,7 @@ extension HomeStore {
             let facetsChanged = deviceFacets != nextFacets
             if facetsChanged { deviceFacets = nextFacets }
 
-            let nextDevices = devicesWithAliases(merged + genericCameraCards)
+            let nextDevices = devicesWithAliases(merged + genericCameraCards + adapterCards(excluding: merged))
             let devicesChanged = devices != nextDevices
             if devicesChanged {
                 devices = nextDevices

@@ -61,6 +61,7 @@ import {
 } from "./connectionsAndDiagView.js";
 import { renderEnergySettingsSection, type HostEnergySession } from "./energySettingsView.js";
 import { getDdcDisplayController, renderDdcSettingsSection } from "./ddcDisplaySection.js";
+import { getTVBridgeController, renderTVBridgeSettingsSection } from "./tvBridgeSection.js";
 import { readAskWhenUnsure } from "./settings.js";
 
 /** The five Settings categories aligned with macOS System Settings. */
@@ -1325,6 +1326,7 @@ function renderSafetyPanel(ctx: SettingsViewContext): string {
 
     ${renderEnergySettingsSection(ctx)}
     ${renderDdcSettingsSection(getDdcDisplayController(), (raw) => ctx.escapeHtml(raw))}
+    ${renderTVBridgeSettingsSection(getTVBridgeController(), (raw) => ctx.escapeHtml(raw))}
     ${renderAutomationAndSafetySettingsSections(ctx)}
 
     <div class="cc-settings-group-card">

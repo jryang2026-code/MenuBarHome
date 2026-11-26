@@ -6,6 +6,7 @@ import { miSceneAccount } from "../core/miCloud/scenes.js";
 import { requestMiSceneConfirmation } from "./sceneConfirmation.js";
 import { isWorkstationLockBlockingControl } from "./transport.js";
 import { recordWorkstationLockBlock } from "./speechGuard.js";
+import { getTVBridgeController, isTVBridgeDeviceId } from "./tvBridgeSection.js";
 import type { MenuMijiaWindowsApp } from "./app.js";
 import type { UndoAction } from "./appTypes.js";
 import {
@@ -1155,6 +1156,9 @@ export async function applyCommand(
   userInitiated = true,
   options?: ApplyCommandOptions,
 ): Promise<boolean> {
+  if (isTVBridgeDeviceId(command.entityId)) {
+    return applyTVBridgeCommand(host, command, options?.allowWhileLocked === true);
+  }
   const sourceRevision = host.sourceRevision;
   const homeRevision = host.homeRevision;
   const allowWhileLocked = options?.allowWhileLocked === true;
@@ -1454,6 +1458,37 @@ export async function applyCommand(
  * 更多设置 row count: a plug's auxiliary control lives on a sibling service (#5), so the drawer
  * address must resolve to the card even though the card's main switch has another one.
  */
+/**
+ * Optional TV bridge rows (ADR-0026) never reach the Mi or HA provider: after the same offline and
+ * workstation-lock guards, `mapTVBridgeCommand` + `tv_bridge_request` carry the write.
+ */
+async function applyTVBridgeCommand(host: MenuMijiaWindowsApp, command: DeviceCommand, allowWhileLocked: boolean): Promise<boolean> {
+  const bridge = getTVBridgeController();
+  const deviceId = command.entityId.split("#")[0] ?? command.entityId;
+  const dev = host.devices.find((d) => d.id === deviceId) ?? null;
+  const fail = (text: string): false => {
+    host.replyBanner = { text, source: t("控制失败"), isError: true };
+    renderHostImmediate(host);
+    return false;
+  };
+  if (!bridge.enabled || !dev) {
+    return fail(controlFailureUserMessage(null, { deviceName: deviceId, isDeviceOnline: false, languagePreference: host.settings.interfaceLanguage }) ?? t("控制失败"));
+  }
+  if (!dev.isOnline) {
+    return fail(controlFailureUserMessage(null, { deviceName: displayNameForDevice(host, dev), isDeviceOnline: false, languagePreference: host.settings.interfaceLanguage }) ?? t("控制失败"));
+  }
+  if (!allowWhileLocked && (await isWorkstationLockBlockingControl(host))) {
+    recordWorkstationLockBlock(host);
+    return false;
+  }
+  try {
+    await bridge.execute(command);
+    return true;
+  } catch {
+    return fail(tr3("电视桥接未能执行该操作，请检查电视网络或插件状态", "電視橋接未能執行該操作，請檢查電視網路或外掛狀態", "The TV bridge couldn't run that action. Check the TV's network or the plugin status"));
+  }
+}
+
 export function deviceOwningEntityId(
   devices: readonly SmartDevice[],
   facets: Readonly<Record<string, readonly FacetControl[]>>,
