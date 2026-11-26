@@ -1150,6 +1150,7 @@ private struct GeneralSettingsTab: View {
 
             AutomationSettingsSection(store: store)
             EnergySettingsSection(store: store)
+            ExternalDisplaySettingsSection(displays: ExternalDisplayStore.shared)
         }
         .task { await HotkeyAndNotificationManager.shared.refreshNotificationPermission() }
         .onAppear {

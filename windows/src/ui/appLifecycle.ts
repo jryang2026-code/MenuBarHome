@@ -43,6 +43,7 @@ import { quickActionTitle } from "../core/quickActions.js";
 import { normalizeGlobalShortcut, recordShortcutFromKeyEvent, tr3 } from "./panelPrefs.js";
 import { APP_VERSION } from "./appConstants.js";
 import { invokeTauriVoid } from "./transport.js";
+import { getDdcDisplayController } from "./ddcDisplaySection.js";
 import { homeAssistantIdentity } from "../core/homeAssistant.js";
 import { loadSettings, stripCredentialFieldsFromStoredCopies, evaluateLegacyOnboardingMigration, writeSettingsForStorage } from "./settings.js";
 import { normalizeSettingsTab, type SettingsTab } from "./settingsViews.js";
@@ -1280,6 +1281,8 @@ export function bindLifecycleRecovery(
     notePanelInteraction(host);
     state.syncTimerSchedule?.();
     controller.trigger("focus");
+    // Optional DDC/CI monitor card: lists displays on show, and does nothing while switched off.
+    getDdcDisplayController().onPanelShown();
   };
   const onOnline = () => {
     if (state.disposed || !isLifecycleHostAttached(host)) {

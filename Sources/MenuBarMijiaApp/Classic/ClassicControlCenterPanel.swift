@@ -7,6 +7,8 @@ public struct ClassicControlCenterPanel: View {
     @Environment(\.colorScheme) private var colorScheme
     @AppStorage(PanelPrefs.climatePanelKey) var climatePanelModule: Bool = true
     @State var draggingId: String?
+    /// Optional DDC/CI monitor card; off by default, so the panel is unchanged unless enabled.
+    @State var externalDisplays = ExternalDisplayStore.shared
     @State var activeResize: ActiveTileResize?
     @State var tileFrames: [String: CGRect] = [:]
     @State var dragLocation: CGPoint?
@@ -114,6 +116,7 @@ public struct ClassicControlCenterPanel: View {
                 prioritySnapshot = .capture(from: store)
                 isPresented = true
                 registerTransientUIHandlers()
+                ExternalDisplayStore.shared.panelDidOpen()
             }
             .onAppear { handlePanelAppear() }
             .onDisappear { handlePanelDidHide() }
@@ -638,6 +641,11 @@ public struct ClassicControlCenterPanel: View {
                                         }
                                     }
                                 }
+                            }
+
+                            if !search.isSearching, !isEditingLayout, externalDisplays.showsPanelCard {
+                                ExternalDisplaySectionView(store: externalDisplays, theme: .classic)
+                                    .transition(.opacity)
                             }
 
                             if !search.isSearching, !isEditingLayout {
