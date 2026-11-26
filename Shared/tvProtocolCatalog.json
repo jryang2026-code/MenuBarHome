@@ -1,0 +1,561 @@
+{
+  "schemaVersion": 1,
+  "catalogId": "menubarhome.tv-protocol-catalog",
+  "description": "Cross-brand TV and external display protocol profiles shared by macOS, Windows, and the out-of-process TV bridge. Data only, no runtime credentials.",
+  "closedCommandVerbs": [
+    "power.set",
+    "display.brightness.set",
+    "volume.set",
+    "mute.set",
+    "input.select",
+    "remote.key",
+    "media.play",
+    "media.pause",
+    "media.stop",
+    "media.seek"
+  ],
+  "profiles": [
+    {
+      "id": "redmi_ddc_display",
+      "displayNames": {
+        "zh": "Redmi 显示器 DDC/CI",
+        "en": "Redmi display over DDC/CI"
+      },
+      "kind": "display",
+      "vendors": ["Redmi", "Xiaomi"],
+      "models": ["Redmi G27U", "Redmi A27U", "Redmi G27"],
+      "transport": {
+        "family": "ddcCi",
+        "channels": ["iokitI2c"],
+        "ports": [],
+        "discovery": ["edid", "iokitServiceMatch"]
+      },
+      "pairing": {
+        "required": false,
+        "method": "none",
+        "inputs": [],
+        "notes": ["识别到受支持的显示器后直接开放已回读的 VCP 能力。"]
+      },
+      "capabilities": {
+        "power": false,
+        "volume": true,
+        "mute": true,
+        "inputSource": true,
+        "directionalKeys": false,
+        "nowPlaying": false,
+        "supportsNowPlayingSeek": false,
+        "wakeOnLan": false
+      },
+      "commands": ["display.brightness.set", "volume.set", "mute.set", "input.select"],
+      "limitations": [
+        "纯显示器没有播放状态或媒体元数据。",
+        "电源 VCP 码由 forbiddenVcpCodes 明确禁用，不接受批量透传。",
+        "仅开放显示器报告为可读写的 VCP 码。"
+      ],
+      "metadata": {
+        "coldBootSupported": false,
+        "vcpCodes": [
+          { "code": "0x10", "name": "brightness", "writable": true },
+          {
+            "code": "0x60",
+            "name": "inputSource",
+            "writable": true,
+            "values": { "DP1": 15, "DP2": 16, "HDMI1": 17, "HDMI2": 18, "USBC": 27 }
+          },
+          { "code": "0x62", "name": "volume", "writable": true },
+          { "code": "0x8D", "name": "mute", "writable": true }
+        ],
+        "forbiddenVcpCodes": ["0xD6"],
+        "macOsBridgeNote": "AppleDCPMCDP29XX -> 0xB7 桥片暴露 DDC/CI，按 IOKit 服务路径识别，不按型号名猜测。"
+      }
+    },
+    {
+      "id": "xiaomi_mitv_6095",
+      "displayNames": {
+        "zh": "小米/Redmi 智能电视 HTTP 6095",
+        "en": "Xiaomi and Redmi TV over HTTP 6095"
+      },
+      "kind": "tv",
+      "vendors": ["Xiaomi", "Redmi"],
+      "models": ["Xiaomi TV", "Redmi TV", "Redmi G Pro 27U"],
+      "transport": {
+        "family": "xiaomiMitv",
+        "channels": ["lanHttp", "miotCloudFallback"],
+        "ports": [{ "number": 6095, "protocol": "tcp" }],
+        "discovery": ["lanHttpProbe", "miotDeviceList"]
+      },
+      "pairing": {
+        "required": false,
+        "method": "sameLanDeviceConfirmation",
+        "inputs": ["displayName"],
+        "notes": ["首次控制在电视端确认，后续复用宿主托管的会话。"]
+      },
+      "capabilities": {
+        "power": true,
+        "volume": true,
+        "mute": true,
+        "inputSource": true,
+        "directionalKeys": true,
+        "nowPlaying": false,
+        "supportsNowPlayingSeek": false,
+        "wakeOnLan": false
+      },
+      "commands": ["power.set", "volume.set", "mute.set", "input.select", "remote.key"],
+      "limitations": [
+        "不支持冷开机，电视必须处于可响应状态。",
+        "信源列表按设备回读结果过滤，不按型号固定生成。"
+      ],
+      "metadata": {
+        "coldBootSupported": false,
+        "keyActions": ["up", "down", "left", "right", "ok", "back", "home", "power", "source"],
+        "hdmiSources": ["HDMI1", "HDMI2", "HDMI3"],
+        "fallback": "MIoT 标准电视动作"
+      }
+    },
+    {
+      "id": "tcl_ffalcon_tnscreen",
+      "displayNames": {
+        "zh": "TCL/雷鸟灵控桌面",
+        "en": "TCL and FFALCON TNScreen"
+      },
+      "kind": "tv",
+      "vendors": ["TCL", "FFALCON"],
+      "models": ["TCL Google TV", "FFALCON TNScreen"],
+      "transport": {
+        "family": "tnscreen",
+        "channels": ["lanUdpDiscovery", "lanTcpControl"],
+        "ports": [
+          { "number": 6537, "protocol": "udp" },
+          { "number": 6553, "protocol": "tcp" }
+        ],
+        "discovery": ["lanUdpBroadcast"]
+      },
+      "pairing": {
+        "required": false,
+        "method": "sameLanDeviceConfirmation",
+        "inputs": ["displayName"],
+        "notes": ["免 ADB，发现后在本机完成确认。"]
+      },
+      "capabilities": {
+        "power": true,
+        "volume": true,
+        "mute": true,
+        "inputSource": true,
+        "directionalKeys": true,
+        "nowPlaying": false,
+        "supportsNowPlayingSeek": false,
+        "wakeOnLan": false
+      },
+      "commands": ["power.set", "volume.set", "mute.set", "input.select", "remote.key"],
+      "limitations": ["国行灵控桌面的应用内播放进度不在本协议承诺范围。"],
+      "metadata": {
+        "coldBootSupported": false,
+        "keyActions": { "up": 11, "down": 12, "left": 13, "right": 14, "ok": 15, "back": 16, "home": 19, "power": 20, "source": 29 },
+        "adbRequired": false
+      }
+    },
+    {
+      "id": "android_adb_lan",
+      "displayNames": {
+        "zh": "安卓电视 LAN ADB 兜底",
+        "en": "Generic Android TV over LAN ADB"
+      },
+      "kind": "tv",
+      "vendors": ["Hisense", "Skyworth", "Dangbei", "JmGO", "Generic AOSP"],
+      "models": ["Older Hisense Android TV", "Older Skyworth Android TV", "Dangbei box", "JmGO projector"],
+      "transport": {
+        "family": "androidAdb",
+        "channels": ["lanTcpAdb"],
+        "ports": [{ "number": 5555, "protocol": "tcp" }],
+        "discovery": ["lanPortProbe", "userSuppliedAddress"]
+      },
+      "pairing": {
+        "required": true,
+        "method": "userEnteredPairingPhrase",
+        "inputs": ["pairingPhrase"],
+        "notes": ["配对短语只在运行时使用，宿主安全存储保管，目录不保存值。"]
+      },
+      "capabilities": {
+        "power": true,
+        "volume": true,
+        "mute": true,
+        "inputSource": true,
+        "directionalKeys": true,
+        "nowPlaying": false,
+        "supportsNowPlayingSeek": false,
+        "wakeOnLan": false
+      },
+      "commands": ["power.set", "volume.set", "mute.set", "input.select", "remote.key"],
+      "limitations": [
+        "仅用于其他协议不可用的兜底场景。",
+        "部分机型关闭 ADB 调试后必须重新在电视端开启。"
+      ],
+      "metadata": {
+        "coldBootSupported": false,
+        "keyActions": { "up": 19, "down": 20, "left": 21, "right": 22, "ok": 23, "back": 4, "home": 3, "power": 26 },
+        "hdmiKeycodes": [243, 244, 245, 246],
+        "androidKeyEventSource": "android.view.KeyEvent"
+      }
+    },
+    {
+      "id": "lg_webos_ssap",
+      "displayNames": {
+        "zh": "LG webOS SSAP",
+        "en": "LG webOS over SSAP"
+      },
+      "kind": "tv",
+      "vendors": ["LG"],
+      "models": ["LG webOS TV"],
+      "transport": {
+        "family": "webosSsap",
+        "channels": ["wss", "pointerSocket", "wakeOnLan"],
+        "ports": [
+          { "number": 3001, "protocol": "wss" },
+          { "number": 3000, "protocol": "wss" }
+        ],
+        "discovery": ["lanSsdp", "userSuppliedAddress"]
+      },
+      "pairing": {
+        "required": true,
+        "method": "tvUserConsent",
+        "inputs": ["displayName"],
+        "notes": ["电视端确认后由宿主保存运行时标识，目录不保存值。"]
+      },
+      "capabilities": {
+        "power": true,
+        "volume": true,
+        "mute": true,
+        "inputSource": true,
+        "directionalKeys": true,
+        "nowPlaying": true,
+        "supportsNowPlayingSeek": false,
+        "wakeOnLan": true
+      },
+      "commands": ["power.set", "volume.set", "mute.set", "input.select", "remote.key", "media.play", "media.pause", "media.stop"],
+      "limitations": ["webOS 不同版本的播放进度字段不一致，未同时回报 duration、position 与 canSeek 时不画进度条。"],
+      "metadata": {
+        "coldBootSupported": true,
+        "pointerSocketRequiredForMouse": true
+      }
+    },
+    {
+      "id": "android_tv_remote_v2",
+      "displayNames": {
+        "zh": "Android TV Remote v2",
+        "en": "Android TV Remote v2"
+      },
+      "kind": "tv",
+      "vendors": ["Google", "Sony", "TCL", "Philips", "Generic Android TV"],
+      "models": ["Android TV", "Google TV"],
+      "transport": {
+        "family": "androidTvRemoteV2",
+        "channels": ["lanTlsPairing", "lanTlsControl", "mdns"],
+        "ports": [
+          { "number": 6466, "protocol": "tcp" },
+          { "number": 6467, "protocol": "tcp" }
+        ],
+        "discovery": ["mdns"]
+      },
+      "pairing": {
+        "required": true,
+        "method": "onDeviceConfirmation",
+        "inputs": ["displayName"],
+        "notes": ["配对材料在运行时生成，只保存在宿主安全存储。"]
+      },
+      "capabilities": {
+        "power": true,
+        "volume": true,
+        "mute": true,
+        "inputSource": false,
+        "directionalKeys": true,
+        "nowPlaying": true,
+        "supportsNowPlayingSeek": false,
+        "wakeOnLan": false
+      },
+      "commands": ["power.set", "volume.set", "mute.set", "remote.key", "media.play", "media.pause", "media.stop"],
+      "limitations": ["信源切换由电视系统接管，插件不直接发送 HDMI 切换指令。"],
+      "metadata": {
+        "coldBootSupported": false,
+        "mdnsService": "_androidtvremote2._tcp"
+      }
+    },
+    {
+      "id": "samsung_tizen_ws",
+      "displayNames": {
+        "zh": "Samsung Tizen WebSocket",
+        "en": "Samsung Tizen WebSocket"
+      },
+      "kind": "tv",
+      "vendors": ["Samsung"],
+      "models": ["Samsung Tizen TV"],
+      "transport": {
+        "family": "tizenWs",
+        "channels": ["wss", "wakeOnLan"],
+        "ports": [
+          { "number": 8002, "protocol": "wss" },
+          { "number": 8001, "protocol": "wss" }
+        ],
+        "discovery": ["lanSsdp", "userSuppliedAddress"]
+      },
+      "pairing": {
+        "required": true,
+        "method": "tvUserConsent",
+        "inputs": ["displayName"],
+        "notes": ["电视端确认后由宿主保存运行时标识，目录不保存值。"]
+      },
+      "capabilities": {
+        "power": true,
+        "volume": true,
+        "mute": true,
+        "inputSource": false,
+        "directionalKeys": true,
+        "nowPlaying": true,
+        "supportsNowPlayingSeek": false,
+        "wakeOnLan": true
+      },
+      "commands": ["power.set", "volume.set", "mute.set", "remote.key", "media.play", "media.pause", "media.stop"],
+      "limitations": ["Tizen 没有可靠的第三方 HDMI 直切写入，输入源入口保持关闭。"],
+      "metadata": {
+        "coldBootSupported": true,
+        "directHdmiSwitch": false
+      }
+    },
+    {
+      "id": "sony_bravia_psk",
+      "displayNames": {
+        "zh": "Sony BRAVIA 预共享短语",
+        "en": "Sony BRAVIA with pre-shared phrase"
+      },
+      "kind": "tv",
+      "vendors": ["Sony"],
+      "models": ["Sony BRAVIA Android TV", "Sony BRAVIA Google TV"],
+      "transport": {
+        "family": "braviaJsonRpcIrcc",
+        "channels": ["lanHttpJsonRpc", "ircc"],
+        "ports": [
+          { "number": 80, "protocol": "http" },
+          { "number": 443, "protocol": "https" }
+        ],
+        "discovery": ["lanSsdp", "userSuppliedAddress"]
+      },
+      "pairing": {
+        "required": true,
+        "method": "userEnteredPreSharedPhrase",
+        "inputs": ["preSharedPhrase"],
+        "notes": ["预共享短语由用户输入，宿主安全存储保管，目录不保存值。"]
+      },
+      "capabilities": {
+        "power": true,
+        "volume": true,
+        "mute": true,
+        "inputSource": true,
+        "directionalKeys": true,
+        "nowPlaying": true,
+        "supportsNowPlayingSeek": false,
+        "wakeOnLan": false
+      },
+      "commands": ["power.set", "volume.set", "mute.set", "input.select", "remote.key", "media.play", "media.pause", "media.stop"],
+      "limitations": ["IRCC 只用于已验证的按键集合，不用于任意命令透传。"],
+      "metadata": {
+        "coldBootSupported": false,
+        "protocolName": "Sony BRAVIA JSON-RPC and IRCC"
+      }
+    },
+    {
+      "id": "hisense_vidaa_mqtt",
+      "displayNames": {
+        "zh": "海外 VIDAA MQTT",
+        "en": "Overseas Hisense VIDAA over MQTT"
+      },
+      "kind": "tv",
+      "vendors": ["Hisense"],
+      "models": ["Overseas Hisense VIDAA TV"],
+      "transport": {
+        "family": "vidaaMqtt",
+        "channels": ["lanMqtt"],
+        "ports": [{ "number": 36669, "protocol": "tcp" }],
+        "discovery": ["lanDeviceProbe", "userSuppliedAddress"]
+      },
+      "pairing": {
+        "required": true,
+        "method": "tvUserConsent",
+        "inputs": ["displayName"],
+        "notes": ["仅海外 VIDAA 设备适用，配对材料只保存在宿主安全存储。"]
+      },
+      "capabilities": {
+        "power": true,
+        "volume": true,
+        "mute": true,
+        "inputSource": true,
+        "directionalKeys": true,
+        "nowPlaying": true,
+        "supportsNowPlayingSeek": false,
+        "wakeOnLan": false
+      },
+      "commands": ["power.set", "volume.set", "mute.set", "input.select", "remote.key", "media.play", "media.pause", "media.stop"],
+      "limitations": ["国行 Juui 系统使用不同协议，不在本画像覆盖范围。"],
+      "metadata": {
+        "coldBootSupported": false,
+        "chinaJuuiSupported": false
+      }
+    },
+    {
+      "id": "dlna_dmr",
+      "displayNames": {
+        "zh": "DLNA 数字媒体渲染器",
+        "en": "DLNA Digital Media Renderer"
+      },
+      "kind": "media",
+      "vendors": ["Generic DLNA"],
+      "models": ["DLNA DMR compatible device"],
+      "transport": {
+        "family": "dlna",
+        "channels": ["ssdp", "soap"],
+        "ports": [{ "number": 1900, "protocol": "udp" }],
+        "discovery": ["ssdp"]
+      },
+      "pairing": {
+        "required": false,
+        "method": "none",
+        "inputs": [],
+        "notes": ["控制地址来自 SSDP 响应，不接受用户录入的外部地址。"]
+      },
+      "capabilities": {
+        "power": false,
+        "volume": true,
+        "mute": true,
+        "inputSource": false,
+        "directionalKeys": false,
+        "nowPlaying": true,
+        "supportsNowPlayingSeek": true,
+        "wakeOnLan": false
+      },
+      "commands": ["volume.set", "mute.set", "media.play", "media.pause", "media.stop", "media.seek"],
+      "limitations": ["仅暴露设备回报的播放位置和总时长。"],
+      "metadata": {
+        "coldBootSupported": false,
+        "rendererRoles": ["AVTransport", "RenderingControl"]
+      }
+    },
+    {
+      "id": "chromecast",
+      "displayNames": {
+        "zh": "Chromecast 接收端",
+        "en": "Chromecast receiver"
+      },
+      "kind": "media",
+      "vendors": ["Google", "Generic Cast"],
+      "models": ["Chromecast", "Cast receiver"],
+      "transport": {
+        "family": "googleCast",
+        "channels": ["mdns", "castChannel"],
+        "ports": [
+          { "number": 8008, "protocol": "http" },
+          { "number": 8009, "protocol": "wss" }
+        ],
+        "discovery": ["mdns"]
+      },
+      "pairing": {
+        "required": false,
+        "method": "none",
+        "inputs": [],
+        "notes": ["同一局域网即可发现，不使用云端账号。"]
+      },
+      "capabilities": {
+        "power": false,
+        "volume": true,
+        "mute": true,
+        "inputSource": false,
+        "directionalKeys": false,
+        "nowPlaying": true,
+        "supportsNowPlayingSeek": true,
+        "wakeOnLan": false
+      },
+      "commands": ["volume.set", "mute.set", "media.play", "media.pause", "media.stop", "media.seek"],
+      "limitations": ["进度条只在接收端回报可跳转时渲染。"],
+      "metadata": {
+        "coldBootSupported": false,
+        "mdnsService": "_googlecast._tcp"
+      }
+    },
+    {
+      "id": "kodi_jsonrpc",
+      "displayNames": {
+        "zh": "Kodi JSON-RPC",
+        "en": "Kodi JSON-RPC"
+      },
+      "kind": "media",
+      "vendors": ["Kodi"],
+      "models": ["Kodi media center"],
+      "transport": {
+        "family": "kodiJsonRpc",
+        "channels": ["lanHttp"],
+        "ports": [{ "number": 8080, "protocol": "http" }],
+        "discovery": ["userSuppliedAddress", "lanPortProbe"]
+      },
+      "pairing": {
+        "required": false,
+        "method": "none",
+        "inputs": [],
+        "notes": ["只能连接用户显式录入的局域网地址。"]
+      },
+      "capabilities": {
+        "power": false,
+        "volume": true,
+        "mute": true,
+        "inputSource": false,
+        "directionalKeys": false,
+        "nowPlaying": true,
+        "supportsNowPlayingSeek": true,
+        "wakeOnLan": false
+      },
+      "commands": ["volume.set", "mute.set", "remote.key", "media.play", "media.pause", "media.stop", "media.seek"],
+      "limitations": ["插件只映射 Player 与 Application 的只读状态和允许的控制方法。"],
+      "metadata": {
+        "coldBootSupported": false,
+        "rpcSurface": ["Player.GetProperties", "Player.Seek", "Application.SetVolume"]
+      }
+    },
+    {
+      "id": "jellyfin_api",
+      "displayNames": {
+        "zh": "Jellyfin API",
+        "en": "Jellyfin API"
+      },
+      "kind": "media",
+      "vendors": ["Jellyfin"],
+      "models": ["Jellyfin server and client sessions"],
+      "transport": {
+        "family": "jellyfinApi",
+        "channels": ["lanHttp", "lanHttps"],
+        "ports": [
+          { "number": 8096, "protocol": "http" },
+          { "number": 8920, "protocol": "https" }
+        ],
+        "discovery": ["userSuppliedAddress", "lanPortProbe"]
+      },
+      "pairing": {
+        "required": false,
+        "method": "userSuppliedServer",
+        "inputs": ["displayName"],
+        "notes": ["用户登录由宿主安全表单完成，目录不保存任何登录值。"]
+      },
+      "capabilities": {
+        "power": false,
+        "volume": true,
+        "mute": true,
+        "inputSource": false,
+        "directionalKeys": false,
+        "nowPlaying": true,
+        "supportsNowPlayingSeek": true,
+        "wakeOnLan": false
+      },
+      "commands": ["volume.set", "mute.set", "remote.key", "media.play", "media.pause", "media.stop", "media.seek"],
+      "limitations": ["进度条来自 Sessions 接口的 PositionTicks 与 RunTimeTicks。"],
+      "metadata": {
+        "coldBootSupported": false,
+        "progressFields": ["PositionTicks", "RunTimeTicks"]
+      }
+    }
+  ]
+}
