@@ -13,6 +13,7 @@ mod canonical_registry;
 mod desktop_shell;
 mod job_object;
 mod process_supervisor;
+mod tv_bridge;
 mod credentials;
 mod miio;
 mod miio_crypto;
@@ -411,6 +412,9 @@ fn main() {
             focus_mode_status,
             set_system_event_watchers,
             wifi_current,
+            tv_bridge::tv_bridge_start,
+            tv_bridge::tv_bridge_request,
+            tv_bridge::tv_bridge_shutdown,
             set_tray_tooltip, send_desktop_notification,
             set_companion_integration,
             write_raycast_snapshot,
@@ -569,6 +573,7 @@ fn main() {
         .expect("error while building MenuBarHome Windows application")
         .run(|app, event| {
             if matches!(event, tauri::RunEvent::Exit) {
+                let _ = tv_bridge::tv_bridge_shutdown();
                 close_camera_pip_on_exit(app);
                 shutdown_system_event_watchers();
                 shutdown_companion_runtime();
