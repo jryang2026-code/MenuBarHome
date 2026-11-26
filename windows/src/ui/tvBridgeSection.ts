@@ -186,6 +186,12 @@ export class TVBridgeController {
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly idleShutdownMs: number | undefined;
   private panelVisible = false;
+  /**
+   * The native side keeps one process slot, so every launch and every stop runs on this chain: a
+   * stale start's or an old dispose's `tv_bridge_shutdown` always lands before the next
+   * `tv_bridge_start` and can never kill the process that replaced it.
+   */
+  private nativeOps: Promise<void> = Promise.resolve();
   private hardwareIds = new Map<string, readonly string[]>();
 
   constructor(deps: TVBridgeControllerDeps = {}) {
@@ -324,7 +330,7 @@ export class TVBridgeController {
     this.clearIdleTimer();
     const lifecycle = this.lifecycle;
     this.lifecycle = null;
-    if (lifecycle) await lifecycle.shutdown().catch(() => undefined);
+    if (lifecycle) await this.stop(lifecycle);
   }
 
   async settle(): Promise<void> {
@@ -376,10 +382,11 @@ export class TVBridgeController {
       this.idleTimer = null;
       if (this.lifecycle !== lifecycle || this.panelVisible) return;
       this.lifecycle = null;
-      this.track(lifecycle.shutdown().catch(() => undefined));
+      this.track(this.stop(lifecycle));
       if (this.status === "running") this.status = this.idleStatus();
       this.onChange();
     }, delay);
+    (this.idleTimer as { unref?: () => void }).unref?.();
   }
 
   private clearIdleTimer(): void {
@@ -399,7 +406,8 @@ export class TVBridgeController {
   private ensureStarted(): Promise<TVBridgeLifecycle> {
     if (this.lifecycle?.isRunning) return Promise.resolve(this.lifecycle);
     if (this.starting) return this.starting;
-    const run = this.start().finally(() => {
+    const epoch = this.generation;
+    const run = this.native(() => this.start(epoch)).finally(() => {
       if (this.starting === run) this.starting = null;
     });
     this.starting = run;
@@ -410,11 +418,22 @@ export class TVBridgeController {
    * Launches the process and sends `initialize`. If the switch goes off or the config changes while
    * either await is pending, or `initialize` fails, the process is shut down and nothing is kept.
    */
-  private async start(): Promise<TVBridgeLifecycle> {
-    const epoch = this.generation;
+  private native<T>(op: () => Promise<T>): Promise<T> {
+    const run = this.nativeOps.then(op);
+    this.nativeOps = run.then(() => undefined, () => undefined);
+    return run;
+  }
+
+  private stop(lifecycle: TVBridgeLifecycle): Promise<void> {
+    return this.native(() => lifecycle.shutdown()).catch(() => undefined);
+  }
+
+  /** Runs on the native chain (see `nativeOps`), so it never calls `native` or `stop` itself. */
+  private async start(epoch: number): Promise<TVBridgeLifecycle> {
     const stale = () => epoch !== this.generation || !this.config.isEnabled;
     const invoke = this.invokeFn;
     if (!invoke) throw new Error("command tv_bridge_start not found");
+    if (stale()) throw new Error("TV bridge switched off before starting");
     const send = async (frame: TVBridgeFrame): Promise<TVBridgeFrame> => {
       const reply = await invoke("tv_bridge_request", { frame });
       const parsed = (typeof reply === "string" ? JSON.parse(reply) : reply) as TVBridgeFrame | null;
@@ -440,6 +459,10 @@ export class TVBridgeController {
     const lifecycle = new TVBridgeLifecycle({ request: send, close: async () => { await invoke("tv_bridge_shutdown"); } }, this.config.idleShutdownSeconds);
     lifecycle.markStarted();
     this.lifecycle = lifecycle;
+    // The panel may have closed while the bridge was starting; `onPanelHidden` saw nothing running.
+    if (!this.panelVisible) {
+      this.track(this.contextChanged({ panelVisible: false, systemActive: false, lowPower: false }).then(() => this.scheduleIdleShutdown()));
+    }
     return lifecycle;
   }
 
@@ -455,7 +478,7 @@ export class TVBridgeController {
       if (!reply || reply.id !== frame.id) throw new Error("Invalid TV bridge frame");
     } catch (error) {
       if (this.lifecycle === lifecycle) this.lifecycle = null;
-      await lifecycle.shutdown().catch(() => undefined);
+      await this.stop(lifecycle);
       throw error;
     }
     if (reply.error) throw new Error(typeof reply.error === "string" ? reply.error : reply.error.message);

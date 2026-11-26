@@ -255,6 +255,15 @@ final class TVBridgeStore {
         case .success(let rows):
             publish(rows.map(Self.routable), hardwareIds: hardwareIds)
             status = running ? .running : idleStatus
+            // The panel may have closed while the bridge was starting: the close found nothing to stop.
+            if running, !panelVisible, idleTask == nil, let manager {
+                let hidden = TVBridgePollingContext(panelVisible: false, systemActive: true, lowPower: false)
+                track { [weak self] in
+                    await manager.updatePollingContext(hidden)
+                    guard let self, self.manager === manager, !self.panelVisible, self.config.isEnabled else { return }
+                    self.scheduleIdleShutdown(manager)
+                }
+            }
         case .failure(let error):
             publish([])
             status = .failed(Self.friendlyMessage(for: error))
@@ -348,20 +357,23 @@ final class TVBridgeStore {
         while let task = backgroundTasks.values.first ?? idleTask { await task.value }
     }
 
-    /// App quit: stop the child process before the app goes away, waiting at most `timeout`.
-    func shutdownNow(timeout: TimeInterval = 1) {
+    /// App quit: asks the bridge to shut down for at most `timeout`, then kills any process still
+    /// alive without waiting on the request lock, so quitting never leaves an orphan behind.
+    func shutdownNow(timeout: TimeInterval = 0.2) {
         generation += 1
         cancelIdleShutdown()
         refreshTask?.cancel()
         refreshTask = nil
-        guard let manager else { return }
-        self.manager = nil
-        let done = DispatchSemaphore(value: 0)
-        Task.detached {
-            await manager.shutdown()
-            done.signal()
+        if let manager {
+            self.manager = nil
+            let done = DispatchSemaphore(value: 0)
+            Task.detached {
+                await manager.shutdown()
+                done.signal()
+            }
+            _ = done.wait(timeout: .now() + timeout)
         }
-        _ = done.wait(timeout: .now() + timeout)
+        StdioTVBridgeTransport.terminateAllImmediately()
     }
 
     private func scheduleIdleShutdown(_ manager: TVBridgePluginManager) {

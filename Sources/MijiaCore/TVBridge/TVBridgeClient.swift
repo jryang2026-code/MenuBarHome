@@ -17,14 +17,25 @@ public actor MockTVBridgeTransport: TVBridgeTransport { public var requests:[TVB
 public final class StdioTVBridgeTransport: TVBridgeTransport, @unchecked Sendable {
     private let process: Process; private let input: FileHandle; private let output: FileHandle; private let lock = NSLock(); private var buffer = Data()
     public init(process:Process,input:FileHandle,output:FileHandle){self.process=process;self.input=input;self.output=output}
-    public static func launch(binaryPath:String,dataDir:URL,manifestPath:URL)throws->Self { let p=Process(); let i=Pipe(); let o=Pipe(); p.executableURL=URL(fileURLWithPath:binaryPath); p.arguments=[]; p.currentDirectoryURL=dataDir; p.environment=["PATH":ProcessInfo.processInfo.environment["PATH"] ?? "/usr/bin:/bin","HOME":dataDir.path,"MBH_DATA_DIR":dataDir.path,"MBH_MANIFEST_PATH":manifestPath.path]; p.standardInput=i; p.standardOutput=o; p.standardError=FileHandle.nullDevice; try p.run(); return Self(process:p,input:i.fileHandleForWriting,output:o.fileHandleForReading) }
+    public static func launch(binaryPath:String,dataDir:URL,manifestPath:URL)throws->Self { let p=Process(); let i=Pipe(); let o=Pipe(); p.executableURL=URL(fileURLWithPath:binaryPath); p.arguments=[]; p.currentDirectoryURL=dataDir; p.environment=["PATH":ProcessInfo.processInfo.environment["PATH"] ?? "/usr/bin:/bin","HOME":dataDir.path,"MBH_DATA_DIR":dataDir.path,"MBH_MANIFEST_PATH":manifestPath.path]; p.standardInput=i; p.standardOutput=o; p.standardError=FileHandle.nullDevice; try p.run(); LiveProcesses.shared.insert(p); return Self(process:p,input:i.fileHandleForWriting,output:o.fileHandleForReading) }
     public func request(_ frame: TVBridgeFrame) async throws -> TVBridgeFrame { try readFrame(frame) }
     private func readFrame(_ frame: TVBridgeFrame) throws -> TVBridgeFrame {
       lock.lock(); defer { lock.unlock() }
       let payload = try frame.encoded() + Data([10]); guard payload.count <= 8 * 1024 * 1024 else { throw TVBridgeError.frameTooLarge }; try input.write(contentsOf: payload)
       while true { if let nl = buffer.firstIndex(of: 10) { let line = Data(buffer[..<nl]); buffer.removeSubrange(...nl); let decoded=try TVBridgeFrame.decode(line); guard decoded.id == frame.id else { throw TVBridgeError.invalidFrame }; return decoded }; let chunk = try output.read(upToCount: 4096) ?? Data(); guard !chunk.isEmpty else { throw TVBridgeError.notRunning }; buffer.append(chunk); guard buffer.count <= 8 * 1024 * 1024 else { throw TVBridgeError.frameTooLarge } }
     }
-    public func close()async{if process.isRunning{process.terminate()}}
+    public func close()async{terminateProcessImmediately()}
+    /// Kills the child without taking the request `lock`, so a `readFrame` stuck on a silent process cannot block it.
+    public func terminateProcessImmediately(){LiveProcesses.shared.remove(process);if process.isRunning{process.terminate()}}
+    /// App quit: kills every bridge process still alive, without waiting on any RPC.
+    public static func terminateAllImmediately(){for p in LiveProcesses.shared.drain() where p.isRunning{p.terminate()}}
+    private final class LiveProcesses: @unchecked Sendable {
+        static let shared = LiveProcesses()
+        private let lock = NSLock(); private var processes: [ObjectIdentifier: Process] = [:]
+        func insert(_ p: Process) { lock.withLock { processes[ObjectIdentifier(p)] = p } }
+        func remove(_ p: Process) { lock.withLock { _ = processes.removeValue(forKey: ObjectIdentifier(p)) } }
+        func drain() -> [Process] { lock.withLock { let all = Array(processes.values); processes.removeAll(); return all } }
+    }
 }
 
 public struct TVBridgeNowPlayingPayload: Codable, Sendable {

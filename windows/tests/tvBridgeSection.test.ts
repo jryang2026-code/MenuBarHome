@@ -44,10 +44,16 @@ const DEFAULT_ROWS: readonly Record<string, unknown>[] = [{ nativeId: "tv-a", na
 
 function recordingInvoke(options: { rows?: readonly Record<string, unknown>[]; startGate?: Promise<void>; failInitialize?: boolean } = {}) {
   const calls: { cmd: string; frame?: TVBridgeFrame; args?: Record<string, unknown> }[] = [];
+  /** Held by the next `tv_bridge_start` only, then cleared. */
+  const gate: { next: Promise<void> | undefined } = { next: options.startGate };
   const invoke = async (cmd: string, args?: Record<string, unknown>) => {
     const frame = args?.frame as TVBridgeFrame | undefined;
     calls.push({ cmd, frame, args });
-    if (cmd === "tv_bridge_start" && options.startGate) await options.startGate;
+    if (cmd === "tv_bridge_start" && gate.next) {
+      const held = gate.next;
+      gate.next = undefined;
+      await held;
+    }
     if (cmd !== "tv_bridge_request" || !frame) return null;
     if (frame.method === "initialize" && options.failInitialize) return { jsonrpc: "2.0", id: frame.id, error: { code: -32099, message: "boom" } };
     const result = frame.method === "snapshot"
@@ -56,7 +62,7 @@ function recordingInvoke(options: { rows?: readonly Record<string, unknown>[]; s
     return { jsonrpc: "2.0", id: frame.id, result };
   };
   const methods = () => calls.map((c) => c.frame?.method ?? c.cmd);
-  return { calls, invoke, methods };
+  return { calls, invoke, methods, gate };
 }
 
 function tv(id: string, name: string): SmartDevice {
@@ -167,7 +173,8 @@ describe("TV bridge section", () => {
 
   it("snapshots once a TV is added and routes drawer commands to control.execute", async () => {
     const { ctrl, rec } = await enabledController();
-    assert.deepEqual(rec.methods(), ["tv_bridge_start", "initialize", "snapshot"]);
+    // The panel is closed while the bridge starts, so it is told so right away (and may stop when idle).
+    assert.deepEqual(rec.methods(), ["tv_bridge_start", "initialize", "host.contextChanged", "snapshot"]);
     const row = ctrl.panelDevices[0]!;
     assert.equal(row.id, ID);
     assert.equal(row.kind.kind === "tv" && row.kind.muteSwitchEntityId, `${ID}#mute`);
@@ -310,5 +317,67 @@ describe("TV bridge section", () => {
     assert.deepEqual(failed.rec.methods(), ["tv_bridge_start", "initialize", "tv_bridge_shutdown"]);
     assert.equal(failed.ctrl.panelDevices.length, 0);
     assert.equal(failed.ctrl.status, "failed");
+  });
+
+  it("cancels a bridge write when the source or home changes while the bridge is starting", async () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ connectionMode: "demo", hasCompletedOnboarding: true, autoCheckUpdates: false }));
+    const { ctrl, rec } = await enabledController();
+    setTVBridgeControllerForTesting(ctrl);
+    try {
+      const root = win.document.querySelector("#app") as unknown as HTMLElement;
+      const app = new MenuMijiaWindowsApp(root);
+      app.settings.connectionMode = "homeAssistant";
+      await ctrl.dispose();
+      let release!: () => void;
+      rec.gate.next = new Promise<void>((resolve) => { release = resolve; });
+      const before = rec.calls.length;
+      const writing = applyCommand(app, { kind: "mediaPlayPause", entityId: ID });
+      while (!rec.calls.slice(before).some((c) => c.cmd === "tv_bridge_start")) await new Promise((r) => setTimeout(r, 0));
+      app.sourceEpoch.advance("home");
+      release();
+      assert.equal(await writing, false);
+      await ctrl.settle();
+      assert.equal(rec.calls.slice(before).filter((c) => c.frame?.method === "control.execute").length, 0);
+    } finally {
+      setTVBridgeControllerForTesting(null);
+    }
+  });
+
+  it("arms the idle stop when the panel closed while the bridge was still starting", async () => {
+    let release!: () => void;
+    const rec = recordingInvoke({ startGate: new Promise<void>((resolve) => { release = resolve; }) });
+    const ctrl = new TVBridgeController({ storage: memoryStorage(), secrets: memorySecrets(), invoke: rec.invoke, idleShutdownMs: 5 });
+    ctrl.onPanelShown();
+    ctrl.setEnabled(true);
+    ctrl.setBinaryPath("C:\\Tools\\mbh-tv-bridge.exe");
+    await ctrl.addDevice({ name: "卧室电视", roomName: "", driver: "kodi_jsonrpc", host: "192.168.1.9" });
+    ctrl.onPanelHidden();
+    release();
+    await ctrl.settle();
+    assert.ok(rec.methods().includes("host.contextChanged"));
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    await ctrl.settle();
+    assert.deepEqual(rec.methods().slice(-2), ["shutdown", "tv_bridge_shutdown"]);
+  });
+
+  it("never lets a stale stop kill the process a quick re-enable started", async () => {
+    let release!: () => void;
+    const rec = recordingInvoke({ startGate: new Promise<void>((resolve) => { release = resolve; }) });
+    const ctrl = new TVBridgeController({ storage: memoryStorage(), secrets: memorySecrets(), invoke: rec.invoke });
+    ctrl.onPanelShown();
+    ctrl.setEnabled(true);
+    ctrl.setBinaryPath("C:\\Tools\\mbh-tv-bridge.exe");
+    await ctrl.addDevice({ name: "卧室电视", roomName: "", driver: "kodi_jsonrpc", host: "192.168.1.9" });
+    ctrl.setEnabled(false);
+    ctrl.setEnabled(true);
+    release();
+    await ctrl.settle();
+    const methods = rec.methods();
+    assert.equal(methods.filter((m) => m === "tv_bridge_start").length, 2, methods.join(","));
+    assert.ok(methods.indexOf("tv_bridge_shutdown") > methods.indexOf("tv_bridge_start"), methods.join(","));
+    assert.ok(methods.lastIndexOf("tv_bridge_shutdown") < methods.lastIndexOf("tv_bridge_start"), methods.join(","));
+    assert.equal(methods.at(-1), "snapshot");
+    assert.equal(ctrl.status, "running");
+    assert.equal(ctrl.panelDevices.length, 1);
   });
 });

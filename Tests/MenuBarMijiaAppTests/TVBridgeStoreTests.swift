@@ -259,6 +259,18 @@ struct TVBridgeStoreTests {
         #expect(await harness.methods().last == "shutdown")
     }
 
+    @Test("A bridge that finishes starting after the panel closed still stops once idle")
+    func idleShutdownWhenPanelClosedDuringStart() async throws {
+        let harness = Harness()
+        let store = enabledStore(harness, idleDelay: .milliseconds(20))
+        store.pollingContextChanged(PollingContext(panelVisible: true))
+        store.pollingContextChanged(PollingContext(panelVisible: false, systemActive: true))
+        await store.waitForPendingWork()
+        #expect(await harness.methods().contains("host.contextChanged"))
+        #expect(await harness.transport.closeCount == 1)
+        #expect(await harness.methods().last == "shutdown")
+    }
+
     @Test("Turning the bridge off while it is still starting stops the process and leaves no rows")
     func disableDuringStart() async throws {
         let harness = Harness()

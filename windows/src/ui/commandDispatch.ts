@@ -1235,7 +1235,9 @@ export async function applyCommand(
     return false;
   }
   if (isTVBridgeDeviceId(command.entityId)) {
-    return applyTVBridgeCommand(host, command, allowWhileLocked);
+    return applyTVBridgeCommand(host, command, allowWhileLocked, {
+      sourceRevision, homeRevision, revalidateBeforeSend: options?.revalidateBeforeSend,
+    });
   }
   const claim = targetDeviceId !== null ? claimDeviceWrite(host, targetDeviceId) : null;
   const roomGroupCover = options?.roomGroupCover === true;
@@ -1463,7 +1465,12 @@ export async function applyCommand(
  * run the capability gate and the offline check; the lock, the switch, the row and the gate are
  * checked again right before `control.execute`, after the bridge may have spent time starting.
  */
-async function applyTVBridgeCommand(host: MenuMijiaWindowsApp, command: DeviceCommand, allowWhileLocked: boolean): Promise<boolean> {
+async function applyTVBridgeCommand(
+  host: MenuMijiaWindowsApp,
+  command: DeviceCommand,
+  allowWhileLocked: boolean,
+  origin: { readonly sourceRevision: number; readonly homeRevision: number; readonly revalidateBeforeSend?: (() => string | null) | undefined },
+): Promise<boolean> {
   const bridge = getTVBridgeController();
   const deviceId = command.entityId.split("#")[0] ?? command.entityId;
   const fail = (text: string): false => {
@@ -1471,7 +1478,11 @@ async function applyTVBridgeCommand(host: MenuMijiaWindowsApp, command: DeviceCo
     renderHostImmediate(host);
     return false;
   };
+  // "" cancels quietly (a source/home switch or the lock); any other text is shown as the failure.
   const refusal = async (): Promise<string | null> => {
+    if (origin.sourceRevision !== host.sourceRevision || origin.homeRevision !== host.homeRevision) return "";
+    const confirmation = origin.revalidateBeforeSend?.() ?? null;
+    if (confirmation !== null) return confirmation;
     if (!allowWhileLocked && (await isWorkstationLockBlockingControl(host))) {
       recordWorkstationLockBlock(host);
       return "";
