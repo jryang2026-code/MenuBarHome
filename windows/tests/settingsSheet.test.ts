@@ -88,6 +88,85 @@ afterEach(async () => {
   await closeTestWindow(dom);
 });
 
+describe("Generic camera removal (#537)", () => {
+  const id = "11111111-1111-4111-8111-111111111111";
+  const camera = { id, name: "Garage RTSP", kind: "rtsp", host: "cam.local" };
+  const remove = `[data-generic-cam-delete="${id}"]`;
+
+  async function openCameraSettings(): Promise<void> {
+    await click("#btn-settings");
+    await click('[data-settings-tab="connection"]');
+    await click('[data-conn-section="advancedConnectionOptions"] > summary');
+  }
+
+  function startCameraDemo(deleteCredential: (name: unknown) => Promise<void>, standalone = false): void {
+    if (standalone) window.history.replaceState(null, "", "/?window=settings&tab=connection");
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      value: {
+        metadata: standalone ? {} : undefined,
+        invoke: async (command: string, args?: Record<string, unknown>) => {
+          if (command === "secure_store_delete") await deleteCredential(args?.name);
+        },
+      },
+      configurable: true,
+    });
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify({
+      connectionMode: "demo",
+      hasCompletedOnboarding: true,
+      genericCameras: [camera],
+    }));
+    new MenuMijiaWindowsApp(element("#app"));
+  }
+
+  it("requires a fresh removal confirmation after settings close and reopen", async () => {
+    const deleted: unknown[] = [];
+    startCameraDemo(async (name) => { deleted.push(name); });
+    await openCameraSettings();
+    await click(remove);
+    assert.equal(element(remove).textContent, "再点一次确认移除");
+    await click("#btn-close-settings");
+    await openCameraSettings();
+    await click(remove);
+    assert.deepEqual(deleted, []);
+    assert.equal(element(remove).textContent, "再点一次确认移除");
+  });
+
+  it("resets the confirmation button when the native settings window is hidden for reuse", async () => {
+    const deleted: unknown[] = [];
+    startCameraDemo(async (name) => { deleted.push(name); }, true);
+    await click('[data-conn-section="advancedConnectionOptions"] > summary');
+    await click(remove);
+    assert.equal(element(remove).textContent, "再点一次确认移除");
+    window.dispatchEvent(new window.CustomEvent("menumijia:request-close-settings"));
+    assert.equal(element(remove).textContent, "删除");
+    await click(remove);
+    assert.deepEqual(deleted, []);
+    assert.equal(element(remove).textContent, "再点一次确认移除");
+  });
+
+  it("keeps the camera listed and retryable when credential removal fails", async () => {
+    const attempts: unknown[] = [];
+    startCameraDemo(async (name) => {
+      attempts.push(name);
+      if (attempts.length === 1) throw new Error("vault unavailable");
+    });
+    await openCameraSettings();
+    await click(remove);
+    await click(remove);
+    assert.deepEqual(attempts, [`generic-camera:${id}`]);
+    assert.match(element(`[data-generic-camera-row="${id}"]`).textContent ?? "", /Garage RTSP/);
+    assert.deepEqual(JSON.parse(localStorage.getItem(SETTINGS_KEY)!).genericCameras, [camera]);
+    assert.match(element("[data-gc-delete-error]").textContent ?? "", /删除凭据失败.*重试/);
+    assert.equal(element(remove).textContent, "删除");
+    await click(remove);
+    await click(remove);
+    assert.deepEqual(attempts, [`generic-camera:${id}`, `generic-camera:${id}`]);
+    assertMissing(document.querySelector(remove));
+    assertMissing(document.querySelector("[data-gc-delete-error]"));
+    assert.deepEqual(JSON.parse(localStorage.getItem(SETTINGS_KEY)!).genericCameras ?? [], []);
+  });
+});
+
 describe("Settings sheet two-column sidebar layout (#78)", () => {
   it("keeps the update card on 常规 when a release is waiting", async () => {
     const release = JSON.stringify({
