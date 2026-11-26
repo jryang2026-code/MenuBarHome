@@ -74,6 +74,7 @@ import { createTransport, invokeTauriVoid } from "./transport.js";
 import { bindAutomationSettingsEvents } from "./automationSettingsView.js";
 import { bindConnectionsAndDiagEvents, reportProblemOnHost, type ConnectionsAndDiagHost } from "./connectionsAndDiagView.js";
 import { bindEnergySettingsEvents } from "./energySettingsView.js";
+import { clearGenericCameraRemovalConfirmation } from "./genericCameraSettingsView.js";
 import { bindDeviceTypeSelectionEvents, clearDeviceTypeSelectionSession } from "./deviceTypeSelectionView.js";
 import { getSettingsTabSpec, normalizeSettingsTab, type SettingsTab } from "./settingsViews.js";
 import { normalizeHaEndpoint } from "./haEndpoint.js";
@@ -723,6 +724,7 @@ export async function signOutAndRevokeAll(host: SettingsEventsHost): Promise<voi
 }
 
 function closeSettingsSheetImmediate(host: SettingsEventsHost): void {
+  clearGenericCameraRemovalConfirmation(host);
   cancelSettingsHaDiscovery(getSettingsSession(host), true);
   syncSettingsSaveHint(host, "reset");
   clearSettingsHighlight(host.root);

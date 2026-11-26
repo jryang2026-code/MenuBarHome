@@ -43,17 +43,19 @@ interface Draft {
   testPreviewDataUrl: string | null;
   /** Camera whose Remove was clicked once; the second click deletes it and its saved credentials. */
   armedDeleteId: string | null;
+  deleteFailed: boolean;
+  readonly pendingWrites: Set<string>;
 }
 
 const draftsByHost = new WeakMap<object, Draft>();
-const emptyDraft = (): Draft => ({
+const emptyDraft = (): Omit<Draft, "pendingWrites"> => ({
   open: false, editingId: null, name: "", kind: "rtsp", host: "", port: "", path: "", channel: "1",
   username: "", password: "", confirmNonLocal: false, error: null, testing: false, testStatus: null, testPreviewDataUrl: null,
-  armedDeleteId: null,
+  armedDeleteId: null, deleteFailed: false,
 });
 const getDraft = (host: object): Draft => {
   let d = draftsByHost.get(host);
-  if (!d) draftsByHost.set(host, (d = emptyDraft()));
+  if (!d) draftsByHost.set(host, (d = { ...emptyDraft(), pendingWrites: new Set() }));
   return d;
 };
 const escFallback = (v: string) => v.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
@@ -62,6 +64,16 @@ const effLang = (pref?: LanguagePreference): AppLanguage =>
 const tr = (zh: string, hant: string, en: string, lang: AppLanguage) => (lang === "en" ? en : lang === "zh-Hant" ? hant : zh);
 const kindLabel = (k: GenericCameraKind, lang: AppLanguage) =>
   k === "isapi" ? tr("海康 ISAPI", "海康 ISAPI", "Hikvision ISAPI", lang) : k === "dahua" ? tr("大华", "大華", "Dahua", lang) : k === "tapo" ? "Tapo" : k.toUpperCase();
+const removeLabel = (lang: AppLanguage) => tr("删除", "刪除", "Remove", lang);
+
+export function clearGenericCameraRemovalConfirmation(host: GenericCameraSettingsHost): void {
+  const d = draftsByHost.get(host);
+  if (!d?.armedDeleteId) return;
+  const button = [...host.root.querySelectorAll<HTMLButtonElement>("[data-generic-cam-delete]")]
+    .find((el) => el.dataset.genericCamDelete === d.armedDeleteId);
+  if (button) button.textContent = removeLabel(effLang(host.settings.interfaceLanguage));
+  d.armedDeleteId = null;
+}
 
 export function renderGenericCamerasSettingsBlock(
   settings: PersistedSettings,
@@ -73,9 +85,12 @@ export function renderGenericCamerasSettingsBlock(
   const d = host ? getDraft(host) : emptyDraft();
   const needsConsent = d.host.trim() !== "" && !isPrivateOrLocalCameraHost(d.host);
 
+  const listErrorHtml = d.deleteFailed
+    ? `<p class="cc-field-hint" data-gc-delete-error role="alert" style="margin:4px 0 6px;color:#e74c3c;font-size:12px;">${esc(tr("删除凭据失败，请重试。", "刪除憑證失敗，請重試。", "Could not delete credentials. Try again.", lang))}</p>`
+    : "";
   const listHtml = cameras.length === 0
     ? `<p class="cc-field-hint" data-generic-cameras-empty style="margin:4px 0 6px;">${esc(tr("暂未添加通用摄像机", "暫未新增通用攝影機", "No generic cameras yet", lang))}</p>`
-    : cameras.map((c) => `<div class="cc-settings-account-card" data-generic-camera-row="${esc(c.id)}" style="padding:7px 10px;margin-bottom:6px;border-radius:10px;background:rgba(128,128,128,0.08);border:1px solid rgba(128,128,128,0.14);"><div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;"><strong style="font-size:12.5px;">${esc(c.name)}</strong><span class="cc-inline-pill" style="font-size:11px;padding:1px 6px;">${esc(kindLabel(c.kind, lang))}</span><span class="cc-field-hint" style="margin:0;font-size:11.5px;">${esc(c.port ? `${c.host}:${c.port}` : c.host)}</span><div style="margin-left:auto;display:flex;gap:6px;"><button type="button" class="cc-inline-pill" data-generic-cam-edit="${esc(c.id)}">${esc(tr("编辑", "編輯", "Edit", lang))}</button><button type="button" class="cc-btn-danger" data-generic-cam-delete="${esc(c.id)}" style="padding:2px 8px;font-size:11.5px;" title="${esc(tr("同时清除这台摄像机保存的登录凭据", "同時清除這台攝影機儲存的登入憑證", "Also deletes this camera's saved credentials", lang))}">${esc(d.armedDeleteId === c.id ? tr("再点一次确认移除", "再點一次確認移除", "Click again to remove", lang) : tr("删除", "刪除", "Remove", lang))}</button></div></div></div>`).join("");
+    : cameras.map((c) => `<div class="cc-settings-account-card" data-generic-camera-row="${esc(c.id)}" style="padding:7px 10px;margin-bottom:6px;border-radius:10px;background:rgba(128,128,128,0.08);border:1px solid rgba(128,128,128,0.14);"><div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;"><strong style="font-size:12.5px;">${esc(c.name)}</strong><span class="cc-inline-pill" style="font-size:11px;padding:1px 6px;">${esc(kindLabel(c.kind, lang))}</span><span class="cc-field-hint" style="margin:0;font-size:11.5px;">${esc(c.port ? `${c.host}:${c.port}` : c.host)}</span><div style="margin-left:auto;display:flex;gap:6px;"><button type="button" class="cc-inline-pill" data-generic-cam-edit="${esc(c.id)}">${esc(tr("编辑", "編輯", "Edit", lang))}</button><button type="button" class="cc-btn-danger" data-generic-cam-delete="${esc(c.id)}" style="padding:2px 8px;font-size:11.5px;" title="${esc(tr("同时清除这台摄像机保存的登录凭据", "同時清除這台攝影機儲存的登入憑證", "Also deletes this camera's saved credentials", lang))}">${esc(d.armedDeleteId === c.id ? tr("再点一次确认移除", "再點一次確認移除", "Click again to remove", lang) : removeLabel(lang))}</button></div></div></div>`).join("");
 
   const formHtml = !d.open ? "" : `<div id="generic-camera-form" data-generic-camera-form style="margin-top:8px;padding:10px;border-radius:10px;background:rgba(128,128,128,0.08);display:flex;flex-direction:column;gap:8px;">
     <div class="cc-field-row" style="gap:8px;">
@@ -106,7 +121,7 @@ export function renderGenericCamerasSettingsBlock(
     <div class="cc-field-row" style="margin-bottom:6px;">
       <label style="margin:0;font-weight:600;">${esc(tr("通用摄像机", "通用攝影機", "Generic Cameras", lang))}</label>
       <button type="button" class="cc-inline-pill" id="btn-gc-add">${esc(tr("添加摄像机", "新增攝影機", "Add Camera", lang))}</button>
-    </div>${listHtml}${formHtml}
+    </div>${listErrorHtml}${listHtml}${formHtml}
   </div>`;
 }
 
@@ -165,22 +180,31 @@ export function bindGenericCameraSettingsEvents(host: GenericCameraSettingsHost)
     });
     host.render();
   }));
-  sec.querySelectorAll<HTMLButtonElement>("[data-generic-cam-delete]").forEach((btn) => on(btn, "click", (el) => {
+  sec.querySelectorAll<HTMLButtonElement>("[data-generic-cam-delete]").forEach((btn) => on(btn, "click", async (el) => {
     const id = el.dataset.genericCamDelete;
-    if (!id) return;
+    if (!id || d.pendingWrites.has(id)) return;
     // Removing also wipes the saved credentials, so the first click only arms it (as AI provider removal does).
     if (d.armedDeleteId !== id) {
       d.armedDeleteId = id;
       host.render();
       return;
     }
-    d.armedDeleteId = null;
-    void secureStoreDelete(genericCameraCredentialName(id)).catch(() => {}).finally(() => {
-      host.settings.genericCameras = (host.settings.genericCameras ?? []).filter((c) => c.id !== id);
-      if (d.editingId === id) Object.assign(d, emptyDraft());
-      host.saveSettings();
+    clearGenericCameraRemovalConfirmation(host);
+    d.pendingWrites.add(id);
+    try {
+      await secureStoreDelete(genericCameraCredentialName(id));
+    } catch {
+      d.deleteFailed = true;
       host.render();
-    });
+      return;
+    } finally {
+      d.pendingWrites.delete(id);
+    }
+    d.deleteFailed = false;
+    host.settings.genericCameras = (host.settings.genericCameras ?? []).filter((c) => c.id !== id);
+    if (d.editingId === id) Object.assign(d, emptyDraft());
+    host.saveSettings();
+    host.render();
   }));
   on(sec.querySelector<HTMLSelectElement>("#gc-input-kind"), "change", () => { readDraft(sec, d); host.render(); });
   on(sec.querySelector<HTMLInputElement>("#gc-input-host"), "blur", () => { readDraft(sec, d); host.render(); });
@@ -211,13 +235,18 @@ export function bindGenericCameraSettingsEvents(host: GenericCameraSettingsHost)
     readDraft(sec, d);
     const v = validateDraft(d, lang);
     if ("error" in v) { d.error = v.error; host.render(); return; }
+    const id = v.config.id;
+    if (d.pendingWrites.has(id)) return;
     void (async () => {
       const creds = serializeGenericCameraCredential({ username: d.kind === "tapo" ? "" : d.username, password: d.password });
       if (creds !== "") {
-        try { await secureStoreSet(genericCameraCredentialName(v.config.id), creds); } catch (err) {
+        d.pendingWrites.add(id);
+        try { await secureStoreSet(genericCameraCredentialName(id), creds); } catch (err) {
           d.error = redactGenericCameraUrl(err instanceof Error ? err.message : String(err ?? ""));
           host.render();
           return;
+        } finally {
+          d.pendingWrites.delete(id);
         }
       }
       const next = [...(host.settings.genericCameras ?? [])];
