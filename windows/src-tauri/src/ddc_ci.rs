@@ -33,7 +33,7 @@ mod platform {
     use super::*;
         use windows_sys::Win32::Devices::Display::*;
     use windows_sys::Win32::Foundation::HANDLE;
-    use windows_sys::Win32::Graphics::Gdi::HMONITOR;
+    use windows_sys::Win32::Graphics::Gdi::{HDC, HMONITOR};
 
     pub struct PhysicalMonitors(Vec<PHYSICAL_MONITOR>);
     impl Drop for PhysicalMonitors {
@@ -46,9 +46,9 @@ mod platform {
     }
 
     pub fn list_displays() -> Result<Vec<String>, String> {
-        unsafe extern "system" fn collect(monitor: HMONITOR, _: isize, _: *mut windows_sys::Win32::Foundation::RECT, data: isize) -> i32 {
+        unsafe extern "system" fn collect(monitor: HMONITOR, _: HDC, _: *mut windows_sys::Win32::Foundation::RECT, data: isize) -> i32 {
             let ids = &mut *(data as *mut Vec<String>);
-            ids.push(format!("{monitor}"));
+            ids.push(format!("{}", monitor as usize));
             1
         }
         let mut ids = Vec::new();
@@ -57,7 +57,10 @@ mod platform {
     }
 
     pub fn set_on_display(id: &str, code: u8, value: u32) -> Result<(), String> {
-        let raw = id.parse::<isize>().map_err(|_| "invalid display id".to_string())?;
+        let raw = id.parse::<usize>().map_err(|_| "invalid display id".to_string())?;
+        if raw == 0 { return Err("invalid display id".to_string()); }
+        let known = list_displays()?.iter().any(|candidate| candidate == id);
+        if !known { return Err("display id is not currently enumerated".to_string()); }
         let monitors = monitors_for(raw as HMONITOR)?;
         for monitor in &monitors.0 { set_vcp(monitor.hPhysicalMonitor, code, value)?; }
         Ok(())
@@ -73,7 +76,6 @@ mod platform {
     }
 }
 
-#[cfg(not(windows))]
 #[cfg(not(windows))]
 fn platform_list_displays() -> Result<Vec<String>, String> { Ok(vec![]) }
 #[cfg(windows)]
