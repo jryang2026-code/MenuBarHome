@@ -27,3 +27,27 @@ final class TVBridgeClientTests: XCTestCase {
         XCTAssertFalse(raw.contains("psk")); XCTAssertFalse(raw.contains("clientKey")); XCTAssertTrue(raw.contains("credentialSlot"))
     }
 }
+
+extension TVBridgeClientTests {
+    func testInitializeSerializesConfiguredDeviceAndCredential() async throws {
+        let transport = MockTVBridgeTransport { frame in
+            XCTAssertEqual(frame.method, "initialize")
+            let object = try XCTUnwrap(try JSONSerialization.jsonObject(with: frame.params!) as? [String: Any])
+            XCTAssertEqual(object["capabilityGeneration"] as? Int, 1)
+            let config = try XCTUnwrap(object["config"] as? [String: Any])
+            let devices = try XCTUnwrap(config["devices"] as? [[String: Any]])
+            XCTAssertEqual(devices.first?["driver"] as? String, "kodi_jsonrpc")
+            XCTAssertEqual(devices.first?["credential"] as? String, "secret-in-memory")
+            return TVBridgeFrame(id: frame.id, result: Data("{}".utf8))
+        }
+        let device = TVBridgeDeviceConfig(nativeId: "n", driver: .kodi_jsonrpc, host: "127.0.0.1", port: 8080, name: "TV", roomName: "Room", macAddress: "aa", credentialSlot: "slot")
+        let manager = TVBridgePluginManager(config: TVBridgeConfig(isEnabled: true, devices: [device]), transport: transport, credentialResolver: { _ in "secret-in-memory" })
+        try await manager.startIfNeeded()
+    }
+
+    func testStructuredRPCErrorIsThrown() async {
+        let transport = MockTVBridgeTransport { frame in TVBridgeFrame(id: frame.id, error: TVBridgeRPCError(code: -32004, message: "offline")) }
+        let manager = TVBridgePluginManager(config: TVBridgeConfig(isEnabled: true), transport: transport)
+        do { try await manager.healthPing(); XCTFail("expected RPC error") } catch TVBridgeError.rpcError(let code, let message) { XCTAssertEqual(code, -32004); XCTAssertEqual(message, "offline") } catch { XCTFail("unexpected error \(error)") }
+    }
+}
