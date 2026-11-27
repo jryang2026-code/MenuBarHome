@@ -1448,7 +1448,7 @@ mod tests {
     fn resolve_mcp_script_path_prefers_bundled_then_dev_then_path() {
         let root = std::env::temp_dir().join(format!("mbh-mcp-path-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        let (res_cli, dev_scripts, dev_cwd, path_bin) = (root.join("res/cli"), root.join("repo/scripts"), root.join("repo/windows"), root.join("bin"));
+        let (res_cli, dev_scripts, dev_cwd, path_bin) = (root.join("res").join("cli"), root.join("repo").join("scripts"), root.join("repo").join("windows"), root.join("bin"));
         for d in [&res_cli, &dev_scripts, &dev_cwd, &path_bin] { std::fs::create_dir_all(d).unwrap(); }
         for f in [res_cli.join("mijia-mcp"), dev_scripts.join("mijia-mcp"), dev_scripts.join("mijia"), path_bin.join("mijia-mcp.cmd")] { std::fs::write(f, "x").unwrap(); }
         assert_eq!(resolve_mcp_script_path(Some(&root.join("res")), None, Some(&dev_cwd), Some(path_bin.as_os_str())), Some(clean_windows_path(&dev_scripts.join("mijia-mcp"))));

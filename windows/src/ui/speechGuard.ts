@@ -11,6 +11,9 @@ import { correctSpeechTranscript } from "../core/assistant.js";
 import { miSessionExpiryState } from "../core/miCloud/session.js";
 import { hasDetailDrawer, type SmartDevice } from "../core/models.js";
 import { planQuickAction, quickActionTitle, type QuickActionId } from "../core/quickActions.js";
+import { AutomationRuleStore } from "../core/automationEngine.js";
+import { AutomationRunHistory } from "../core/automationRun.js";
+import { defaultSafetyStorage } from "../core/safetyAndHealth.js";
 import {
   RaycastBridgeTokenManager,
   buildRaycastSnapshot,
@@ -967,13 +970,12 @@ export function getLatestRaycastSnapshotForHost(host: MenuMijiaWindowsApp): Rayc
       : null;
 
   const automationEngine = host.activityCenter?.automationEngine;
-  const automationStatus = automationEngine
-    ? buildSanitizedAutomationStatus({
-        enabled: host.settings.eventAutomationEnabled !== false,
-        rules: automationEngine.store.load(),
-        history: automationEngine.history.load(),
-      })
-    : undefined;
+  const fallbackStorage = automationEngine ? null : defaultSafetyStorage();
+  const automationStatus = buildSanitizedAutomationStatus({
+    enabled: host.settings.eventAutomationEnabled !== false,
+    rules: automationEngine ? automationEngine.store.load() : new AutomationRuleStore(fallbackStorage!).load(),
+    history: automationEngine ? automationEngine.history.load() : new AutomationRunHistory(fallbackStorage!).load(),
+  });
 
   return buildRaycastSnapshot({
     connectionMode: host.settings.connectionMode,

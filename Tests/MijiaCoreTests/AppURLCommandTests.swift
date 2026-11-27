@@ -862,7 +862,9 @@ struct AppURLCommandTests {
         #expect((await provider.executedCommands).last == .mediaSetVolume(entityId: "media_player.tv", volumeLevel: 0.35))
         #expect(!(await store.executeRaycastMute(deviceId: "dev_tv", isMuted: true)).isError)
         let afterMute = (await provider.executedCommands).count
-        #expect(!(await store.executeRaycastMute(deviceId: "dev_tv", isMuted: true)).isError && (await provider.executedCommands).count == afterMute)
+        let repeatMute = await store.executeRaycastMute(deviceId: "dev_tv", isMuted: true)
+        let countAfterRepeat = (await provider.executedCommands).count
+        #expect(!repeatMute.isError && countAfterRepeat == afterMute)
         #expect(!(await store.executeRaycastMediaPlayPause(deviceId: "dev_tv")).isError)
         #expect((await provider.executedCommands).last == .mediaPlayPause(entityId: "media_player.tv"))
 
