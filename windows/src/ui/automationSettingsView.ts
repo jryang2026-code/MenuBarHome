@@ -1136,7 +1136,7 @@ export function renderAutomationAndSafetySettingsSections(ctx: SettingsViewConte
                       trigger: automationTriggerTitle(exitTrigger, lang),
                     }),
                   )}</p>
-                  <p class="cc-field-hint">${esc(uiText(lang, "还原时会跳过需要重新开启的高风险设备。", "還原時會略過需要重新開啟的高風險設備。", "Restore skips high-risk devices that would need to be turned back on."))}</p>
+                  <p class="cc-field-hint">${esc(uiText(lang, "还原时会跳过需要确认的高风险设备。", "還原時會略過需要確認的高風險設備。", "Restore skips high-risk devices that require confirmation."))}</p>
                 </div>`;
               })()
             : ""

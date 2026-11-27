@@ -1638,6 +1638,7 @@ export class AutomationEngine {
 
     let totalRestored = 0;
     const skippedHighRiskIds = new Set<string>();
+    const failedRestoreIds = new Set<string>();
     for (const { frame } of orderedFrames) {
       if (options.canContinue?.() === false || (host.sourceRevision ?? 0) !== startingRevision) break;
       const plan = this.contextStack.prepareRestore(frame, live, nowMs);
@@ -1645,95 +1646,119 @@ export class AutomationEngine {
       const restoredIds = new Set<string>();
       const policyDevices = options.displayDevices ?? host.devices;
       const requiresRestoreConfirmation = (intent: AutomationContextRestoreIntent): boolean =>
-        intent.operation.isOn && (
-          ManualControlPolicy.requiresConfirmation(intent, host.devices)
-          || ManualControlPolicy.requiresConfirmation(intent, policyDevices)
-        );
+        ManualControlPolicy.requiresConfirmation(intent, host.devices)
+        || ManualControlPolicy.requiresConfirmation(intent, policyDevices);
       const blockedRestoreIds = new Set(plan.intents.filter(requiresRestoreConfirmation).map((intent) => intent.targetId));
-      let attemptedCount = 0;
+      // Consume skipped high-risk restores before running commands so a throw cannot leave them pending.
+      if (blockedRestoreIds.size > 0) {
+        this.contextStack.commitRestore(plan, blockedRestoreIds);
+        blockedRestoreIds.forEach((id) => skippedHighRiskIds.add(id));
+      }
+      const executableIntents = plan.intents.filter((intent) => !blockedRestoreIds.has(intent.targetId));
+      if (executableIntents.length === 0) continue;
+
       let succeededCount = 0;
-      for (const intent of plan.intents) {
-        if (options.canContinue?.() === false || (host.sourceRevision ?? 0) !== startingRevision) break;
-        if (blockedRestoreIds.has(intent.targetId)) continue;
-        if (requiresRestoreConfirmation(intent)) {
-          blockedRestoreIds.add(intent.targetId);
-          continue;
-        }
-        const dev = host.devices.find((d) => d.id === intent.targetId);
-        if (!dev) continue;
-        const liveVal = live[intent.targetId];
-        if (liveVal && liveVal.boolValue === intent.operation.isOn) {
-          restoredIds.add(intent.targetId);
-          continue;
-        }
-        if (!dev.isOnline) {
-          delete live[intent.targetId];
-          continue;
-        }
-        const cmds = commandsForPowerIntent(dev, intent.operation.isOn, policyDevices);
-        if (cmds.length === 0) continue;
-        attemptedCount += 1;
-        let allSucceeded = true;
-        for (const cmd of cmds) {
-          if (options.canContinue?.() === false || (host.sourceRevision ?? 0) !== startingRevision) {
-            allSucceeded = false;
-            break;
+      try {
+        for (const intent of executableIntents) {
+          if (options.canContinue?.() === false || (host.sourceRevision ?? 0) !== startingRevision) break;
+          if (requiresRestoreConfirmation(intent)) {
+            blockedRestoreIds.add(intent.targetId);
+            skippedHighRiskIds.add(intent.targetId);
+            this.contextStack.commitRestore(plan, new Set([intent.targetId]));
+            continue;
           }
-          if (!(await host.applyCommand(cmd, true, false))) {
-            allSucceeded = false;
-            break;
+          const dev = host.devices.find((d) => d.id === intent.targetId);
+          if (!dev) continue;
+          const liveVal = live[intent.targetId];
+          if (liveVal && liveVal.boolValue === intent.operation.isOn) {
+            restoredIds.add(intent.targetId);
+            continue;
+          }
+          if (!dev.isOnline) {
+            delete live[intent.targetId];
+            continue;
+          }
+          const cmds = commandsForPowerIntent(dev, intent.operation.isOn, policyDevices);
+          if (cmds.length === 0) continue;
+          let allSucceeded = true;
+          for (const cmd of cmds) {
+            if (options.canContinue?.() === false || (host.sourceRevision ?? 0) !== startingRevision) {
+              allSucceeded = false;
+              break;
+            }
+            if (!(await host.applyCommand(cmd, true, false))) {
+              allSucceeded = false;
+              break;
+            }
+          }
+          if (allSucceeded) {
+            succeededCount += 1;
+            restoredIds.add(intent.targetId);
+            live[intent.targetId] = { field: "power", boolValue: intent.operation.isOn };
+          } else {
+            failedRestoreIds.add(intent.targetId);
+            // Keep older frames for this device intact for retry instead of treating an un-restored
+            // inner frame as a manual takeover.
+            delete live[intent.targetId];
           }
         }
-        if (allSucceeded) {
-          succeededCount += 1;
-          restoredIds.add(intent.targetId);
-          live[intent.targetId] = { field: "power", boolValue: intent.operation.isOn };
-        } else {
-          // Keep older frames for this device intact for retry instead of treating an un-restored
-          // inner frame as a manual takeover.
-          delete live[intent.targetId];
+      } finally {
+        if (restoredIds.size > 0) {
+          this.contextStack.commitRestore(plan, restoredIds);
         }
       }
-      // Consume skipped power-ons so a later exit cannot retry them unattended.
-      this.contextStack.commitRestore(plan, new Set([...restoredIds, ...blockedRestoreIds]));
-      blockedRestoreIds.forEach((id) => skippedHighRiskIds.add(id));
       totalRestored += succeededCount;
-      if (succeededCount === 0 && attemptedCount > 0) {
+    }
+    if ((host.sourceRevision ?? 0) === startingRevision) {
+      const source = tr3("状态感知自动化", "狀態感知自動化", "Context Automation", undefined, effectivePref);
+      if (skippedHighRiskIds.size > 0 && failedRestoreIds.size > 0) {
         host.replyBanner = {
           text: tr3(
-            "上下文还原被安全策略跳过",
-            "上下文還原被安全策略略過",
-            "Context restore skipped by safety policy",
-            undefined,
+            "还原未完全完成：已跳过 {skipped} 台需要确认的高风险设备，另有 {failed} 台设备还原失败",
+            "還原未完全完成：已略過 {skipped} 台需要確認的高風險設備，另有 {failed} 台設備還原失敗",
+            "Restore incomplete: skipped {skipped} high-risk device(s) requiring confirmation, and {failed} device(s) failed to restore",
+            { skipped: skippedHighRiskIds.size, failed: failedRestoreIds.size },
             effectivePref,
           ),
-          source: tr3("状态感知自动化", "狀態感知自動化", "Context Automation", undefined, effectivePref),
+          source,
           isError: true,
         };
         host.queueBackgroundRender?.();
-      } else if (succeededCount > 0) {
+      } else if (skippedHighRiskIds.size > 0) {
+        host.replyBanner = {
+          text: tr3(
+            "还原时已跳过 {count} 台需要确认的高风险设备",
+            "還原時已略過 {count} 台需要確認的高風險設備",
+            "Restore skipped {count} high-risk device(s) requiring confirmation",
+            { count: skippedHighRiskIds.size },
+            effectivePref,
+          ),
+          source,
+          isError: true,
+        };
+        host.queueBackgroundRender?.();
+      } else if (failedRestoreIds.size > 0) {
+        host.replyBanner = {
+          text: tr3(
+            "上下文还原失败（{count} 台设备未完成）",
+            "上下文還原失敗（{count} 台設備未完成）",
+            "Context restore failed ({count} device(s) did not complete)",
+            { count: failedRestoreIds.size },
+            effectivePref,
+          ),
+          source,
+          isError: true,
+        };
+        host.queueBackgroundRender?.();
+      } else if (totalRestored > 0) {
         if (!host.replyBanner?.isError) {
           host.replyBanner = {
             text: tr3("自动化还原上下文", "自動化還原上下文", "Restore automation context", undefined, effectivePref),
-            source: tr3("状态感知自动化", "狀態感知自動化", "Context Automation", undefined, effectivePref),
+            source,
           };
         }
         host.queueBackgroundRender?.();
       }
-    }
-    if (skippedHighRiskIds.size > 0 && (host.sourceRevision ?? 0) === startingRevision) {
-      host.replyBanner = {
-        text: tr3(
-          "还原时已跳过 {count} 台需要重新开启的高风险设备",
-          "還原時已略過 {count} 台需要重新開啟的高風險設備",
-          "Restore skipped {count} high-risk device(s) that would have been turned back on",
-          { count: skippedHighRiskIds.size },
-          effectivePref,
-        ),
-        source: tr3("状态感知自动化", "狀態感知自動化", "Context Automation", undefined, effectivePref),
-        isError: true,
-      };
-      host.queueBackgroundRender?.();
     }
     return totalRestored;
   }

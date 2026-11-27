@@ -155,4 +155,53 @@ describe("Xiaomi LAN-first routing", () => {
     assert.deepEqual(await client.getProps([power]), new Map([["1001.2.1", true]]));
     assert.equal(lan.length, 4);
   });
+
+  it("routes legacy non-MIoT Wi-Fi devices (unsupported_local_miot) to cloud on read and write (#570)", async () => {
+    const purifier = record({ did: "357621783", model: "zhimi.airpurifier.ma2", localip: "192.168.0.70", pid: 0 });
+    const fanPower = { did: "357621783", siid: 2, piid: 1 };
+    const fanOff = [{ ...fanPower, value: false }];
+    const { client, lan, cloud } = fixture(() => {
+      throw { code: "unsupported_local_miot", deviceCode: -32601 };
+    }, [purifier]);
+
+    // Cold write hitting unsupported_local_miot checks beforeFallback and falls back to Xiaomi Cloud.
+    let gateChecked = false;
+    await client.setProps(fanOff, () => { gateChecked = true; });
+    assert.equal(gateChecked, true);
+    assert.deepEqual(lan, ["miio_set_props"]);
+    assert.deepEqual(cloud, [{ api: "miotspec/prop/set", data: { params: fanOff } }]);
+    assert.equal(client.hasLANRoute("357621783"), false);
+
+    // Subsequent reads, writes, and actions skip LAN directly (even across resetLocalMiIOHealth).
+    resetLocalMiIOHealth();
+    assert.equal(client.hasLANRoute("357621783"), false);
+    assert.deepEqual(await client.getProps([fanPower]), new Map([["357621783.2.1", 55]]));
+    await client.setProps(fanOff);
+    await client.callAction({ did: "357621783", siid: 2, aiid: 1, inputs: [] });
+    assert.deepEqual(lan, ["miio_set_props"]);
+    assert.equal(cloud.length, 4);
+
+    // A read hitting unsupported_local_miot also disables LAN immediately for subsequent writes.
+    const v6 = record({ did: "70849337", model: "zhimi.airpurifier.v6", localip: "192.168.0.71", pid: 0 });
+    const v6Read = fixture(() => {
+      throw { code: "unsupported_local_miot", deviceCode: -5001 };
+    }, [v6]);
+    assert.deepEqual(await v6Read.client.getProps([{ did: "70849337", siid: 2, piid: 1 }]), new Map([["70849337.2.1", 55]]));
+    assert.equal(v6Read.client.hasLANRoute("70849337"), false);
+    await v6Read.client.setProps([{ did: "70849337", siid: 2, piid: 1, value: false }]);
+    assert.deepEqual(v6Read.lan, ["miio_get_props"]);
+    assert.deepEqual(v6Read.cloud.map(({ api }) => api), ["miotspec/prop/get", "miotspec/prop/set"]);
+
+    // beforeFallback refusal still blocks cloud fallback on unsupported_local_miot.
+    const blocked = fixture(() => {
+      throw { code: "unsupported_local_miot", deviceCode: -32601 };
+    }, [record({ did: "357621784", model: "zhimi.airpurifier.ma2", localip: "192.168.0.72", pid: 0 })]);
+    await assert.rejects(
+      blocked.client.setProps([{ did: "357621784", siid: 2, piid: 1, value: false }], async () => {
+        throw new Error("source switched");
+      }),
+      /source switched/,
+    );
+    assert.deepEqual(blocked.cloud, []);
+  });
 });

@@ -72,6 +72,7 @@ public actor MiCloudProvider: HomeProvider {
         var cooldownUntil: Date?
         var lastRTTMs: Int?
         var lastErrorWasLocalNetworkDenied: Bool = false
+        var localMiotUnsupported: Bool = false
     }
 
     private var continuation: AsyncStream<HomeProviderEvent>.Continuation?
@@ -391,12 +392,14 @@ public actor MiCloudProvider: HomeProvider {
                 guard var state = lanHealthByDid[did] else { continue }
                 state.cooldownUntil = nil
                 state.consecutiveFailures = 0
+                state.localMiotUnsupported = false
                 lanHealthByDid[did] = state
             }
         } else {
             for (did, var state) in lanHealthByDid {
                 state.cooldownUntil = nil
                 state.consecutiveFailures = 0
+                state.localMiotUnsupported = false
                 lanHealthByDid[did] = state
             }
         }
@@ -1342,6 +1345,7 @@ public actor MiCloudProvider: HomeProvider {
                     failedOutcomes.append(outcome)
                     if !batchSawLocalNetworkDenied,
                        (err as? MiIOError) != .localNetworkDenied,
+                       !Self.isUnsupportedLocalMiot(err),
                        (allowBroadcastSweepOnFailure || (lanHealthByDid[outcome.did]?.consecutiveFailures ?? 0) >= lanFailureThreshold) { shouldSweep = true }
                 } else if let resultValues = outcome.values {
                     let missingKeys = outcome.keys.filter { resultValues[$0] == nil }
@@ -1371,7 +1375,8 @@ public actor MiCloudProvider: HomeProvider {
             var seenCandidateDids: Set<String> = []
             var retryKeysByDid: [String: [MiotPropKey]] = [:]
             var candidates: [MiIODeviceCandidate] = []
-            for outcome in failedOutcomes where (outcome.error as? MiIOError) != .localNetworkDenied {
+            for outcome in failedOutcomes where (outcome.error as? MiIOError) != .localNetworkDenied
+                && !(outcome.error.map(Self.isUnsupportedLocalMiot) ?? false) {
                 retryKeysByDid[outcome.did] = outcome.keys
                 let token = lanBindingsByDid[outcome.did]?.token ?? recordByDid[outcome.did]?.token ?? ""
                 if seenCandidateDids.insert(outcome.did).inserted, MiIOPacket.validateToken(token) != nil {
@@ -1604,9 +1609,15 @@ public actor MiCloudProvider: HomeProvider {
         }
     }
 
+    private static func isUnsupportedLocalMiot(_ error: any Error) -> Bool {
+        if case .unsupportedLocalMiot = error as? MiIOError { return true }
+        return false
+    }
+
     private func lanEligibleEndpointIgnoringCooldown(for record: MiDeviceRecord) -> MiIODeviceEndpoint? {
         let binding = lanBindingsByDid[record.miotDid]
         guard localClient != nil,
+              lanHealthByDid[record.miotDid]?.localMiotUnsupported != true,
               record.isOnline,
               !record.isShared,
               !sharedHomeDids.contains(record.did),
@@ -1634,7 +1645,7 @@ public actor MiCloudProvider: HomeProvider {
     private func recordLANSuccess(did: String, rttMs: Int? = nil, allowClearingDenied: Bool = true) {
         reachabilityPermission = .granted
         let quantized = rttMs.map(DeviceTransportDiagnostics.quantizeRTT) ?? lanHealthByDid[did]?.lastRTTMs
-        lanHealthByDid[did] = LANHealthState(consecutiveFailures: 0, cooldownUntil: nil, lastRTTMs: quantized, lastErrorWasLocalNetworkDenied: false)
+        lanHealthByDid[did] = LANHealthState(consecutiveFailures: 0, cooldownUntil: nil, lastRTTMs: quantized, lastErrorWasLocalNetworkDenied: false, localMiotUnsupported: false)
         lanTransportSucceededDids.insert(did)
         if allowClearingDenied {
             reachabilityPermission = .granted
@@ -1656,6 +1667,15 @@ public actor MiCloudProvider: HomeProvider {
             state.lastErrorWasLocalNetworkDenied = true
             state.cooldownUntil = nil
             updateLocalNetworkDenied(true)
+        } else if Self.isUnsupportedLocalMiot(error) {
+            if allowClearingDenied, isLocalNetworkDenied {
+                updateLocalNetworkDenied(false)
+            }
+            state.lastErrorWasLocalNetworkDenied = false
+            state.localMiotUnsupported = true
+            state.cooldownUntil = nil
+            state.consecutiveFailures = 0
+            logger.notice("Device \(did, privacy: .public) does not support local MIoT RPC; routing through Xiaomi Cloud: \(error.localizedDescription, privacy: .public)")
         } else {
             if allowClearingDenied, isLocalNetworkDenied, crossedPermissionBoundary {
                 updateLocalNetworkDenied(false)
