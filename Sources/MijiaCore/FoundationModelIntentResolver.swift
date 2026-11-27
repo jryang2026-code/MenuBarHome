@@ -49,6 +49,18 @@ struct FoundationAssistantPlan {
 }
 
 @available(macOS 26.0, *)
+@Generable
+struct FoundationProactiveItem {
+    @Guide(description: "Catalog id: dN, room_lights:N, all_lights, all_devices, or sN") var target: String
+    var operation: FoundationAssistantOperation
+    @Guide(description: "Integer confidence between 20 and 99") var confidence: Int
+}
+
+@available(macOS 26.0, *)
+@Generable
+struct FoundationProactiveSuggestions { var suggestions: [FoundationProactiveItem] }
+
+@available(macOS 26.0, *)
 extension FoundationAssistantOperation {
     var intentOperation: IntentOperation {
         switch self {
@@ -152,6 +164,20 @@ public struct FoundationModelIntentResolver: AssistantCommandResolving {
         } catch {
             throw AssistantLocalModelError.failed
         }
+    }
+
+    public func recommendProactiveSuggestions(devices: [SmartDevice], scenes: [HomeScene], context: AssistantContext) async throws -> [AssistantSuggestion] {
+        if case .unavailable(let reason) = Self.availability { throw AssistantLocalModelError.unavailable(reason) }
+        let catalog = IntentCatalog(devices: devices, scenes: scenes)
+        let preferred = Set(context.favoriteDeviceIds).union(devices.filter(\.isActiveDevice).map(\.id))
+        let session = LanguageModelSession(model: .default, instructions: AssistantLocalPrompt.proactiveInstructions(catalog: catalog, context: context, preferredDeviceIds: preferred))
+        do {
+            let response = try await session.respond(to: "根据当前状态推荐最多 3 项操作", generating: FoundationProactiveSuggestions.self, options: GenerationOptions(temperature: 0, maximumResponseTokens: 450))
+            return AssistantLocalPlanMapper.proactiveSuggestions(
+                response.content.suggestions.map { AssistantLocalProactiveSuggestion(target: $0.target, operation: $0.operation.intentOperation, confidence: $0.confidence) },
+                catalog: catalog, devices: devices, scenes: scenes
+            )
+        } catch { throw AssistantLocalModelError.failed }
     }
 }
 #endif

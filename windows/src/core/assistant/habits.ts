@@ -9,6 +9,7 @@ import type {
 import { currentLanguage, type AppLanguage } from "../i18n.js";
 import { deviceAcceptsControlWrites, deviceCanTogglePower, isDeviceActiveOn } from "../models.js";
 import { timeBucketLabel } from "./context.js";
+import { hasActiveDesktopAmbientSignals, normalizeDesktopAmbientContext, type DesktopAmbientContext } from "./desktopContext.js";
 import { IntentReply } from "./intent.js";
 import { PROMPT_NAME_LIMIT, sanitizePromptText } from "./promptText.js";
 
@@ -614,6 +615,7 @@ export class UserHabitMemory {
     limit?: number;
     favoriteIds?: readonly string[];
     environmentReadings?: readonly EnvironmentReading[];
+    desktopContext?: Partial<DesktopAmbientContext> | null;
   }): AssistantSuggestion[] {
     const limit = options.limit ?? 4;
     const now = options.now ?? new Date();
@@ -658,6 +660,47 @@ export class UserHabitMemory {
       if (results.length >= limit) return;
       results.push({ id, title, confidencePercent: null, intents: [...intents] });
     };
+
+    const desktop = normalizeDesktopAmbientContext(options.desktopContext);
+    if (hasActiveDesktopAmbientSignals(desktop)) {
+      const desktopLimit = Math.min(2, limit);
+      const isOffLight = (d: SmartDevice, preferDesk: boolean): boolean =>
+        d.isOnline && d.kind.kind === "light" && !d.kind.isOn && (!preferDesk || /补光|台灯|护眼|挂灯|屏幕|书房|办公|工作|氛围|灯带|desk|study|monitor|fill|key|lamp|strip/i.test(`${d.name} ${d.roomName}`));
+      const isNoisy = (d: SmartDevice, withFan: boolean): boolean =>
+        d.isOnline && ((d.kind.kind === "vacuum" && (d.kind.status === "cleaning" || d.kind.status === "on"))
+          || (d.kind.kind === "tv" && d.kind.state !== "off" && d.kind.state !== "standby")
+          || (withFan && d.kind.kind === "fan" && d.kind.isOn));
+      const addDesktop = (tag: string, dev: SmartDevice | undefined, op: IntentOperation): void => {
+        if (!dev || results.length >= desktopLimit || seenTargets.has(dev.id)) return;
+        const intent: DeviceIntent = { targetId: dev.id, operation: op };
+        if (!habitActionable(intent, devices, scenes)) return;
+        const title = habitSuggestionTitle(intent, devices, scenes);
+        if (title === null) return;
+        seenTargets.add(dev.id); append(`ambient:desktop:${tag}:${dev.id}`, title, [intent]);
+      };
+      const offLight = devices.find((d) => isOffLight(d, true)) ?? devices.find((d) => isOffLight(d, false));
+      if (desktop.inMeeting) {
+        addDesktop("inMeeting:light", offLight, { kind: "power", isOn: true });
+        addDesktop("inMeeting:quiet", devices.find((d) => isNoisy(d, true)), { kind: "power", isOn: false });
+      }
+      if (desktop.lateNightWork) {
+        if (offLight) { addDesktop("lateNight:light", offLight, { kind: "power", isOn: true }); }
+        else {
+          const lit = devices.find((d) => d.isOnline && d.kind.kind === "light" && d.kind.isOn && (d.kind.availableEffects.some((e) => e.toLowerCase() === "night") || (d.kind.brightnessPercent ?? 0) >= 65));
+          if (lit && lit.kind.kind === "light") {
+            const hasNight = lit.kind.availableEffects.some((e) => e.toLowerCase() === "night");
+            addDesktop("lateNight:comfort", lit, hasNight ? { kind: "lightEffect", effect: "Night" } : { kind: "brightness", percent: 35 });
+          }
+        }
+      }
+      if (desktop.externalDisplayConnected) addDesktop("display:light", offLight, { kind: "power", isOn: true });
+      if (desktop.focusActive) {
+        addDesktop("focus:quiet", devices.find((d) => isNoisy(d, false)), { kind: "power", isOn: false });
+        addDesktop("focus:light", offLight, { kind: "power", isOn: true });
+      }
+      if (desktop.mediaPlaying) addDesktop("media:dim", devices.find((d) => d.isOnline && d.kind.kind === "light" && d.kind.isOn && (d.kind.brightnessPercent ?? 0) >= 60), { kind: "brightness", percent: 30 });
+    }
+    if (results.length >= limit) return results;
 
     // Phase 1: learned habits for the current context.
     for (const candidate of candidates) {

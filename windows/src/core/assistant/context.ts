@@ -1,5 +1,6 @@
 import { haRoundedInt } from "../haDomains.js";
 import type { EnvironmentReading } from "../models.js";
+import type { DesktopAmbientContext } from "./desktopContext.js";
 import { cleanPromptField, PROMPT_NAME_LIMIT } from "./promptText.js";
 
 // MARK: - Ambient Context & Jev SystemOne Request (#38)
@@ -14,6 +15,8 @@ export interface AssistantContext {
   readonly environmentSummary: string;
   readonly activeDevicesSummary: string;
   readonly habitSummary: string;
+  /** Controlled boolean-only desktop signals (ADR-0015; never carries free-text OS titles/SSIDs). */
+  readonly desktopContext?: DesktopAmbientContext;
 }
 
 export const EMPTY_ASSISTANT_CONTEXT: AssistantContext = {

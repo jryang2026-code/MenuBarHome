@@ -29,6 +29,7 @@ import {
 import type { AssistantSuggestion, DeviceIntent, IntentPlan, ScheduledCommand } from "../core/models.js";
 import type { HttpTransport } from "../core/miCloudClient.js";
 import { withAliases } from "./panelPrefs.js";
+import { currentDesktopAmbientContext } from "./activityStackView.js";
 import { executeBuiltInQuickAction } from "./speechGuard.js";
 import { buildHostCapabilityContext, isDualSourceEnabled } from "./cloudRefresh.js";
 import { buildDiffPreview, requiresDiffPreview } from "../core/assistantDiffPreview.js";
@@ -344,6 +345,7 @@ export async function handleNaturalCommand(
             intents: shortcut.intents,
           })),
           mention: { kind: "utterance", text: trimmed },
+          desktopContext: currentDesktopAmbientContext(host),
         });
         plan = await resolver.resolve(trimmed, aliasedDevices, host.scenes, context);
         if (

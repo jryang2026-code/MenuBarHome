@@ -47,7 +47,7 @@ import {
   type SensorObservation,
   type WeeklyHealthReport,
 } from "../core/safetyAndHealth.js";
-import { ManualControlPolicy } from "../core/assistant.js";
+import { EMPTY_DESKTOP_AMBIENT_CONTEXT, ManualControlPolicy, projectDesktopAmbientContext, type DesktopAmbientContext, type RawDesktopAmbientObservation } from "../core/assistant.js";
 import { sensorAlertSeverity, type AlertSeverity } from "../core/alertSeverity.js";
 import { isSwitchMarkedAsLight } from "../core/switchLightMarks.js";
 import { getScopedEnergyHistory } from "../core/energyHistory.js";
@@ -161,6 +161,8 @@ export interface HostActivityCenter {
   lastSystemPollAtMs: number;
   systemPollInFlight: boolean;
   activeSystemWatchers: { mediaCapture: boolean; focusMode: boolean };
+  mediaCaptureState: { cameraInUse: boolean; microphoneInUse: boolean };
+  desktopContextOverride: DesktopAmbientContext | null;
   /** `lastSampledLockState` 每次值翻转递增：用于作废在探针/规则执行期间被后续
    * 翻转超越的锁屏回调（布尔值检查区分不了「解锁又上锁」的两次翻转）。 */
   lockSampleGeneration: number;
@@ -387,6 +389,8 @@ function createHostActivityCenter(
     lastSystemPollAtMs: 0,
     systemPollInFlight: false,
     activeSystemWatchers: { mediaCapture: false, focusMode: false },
+    mediaCaptureState: { cameraInUse: false, microphoneInUse: false },
+    desktopContextOverride: null,
     lockSampleGeneration: 0,
     lastClipboardMarkdown: null,
     pendingHighRiskUndoRunId: null,
@@ -1861,6 +1865,7 @@ export async function syncSystemEventWatchers(
   if (next.mediaCapture && !prev.mediaCapture) {
     const sample = await readNativeMediaCaptureStatus();
     if (sample && generation === center.automationGeneration) {
+      center.mediaCaptureState = { cameraInUse: sample.cameraInUse, microphoneInUse: sample.microphoneInUse };
       center.automationEngine.primeMediaCaptureBaseline(sample.cameraInUse, sample.microphoneInUse);
     }
   }
@@ -1886,6 +1891,8 @@ export function notifyMediaCaptureChanged(
   nowMs = Date.now(),
 ): void {
   if (!isFullPanelHost(host)) return;
+  const center = getHostActivityCenter(host);
+  center.mediaCaptureState = { cameraInUse: status.cameraInUse ?? center.mediaCaptureState.cameraInUse, microphoneInUse: status.microphoneInUse ?? center.mediaCaptureState.microphoneInUse };
   void dispatchSystemContextEvent(
     host,
     {
@@ -1897,6 +1904,24 @@ export function notifyMediaCaptureChanged(
   ).then((runs) => {
     if (runs.length > 0) host.queueBackgroundRender();
   });
+}
+
+/** Projects live Windows signals into strictly boolean desktop ambient context (ADR-0015). */
+export function currentDesktopAmbientContext(host: MenuMijiaWindowsApp, now = new Date()): DesktopAmbientContext {
+  const c = (host as HostWithActivity).activityCenter;
+  if (!c) return EMPTY_DESKTOP_AMBIENT_CONTEXT;
+  if (c.desktopContextOverride) return c.desktopContextOverride;
+  if (!c.systemSignalBaseline && !c.mediaCaptureState.cameraInUse && !c.mediaCaptureState.microphoneInUse) return EMPTY_DESKTOP_AMBIENT_CONTEXT;
+  return projectDesktopAmbientContext({
+    cameraInUse: c.mediaCaptureState.cameraInUse, microphoneInUse: c.mediaCaptureState.microphoneInUse,
+    externalDisplayCount: c.systemSignalBaseline?.externalDisplayCount ?? 0, focusActive: c.systemSignalBaseline?.focusMode ?? false,
+    isUserPresent: c.lastSampledLockState !== true, mediaPlaying: false, now,
+  });
+}
+export function setDesktopContextOverride(host: MenuMijiaWindowsApp, raw: RawDesktopAmbientObservation | null): DesktopAmbientContext {
+  const next = raw ? projectDesktopAmbientContext(raw) : null;
+  getHostActivityCenter(host).desktopContextOverride = next;
+  return next ?? EMPTY_DESKTOP_AMBIENT_CONTEXT;
 }
 
 /** `SetWinEventHook(EVENT_SYSTEM_FOREGROUND)` + `SHQueryUserNotificationState` push from `system_events.rs`. */

@@ -6,8 +6,10 @@ import { closeConnectionsAndDiagModal, isConnectionsAndDiagModalOpen } from "./c
 import { handleSettingsSheetEscape } from "./settingsEvents.js";
 import { cancelPendingDiffPreview } from "./roomGroupActions.js";
 import {
+  abortVoiceInput,
   dismissPendingUrlConfirmation,
   hasPendingUrlConfirmation,
+  isVoiceInputEnabled,
   resumeUndoHoverPause,
   shouldKeepPopoverPinned,
 } from "./speechGuard.js";
@@ -333,6 +335,7 @@ export function handlePanelKey(host: MenuMijiaWindowsApp, event: KeyboardEvent):
       host.stopEditing();
       return true;
     }
+    if (host.isListeningVoice) { event.preventDefault(); abortVoiceInput(host); host.render(); return true; }
     if (host.pendingDiffPreview !== null) {
       event.preventDefault();
       cancelPendingDiffPreview(host);
@@ -500,6 +503,12 @@ export function handlePanelKey(host: MenuMijiaWindowsApp, event: KeyboardEvent):
     if (isEditable) return false;
     event.preventDefault();
     if (!event.repeat) togglePanelQuickDrawer(host);
+    return true;
+  }
+  if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "m") {
+    if ((isEditable && !inInput) || !isVoiceInputEnabled(host.settings)) return false;
+    event.preventDefault();
+    if (!event.repeat) host.toggleVoiceInput();
     return true;
   }
   if (
