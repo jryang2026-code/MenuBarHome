@@ -380,7 +380,7 @@ MenuBarHome 是独立开源项目，并非小米官方客户端。米家云直�
 | AI 助手 | 按服务商预设隔离保存的 API 密钥，以及非机密的导入来源标记、自定义端点绑定与已允许的云端授权地址 | 各服务商 API 密钥保存在 macOS 钥匙串或 Windows 凭据管理器（`assistant_api_key_<preset>`）；非机密元数据保存在应用偏好中 |
 | 只读通用摄像机 | 各 RTSP / ONVIF / ISAPI / 大华 / Tapo 摄像机凭据（仅在内存中传给 go2rtc，绝不写入 `go2rtc.yaml`） | macOS 钥匙串或 Windows 凭据管理器（`generic-camera:<id>`） |
 | LG webOS 电视（内置） | 电视签发的配对客户端密钥 | macOS 钥匙串 |
-| 多品牌电视桥（`mbh-tv-bridge`） | 各电视配对客户端密钥 / 桥接凭据（仅运行时注入） | macOS 钥匙串（`tvBridge.cred.<nativeId>`）或 Windows 凭据管理器（`tv-bridge:<id>`） |
+| 多品牌电视桥（`mbh-tv-bridge`） | 宿主配置的桥接凭据（仅运行时注入插件）；插件 `pairing` 流程配对 LG webOS 电视时生成主机级 TLS 证书指纹钉扎（`.pin`）与配对密钥（`.key`） | macOS 钥匙串（`tvBridge.cred.<nativeId>`）或 Windows 凭据管理器（`tv-bridge:<id>`）；LG 配对文件位于宿主数据目录 `MBH_DATA_DIR/lg-pairing/`，权限 `0600`（Windows 继承用户目录 ACL） |
 
 macOS 会将这些钥匙串项加密保存，并由登录钥匙串保护；MenuBarHome 写入时使用 `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`，首次解锁后可用，但不会同步到 iCloud 或另一台 Mac。双端都不会把这些机密写进明文 `UserDefaults`、WebView `localStorage` 或日志。macOS 更新后可能询问一次钥匙串授权（构建签名发生变化）；选择「始终允许」即可覆盖之后的读写。
 
