@@ -5,6 +5,7 @@ import {
   UserHabitMemory,
   assistantEndpointIdentity,
   buildAssistantContext,
+  desktopAmbientSignatureToken,
   encodeHabitOperation,
   endpointAllowsSendingSecrets,
   habitActionable,
@@ -16,6 +17,7 @@ import {
 import type { AssistantSuggestion, SmartDevice } from "../core/models.js";
 import type { HttpTransport } from "../core/miCloudClient.js";
 import { SF_ICONS } from "./appConstants.js";
+import { currentDesktopAmbientContext } from "./activityStackView.js";
 import { applyOrder, withAliases, type LayoutPrefs } from "./panelPrefs.js";
 import { tr3 } from "./undoTracker.js";
 
@@ -158,7 +160,8 @@ export function proactiveSignature(host: MenuMijiaWindowsApp): string {
         }`,
     )
     .join(",");
-  return `${bucket}|${readings}`;
+  const desktopToken = desktopAmbientSignatureToken(currentDesktopAmbientContext(host));
+  return desktopToken ? `${bucket}|${readings}|${desktopToken}` : `${bucket}|${readings}`;
 }
 
 /** The Top-4 zero-delay suggestions: the AI cache when fresh, otherwise ranked locally (#113). */
@@ -171,11 +174,13 @@ export function currentProactiveSuggestions(host: MenuMijiaWindowsApp): Assistan
   const signature = proactiveSignature(host);
   const aliasedDevices = proactiveVisibleDevices(host);
   const favoriteIds = proactiveFavoriteIds(host.layout, aliasedDevices);
+  const desktopContext = currentDesktopAmbientContext(host);
   const local = new UserHabitMemory(host.settings.habitEntries, host.habitSequences(), host.lastHabitAction()).topSuggestions({
     devices: aliasedDevices,
     scenes: host.scenes,
     environmentReadings: host.computedEnvironmentReadings,
     favoriteIds,
+    desktopContext,
   });
   const cached = host.aiProactiveSignature === signature ? host.aiProactiveSuggestions ?? [] : [];
   const result: AssistantSuggestion[] = [];
@@ -274,6 +279,7 @@ export function maybeRefreshProactiveInBackground(host: MenuMijiaWindowsApp): vo
           intents: shortcut.intents,
         })),
         mention: { kind: "none" },
+        desktopContext: currentDesktopAmbientContext(host),
       }),
     )
     .then((suggestions) => {

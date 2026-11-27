@@ -8,6 +8,7 @@ import { deviceAcceptsControlWrites, isActiveDevice, isDeviceActiveOn } from "..
 import { deviceHeadInstruction, proactiveHeadInstruction } from "./actionPolicy.js";
 import type { AssistantContext } from "./context.js";
 import { buildEnvironmentSummary, buildTimeSummary, EMPTY_ASSISTANT_CONTEXT } from "./context.js";
+import { mergeDesktopAmbientIntoEnvironment, normalizeDesktopAmbientContext, type DesktopAmbientContext } from "./desktopContext.js";
 import {
   deviceCategory,
   isAssistantControllable,
@@ -48,6 +49,7 @@ export function buildAssistantContext(options: {
   };
   readonly phrases: readonly { readonly phrase: string; readonly intents: readonly DeviceIntent[] }[];
   readonly mention: CommandMention;
+  readonly desktopContext?: Partial<DesktopAmbientContext> | null;
 }): AssistantContext {
   const active = options.devices
     .filter((device) => device.isOnline && isActiveDevice(device))
@@ -65,11 +67,13 @@ export function buildAssistantContext(options: {
     mention: options.mention,
     now: options.now,
   });
+  const desktop = normalizeDesktopAmbientContext(options.desktopContext);
   return {
     timeSummary: cleanPromptField(buildTimeSummary(options.now)),
-    environmentSummary: cleanPromptField(buildEnvironmentSummary(options.readings)),
+    environmentSummary: cleanPromptField(mergeDesktopAmbientIntoEnvironment(buildEnvironmentSummary(options.readings), desktop)),
     activeDevicesSummary: cleanPromptField(active.length > 0 ? active.join("、") : "全屋设备均关闭"),
     habitSummary: cleanPromptField(habitSummary),
+    desktopContext: desktop,
   };
 }
 
@@ -514,7 +518,7 @@ export function buildSystemOneRequestBody(options: {
     command: options.utterance,
   };
   const time = cleanPromptField(context.timeSummary);
-  const environment = cleanPromptField(context.environmentSummary);
+  const environment = cleanPromptField(mergeDesktopAmbientIntoEnvironment(context.environmentSummary, context.desktopContext));
   const activeDevices = cleanPromptField(context.activeDevicesSummary);
   const habits = cleanPromptField(context.habitSummary);
   if (time) state["time"] = time;
@@ -547,7 +551,7 @@ export function buildProactiveSystemOneRequestBody(options: {
   const state: Record<string, unknown> = {
     catalog: options.catalog.text,
     time: cleanPromptField(options.context.timeSummary),
-    environment: cleanPromptField(options.context.environmentSummary),
+    environment: cleanPromptField(mergeDesktopAmbientIntoEnvironment(options.context.environmentSummary, options.context.desktopContext)),
     active_devices: cleanPromptField(options.context.activeDevicesSummary),
     user_habits: cleanPromptField(options.context.habitSummary),
   };
@@ -565,17 +569,18 @@ export function buildProactiveChatRequestBody(
   catalog: IntentCatalog,
   maxCatalogTokens = CHAT_CATALOG_TOKEN_BUDGET,
 ): Record<string, unknown> {
+  const environment = cleanPromptField(mergeDesktopAmbientIntoEnvironment(context.environmentSummary, context.desktopContext));
   const preferred = new Set<string>([
     ...(context.favoriteDeviceIds ?? []),
     ...catalog.aliasDevices.filter(({ device }) => device.isOnline && isDeviceActiveOn(device)).map(({ device }) => device.id),
   ]);
   const system = [
-    "你是智能家居主动建议引擎。根据当前时间、室内温湿度、开启中的设备与用户习惯，推荐最多 3 个最值得立即执行的设备调整建议，只输出 JSON，不要解释。",
+    "你是智能家居主动建议引擎。根据当前时间、室内温湿度、桌面情境、开启中的设备与用户习惯，推荐最多 3 个最值得立即执行的设备调整建议，只输出 JSON，不要解释。",
     catalog.textFitting(maxCatalogTokens, "", preferred),
     'schema: {"suggestions":[{"device":"id","op":"power|brightness|color_temp|effect|hvac_mode|temperature|fan_speed|fan_percentage|cover_position|oscillation|scene","value":...,"confidence":85}]}',
     "规则：confidence 为 20-99 的整数置信度；如果当前环境已处于理想状态无需操作，输出 {\"suggestions\":[]}。只能使用上面列出的 id。",
   ].join("\n");
-  const userState = `时间：${cleanPromptField(context.timeSummary)}\n环境：${cleanPromptField(context.environmentSummary)}\n开启中：${cleanPromptField(context.activeDevicesSummary)}\n习惯：${cleanPromptField(context.habitSummary)}`;
+  const userState = `时间：${cleanPromptField(context.timeSummary)}\n环境：${environment}\n开启中：${cleanPromptField(context.activeDevicesSummary)}\n习惯：${cleanPromptField(context.habitSummary)}`;
   return {
     model: model.trim(),
     messages: [

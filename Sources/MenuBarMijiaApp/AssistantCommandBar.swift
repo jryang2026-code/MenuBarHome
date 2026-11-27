@@ -1085,17 +1085,44 @@ enum AssistantSettingsCopy {
     static var saveConfiguration: String { L10n.tr("保存", "Save") }
     static var keySaved: String { L10n.tr("已填写", "Key saved") }
     static var loopback: String { L10n.tr("本机免密", "Local, no key") }
+    static var localFoundationReady: String { L10n.tr("本机免配", "On-device, no key") }
     static var httpsRequired: String { L10n.tr("需用 https，否则不会发送", "Use https or nothing is sent") }
     static var customAddressRequired: String {
         L10n.tr("请先填写自定义服务地址", "Enter the custom service address first")
     }
 
     /// The status beside the card title. It never names where a key came from; the import row inside 高级 owns that.
-    static func headerStatus(isInsecure: Bool, hasKey: Bool, isLoopback: Bool) -> String? {
+    static func headerStatus(isInsecure: Bool, hasKey: Bool, isLoopback: Bool, usesLocalFoundation: Bool = false) -> String? {
+        if usesLocalFoundation { return localFoundationReady }
         if isInsecure { return httpsRequired }
         if hasKey { return keySaved }
         if isLoopback { return loopback }
         return nil
+    }
+}
+
+struct AssistantLocalModelCardState: Equatable, Sendable {
+    let badgeText, detailText: String; let primaryActionTitle: String?; let isReady, isActiveDefault: Bool
+
+    static func resolve(availability: AssistantLocalModelAvailability, route: AssistantModelRoute, aiEnabled: Bool) -> Self {
+        switch availability {
+        case .available:
+            let active = aiEnabled && route == .localFoundation
+            return Self(
+                badgeText: active ? L10n.tr("已就绪 · 当前默认", "Ready · Active Default") : L10n.tr("已就绪 · 免配可用", "Ready · No Key Needed"),
+                detailText: active
+                    ? L10n.tr("指令与主动建议均在本机 Apple Intelligence 运行，无需 API Key，不上传云端。", "Commands and proactive suggestions run locally via Apple Intelligence without an API key.")
+                    : L10n.tr("Apple Intelligence 本机模型已就绪，可一键设为默认免配运行，无需填写 API Key。", "Apple Intelligence on-device model is ready; set it as default in one click without an API key."),
+                primaryActionTitle: active ? nil : (aiEnabled ? L10n.tr("一键设为默认", "Set as Default") : L10n.tr("启用并设为默认", "Enable & Set as Default")),
+                isReady: true, isActiveDefault: active
+            )
+        case .unavailable(let reason):
+            return Self(
+                badgeText: L10n.tr("当前不可用", "Unavailable"),
+                detailText: L10n.tr("\(reason)。可使用下方云端服务商或 Ollama 本地模型；简单指令无需配置。", "\(reason). Configure a cloud provider or local Ollama below; direct commands work offline."),
+                primaryActionTitle: nil, isReady: false, isActiveDefault: false
+            )
+        }
     }
 }
 
@@ -1229,11 +1256,8 @@ struct AssistantSettingsSection: View {
         let isLoopback = AssistantConfig(baseURL: baseURLDraft, model: modelDraft, apiKey: "").isLoopbackEndpoint
         let isInsecure = !baseURLDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && !AssistantConfig(baseURL: baseURLDraft, model: modelDraft, apiKey: "").allowsSendingAPIKey
-        let headerStatus = AssistantSettingsCopy.headerStatus(
-            isInsecure: isInsecure,
-            hasKey: hasCustomKey,
-            isLoopback: isLoopback
-        )
+        let localCard = AssistantLocalModelCardState.resolve(availability: store.localModelAvailability, route: store.activeAssistantModelRoute, aiEnabled: store.aiAssistantEnabled)
+        let headerStatus = AssistantSettingsCopy.headerStatus(isInsecure: isInsecure, hasKey: hasCustomKey, isLoopback: isLoopback, usesLocalFoundation: localCard.isActiveDefault)
         VStack(alignment: .leading, spacing: 9) {
             Toggle(isOn: Binding(
                 get: { store.aiAssistantEnabled },
@@ -1245,7 +1269,7 @@ struct AssistantSettingsSection: View {
                     if let headerStatus {
                         Text(headerStatus)
                             .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
-                            .foregroundStyle(isInsecure ? Color.orange : Color.green)
+                            .foregroundStyle(isInsecure && !localCard.isActiveDefault ? Color.orange : Color.green)
                     }
                 }
             }
@@ -1258,6 +1282,9 @@ struct AssistantSettingsSection: View {
                     .font(.system(size: DesignTokens.TypeSize.caption))
                     .foregroundStyle(DesignTokens.secondaryText)
             }
+
+            localFoundationModelCard(localCard)
+                .settingsRow(anchor: .assistantLocalModel)
 
             HStack {
                 Text(AssistantSettingsCopy.providerLabel)
@@ -1300,10 +1327,11 @@ struct AssistantSettingsSection: View {
 
             HStack(spacing: 6) {
                 Button(isTestingConnection ? AssistantSettingsCopy.testingConnection : AssistantSettingsCopy.testConnection) {
-                    guard let saved = saveCurrentDraft() else { return }
+                    guard let configToVerify = (!hasUnsavedEdits && store.activeAssistantModelRoute == .localFoundation)
+                        ? store.assistantConfig : saveCurrentDraft() else { return }
                     isTestingConnection = true
                     Task {
-                        let result = await store.verifyAssistantConfig(saved)
+                        let result = await store.verifyAssistantConfig(configToVerify)
                         isTestingConnection = false
                         store.showToast(result.message, isError: !result.isSuccess)
                     }
@@ -1454,11 +1482,40 @@ struct AssistantSettingsSection: View {
             return nil
         }
         let resolved = store.assistantConfig
+        if resolved.hasConfiguredProvider { store.prefersLocalFoundationModel = false }
         baseURLDraft = resolved.baseURL
         modelDraft = resolved.model
         selectedPreset = resolved.preset
         savedFields = draftFields
         return cfg
+    }
+
+    @ViewBuilder
+    private func localFoundationModelCard(_ card: AssistantLocalModelCardState) -> some View {
+        let tint: Color = card.isReady ? .green : .orange
+        let shape = RoundedRectangle(cornerRadius: DesignTokens.Radius.inset, style: .continuous)
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Image(systemName: card.isReady ? "sparkles" : "cpu").font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold)).foregroundStyle(tint)
+                Text(L10n.tr("Apple Intelligence · 本机免配端侧模型", "Apple Intelligence · On-Device Model")).font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
+                Spacer(minLength: 6)
+                Text(card.badgeText).font(.system(size: DesignTokens.TypeSize.caption, weight: .medium)).foregroundStyle(tint)
+                    .padding(.horizontal, 6).padding(.vertical, 2).background(tint.opacity(0.12), in: Capsule())
+            }
+            HStack(alignment: .center, spacing: 8) {
+                Text(card.detailText).font(.system(size: DesignTokens.TypeSize.caption)).foregroundStyle(card.isReady ? DesignTokens.secondaryText : .primary).fixedSize(horizontal: false, vertical: true)
+                if let actionTitle = card.primaryActionTitle {
+                    Spacer(minLength: 6)
+                    Button(actionTitle) {
+                        if store.useLocalFoundationModelAsDefault() {
+                            store.showToast(L10n.tr("已启用 Apple Intelligence 本机模型作为默认", "Apple Intelligence on-device model is now the default"))
+                        }
+                    }.buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .accentColor))
+                }
+            }
+        }
+        .padding(10).frame(maxWidth: .infinity, alignment: .leading).background(Color.primary.opacity(0.035), in: shape)
+        .overlay { shape.strokeBorder(card.isActiveDefault ? Color.green.opacity(0.35) : DesignTokens.separator.opacity(0.4), lineWidth: DesignTokens.hairline) }
     }
 
     /// Removes the provider the picker currently shows (P5a-M). Two-click confirm already ran.

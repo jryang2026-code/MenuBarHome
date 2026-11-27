@@ -554,6 +554,7 @@ final class AutomationEngine {
         )
         let previous = lastContext
         lastContext = effective
+        store.updateDesktopContext(DesktopAmbientContext.from(macSnapshot: effective, externalDisplayCount: environment.externalDisplayCount(), now: now, calendar: calendar))
         let rules = ruleStore.load()
         let elapsed = elapsedTime()
         if let resumedAt {
@@ -844,6 +845,7 @@ final class AutomationEngine {
     private func screenConfigurationChanged() {
         let count = environment.externalDisplayCount()
         defer { lastExternalDisplayCount = count }
+        if let store { var d = store.desktopContext; d.externalDisplayConnected = count > 0; store.updateDesktopContext(d) }
         guard count != lastExternalDisplayCount else { return }
         let trigger: AutomationTrigger = count > lastExternalDisplayCount
             ? .externalDisplayConnected
