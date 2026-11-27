@@ -32,7 +32,15 @@ public final class StdioTVBridgeTransport: TVBridgeTransport, @unchecked Sendabl
         self.input = input; self.output = output; self.requestTimeout = max(0.05, requestTimeout)
         if let errHandle = errorOutput {
             let box = SendableHandle(handle: errHandle); let ring = self.stderrRing
-            DispatchQueue.global(qos: .utility).async { while let c = try? box.handle.read(upToCount: 2048), !c.isEmpty { ring.append(c) } }
+            DispatchQueue.global(qos: .utility).async {
+                let fd = box.handle.fileDescriptor; var tmp = [UInt8](repeating: 0, count: 2048)
+                while true {
+                    let n = tmp.withUnsafeMutableBytes { Self.posixRead(fd: fd, buffer: $0.baseAddress!, count: $0.count) }
+                    if n < 0 { if errno == EINTR { continue }; break }
+                    guard n > 0 else { break }; ring.append(Data(tmp.prefix(n)))
+                }
+                withExtendedLifetime(box) {}
+            }
         }
     }
     public static func launch(binaryPath: String, dataDir: URL, manifestPath: URL, requestTimeout: TimeInterval = defaultRequestTimeout) throws -> Self {

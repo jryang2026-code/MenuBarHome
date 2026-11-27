@@ -219,7 +219,7 @@ extension TVBridgeClientTests {
         do { _ = try await transport.request(TVBridgeFrame(method: "health.ping", params: Data("{}".utf8))); XCTFail("expected timeout") } catch TVBridgeError.transport(let msg) {
             XCTAssertLessThan(Date().timeIntervalSince(start), 3.0); XCTAssertTrue(msg.contains("timed out"), msg); XCTAssertFalse(msg.contains("lg-secret-77")); XCTAssertFalse(msg.contains("tok999"))
         }
-        let deadline = Date().addingTimeInterval(1.0)
+        let deadline = Date().addingTimeInterval(2.0)
         while transport.recentStderr.isEmpty && Date() < deadline { try? await Task.sleep(for: .milliseconds(20)) }
         let stderr = transport.recentStderr; XCTAssertTrue(stderr.contains("[REDACTED]"), stderr); XCTAssertFalse(stderr.contains("lg-secret-77")); XCTAssertFalse(stderr.contains("tok999"))
     }

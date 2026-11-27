@@ -235,7 +235,7 @@ func TestXiaomi6095SnapshotAndCommands(t *testing.T) {
 		mu.Lock(); defer mu.Unlock()
 		switch r.URL.Path {
 		case "/request": if !alive { http.Error(w, "off", 503); return }; _, _ = w.Write([]byte(`{"status":0,"data":{"devicename":"客厅小米电视"}}`))
-		case "/general": _, _ = json.NewEncoder(w).Encode(map[string]any{"status": 0, "data": map[string]any{"volum": volStep, "maxvolum": 15}})
+		case "/general": _ = json.NewEncoder(w).Encode(map[string]any{"status": 0, "data": map[string]any{"volum": volStep, "maxvolum": 15}})
 		case "/controller":
 			if r.URL.Query().Get("action") == "keyevent" {
 				code := r.URL.Query().Get("keycode"); actions = append(actions, "key:"+code)
@@ -259,7 +259,7 @@ func TestXiaomi6095SnapshotAndCommands(t *testing.T) {
 func TestHisenseVIDAAEdgeCasesTimeoutRedactionAndTLS(t *testing.T) {
 	var wg sync.WaitGroup
 	authLn, _ := net.Listen("tcp", "127.0.0.1:0")
-	serveLoop(&wg, authLn, func(c net.Conn) { var b [1]byte; if _, err := io.ReadFull(c, b[:]); err == nil && b[0] == 0x10 { _, _ = c.Write([]byte{0x20, 0x02, 0x00, 0x05}) } })
+	serveLoop(&wg, authLn, func(c net.Conn) { var buf [128]byte; if n, err := c.Read(buf[:]); err == nil && n > 0 && buf[0] == 0x10 { _, _ = c.Write([]byte{0x20, 0x02, 0x00, 0x05}) } })
 	dAuth := NewHisenseVIDAA(authLn.Addr().String(), "myuser:TopSecretPass99"); dAuth.Timeout = time.Second
 	if err := dAuth.Probe(); err == nil || strings.Contains(err.Error(), "TopSecretPass99") || strings.Contains(err.Error(), "myuser") { t.Fatalf("auth err leaked: %v", err) }
 	_ = authLn.Close()
