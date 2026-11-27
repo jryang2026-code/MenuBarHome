@@ -1,5 +1,15 @@
 import Foundation
 
+public enum LocalIntentMissReason: String, Equatable, Sendable {
+    case unknownDevice, unsupportedAction, unrecognizedPhrasing
+}
+
+public enum LocalIntentParseOutcome: Equatable, Sendable {
+    case matched(IntentPlan)
+    case missed(LocalIntentMissReason)
+    public var plan: IntentPlan? { if case .matched(let plan) = self { return plan }; return nil }
+}
+
 /// Deterministic, zero-network parser for short Chinese and English home commands.
 /// Every recognized phrase is consumed from the utterance; any leftover text means the
 /// command has parts this parser does not understand, so it returns nil and the model takes over.
@@ -7,8 +17,12 @@ public enum LocalIntentParser {
     private static let consumed: Character = "\u{1F}"
 
     private static let powerVerbs: [String: Bool] = [
-        "打开": true, "开启": true, "开": true,
-        "关闭": false, "关掉": false, "关上": false, "熄灭": false, "熄掉": false, "关": false
+        "打开": true, "开启": true, "开": true, "拉开": true, "拉起": true,
+        "关闭": false, "关掉": false, "关上": false, "熄灭": false, "熄掉": false, "关": false, "拉上": false, "合上": false
+    ]
+
+    private static let coverPositionWords: [String: Int] = [
+        "开到一半": 50, "拉到一半": 50, "开一半": 50, "拉一半": 50, "半开": 50
     ]
 
     private static let brightnessWords: [String: Int] = [
@@ -82,7 +96,8 @@ public enum LocalIntentParser {
         "扫地机": .vacuum, "扫地机器人": .vacuum,
         "电视": .tv, "电视机": .tv,
         "摄像头": .camera, "摄像机": .camera, "监控": .camera,
-        "阀门": .valve, "水阀": .valve, "气阀": .valve, "燃气阀": .valve, "总阀": .valve
+        "阀门": .valve, "水阀": .valve, "气阀": .valve, "燃气阀": .valve, "总阀": .valve,
+        "窗帘": .cover, "布帘": .cover, "纱帘": .cover, "卷帘": .cover, "百叶窗": .cover, "开窗器": .cover, "车库门": .cover, "晾衣架": .cover
     ]
 
     /// Generic room words users say, mapped to room names they may correspond to in HA.
@@ -161,9 +176,40 @@ public enum LocalIntentParser {
         panelRoom: BareCategoryCommand.Room? = nil,
         usageOrder: [String] = []
     ) -> IntentPlan? {
+        var miss: LocalIntentMissReason = .unrecognizedPhrasing
+        return parseCore(utterance, devices: devices, scenes: scenes, panelRoom: panelRoom, usageOrder: usageOrder, syllables: PanelSearch.Pinyin.syllables, miss: &miss)
+    }
+
+    public static func parseWithDiagnostic(
+        _ utterance: String,
+        devices: [SmartDevice],
+        scenes: [HomeScene],
+        panelRoom: BareCategoryCommand.Room? = nil,
+        usageOrder: [String] = [],
+        syllables: (String) -> [String]? = PanelSearch.Pinyin.syllables
+    ) -> LocalIntentParseOutcome {
+        var miss: LocalIntentMissReason = .unrecognizedPhrasing
+        if let plan = parseCore(utterance, devices: devices, scenes: scenes, panelRoom: panelRoom, usageOrder: usageOrder, syllables: syllables, miss: &miss) {
+            return .matched(plan)
+        }
+        return .missed(miss)
+    }
+
+    private static func parseCore(
+        _ utterance: String,
+        devices: [SmartDevice],
+        scenes: [HomeScene],
+        panelRoom: BareCategoryCommand.Room?,
+        usageOrder: [String],
+        syllables: (String) -> [String]?,
+        miss: inout LocalIntentMissReason
+    ) -> IntentPlan? {
         let text = normalizedText(utterance)
         guard !text.isEmpty else { return nil }
-        if let query = StateQuery.parse(text) { return query.answer(devices: devices) }
+        if let query = StateQuery.parse(text) {
+            if let plan = query.answer(devices: devices) { return plan }
+            recordMiss(&miss, .unknownDevice); return nil
+        }
         let politeAction = removingPoliteWrappers(text)
         let deviceText = isPoliteActionQuestion(text) ? String(politeAction.dropLast()) : politeAction
 
@@ -185,14 +231,16 @@ public enum LocalIntentParser {
             devices: devices,
             scenes: scenes,
             panelRoom: panelRoom,
-            usageOrder: usageOrder
+            usageOrder: usageOrder,
+            syllables: syllables,
+            miss: &miss
         ) {
             return plan
         }
         if deviceText != text,
            let plan = parseDeviceCommand(
                deviceText, rawUtterance: utterance, devices: devices, scenes: scenes,
-               panelRoom: panelRoom, usageOrder: usageOrder
+               panelRoom: panelRoom, usageOrder: usageOrder, syllables: syllables, miss: &miss
            ) {
             return plan
         }
@@ -214,10 +262,17 @@ public enum LocalIntentParser {
                 devices: devices,
                 scenes: scenes,
                 panelRoom: panelRoom,
-                usageOrder: usageOrder
+                usageOrder: usageOrder,
+                syllables: syllables,
+                miss: &miss
             )
         }
         return nil
+    }
+
+    private static func recordMiss(_ current: inout LocalIntentMissReason, _ next: LocalIntentMissReason) {
+        let rank: (LocalIntentMissReason) -> Int = { $0 == .unsupportedAction ? 2 : ($0 == .unknownDevice ? 1 : 0) }
+        if rank(next) > rank(current) { current = next }
     }
 
     private static func scenePlan(_ scene: HomeScene) -> IntentPlan {
@@ -286,7 +341,9 @@ public enum LocalIntentParser {
         devices: [SmartDevice],
         scenes: [HomeScene],
         panelRoom: BareCategoryCommand.Room?,
-        usageOrder: [String]
+        usageOrder: [String],
+        syllables: (String) -> [String]?,
+        miss: inout LocalIntentMissReason
     ) -> IntentPlan? {
         var rest = text
         var ops: [IntentOperation] = extractNumericOperations(&rest)
@@ -310,6 +367,9 @@ public enum LocalIntentParser {
         }
         for word in longestFirst(Set(fanSpeedWords.keys)) where consume(word, from: &rest) {
             ops.append(.fanSpeed(fanSpeedWords[word]!))
+        }
+        for word in longestFirst(Set(coverPositionWords.keys)) where consume(word, from: &rest) {
+            ops.append(.coverPosition(coverPositionWords[word]!))
         }
         for word in longestFirst(Set(brightnessStepWords.keys)) where consume(word, from: &rest) {
             ops.append(.brightnessStep(brightnessStepWords[word]!))
@@ -337,10 +397,6 @@ public enum LocalIntentParser {
         for word in longestFirst(fillers) {
             _ = consume(word, from: &rest)
         }
-        guard rest.allSatisfy({ $0 == consumed }) else { return nil }
-
-        guard let ops = reconcile(ops) else { return nil }
-
         var roomDeviceIds: Set<String> = []
         for word in matchedRooms {
             guard let ids = deviceIds(inRoom: word, devices: devices, panelRoom: panelRoom) else {
@@ -348,6 +404,21 @@ public enum LocalIntentParser {
             }
             roomDeviceIds.formUnion(ids)
         }
+        let leftover = rest.split(separator: consumed).map(String.init).filter { !$0.isEmpty }
+        if !leftover.isEmpty {
+            if matchedEntries.isEmpty, !ops.isEmpty, leftover.count == 1,
+               let fuzzy = matchPinyinOrHomophone(query: leftover[0], devices: devices, roomDeviceIds: roomDeviceIds, syllables: syllables) {
+                matchedEntries.append(fuzzy)
+                rest = String(consumed)
+            } else {
+                if reconcile(ops) != nil, matchedEntries.isEmpty, leftover.count == 1, isLikelyUnknownDevice(leftover[0], english: false) {
+                    recordMiss(&miss, .unknownDevice)
+                }
+                return nil
+            }
+        }
+
+        guard let ops = reconcile(ops) else { return nil }
         let isTurningOff = ops == [.power(false)]
         var targetIds: [String] = []
         var mustAcceptAll: Set<String> = []
@@ -359,7 +430,7 @@ public enum LocalIntentParser {
                 let narrowedCandidates = matchedRooms.isEmpty
                     ? initialCandidates
                     : initialCandidates.filter { roomDeviceIds.contains($0.id) }
-                guard !narrowedCandidates.isEmpty else { return nil }
+                guard !narrowedCandidates.isEmpty else { recordMiss(&miss, .unknownDevice); return nil }
                 let roomResolvedIds = Set(disambiguateRoomDevices(
                     narrowedCandidates.compactMap { deviceById[$0.id] },
                     panelRoom: panelRoom
@@ -405,11 +476,13 @@ public enum LocalIntentParser {
                     let category = IntentDeviceCategory(dev)
                     guard dev.isOnline, category.isAssistantControllable, dev.kind.acceptsControlWrites else { return false }
                     if category == .valve && !(wanted?.contains(.valve) ?? false) { return false }
+                    if category == .cover && !(wanted?.contains(.cover) ?? false) { return false }
                     if onlyActive && !dev.isActiveOn { return false }
                     if !matchedRooms.isEmpty && !roomDeviceIds.contains(dev.id) { return false }
                     if let wanted, !wanted.contains(category) { return false }
                     return true
                 }
+                if candidates.isEmpty { recordMiss(&miss, .unknownDevice); return nil }
                 // A bare category ("打开空调") is only unambiguous when the home has exactly one such device;
                 // relative adjustments ("再暗一点") intentionally apply to all currently-on matching devices.
                 if !onlyActive && !hasScope && matchedRooms.isEmpty && candidates.count != 1 { return nil }
@@ -422,12 +495,12 @@ public enum LocalIntentParser {
             guard let device = deviceById[id] else { return nil }
             let normalized = ops.compactMap { IntentValidator.normalize($0, for: device) }
             guard normalized.count == ops.count else {
-                if mustAcceptAll.contains(id) { return nil }
+                if mustAcceptAll.contains(id) { recordMiss(&miss, .unsupportedAction); return nil }
                 continue
             }
             intents.append(contentsOf: normalized.map { DeviceIntent(targetId: id, operation: $0) })
         }
-        guard !intents.isEmpty else { return nil }
+        guard !intents.isEmpty else { recordMiss(&miss, .unsupportedAction); return nil }
 
         return IntentPlan(
             intents: intents,
@@ -498,7 +571,7 @@ public enum LocalIntentParser {
         // What is on answers a close and what is off answers an open, even when the device cannot
         // perform the operation (#273 review).
         let affected = sameCategory.filter {
-            direction == .close ? $0.isActiveDevice : !$0.isActiveDevice
+            direction == .close ? $0.isActiveOn : !$0.isActiveOn
         }
         let switchable = affected.filter { IntentValidator.normalize(operation, for: $0) != nil }
         if !affected.isEmpty, switchable.isEmpty {
@@ -653,6 +726,7 @@ public enum LocalIntentParser {
             case .hvacMode, .targetTemperature, .temperatureStep: return [.climate, .heater]
             case .fanSpeed: return [.fan, .airPurifier, .climate]
             case .fanPercentage, .oscillation: return [.fan]
+            case .coverPosition: return [.cover]
             case .power, .activateScene: continue
             }
         }
@@ -670,7 +744,7 @@ public enum LocalIntentParser {
         }
         if byRank[0] == .power(false), byRank.count > 1 { return nil }
         // HVAC mode, light effect, brightness, and color temperature already switch the device on.
-        if byRank[0] == .power(true), byRank.keys.contains(where: { $0 == 1 || $0 == 3 || $0 == 4 || $0 == 5 }) {
+        if byRank[0] == .power(true), byRank.keys.contains(where: { $0 == 1 || $0 == 3 || $0 == 4 || $0 == 5 || $0 == 9 }) {
             byRank[0] = nil
         }
         return byRank.keys.sorted().compactMap { byRank[$0] }
@@ -687,6 +761,7 @@ public enum LocalIntentParser {
         case .activateScene: return 6
         case .fanSpeed, .fanPercentage: return 7
         case .oscillation: return 8
+        case .coverPosition: return 9
         }
     }
 
@@ -758,6 +833,16 @@ public enum LocalIntentParser {
                 text.replaceSubrange(range, with: String(consumed))
             }
         }
+        let coverPattern = #"(?:(?<=窗帘|布帘|纱帘|卷帘|百叶窗|开窗器|车库门|晾衣架)(?:打开|开启|开到|开至|拉开到|拉开|拉到|拉至|关到|关至|合到|调到|调至|调为|设为|设置为|到|为)?|(?:开到|开至|拉开到|拉到|拉至|关到|关至|合到))(?:百分之([0-9]{1,3}|[零一二两三四五六七八九十百]+)(?![0-9%％])|([0-9]{1,3}|[零一二两三四五六七八九十百]+)[%％])"#
+        if let regex = try? NSRegularExpression(pattern: coverPattern) {
+            let source = text as NSString
+            for match in regex.matches(in: text, range: NSRange(location: 0, length: source.length)).reversed() {
+                let numberRange = match.range(at: match.range(at: 1).location == NSNotFound ? 2 : 1)
+                guard let percent = spokenNumber(source.substring(with: numberRange)), let range = Range(match.range, in: text) else { continue }
+                ops.append(.coverPosition(percent))
+                text.replaceSubrange(range, with: String(consumed))
+            }
+        }
         let patterns: [(String, (Double) -> IntentOperation)] = [
             (#"(\d{4})[kK]"#, { .colorTemperature(Int($0)) }),
             (#"亮度(?:调到|调至|调为|设为|设置为|到|为)?(\d{1,3})(?:%|％)?"#, { .brightness(Int($0)) }),
@@ -824,7 +909,10 @@ public enum LocalIntentParser {
         ("cameras", .camera), ("camera", .camera),
         ("water valves", .valve), ("water valve", .valve),
         ("gas valves", .valve), ("gas valve", .valve),
-        ("valves", .valve), ("valve", .valve)
+        ("valves", .valve), ("valve", .valve),
+        ("garage door", .cover), ("window opener", .cover),
+        ("curtains", .cover), ("curtain", .cover), ("blinds", .cover), ("blind", .cover),
+        ("shades", .cover), ("shade", .cover), ("drapes", .cover), ("drape", .cover), ("covers", .cover), ("cover", .cover)
     ]
 
     private static let englishFillers: [String] = [
@@ -839,7 +927,9 @@ public enum LocalIntentParser {
         devices: [SmartDevice],
         scenes: [HomeScene],
         panelRoom: BareCategoryCommand.Room?,
-        usageOrder: [String]
+        usageOrder: [String],
+        syllables: (String) -> [String]?,
+        miss: inout LocalIntentMissReason
     ) -> IntentPlan? {
         let lower = utterance.lowercased()
             .replacingOccurrences(of: #"[,!?;:'"“”‘’。，！？、]+"#, with: " ", options: .regularExpression)
@@ -965,6 +1055,10 @@ public enum LocalIntentParser {
             ops.append(.hvacMode(val))
         }
 
+        for (p, val) in [("halfway open", 50), ("half open", 50), ("halfway", 50)] where consumeEnglishPhrase(p, from: &rest) {
+            ops.append(.coverPosition(val))
+        }
+
         let powerPhrases: [(String, Bool)] = [
             ("turn on", true), ("switch on", true), ("power on", true), ("enable", true), ("open", true),
             ("turn off", false), ("switch off", false), ("power off", false), ("shut off", false), ("disable", false), ("close", false),
@@ -984,9 +1078,6 @@ public enum LocalIntentParser {
             _ = consumeEnglishPhrase(filler, from: &rest)
         }
 
-        guard rest.allSatisfy({ $0 == consumed || $0.isWhitespace }) else { return nil }
-        guard let ops = reconcile(ops) else { return nil }
-
         var roomDeviceIds: Set<String> = []
         for key in matchedRoomKeys {
             let aliases = englishRoomAliases[key] ?? [key]
@@ -1000,13 +1091,30 @@ public enum LocalIntentParser {
                 roomDeviceIds.formUnion(resolved)
             }
         }
+        let leftoverTokens = rest.replacingOccurrences(of: String(consumed), with: " ").split(whereSeparator: \.isWhitespace).map(String.init)
+        if !leftoverTokens.isEmpty {
+            let devMap = Dictionary(devices.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+            if explicitGroups.isEmpty, !ops.isEmpty,
+               let fuzzy = matchPinyinOrHomophone(query: leftoverTokens.joined(), devices: devices, roomDeviceIds: roomDeviceIds, syllables: syllables) {
+                let resolved = fuzzy.compactMap { devMap[$0.id] }
+                if !resolved.isEmpty { explicitGroups.append(resolved); rest = String(consumed) }
+            }
+            guard rest.allSatisfy({ $0 == consumed || $0.isWhitespace }) else {
+                if reconcile(ops) != nil, explicitGroups.isEmpty, leftoverTokens.count <= 2,
+                   leftoverTokens.allSatisfy({ isLikelyUnknownDevice($0, english: true) }) {
+                    recordMiss(&miss, .unknownDevice)
+                }
+                return nil
+            }
+        }
+        guard let ops = reconcile(ops) else { return nil }
 
         var explicitIds: [String] = []
         for group in explicitGroups {
             let narrowed = matchedRoomKeys.isEmpty
                 ? group
                 : group.filter { roomDeviceIds.contains($0.id) }
-            guard !narrowed.isEmpty else { return nil }
+            guard !narrowed.isEmpty else { recordMiss(&miss, .unknownDevice); return nil }
             let resolved = disambiguateRoomDevices(narrowed, panelRoom: panelRoom)
             guard !resolved.isEmpty else { return nil }
             explicitIds.append(contentsOf: resolved.filter { !explicitIds.contains($0) })
@@ -1044,11 +1152,13 @@ public enum LocalIntentParser {
                     let category = IntentDeviceCategory(dev)
                     guard dev.isOnline, category.isAssistantControllable, dev.kind.acceptsControlWrites else { return false }
                     if category == .valve && !(wanted?.contains(.valve) ?? false) { return false }
+                    if category == .cover && !(wanted?.contains(.cover) ?? false) { return false }
                     if onlyActive && !dev.isActiveOn { return false }
                     if !matchedRoomKeys.isEmpty && !roomDeviceIds.contains(dev.id) { return false }
                     if let wanted, !wanted.contains(category) { return false }
                     return true
                 }
+                if candidates.isEmpty { recordMiss(&miss, .unknownDevice); return nil }
                 if !onlyActive && !hasScope && matchedRoomKeys.isEmpty && candidates.count != 1 { return nil }
                 targetIds = candidates.map(\.id)
             }
@@ -1060,12 +1170,12 @@ public enum LocalIntentParser {
             guard let device = deviceById[id] else { return nil }
             let normalized = ops.compactMap { IntentValidator.normalize($0, for: device) }
             guard normalized.count == ops.count else {
-                if mustAcceptAll.contains(id) { return nil }
+                if mustAcceptAll.contains(id) { recordMiss(&miss, .unsupportedAction); return nil }
                 continue
             }
             intents.append(contentsOf: normalized.map { DeviceIntent(targetId: id, operation: $0) })
         }
-        guard !intents.isEmpty else { return nil }
+        guard !intents.isEmpty else { recordMiss(&miss, .unsupportedAction); return nil }
 
         return IntentPlan(
             intents: intents,
@@ -1127,6 +1237,7 @@ public enum LocalIntentParser {
 
         let patterns: [(String, (Double) -> IntentOperation)] = [
             (#"(?<=\bfan)\s+(?:speed\s+)?(?:to\s+)?([0-9]{1,3})\s*(?:%|percent)(?![a-z0-9])"#, { .fanPercentage(Int($0)) }),
+            (#"(?<=\b(?:curtains?|blinds?|shades?|drapes?|covers?|garage door|window opener))\s+(?:position\s+)?(?:to\s+)?([0-9]{1,3})\s*(?:%|percent)(?![a-z0-9])"#, { .coverPosition(Int($0)) }),
             (#"(?<![a-z0-9])(\d{4})\s*k(?![a-z0-9])"#, { .colorTemperature(Int($0)) }),
             (#"(?<![a-z0-9])(\d{1,3})\s*(?:%|percent)(?![a-z0-9])"#, { .brightness(Int($0)) }),
             (#"(?<![a-z0-9])(\d{1,2}(?:\.\d)?)\s*(?:degrees?\s*celsius|degrees?|deg|℃|°c|°)(?![a-z0-9])"#, { .targetTemperature($0) })
@@ -1147,5 +1258,47 @@ public enum LocalIntentParser {
             }
         }
         return ops
+    }
+
+    private static func matchPinyinOrHomophone(
+        query: String, devices: [SmartDevice], roomDeviceIds: Set<String>, syllables: (String) -> [String]?
+    ) -> [DevicePhraseCandidate]? {
+        let q = PanelSearch.normalize(toSimplifiedChinese(query))
+        guard q.count >= 2 else { return nil }
+        let isASCII = q.unicodeScalars.allSatisfy(\.isASCII)
+        let qSyms = isASCII ? nil : syllables(q)
+        guard isASCII || (qSyms?.count ?? 0) >= 2 else { return nil }
+        let qFull = qSyms?.joined() ?? ""
+        func hit(_ raw: String) -> Bool {
+            let norm = PanelSearch.normalize(toSimplifiedChinese(raw))
+            guard norm.count >= 2 else { return false }
+            if isASCII {
+                if norm == q { return true }
+                guard let s = syllables(norm), !s.isEmpty else { return false }
+                return s.joined() == q || PanelSearch.Pinyin.initials(of: s) == q
+            }
+            guard let s = syllables(norm), s.count == qSyms?.count else { return false }
+            return s.joined() == qFull
+        }
+        var full: [DevicePhraseCandidate] = [], base: [DevicePhraseCandidate] = []
+        for dev in (roomDeviceIds.isEmpty ? devices : devices.filter { roomDeviceIds.contains($0.id) }) where !dev.name.isEmpty {
+            let raw = cleanRawText(dev.name)
+            if hit(raw) { full.append(DevicePhraseCandidate(id: dev.id, rawPhrase: raw, isFull: true)); continue }
+            let nName = toSimplifiedChinese(raw), nRoom = toSimplifiedChinese(cleanRawText(dev.roomName))
+            if !nRoom.isEmpty, nName.hasPrefix(nRoom) {
+                let stripped = String(nName.dropFirst(nRoom.count))
+                if stripped.count >= 2, hit(stripped) { base.append(DevicePhraseCandidate(id: dev.id, rawPhrase: stripped, isFull: false)) }
+            }
+        }
+        return !full.isEmpty ? full : (base.isEmpty ? nil : base)
+    }
+
+    private static func isLikelyUnknownDevice(_ raw: String, english: Bool) -> Bool {
+        let norm = PanelSearch.normalize(raw)
+        guard norm.count >= 2, norm.count <= (english ? 16 : 10) else { return false }
+        if english {
+            return !["i", "me", "my", "we", "want", "feel", "sleep", "movie", "work", "ready", "home", "break", "prepare", "because", "and", "or", "but", "something", "cozy"].contains(norm)
+        }
+        return !["我", "你", "他", "她", "想", "要", "觉得", "有点", "感觉", "怎么", "为什么", "准备", "因为", "所以", "但是", "还是", "或者", "适合", "帮", "心情", "睡觉", "起床", "出门", "回家", "看电影", "写代码", "休息", "舒服", "冷", "热"].contains { norm.contains($0) }
     }
 }

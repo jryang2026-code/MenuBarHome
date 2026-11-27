@@ -218,40 +218,68 @@ public struct ModelIntentResolver: Sendable, AssistantCommandResolving {
 
     // MARK: - Request
 
-    /// Sends an OpenAI-compatible chat request. Some models only accept their own fixed
-    /// sampling temperature (e.g. Kimi Code rejects `temperature: 0`, #260), so a 400 whose
-    /// body names `temperature` is retried once without that field.
+    static let chatCatalogTokenBudget = 3_600
+
+    private static func jsonSchemaFormat(name: String, arrayKey: String, ops: [String], withConfidence: Bool = false, withReply: Bool = false) -> [String: Any] {
+        var itemProps: [String: Any] = ["device": ["type": "string"], "op": ["type": "string", "enum": ops], "value": ["type": ["string", "number", "boolean", "null"]]]
+        var itemReq = ["device", "op", "value"]
+        if withConfidence { itemProps["confidence"] = ["type": "number"]; itemReq.append("confidence") }
+        var props: [String: Any] = [arrayKey: ["type": "array", "items": ["type": "object", "properties": itemProps, "required": itemReq, "additionalProperties": false]]]
+        var req = [arrayKey]
+        if withReply { props["reply"] = ["type": "string"]; req.append("reply") }
+        return ["type": "json_schema", "json_schema": ["name": name, "strict": true, "schema": ["type": "object", "properties": props, "required": req, "additionalProperties": false]]]
+    }
+
+    static var intentPlanResponseFormat: [String: Any] {
+        jsonSchemaFormat(
+            name: "smart_home_intent_plan", arrayKey: "actions",
+            ops: ["power", "brightness", "brightness_step", "color_temp", "effect", "hvac_mode", "temperature", "temperature_step", "fan_speed", "fan_percentage", "cover_position", "oscillation", "scene"],
+            withReply: true
+        )
+    }
+
+    static var proactiveResponseFormat: [String: Any] {
+        jsonSchemaFormat(
+            name: "smart_home_proactive_suggestions", arrayKey: "suggestions",
+            ops: ["power", "brightness", "color_temp", "effect", "hvac_mode", "temperature", "fan_speed", "fan_percentage", "cover_position", "oscillation", "scene"],
+            withConfidence: true
+        )
+    }
+
+    /// Sends an OpenAI-compatible chat request, automatically retrying without unsupported
+    /// `response_format` (third-party relays) or `temperature` (e.g. Kimi Code, #260).
     func sendChatCompletion(_ request: URLRequest) async throws -> Data {
-        let (data, response) = try await transport(request)
-        guard let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) else {
-            return data
+        var current = request
+        for _ in 0..<3 {
+            let (data, response) = try await transport(current)
+            guard let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) else { return data }
+            guard http.statusCode == 400 || http.statusCode == 422 else { throw AssistantError.httpStatus(http.statusCode) }
+            var strip: [String] = []
+            if Self.errorBodyMentionsResponseFormat(data) { strip.append("response_format") }
+            if Self.errorBodyMentionsTemperature(data) { strip.append("temperature") }
+            guard !strip.isEmpty, let retry = Self.removingKeys(strip, from: current) else { throw AssistantError.httpStatus(http.statusCode) }
+            current = retry
         }
-        guard http.statusCode == 400,
-              Self.errorBodyMentionsTemperature(data),
-              let retry = Self.removingTemperature(from: request) else {
-            throw AssistantError.httpStatus(http.statusCode)
-        }
-        let (retryData, retryResponse) = try await transport(retry)
-        if let retryHTTP = retryResponse as? HTTPURLResponse, !(200..<300).contains(retryHTTP.statusCode) {
-            throw AssistantError.httpStatus(retryHTTP.statusCode)
-        }
-        return retryData
+        throw AssistantError.httpStatus(400)
     }
 
     static func errorBodyMentionsTemperature(_ data: Data) -> Bool {
         String(decoding: data.prefix(4096), as: UTF8.self).lowercased().contains("temperature")
     }
 
-    static func removingTemperature(from request: URLRequest) -> URLRequest? {
-        guard let body = request.httpBody,
-              var json = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
-              json.removeValue(forKey: "temperature") != nil,
-              let stripped = try? JSONSerialization.data(withJSONObject: json) else {
-            return nil
-        }
-        var retry = request
-        retry.httpBody = stripped
-        return retry
+    static func errorBodyMentionsResponseFormat(_ data: Data) -> Bool {
+        let lower = String(decoding: data.prefix(4096), as: UTF8.self).lowercased()
+        return ["response_format", "response format", "json_schema", "structured", "grammar", "schema"].contains { lower.contains($0) }
+    }
+
+    static func removingTemperature(from request: URLRequest) -> URLRequest? { removingKeys(["temperature"], from: request) }
+
+    static func removingKeys(_ keys: [String], from request: URLRequest) -> URLRequest? {
+        guard let body = request.httpBody, var json = try? JSONSerialization.jsonObject(with: body) as? [String: Any] else { return nil }
+        var changed = false
+        for key in keys where json.removeValue(forKey: key) != nil { changed = true }
+        guard changed, let stripped = try? JSONSerialization.data(withJSONObject: json) else { return nil }
+        var retry = request; retry.httpBody = stripped; return retry
     }
 
     func makeRequest(
@@ -270,12 +298,13 @@ public struct ModelIntentResolver: Sendable, AssistantCommandResolving {
         let body: [String: Any] = [
             "model": config.model,
             "messages": [
-                ["role": "system", "content": Self.systemPrompt(catalog: catalog, context: context)],
+                ["role": "system", "content": Self.systemPrompt(catalog: catalog, context: context, mention: utterance)],
                 ["role": "user", "content": utterance]
             ],
             "temperature": 0,
             "max_tokens": 800,
-            "stream": false
+            "stream": false,
+            "response_format": Self.intentPlanResponseFormat
         ]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
         return request
@@ -428,10 +457,13 @@ public struct ModelIntentResolver: Sendable, AssistantCommandResolving {
         let key = effectiveAPIKey()
         request.setValue("Bearer \(key.isEmpty ? "local" : key)", forHTTPHeaderField: "Authorization")
 
+        var preferredIds = Set(context.favoriteDeviceIds)
+        preferredIds.formUnion(catalog.aliasDevices.filter { $0.device.isActiveOn }.map(\.device.id))
+        let catalogText = catalog.text(fitting: Self.chatCatalogTokenBudget, preferredDeviceIds: preferredIds)
         let system = """
         你是智能家居主动建议引擎。根据当前时间、室内温湿度、开启中的设备与用户习惯，推荐最多 3 个最值得立即执行的设备调整建议，只输出 JSON，不要解释。
-        \(catalog.text)
-        schema: {"suggestions":[{"device":"id","op":"power|brightness|color_temp|effect|hvac_mode|temperature|fan_speed|oscillation|scene","value":...,"confidence":85}]}
+        \(catalogText)
+        schema: {"suggestions":[{"device":"id","op":"power|brightness|color_temp|effect|hvac_mode|temperature|fan_speed|fan_percentage|cover_position|oscillation|scene","value":...,"confidence":85}]}
         规则：confidence 为 20-99 的整数置信度；如果当前环境已处于理想状态无需操作，输出 {"suggestions":[]}。只能使用上面列出的 id。
         """
         let userState = "时间：\(Self.promptField(context.timeSummary) ?? "")\n环境：\(Self.promptField(context.environmentSummary) ?? "")\n开启中：\(Self.promptField(context.activeDevicesSummary) ?? "")\n习惯：\(Self.promptField(context.habitSummary) ?? "")"
@@ -444,7 +476,8 @@ public struct ModelIntentResolver: Sendable, AssistantCommandResolving {
             ],
             "temperature": 0,
             "max_tokens": 600,
-            "stream": false
+            "stream": false,
+            "response_format": Self.proactiveResponseFormat
         ]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
         return request
@@ -516,19 +549,28 @@ public struct ModelIntentResolver: Sendable, AssistantCommandResolving {
         return url
     }
 
-    static func systemPrompt(catalog: IntentCatalog, context: AssistantContext = AssistantContext()) -> String {
+    static func systemPrompt(
+        catalog: IntentCatalog,
+        context: AssistantContext = AssistantContext(),
+        mention: String = "",
+        maxCatalogTokens: Int = chatCatalogTokenBudget
+    ) -> String {
         let contextParts = [context.timeSummary, context.environmentSummary, context.activeDevicesSummary, context.habitSummary]
             .compactMap { promptField($0) }
         let contextBlock = contextParts.isEmpty ? "" : "\n当前环境与习惯：\(contextParts.joined(separator: "；"))\n"
+        var preferredIds = Set(context.favoriteDeviceIds)
+        preferredIds.formUnion(catalog.aliasDevices.filter { $0.device.isActiveOn }.map(\.device.id))
+        let catalogText = catalog.text(fitting: maxCatalogTokens, mention: mention, preferredDeviceIds: preferredIds)
         return """
         你是智能家居指令解析器。把用户的中文指令转换为 JSON，只输出 JSON，不要解释。\(contextBlock)
-        \(catalog.text)
-        schema: {"actions":[{"device":"id","op":"power|brightness|brightness_step|color_temp|effect|hvac_mode|temperature|temperature_step|fan_speed|oscillation|scene","value":...}],"reply":"一句话中文回执"}
+        \(catalogText)
+        schema: {"actions":[{"device":"id","op":"power|brightness|brightness_step|color_temp|effect|hvac_mode|temperature|temperature_step|fan_speed|fan_percentage|cover_position|oscillation|scene","value":...}],"reply":"一句话中文回执"}
         规则：power 的 value 为 true/false；brightness 为 1-100（调暗用 20，调亮用 100）；color_temp 为开尔文；\
         effect 取 Day（日光模式）或 Night（月光/夜灯模式），且必须是该灯具的可用模式；\
         hvac_mode 取 cool/heat/dry/fan_only/auto/off 且必须是该设备的可用模式；temperature 为摄氏度数字；\
         brightness_step / temperature_step 是相对调节（"再暗一点"=-20，"调高两度"=2），优先用于"再…一点"类说法；\
-        fan_speed 取 high/medium/low/auto 或该设备"可选风速"里的原名；oscillation 为 true/false（风扇摇头）；\
+        fan_speed 取 high/medium/low/auto 或该设备"可选风速"里的原名；fan_percentage 为 1-100 风速百分比；\
+        cover_position 为 0-100 窗帘/开合设备位置百分比（0=关，100=开）；oscillation 为 true/false（风扇摇头）；\
         scene 的 device 填场景 id，value 填 null。只能使用上面列出的 id。\
         无法执行时 actions 为空数组，并在 reply 中简短说明原因。
         """
@@ -1028,6 +1070,10 @@ public struct ModelIntentResolver: Sendable, AssistantCommandResolving {
             return number(from: value).map(IntentOperation.temperatureStep)
         case "fan_speed", "fan_mode", "preset":
             return (value as? String).map(IntentOperation.fanSpeed)
+        case "fan_percentage", "fan_percent":
+            return clampedInt(from: value).map(IntentOperation.fanPercentage)
+        case "cover_position", "position":
+            return clampedInt(from: value).map(IntentOperation.coverPosition)
         case "oscillation", "swing":
             return bool(from: value).map(IntentOperation.oscillation)
         default:

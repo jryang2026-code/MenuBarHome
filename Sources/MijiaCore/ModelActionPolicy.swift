@@ -211,10 +211,16 @@ public enum ModelActionPolicy {
                 default: return true
                 }
             case .anyPower:
-                if case .power = operation { return true }
-                return false
+                switch operation {
+                case .power, .coverPosition: return true
+                default: return false
+                }
             case .powerOn:
-                return operation == .power(true)
+                switch operation {
+                case .power(true): return true
+                case .coverPosition(let percent): return percent > 0
+                default: return false
+                }
             case .powerOnOrHotter(let setpoint):
                 switch operation {
                 case .power(let isOn): return isOn

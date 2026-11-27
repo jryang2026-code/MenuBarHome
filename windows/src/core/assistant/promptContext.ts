@@ -4,7 +4,7 @@ import type {
   HomeScene,
   SmartDevice,
 } from "../models.js";
-import { deviceAcceptsControlWrites, isActiveDevice } from "../models.js";
+import { deviceAcceptsControlWrites, isActiveDevice, isDeviceActiveOn } from "../models.js";
 import { deviceHeadInstruction, proactiveHeadInstruction } from "./actionPolicy.js";
 import type { AssistantContext } from "./context.js";
 import { buildEnvironmentSummary, buildTimeSummary, EMPTY_ASSISTANT_CONTEXT } from "./context.js";
@@ -24,7 +24,9 @@ import type {
 import { shareHabitSentence } from "./habits.js";
 import {
   cleanPromptField,
+  estimatedPromptTokens,
   PROMPT_ACTIVE_STATE_LIMIT,
+  PROMPT_CONTEXT_LIMIT,
   PROMPT_DATA_NOTICE,
   PROMPT_NAME_LIMIT,
   PROMPT_OPTION_LIMIT,
@@ -159,7 +161,7 @@ export function catalogStateSummary(device: SmartDevice): string {
     case "speaker":
       return "";
     case "cover":
-      return kind.positionPercent === null ? "" : `开${kind.positionPercent}%`;
+      return kind.positionPercent === null ? "未知" : `开${kind.positionPercent}%`;
     case "appliance": {
       if (isValveDevice(device)) {
         return kind.isOn ? "开" : "关";
@@ -195,6 +197,47 @@ export interface IntentCatalog {
   readonly aliasDevices: ReadonlyArray<{ readonly alias: string; readonly device: SmartDevice }>;
   readonly criteriaByAlias: Readonly<Record<string, string>>;
   readonly aliasToIds: ReadonlyMap<string, readonly string[]>;
+  readonly textFitting: (maxEstimatedTokens: number, mention?: string, preferredDeviceIds?: ReadonlySet<string>) => string;
+}
+
+export const CHAT_CATALOG_TOKEN_BUDGET = 3600;
+
+function jsonSchemaFormat(name: string, arrayKey: string, ops: readonly string[], extra: { confidence?: boolean; reply?: boolean }): Record<string, unknown> {
+  const itemProps: Record<string, unknown> = { device: { type: "string" }, op: { type: "string", enum: [...ops] }, value: { type: ["string", "number", "boolean", "null"] } };
+  const itemReq = ["device", "op", "value"];
+  if (extra.confidence) { itemProps["confidence"] = { type: "number" }; itemReq.push("confidence"); }
+  const props: Record<string, unknown> = { [arrayKey]: { type: "array", items: { type: "object", properties: itemProps, required: itemReq, additionalProperties: false } } };
+  const req = [arrayKey];
+  if (extra.reply) { props["reply"] = { type: "string" }; req.push("reply"); }
+  return { type: "json_schema", json_schema: { name, strict: true, schema: { type: "object", properties: props, required: req, additionalProperties: false } } };
+}
+
+export const INTENT_PLAN_RESPONSE_FORMAT = jsonSchemaFormat(
+  "smart_home_intent_plan", "actions",
+  ["power", "brightness", "brightness_step", "color_temp", "effect", "hvac_mode", "temperature", "temperature_step", "fan_speed", "fan_percentage", "cover_position", "oscillation", "scene"],
+  { reply: true },
+);
+
+export const PROACTIVE_RESPONSE_FORMAT = jsonSchemaFormat(
+  "smart_home_proactive_suggestions", "suggestions",
+  ["power", "brightness", "color_temp", "effect", "hvac_mode", "temperature", "fan_speed", "fan_percentage", "cover_position", "oscillation", "scene"],
+  { confidence: true },
+);
+
+function matchedCatalogNames(mention: string, names: readonly string[], claimed: Array<[number, number]> = []): { names: Set<string>; ranges: Array<[number, number]> } {
+  if (!mention) return { names: new Set(), ranges: claimed };
+  const lower = mention.toLowerCase(), ranges = [...claimed], matched = new Set<string>();
+  for (const name of [...new Set(names.filter(Boolean))].sort((a, b) => b.length - a.length)) {
+    const needle = name.toLowerCase();
+    for (let from = 0; from <= lower.length - needle.length; ) {
+      const idx = lower.indexOf(needle, from);
+      if (idx < 0) break;
+      const end = idx + needle.length;
+      if (!ranges.some(([s, e]) => idx < e && s < end)) { ranges.push([idx, end]); matched.add(name); }
+      from = end;
+    }
+  }
+  return { names: matched, ranges };
 }
 
 /**
@@ -223,7 +266,7 @@ export function buildIntentCatalog(
     aliasToIds.set(alias, [device.id]);
     aliasById.set(device.id, alias);
     if (!aliasToIds.has(device.id)) aliasToIds.set(device.id, [device.id]);
-    if (category !== "valve") {
+    if (category !== "valve" && category !== "cover") {
       allDeviceIds.push(device.id);
     }
     if (category === "light" && device.roomName) {
@@ -282,7 +325,32 @@ export function buildIntentCatalog(
   });
 
   const text = `${PROMPT_DATA_NOTICE}\n${JSON.stringify({ devices: deviceRows, groups: groupRows, scenes: sceneRows })}`;
-  return { text, aliasDevices, criteriaByAlias, aliasToIds };
+  const textFitting = (maxEstimatedTokens: number, mention = "", preferredDeviceIds: ReadonlySet<string> = new Set()): string => {
+    const clean = sanitizePromptText(mention, PROMPT_CONTEXT_LIMIT);
+    const dMeta = deviceRows.map((r, i) => ({ alias: String(r["id"]), name: String(r["name"]), room: String(r["room"]), deviceId: aliasDevices[i]!.device.id, row: JSON.stringify(r) }));
+    const gMeta = groupRows.map((r) => ({ room: r.room, members: r.members, ids: aliasToIds.get(r.id) ?? [], row: JSON.stringify(r) }));
+    const sMeta = sceneRows.map((r) => ({ alias: r.id, name: r.name, row: JSON.stringify(r) }));
+    const dm = matchedCatalogNames(clean, dMeta.map((d) => d.name));
+    const sm = matchedCatalogNames(clean, sMeta.map((s) => s.name), dm.ranges);
+    const rm = matchedCatalogNames(clean, dMeta.map((d) => d.room), sm.ranges);
+    const devA = new Set(dMeta.filter((d) => dm.names.has(d.name)).map((d) => d.alias));
+    const roomA = new Set(dMeta.filter((d) => d.room && rm.names.has(d.room)).map((d) => d.alias));
+    const sceneA = new Set(sMeta.filter((s) => sm.names.has(s.name)).map((s) => s.alias));
+    const cands: Array<{ row: string; p: number; o: number }> = [];
+    let o = 0;
+    for (const d of dMeta) cands.push({ row: d.row, p: devA.has(d.alias) ? 0 : roomA.has(d.alias) ? 2 : preferredDeviceIds.has(d.deviceId) ? 3 : 4, o: o++ });
+    for (const g of gMeta) cands.push({ row: g.row, p: g.room && rm.names.has(g.room) ? 1 : g.members.some((m) => devA.has(m)) ? 2 : g.ids.some((id) => preferredDeviceIds.has(id)) ? 3 : 4, o: o++ });
+    for (const s of sMeta) cands.push({ row: s.row, p: sceneA.has(s.alias) ? 0 : 4, o: o++ });
+    cands.sort((a, b) => a.p - b.p || a.o - b.o);
+    let used = estimatedPromptTokens(`${PROMPT_DATA_NOTICE}\n{"devices":[],"groups":[],"scenes":[]}`);
+    const picked = new Set<string>();
+    for (const c of cands) {
+      const cost = estimatedPromptTokens(c.row) + 1;
+      if (used + cost <= maxEstimatedTokens) { used += cost; picked.add(c.row); }
+    }
+    return `${PROMPT_DATA_NOTICE}\n{"devices":[${dMeta.filter((d) => picked.has(d.row)).map((d) => d.row).join(",")}],"groups":[${gMeta.filter((g) => picked.has(g.row)).map((g) => g.row).join(",")}],"scenes":[${sMeta.filter((s) => picked.has(s.row)).map((s) => s.row).join(",")}]}`;
+  };
+  return { text, aliasDevices, criteriaByAlias, aliasToIds, textFitting };
 }
 
 /** Operations offered to the model, matching macOS `opCriteria` (#38). */
@@ -495,11 +563,16 @@ export function buildProactiveChatRequestBody(
   model: string,
   context: AssistantContext,
   catalog: IntentCatalog,
+  maxCatalogTokens = CHAT_CATALOG_TOKEN_BUDGET,
 ): Record<string, unknown> {
+  const preferred = new Set<string>([
+    ...(context.favoriteDeviceIds ?? []),
+    ...catalog.aliasDevices.filter(({ device }) => device.isOnline && isDeviceActiveOn(device)).map(({ device }) => device.id),
+  ]);
   const system = [
     "你是智能家居主动建议引擎。根据当前时间、室内温湿度、开启中的设备与用户习惯，推荐最多 3 个最值得立即执行的设备调整建议，只输出 JSON，不要解释。",
-    catalog.text,
-    'schema: {"suggestions":[{"device":"id","op":"power|brightness|color_temp|effect|hvac_mode|temperature|fan_speed|oscillation|scene","value":...,"confidence":85}]}',
+    catalog.textFitting(maxCatalogTokens, "", preferred),
+    'schema: {"suggestions":[{"device":"id","op":"power|brightness|color_temp|effect|hvac_mode|temperature|fan_speed|fan_percentage|cover_position|oscillation|scene","value":...,"confidence":85}]}',
     "规则：confidence 为 20-99 的整数置信度；如果当前环境已处于理想状态无需操作，输出 {\"suggestions\":[]}。只能使用上面列出的 id。",
   ].join("\n");
   const userState = `时间：${cleanPromptField(context.timeSummary)}\n环境：${cleanPromptField(context.environmentSummary)}\n开启中：${cleanPromptField(context.activeDevicesSummary)}\n习惯：${cleanPromptField(context.habitSummary)}`;
@@ -512,5 +585,6 @@ export function buildProactiveChatRequestBody(
     temperature: 0,
     max_tokens: 600,
     stream: false,
+    response_format: PROACTIVE_RESPONSE_FORMAT,
   };
 }

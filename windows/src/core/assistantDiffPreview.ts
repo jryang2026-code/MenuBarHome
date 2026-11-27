@@ -76,8 +76,9 @@ function projectToState(device: SmartDevice, intents: readonly DeviceIntent[]): 
       if (op.kind === "power") { k.isOn = op.isOn; k.hvacMode = op.isOn ? (k.hvacMode === "off" ? "cool" : k.hvacMode) : "off"; }
       else if (op.kind === "hvacMode") { k.hvacMode = op.mode; k.isOn = op.mode !== "off"; }
       else if (op.kind === "targetTemperature") { k.isOn = true; k.targetTemperature = op.celsius; }
-    } else if (k.kind === "cover" && op.kind === "power") {
-      k.positionPercent = op.isOn ? 100 : 0;
+    } else if (k.kind === "cover") {
+      if (op.kind === "power") k.positionPercent = op.isOn ? 100 : 0;
+      else if (op.kind === "coverPosition") k.positionPercent = op.percent;
     }
   }
   return summarizeDevice(clone);

@@ -11,7 +11,8 @@ public enum IntentOperation: Codable, Equatable, Sendable {
     case targetTemperature(Double)
     case activateScene            // target is a HomeScene id
     case fanSpeed(String)         // fan preset or air-conditioner fan mode; normalized to the device's own option
-    case fanPercentage(Int)      // 1...100
+    case fanPercentage(Int)       // 1...100
+    case coverPosition(Int)       // 0...100
     case oscillation(Bool)        // fan swing (摇头)
 
     // Relative adjustments ("再暗一点", "调高两度"). IntentValidator.normalize resolves them against the
@@ -321,8 +322,8 @@ public enum IntentDeviceCategory: String, Equatable, Sendable, CaseIterable {
     /// Categories whose state the assistant can change; the rest are omitted from prompts and plans.
     public var isAssistantControllable: Bool {
         switch self {
-        case .light, .climate, .heater, .fan, .airPurifier, .dehumidifier, .diffuser, .plug, .vacuum, .tv, .camera, .valve: return true
-        case .speaker, .fridge, .sensor, .cover, .appliance, .generic: return false
+        case .light, .climate, .heater, .fan, .airPurifier, .dehumidifier, .diffuser, .plug, .vacuum, .tv, .camera, .valve, .cover: return true
+        case .speaker, .fridge, .sensor, .appliance, .generic: return false
         }
     }
 }
@@ -377,6 +378,14 @@ public enum IntentValidator {
             return on ? (s.openWritable ? operation : nil) : (s.closeWritable ? operation : nil)
         case (.power, .tv(let s)):
             return s.powerWritable ? operation : nil
+        case (.power(let on), .cover(let s)):
+            return (on ? (s.openDescription != nil || s.positionWritable) : (s.closeDescription != nil || s.positionWritable)) ? operation : nil
+        case (.coverPosition(let percent), .cover(let s)):
+            let clamped = max(0, min(100, percent))
+            if s.positionWritable || (clamped == 100 && s.openDescription != nil) || (clamped == 0 && s.closeDescription != nil) {
+                return .coverPosition(clamped)
+            }
+            return nil
 
         case (.brightness(let percent), .light(let s)):
             guard s.brightnessWritable else { return nil }
@@ -529,6 +538,10 @@ public enum IntentReply {
             case .activateScene: return L10n.format("执行场景「%@」", "Activated scene \"%@\"", joined)
             case .fanPercentage(let percent):
                 return L10n.format("%@风速调为 %@%", "Set %@ fan speed to %@%", joined, String(percent))
+            case .coverPosition(let percent):
+                if percent == 0 { return L10n.format("关闭%@", "Closed %@", joined) }
+                if percent == 100 { return L10n.format("打开%@", "Opened %@", joined) }
+                return L10n.format("%@开至 %@%", "Set %@ to %@%", joined, String(percent))
             case .fanSpeed(let v):
                 let label = fanSpeedLabel(v)
                 let spaced = !isEn && label.first?.isNumber == true ? " " + label : label
@@ -637,7 +650,7 @@ public struct IntentCatalog: Sendable {
             aliasById[device.id] = alias
             if map[device.id] == nil { map[device.id] = [device.id] }
             let state = PromptText.sanitize(Self.stateSummary(device), limit: PromptText.stateLimit)
-            if category != .valve {
+            if category != .valve && category != .cover {
                 allDeviceIds.append(device.id)
             }
             if category == .light {

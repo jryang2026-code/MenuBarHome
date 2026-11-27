@@ -1,3 +1,4 @@
+import { pinyin } from "pinyin-pro";
 import type {
   AssistantSuggestion,
   DeviceCommand,
@@ -11,10 +12,12 @@ import { deviceAcceptsControlWrites, isDeviceActiveOn } from "../models.js";
 import {
   buildDevicePhrases,
   chineseRoomDeviceIds,
+  cleanRawChineseText,
   CN_BRIGHTNESS_STEP_WORDS,
   CN_BRIGHTNESS_WORDS,
   CN_CATEGORY_WORDS,
   CN_COLOR_TEMPERATURE_WORDS,
+  CN_COVER_POSITION_WORDS,
   CN_FAN_SPEED_WORDS,
   CN_FILLERS,
   CN_HVAC_MODE_WORDS,
@@ -356,8 +359,17 @@ export const IntentValidator = {
         if (k.kind === "appliance") {
           return k.powerPresent && k.powerWritable ? op : null;
         }
+        if (k.kind === "cover") {
+          return (op.isOn ? (k.openDescription !== null || k.positionWritable) : (k.closeDescription !== null || k.positionWritable)) ? op : null;
+        }
         if (k.kind === "vacuum") return k.actionsWritable === false ? null : op;
         return null;
+      }
+      case "coverPosition": {
+        if (k.kind !== "cover" || !Number.isFinite(op.percent)) return null;
+        const clamped = Math.max(0, Math.min(100, Math.round(op.percent)));
+        return (k.positionWritable || (clamped === 100 && k.openDescription !== null) || (clamped === 0 && k.closeDescription !== null))
+          ? { kind: "coverPosition", percent: clamped } : null;
       }
       case "brightness": {
         if (k.kind !== "light" || k.brightnessWritable === false || !Number.isFinite(op.percent)) return null;
@@ -533,7 +545,8 @@ export const IntentValidator = {
             return [{ kind: "setSelectOption", entityId: k.entityId, option: k.pauseDescription }];
           }
           const option = op.isOn ? k.openDescription : k.closeDescription;
-          return option ? [{ kind: "setSelectOption", entityId: k.entityId, option }] : [];
+          if (option) return [{ kind: "setSelectOption", entityId: k.entityId, option }];
+          return k.positionWritable ? [{ kind: "setNumberValue", entityId: k.entityId, value: op.isOn ? 100 : 0 }] : [];
         }
         if (k.kind === "appliance") {
           // The card's switch addresses the service that actually carries power (#300, #4).
@@ -573,6 +586,13 @@ export const IntentValidator = {
         return k.kind === "fan" && normalized?.kind === "fanPercentage"
           ? [{ kind: "setFanPercentage", entityId: k.entityId, percent: normalized.percent }]
           : [];
+      }
+      case "coverPosition": {
+        const normalized = this.normalize(op, device);
+        if (k.kind !== "cover" || normalized?.kind !== "coverPosition") return [];
+        if (k.positionWritable) return [{ kind: "setNumberValue", entityId: k.entityId, value: normalized.percent }];
+        const opt = normalized.percent === 100 ? k.openDescription : normalized.percent === 0 ? k.closeDescription : null;
+        return opt ? [{ kind: "setSelectOption", entityId: k.entityId, option: opt }] : [];
       }
       case "fanSpeed":
         if (k.kind === "fan" && k.availablePresetModes.length > 0)
@@ -675,6 +695,8 @@ export const IntentReply = {
         return `已${targetNames}设为 ${op.celsius}°C`;
       case "fanPercentage":
         return `已将${targetNames}风速调为 ${op.percent}%`;
+      case "coverPosition":
+        return op.percent === 0 ? `已关闭${targetNames}` : op.percent === 100 ? `已打开${targetNames}` : `已${targetNames}开至 ${op.percent}%`;
       case "fanSpeed":
         return `已${targetNames}风速调为 ${this.fanSpeedLabel(op.speed)}`;
       case "oscillation":
@@ -716,6 +738,8 @@ function impliedCategories(ops: readonly IntentOperation[]): Set<IntentCategory>
       case "fanPercentage":
       case "oscillation":
         return new Set(["fan"]);
+      case "coverPosition":
+        return new Set(["cover"]);
       case "power":
       case "activateScene":
         continue;
@@ -738,6 +762,7 @@ function dispatchRank(op: IntentOperation): number {
     case "fanPercentage":
     case "fanSpeed": return 7;
     case "oscillation": return 8;
+    case "coverPosition": return 9;
   }
 }
 
@@ -752,7 +777,7 @@ function reconcileOps(ops: readonly IntentOperation[]): IntentOperation[] | null
   }
   const p = byRank.get(0);
   if (p?.kind === "power" && !p.isOn && byRank.size > 1) return null;
-  if (p?.kind === "power" && p.isOn && (byRank.has(1) || byRank.has(3) || byRank.has(4) || byRank.has(5))) {
+  if (p?.kind === "power" && p.isOn && (byRank.has(1) || byRank.has(3) || byRank.has(4) || byRank.has(5) || byRank.has(9))) {
     byRank.delete(0);
   }
   return Array.from(byRank.keys())
@@ -760,27 +785,40 @@ function reconcileOps(ops: readonly IntentOperation[]): IntentOperation[] | null
     .map((k) => byRank.get(k)!);
 }
 
+export type LocalIntentMissReason = "unknownDevice" | "unsupportedAction" | "unrecognizedPhrasing";
+export type LocalIntentParseOutcome =
+  | { readonly kind: "matched"; readonly plan: IntentPlan }
+  | { readonly kind: "missed"; readonly reason: LocalIntentMissReason };
+
+function recordMiss(miss: { reason: LocalIntentMissReason } | undefined, next: LocalIntentMissReason): void {
+  if (!miss) return;
+  const rank = (r: LocalIntentMissReason) => (r === "unsupportedAction" ? 2 : r === "unknownDevice" ? 1 : 0);
+  if (rank(next) > rank(miss.reason)) miss.reason = next;
+}
+
 function buildPlanFromCandidates(
   candidates: readonly SmartDevice[],
   mustAcceptIds: ReadonlySet<string>,
   ops: readonly IntentOperation[],
   devices: readonly SmartDevice[],
-  scenes: readonly HomeScene[]
+  scenes: readonly HomeScene[],
+  miss?: { reason: LocalIntentMissReason },
 ): IntentPlan | null {
+  if (candidates.length === 0) { recordMiss(miss, "unknownDevice"); return null; }
   const intents: DeviceIntent[] = [];
   for (const dev of candidates) {
     const normOps = ops
       .map((o) => IntentValidator.normalize(o, dev))
       .filter((o): o is IntentOperation => o !== null);
     if (normOps.length !== ops.length) {
-      if (mustAcceptIds.has(dev.id)) return null;
+      if (mustAcceptIds.has(dev.id)) { recordMiss(miss, "unsupportedAction"); return null; }
       continue;
     }
     for (const no of normOps) {
       intents.push({ targetId: dev.id, operation: no });
     }
   }
-  if (intents.length === 0) return null;
+  if (intents.length === 0) { recordMiss(miss, "unsupportedAction"); return null; }
   return {
     intents,
     reply: IntentReply.describe(intents, devices, scenes),
@@ -819,6 +857,7 @@ const BARE_CATEGORY_NOUNS: Readonly<Record<IntentCategory, string>> = {
   tv: "电视",
   camera: "摄像机",
   valve: "阀门",
+  cover: "窗帘",
   other: "设备",
 };
 
@@ -1053,6 +1092,9 @@ const EN_CATEGORY_WORDS: ReadonlyArray<readonly [string, IntentCategory]> = [
   ["water valves", "valve"], ["water valve", "valve"],
   ["gas valves", "valve"], ["gas valve", "valve"],
   ["valves", "valve"], ["valve", "valve"],
+  ["garage door", "cover"], ["window opener", "cover"],
+  ["curtains", "cover"], ["curtain", "cover"], ["blinds", "cover"], ["blind", "cover"],
+  ["shades", "cover"], ["shade", "cover"], ["drapes", "cover"], ["drape", "cover"], ["covers", "cover"], ["cover", "cover"],
 ];
 
 const EN_FILLERS = [
@@ -1111,6 +1153,7 @@ function extractEnglishNumericOps(state: { rest: string }): IntentOperation[] {
 
   const numericPatterns: ReadonlyArray<readonly [RegExp, (val: number) => IntentOperation]> = [
     [/(?<=\bfan)\s+(?:speed\s+)?(?:to\s+)?([0-9]{1,3})\s*(?:%|percent)(?![a-z0-9])/g, (v) => ({ kind: "fanPercentage", percent: v })],
+    [/(?<=\b(?:curtains?|blinds?|shades?|drapes?|covers?|garage door|window opener))\s+(?:position\s+)?(?:to\s+)?([0-9]{1,3})\s*(?:%|percent)(?![a-z0-9])/g, (v) => ({ kind: "coverPosition", percent: Math.round(v) })],
     [/(?<![a-z0-9])(\d{4})\s*k(?![a-z0-9])/g, (v) => ({ kind: "colorTemperature", kelvin: Math.round(v) })],
     [/(?<![a-z0-9])(\d{1,3})\s*(?:%|percent)(?![a-z0-9])/g, (v) => ({ kind: "brightness", percent: Math.round(v) })],
     [/(?<![a-z0-9])(\d{1,2}(?:\.\d)?)\s*(?:degrees?\s*celsius|degrees?|deg|℃|°c|°)(?![a-z0-9])/g, (v) => ({ kind: "targetTemperature", celsius: v })],
@@ -1168,12 +1211,60 @@ function sceneConfirmationPlan(
   };
 }
 
+function normalizeFuzzy(raw: string): string {
+  return toSimplifiedChinese(raw).normalize("NFKD").replace(/\p{M}/gu, "").replace(/[^\p{L}\p{N}]/gu, "").toLowerCase();
+}
+function pinyinSyms(raw: string): string[] | null {
+  if (!/\p{Script=Han}/u.test(raw)) return null;
+  const arr = pinyin(raw, { toneType: "none", type: "array" }).map((s) => s.replace(/[^a-z0-9]/gi, "").toLowerCase()).filter(Boolean);
+  return arr.length > 0 ? arr : null;
+}
+function matchPinyinOrHomophone(query: string, devices: readonly SmartDevice[], roomDeviceIds: ReadonlySet<string>): DevicePhraseEntry | null {
+  const q = normalizeFuzzy(query);
+  if (Array.from(q).length < 2) return null;
+  const isAscii = /^[a-z0-9]+$/.test(q), qSyms = isAscii ? null : pinyinSyms(q);
+  if (!isAscii && (!qSyms || qSyms.length < 2)) return null;
+  const qFull = qSyms ? qSyms.join("") : "";
+  const hit = (raw: string): boolean => {
+    const norm = normalizeFuzzy(raw);
+    if (Array.from(norm).length < 2) return false;
+    if (isAscii) {
+      if (norm === q) return true;
+      const s = pinyinSyms(norm);
+      return s !== null && (s.join("") === q || s.map((x) => x[0] ?? "").join("") === q);
+    }
+    const s = pinyinSyms(norm);
+    return s !== null && qSyms !== null && s.length === qSyms.length && s.join("") === qFull;
+  };
+  const full: DevicePhraseEntry["candidates"][number][] = [], base: DevicePhraseEntry["candidates"][number][] = [];
+  for (const dev of roomDeviceIds.size > 0 ? devices.filter((d) => roomDeviceIds.has(d.id)) : devices) {
+    if (!dev.name) continue;
+    const raw = cleanRawChineseText(dev.name);
+    if (hit(raw)) { full.push({ id: dev.id, rawPhrase: raw, kind: "full" }); continue; }
+    const nName = toSimplifiedChinese(raw), nRoom = toSimplifiedChinese(cleanRawChineseText(dev.roomName));
+    if (nRoom && nName.startsWith(nRoom)) {
+      const stripped = nName.slice(nRoom.length);
+      if (Array.from(stripped).length >= 2 && hit(stripped)) base.push({ id: dev.id, rawPhrase: stripped, kind: "base" });
+    }
+  }
+  const chosen = full.length > 0 ? full : base;
+  return chosen.length > 0 ? { phrase: q, kind: full.length > 0 ? "full" : "base", ids: chosen.map((c) => c.id), candidates: chosen } : null;
+}
+function isLikelyUnknownDevice(raw: string, english: boolean): boolean {
+  const norm = normalizeFuzzy(raw), len = Array.from(norm).length;
+  if (len < 2 || len > (english ? 16 : 10)) return false;
+  return english
+    ? !["i", "me", "my", "we", "want", "feel", "sleep", "movie", "work", "ready", "home", "break", "prepare", "because", "and", "or", "but", "something", "cozy"].includes(norm)
+    : !["我", "你", "他", "她", "想", "要", "觉得", "有点", "感觉", "怎么", "为什么", "准备", "因为", "所以", "但是", "还是", "或者", "适合", "帮", "心情", "睡觉", "起床", "出门", "回家", "看电影", "写代码", "休息", "舒服", "冷", "热"].some((f) => norm.includes(f));
+}
+
 function parseChineseDeviceCommand(
   text: string,
   devices: readonly SmartDevice[],
   scenes: readonly HomeScene[],
   options: LocalIntentParseOptions,
   rawUtterance: string = text,
+  miss?: { reason: LocalIntentMissReason },
 ): IntentPlan | null {
   const panelRoom = options.panelRoom ?? null;
   const state = { rest: text };
@@ -1204,6 +1295,9 @@ function parseChineseDeviceCommand(
   for (const word of longestFirst(Object.keys(CN_FAN_SPEED_WORDS))) {
     if (consumeChinesePhrase(word, state)) rawOps.push({ kind: "fanSpeed", speed: CN_FAN_SPEED_WORDS[word]! });
   }
+  for (const word of longestFirst(Object.keys(CN_COVER_POSITION_WORDS))) {
+    if (consumeChinesePhrase(word, state)) rawOps.push({ kind: "coverPosition", percent: CN_COVER_POSITION_WORDS[word]! });
+  }
   for (const word of longestFirst(Object.keys(CN_BRIGHTNESS_STEP_WORDS))) {
     if (consumeChinesePhrase(word, state)) rawOps.push({ kind: "brightnessStep", delta: CN_BRIGHTNESS_STEP_WORDS[word]! });
   }
@@ -1229,19 +1323,24 @@ function parseChineseDeviceCommand(
   for (const word of longestFirst(CN_FILLERS)) {
     consumeChinesePhrase(word, state);
   }
-  if (Array.from(state.rest).some((ch) => ch !== CONSUMED_MARKER)) {
-    return null;
-  }
-
-  const ops = reconcileOps(rawOps);
-  if (!ops) return null;
-
   const roomDeviceIds = new Set<string>();
   for (const w of matchedRooms) {
     const ids = chineseRoomDeviceIds(w, devices, panelRoom);
     if (ids === null) return null;
     for (const id of ids) roomDeviceIds.add(id);
   }
+  const leftover = state.rest.split(CONSUMED_MARKER).filter(Boolean);
+  if (leftover.length > 0) {
+    const fuzzy = matchedEntries.length === 0 && rawOps.length > 0 && leftover.length === 1 ? matchPinyinOrHomophone(leftover[0]!, devices, roomDeviceIds) : null;
+    if (fuzzy) { matchedEntries.push(fuzzy); state.rest = CONSUMED_MARKER; }
+    else {
+      if (reconcileOps(rawOps) !== null && matchedEntries.length === 0 && leftover.length === 1 && isLikelyUnknownDevice(leftover[0]!, false)) recordMiss(miss, "unknownDevice");
+      return null;
+    }
+  }
+
+  const ops = reconcileOps(rawOps);
+  if (!ops) return null;
   const isTurningOff = ops.length === 1 && ops[0]?.kind === "power" && !ops[0].isOn;
   const mustAcceptIds = new Set<string>();
   let candidates: SmartDevice[] = [];
@@ -1255,7 +1354,7 @@ function parseChineseDeviceCommand(
         matchedRooms.length === 0
           ? initialCandidates
           : initialCandidates.filter((c) => roomDeviceIds.has(c.id));
-      if (narrowedCandidates.length === 0) return null;
+      if (narrowedCandidates.length === 0) { recordMiss(miss, "unknownDevice"); return null; }
       const roomResolvedSet = new Set(
         disambiguateRoomDevices(
           narrowedCandidates.map((c) => devById.get(c.id)).filter((d): d is SmartDevice => d !== undefined),
@@ -1303,31 +1402,49 @@ function parseChineseDeviceCommand(
         const cat = deviceCategory(dev);
         if (!dev.isOnline || !isAssistantControllable(cat) || !deviceAcceptsControlWrites(dev)) return false;
         if (cat === "valve" && !wanted?.has("valve")) return false;
+        if (cat === "cover" && !wanted?.has("cover")) return false;
         if (onlyActive && !isDeviceActiveOn(dev)) return false;
         if (matchedRooms.length > 0 && !roomDeviceIds.has(dev.id)) return false;
         if (wanted && !wanted.has(cat)) return false;
         return true;
       });
+      if (candidates.length === 0) { recordMiss(miss, "unknownDevice"); return null; }
       if (!onlyActive && !hasScope && matchedRooms.length === 0 && candidates.length !== 1) {
         return null;
       }
     }
   }
 
-  return buildPlanFromCandidates(candidates, mustAcceptIds, ops, devices, scenes);
+  return buildPlanFromCandidates(candidates, mustAcceptIds, ops, devices, scenes, miss);
 }
 
 export const LocalIntentParser = {
+  parseWithDiagnostic(
+    utterance: string,
+    devices: readonly SmartDevice[],
+    scenes: readonly HomeScene[],
+    options: LocalIntentParseOptions = {},
+  ): LocalIntentParseOutcome {
+    const miss: { reason: LocalIntentMissReason } = { reason: "unrecognizedPhrasing" };
+    const plan = this.parse(utterance, devices, scenes, options, miss);
+    return plan ? { kind: "matched", plan } : { kind: "missed", reason: miss.reason };
+  },
+
   parse(
     utterance: string,
     devices: readonly SmartDevice[],
     scenes: readonly HomeScene[],
     options: LocalIntentParseOptions = {},
+    miss?: { reason: LocalIntentMissReason },
   ): IntentPlan | null {
     const text = normalizeChineseUtterance(utterance);
     if (!text) return null;
     const query = parseStateQuery(utterance);
-    if (query) return answerStateQuery(query, devices);
+    if (query) {
+      const plan = answerStateQuery(query, devices);
+      if (!plan) recordMiss(miss, "unknownDevice");
+      return plan;
+    }
     const politeAction = removingPoliteWrappers(text);
     const deviceText = isPoliteActionQuestion(text) ? politeAction.slice(0, -1) : politeAction;
 
@@ -1349,12 +1466,12 @@ export const LocalIntentParser = {
     }
 
     if (!/[\u4e00-\u9fff]/.test(utterance) && /[a-zA-Z]/.test(utterance)) {
-      const englishPlan = this.parseEnglish(utterance, devices, scenes, options);
+      const englishPlan = this.parseEnglish(utterance, devices, scenes, options, miss);
       if (englishPlan) return englishPlan;
     }
 
-    const devicePlan = parseChineseDeviceCommand(text, devices, scenes, options, utterance)
-      ?? (deviceText !== text ? parseChineseDeviceCommand(deviceText, devices, scenes, options, utterance) : null);
+    const devicePlan = parseChineseDeviceCommand(text, devices, scenes, options, utterance, miss)
+      ?? (deviceText !== text ? parseChineseDeviceCommand(deviceText, devices, scenes, options, utterance, miss) : null);
     if (devicePlan) return devicePlan;
 
     if (Array.from(sceneCore).length >= 2) {
@@ -1375,7 +1492,7 @@ export const LocalIntentParser = {
     }
 
     if (/[a-zA-Z]/.test(utterance)) {
-      return this.parseEnglish(utterance, devices, scenes, options);
+      return this.parseEnglish(utterance, devices, scenes, options, miss);
     }
     return null;
   },
@@ -1385,6 +1502,7 @@ export const LocalIntentParser = {
     devices: readonly SmartDevice[],
     scenes: readonly HomeScene[],
     options: LocalIntentParseOptions = {},
+    miss?: { reason: LocalIntentMissReason },
   ): IntentPlan | null {
     const panelRoom = options.panelRoom ?? null;
     const lower = utterance
@@ -1522,6 +1640,10 @@ export const LocalIntentParser = {
       if (consumeEnglishPhrase(p, state)) rawOps.push({ kind: "hvacMode", mode: val });
     }
 
+    for (const [p, val] of [["halfway open", 50], ["half open", 50], ["halfway", 50]] as const) {
+      if (consumeEnglishPhrase(p, state)) rawOps.push({ kind: "coverPosition", percent: val });
+    }
+
     const powerPhrases: ReadonlyArray<readonly [string, boolean]> = [
       ["turn on", true], ["switch on", true], ["power on", true], ["enable", true], ["open", true],
       ["turn off", false], ["switch off", false], ["power off", false], ["shut off", false], ["disable", false], ["close", false],
@@ -1542,13 +1664,6 @@ export const LocalIntentParser = {
       consumeEnglishPhrase(filler, state);
     }
 
-    if (state.rest.replaceAll(CONSUMED_MARKER, "").trim().length > 0) {
-      return null;
-    }
-
-    const ops = reconcileOps(rawOps);
-    if (!ops) return null;
-
     const roomDeviceIds = new Set<string>();
     for (const key of matchedRoomKeys) {
       const aliases = EN_ROOM_ALIASES[key] ?? [key];
@@ -1565,13 +1680,30 @@ export const LocalIntentParser = {
       }
     }
 
+    const leftoverTokens = state.rest.replaceAll(CONSUMED_MARKER, " ").trim().split(/\s+/).filter(Boolean);
+    if (leftoverTokens.length > 0) {
+      const devMap = new Map(devices.map((d) => [d.id, d]));
+      const fuzzy = explicitGroups.length === 0 && rawOps.length > 0 ? matchPinyinOrHomophone(leftoverTokens.join(""), devices, roomDeviceIds) : null;
+      const resolved = fuzzy ? fuzzy.ids.map((id) => devMap.get(id)).filter((d): d is SmartDevice => d !== undefined) : [];
+      if (resolved.length > 0) { explicitGroups.push(resolved); state.rest = CONSUMED_MARKER; }
+      else {
+        if (reconcileOps(rawOps) !== null && explicitGroups.length === 0 && leftoverTokens.length <= 2 && leftoverTokens.every((w) => isLikelyUnknownDevice(w, true))) {
+          recordMiss(miss, "unknownDevice");
+        }
+        return null;
+      }
+    }
+
+    const ops = reconcileOps(rawOps);
+    if (!ops) return null;
+
     const explicitIds: string[] = [];
     for (const group of explicitGroups) {
       const narrowed =
         matchedRoomKeys.length === 0
           ? group
           : group.filter((dev) => roomDeviceIds.has(dev.id));
-      if (narrowed.length === 0) return null;
+      if (narrowed.length === 0) { recordMiss(miss, "unknownDevice"); return null; }
       const resolved = disambiguateRoomDevices(narrowed, panelRoom);
       if (resolved.length === 0) return null;
       for (const id of resolved) {
@@ -1613,17 +1745,19 @@ export const LocalIntentParser = {
           const cat = deviceCategory(dev);
           if (!dev.isOnline || !isAssistantControllable(cat) || !deviceAcceptsControlWrites(dev)) return false;
           if (cat === "valve" && !wanted?.has("valve")) return false;
+          if (cat === "cover" && !wanted?.has("cover")) return false;
           if (onlyActive && !isDeviceActiveOn(dev)) return false;
           if (matchedRoomKeys.length > 0 && !roomDeviceIds.has(dev.id)) return false;
           if (wanted && !wanted.has(cat)) return false;
           return true;
         });
+        if (candidates.length === 0) { recordMiss(miss, "unknownDevice"); return null; }
         if (!onlyActive && !hasScope && matchedRoomKeys.length === 0 && candidates.length !== 1) {
           return null;
         }
       }
     }
 
-    return buildPlanFromCandidates(candidates, mustAcceptIds, ops, devices, scenes);
+    return buildPlanFromCandidates(candidates, mustAcceptIds, ops, devices, scenes, miss);
   },
 };
