@@ -143,9 +143,15 @@ export function extractMiDeviceIdentities(records: readonly MiDeviceRecord[], sy
 ): Record<string, DeviceSourceIdentity> { const byDid = new Map<string, MiDeviceRecord>();
   for (const rec of records) { if (!byDid.has(rec.did)) byDid.set(rec.did, rec);
   }
-  const out: Record<string, DeviceSourceIdentity> = {}; for (const device of synthesized.devices) { const rec =
-      byDid.get(device.id) ?? byDid.get(stripTrackSuffix(device.id));
-    const did = rec?.did ?? stripTrackSuffix(device.id);
+  const out: Record<string, DeviceSourceIdentity> = {}; for (const device of synthesized.devices) {
+    const slash = device.id.indexOf("/");
+    const unscopedId = slash >= 0 ? device.id.slice(slash + 1) : device.id;
+    const rec =
+      byDid.get(device.id) ??
+      byDid.get(stripTrackSuffix(device.id)) ??
+      byDid.get(unscopedId) ??
+      byDid.get(stripTrackSuffix(unscopedId));
+    const did = rec?.did ?? stripTrackSuffix(unscopedId);
     const macs = rec && !rec.splitParentDid && rec.mac ? [rec.mac] : []; out[device.id] = makeDeviceSourceIdentity({
       dids: did ? [did] : [],
       macAddresses: macs,
@@ -155,7 +161,18 @@ export function extractMiDeviceIdentities(records: readonly MiDeviceRecord[], sy
       kindTag: device.kind.kind,
     });
   }
-  return out; } function readTuplePairs(raw: unknown): Array<[string, string]> { if (!Array.isArray(raw)) return [];
+  return out; }
+
+export function extractBuiltInDeviceMacs(
+  identities: Readonly<Record<string, DeviceSourceIdentity>> | null | undefined,
+): Record<string, readonly string[]> {
+  const out: Record<string, readonly string[]> = {};
+  if (!identities) return out;
+  for (const [id, identity] of Object.entries(identities)) {
+    if (identity.macAddresses.length > 0) out[id] = identity.macAddresses;
+  }
+  return out;
+} function readTuplePairs(raw: unknown): Array<[string, string]> { if (!Array.isArray(raw)) return [];
   const pairs: Array<[string, string]> = []; for (const item of raw) { if (Array.isArray(item) && item.length >= 2) {
       const k = typeof item[0] === "string" ? item[0] : ""; const v = typeof item[1] === "string" ? item[1] : "";
       if (k && v) pairs.push([k, v]);
@@ -381,6 +398,7 @@ export interface MergedSmartDevice extends AccountScopedSmartDevice { readonly s
 export interface DeviceMergeResult {
   readonly home: Omit<SynthesizedHome, "devices"> & { readonly devices: MergedSmartDevice[] };
   readonly routes: Readonly<Record<string, DeviceMergeRoute>>;
+  readonly deviceIdentities: Readonly<Record<string, DeviceSourceIdentity>>;
   readonly pollCapturedEpochs?: Readonly<Record<string, number>>;
   readonly deviceBackends: Readonly<Record<string, HomeBackend>>;
   readonly pairedDeviceIds: ReadonlySet<string>;
@@ -815,6 +833,7 @@ export const DeviceDeduplicator = {
     collectRoomIdentities(miInput?.home);
 
     const mergedDevices: MergedSmartDevice[] = []; const routes: Record<string, DeviceMergeRoute> = {};
+    const deviceIdentities: Record<string, DeviceSourceIdentity> = {};
     const deviceBackends: Record<string, HomeBackend> = {}; const pairedDeviceIds = new Set<string>();
     const miCanonicalIds: Record<string, string> = {}; const haCanonicalIds: Record<string, string> = {};
     const preferenceAdoptions: Record<string, string> = {};
@@ -930,6 +949,20 @@ export const DeviceDeduplicator = {
         fallbackLabel,
         menuTitle: currentSourceMenuTitle(card.winner.backend, pinned, fallbackActive, options.languagePreference),
       };
+      const sourceIdentities = [card.winner.identity, card.other?.identity].filter(
+        (ident): ident is DeviceSourceIdentity => ident != null,
+      );
+      if (sourceIdentities.length > 0) {
+        deviceIdentities[canonicalId] = makeDeviceSourceIdentity({
+          dids: sourceIdentities.flatMap((ident) => ident.dids),
+          macAddresses: sourceIdentities.flatMap((ident) => ident.macAddresses),
+          uniqueIds: sourceIdentities.flatMap((ident) => ident.uniqueIds),
+          model: model || card.winner.identity?.model || card.other?.identity?.model || "",
+          name: name || card.winner.identity?.name || card.other?.identity?.name || "",
+          roomName: roomName || card.winner.identity?.roomName || card.other?.identity?.roomName || "",
+          kindTag: mergedCard.kind.kind,
+        });
+      }
       deviceBackends[canonicalId] = card.winner.backend;
     }
 
@@ -1005,6 +1038,7 @@ export const DeviceDeduplicator = {
         ...(Object.keys(mergedFacets).length > 0 ? { deviceFacets: mergedFacets } : {}),
       },
       routes,
+      deviceIdentities,
       pollCapturedEpochs: Object.fromEntries(Object.entries(routes).flatMap(([id, route]) => {
         const captured = (route.backend === "homeAssistant" ? haInput : miInput)?.pollCapturedEpoch;
         return captured === undefined ? [] : [[id, captured]];

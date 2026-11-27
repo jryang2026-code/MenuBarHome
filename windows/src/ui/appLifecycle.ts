@@ -423,6 +423,7 @@ export async function clearHostSessionAndDualSourceState(
     appDiagnosticsLog.clear();
     host.dualSourceCoordinator?.reset(false);
     host.dualSourceCoordinator = null;
+    host.builtInDeviceMacs = {};
     await clearNativeCanonicalRegistry().catch(() => {});
     host.dualSourceEnabledOverride = null;
     if (host.settings) {

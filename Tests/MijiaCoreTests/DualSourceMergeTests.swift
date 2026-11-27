@@ -1452,4 +1452,31 @@ struct DualSourceMergeTests {
         #expect(result.home.devices.map(\.id) == ["ha-lone"])
         #expect(result.home.preferenceAdoptions.isEmpty)
     }
+
+    @Test("Dual-source merge preserves source MAC identities under canonical card IDs for TV bridge dedup (#571)")
+    @MainActor
+    func dualSourcePreservesDeviceIdentitiesForTVBridgeDedup() throws {
+        let tvSpec = TVSpec(mediaEntityId: "media_player.living_tv", state: "on", volumePercent: 20)
+        let haTV = SmartDevice(id: "ha-tv-1", name: "客厅大屏", roomId: "living", roomName: "客厅", model: "xiaomi.tv.e1", isOnline: true, kind: .tv(tvSpec))
+        let miTV = SmartDevice(id: "888000888", name: "小米客厅电视", roomId: "mi_living", roomName: "客厅", model: "xiaomi.tv.e1", isOnline: true, kind: .tv(tvSpec))
+        let miOnlyTV = SmartDevice(id: "999000999", name: "卧室电视", roomId: "bedroom", roomName: "卧室", model: "xiaomi.tv.s1", isOnline: true, kind: .tv(tvSpec))
+        let haHome = makeHome(devices: [haTV], identities: [haTV.id: makeIdentity(dids: ["888000888"], macs: ["AA:BB:CC:DD:EE:01"], model: haTV.model, name: haTV.name, roomName: haTV.roomName, kind: .tv)])
+        let miHome = makeHome(devices: [miTV, miOnlyTV], identities: [
+            miTV.id: makeIdentity(dids: ["888000888"], macs: ["AA:BB:CC:DD:EE:02"], model: miTV.model, name: miTV.name, roomName: miTV.roomName, kind: .tv),
+            miOnlyTV.id: makeIdentity(dids: ["999000999"], macs: ["11:22:33:44:55:66"], model: miOnlyTV.model, name: miOnlyTV.name, roomName: miOnlyTV.roomName, kind: .tv)
+        ])
+        let result = DeviceDeduplicator.merge(homeAssistant: haHome, xiaomiCloud: miHome)
+        #expect(result.home.deviceIdentities["ha-tv-1"]?.macAddresses == ["aabbccddee01", "aabbccddee02"])
+        #expect(result.home.deviceIdentities["999000999"]?.macAddresses == ["112233445566"])
+        let builtInMACs = result.home.deviceIdentities.compactMapValues { $0.macAddresses.isEmpty ? nil : $0.macAddresses }
+        let bridgedPaired = SmartDevice(id: "adapter:com.menubarhome.tv-bridge:living", name: "Sony Living", roomId: "living", roomName: "客厅", model: "tv", isOnline: true, kind: .tv(tvSpec))
+        let bridgedMiOnly = SmartDevice(id: "adapter:com.menubarhome.tv-bridge:bed", name: "Bedroom Mi TV", roomId: "bedroom", roomName: "卧室", model: "tv", isOnline: true, kind: .tv(tvSpec))
+        let bridgedUnique = SmartDevice(id: "adapter:com.menubarhome.tv-bridge:study", name: "书房电视", roomId: "study", roomName: "书房", model: "tv", isOnline: true, kind: .tv(tvSpec))
+        let surviving = HomeStore.nonHijackingAdapterRows(
+            [bridgedPaired, bridgedMiOnly, bridgedUnique], builtIn: result.home.devices,
+            adapterMACs: [bridgedPaired.id: ["AA-BB-CC-DD-EE-02"], bridgedMiOnly.id: ["11:22:33:44:55:66"], bridgedUnique.id: ["01:02:03:04:05:06"]],
+            builtInMACs: builtInMACs
+        )
+        #expect(surviving.map(\.id) == [bridgedUnique.id])
+    }
 }
