@@ -1,5 +1,6 @@
 import { pinyin } from "pinyin-pro";
 import { ManualControlPolicy, isSwitchedLightDevice } from "./assistant.js";
+import type { AutomationRunEntry } from "./automationRun.js";
 import {
   allOffTargets,
   deviceCanTogglePower,
@@ -52,6 +53,11 @@ export interface RaycastDeviceCapabilities {
   readonly positionWritable: boolean;
   readonly positionPercent?: number;
   readonly canMoveCover: boolean;
+  readonly volumeWritable?: boolean;
+  readonly volumePercent?: number;
+  readonly muteWritable?: boolean;
+  readonly isMuted?: boolean;
+  readonly canPlayPause?: boolean;
   readonly isHighRisk: boolean;
 }
 
@@ -108,6 +114,9 @@ export interface RaycastEnvironmentReadingItem {
   readonly pinyinInitials: string;
 }
 
+export interface RaycastAutomationRunItem { readonly ruleId: string; readonly trigger: string; readonly result: "executed" | "skipped"; readonly skipReason?: string; readonly at: string; }
+export interface RaycastAutomationStatus { readonly enabled: boolean; readonly ruleCount: number; readonly enabledRuleCount: number; readonly executedCount: number; readonly skippedCount: number; readonly recentRuns: RaycastAutomationRunItem[]; }
+
 export interface RaycastSnapshot {
   readonly schemaVersion: number;
   readonly generatedAt: string;
@@ -123,6 +132,7 @@ export interface RaycastSnapshot {
   readonly climate: RaycastEnvironmentReadingItem[];
   readonly environmentReadings: RaycastEnvironmentReadingItem[];
   readonly lastCommandFeedback?: RaycastCommandFeedback;
+  readonly automationStatus?: RaycastAutomationStatus;
 }
 
 export interface BuildRaycastSnapshotInput {
@@ -154,6 +164,23 @@ export interface BuildRaycastSnapshotInput {
   readonly allOffOverrides?: Readonly<Record<string, boolean>>;
   readonly undoSummary?: { readonly title: string; readonly count: number } | null;
   readonly lastCommandFeedback?: RaycastCommandFeedback;
+  readonly automationStatus?: RaycastAutomationStatus;
+}
+
+/** Sanitized automation summary (controlled trigger/skip enums only; no titles, SSIDs, or credentials). */
+export function buildSanitizedAutomationStatus(input: {
+  readonly enabled: boolean; readonly rules: readonly { readonly isEnabled: boolean }[]; readonly history: readonly AutomationRunEntry[];
+}): RaycastAutomationStatus {
+  const executedCount = input.history.filter((e) => e.result === "executed").length;
+  return {
+    enabled: input.enabled, ruleCount: input.rules.length,
+    enabledRuleCount: input.rules.filter((r) => r.isEnabled).length,
+    executedCount, skippedCount: input.history.length - executedCount,
+    recentRuns: input.history.slice(0, 15).map((e) => ({
+      ruleId: e.ruleId, trigger: e.trigger, result: e.result,
+      ...(e.result === "skipped" ? { skipReason: e.reason } : {}), at: new Date(e.time).toISOString(),
+    })),
+  };
 }
 
 /**
@@ -323,6 +350,9 @@ function buildDeviceCapabilities(device: SmartDevice): RaycastDeviceCapabilities
         canMoveCover: k.openDescription !== null && k.closeDescription !== null,
         isHighRisk: isHighRisk || k.subtype === "garage-door" || k.subtype === "window-opener",
       };
+    case "speaker":
+    case "tv":
+      return { ...base, volumeWritable: k.volumeWritable, ...(k.volumePresent !== false ? { volumePercent: k.volumePercent } : {}), muteWritable: Boolean(k.muteSwitchEntityId), isMuted: Boolean(k.isMuted), canPlayPause: k.playback?.canPlayPause === true };
     default:
       return base;
   }
@@ -686,6 +716,7 @@ export function buildRaycastSnapshot(input: BuildRaycastSnapshotInput): RaycastS
     climate: readingItems,
     environmentReadings: readingItems,
     ...(input.lastCommandFeedback ? { lastCommandFeedback: input.lastCommandFeedback } : {}),
+    ...(input.automationStatus ? { automationStatus: input.automationStatus } : {}),
   };
 }
 

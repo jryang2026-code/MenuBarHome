@@ -1117,9 +1117,9 @@ export function bindSettingsEvents(host: SettingsEventsHost): void {
         [
           copied
             ? tr3(
-                "已复制 MCP 配置（不含令牌）。把 args 里的路径换成你电脑上 scripts\\mijia-mcp 的位置，再粘贴到 Claude、Cursor 等工具的配置里。",
-                "已複製 MCP 設定（不含權杖）。把 args 裡的路徑換成你電腦上 scripts\\mijia-mcp 的位置，再貼到 Claude、Cursor 等工具的設定裡。",
-                "Copied the MCP config (no token). Point args at scripts\\mijia-mcp on this PC, then paste it into Claude, Cursor or a similar tool.",
+                "已复制开箱即用的 MCP 配置（不含令牌），可直接粘贴到 Claude Desktop、Cursor 等客户端。",
+                "已複製開箱即用的 MCP 設定（不含權杖），可直接貼上至 Claude Desktop、Cursor 等用戶端。",
+                "Copied ready-to-use MCP config (no token). Paste it directly into Claude Desktop, Cursor, or another MCP client.",
               )
             : tr3("无法写入剪贴板，请稍后重试。", "無法寫入剪貼簿，請稍後重試。", "Could not write to the clipboard; try again."),
         ],

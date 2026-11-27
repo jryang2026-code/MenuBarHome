@@ -675,7 +675,7 @@ struct AppURLCommandTests {
     @Test("Shared app_url_command_golden.json corpus matches macOS parser, scene resolver, bridge token gate, and temperature snap (#46)")
     func matchesAppURLCommandGoldenCorpus() throws {
         struct ParseExpected: Decodable {
-            let kind: String; let deviceId: String?; let name: String?; let text: String?; let isOn: Bool?
+            let kind: String; let deviceId: String?; let name: String?; let text: String?; let isOn: Bool?; let isMuted: Bool?
             let percent: Int?; let kelvin: Int?; let celsius: Double?; let preset: String?
             let controlsDevice: Bool; let token: String?; let requestId: String?
         }
@@ -708,6 +708,10 @@ struct AppURLCommandTests {
             case "colorTemp": #expect(env.command == .colorTemp(deviceId: exp.deviceId ?? "", kelvin: exp.kelvin ?? 0))
             case "temperature": #expect(env.command == .temperature(deviceId: exp.deviceId ?? "", celsius: exp.celsius ?? 0))
             case "fan": #expect(env.command == .fan(deviceId: exp.deviceId ?? "", percent: exp.percent, preset: exp.preset))
+            case "coverPosition": #expect(env.command == .coverPosition(deviceId: exp.deviceId ?? "", percent: exp.percent ?? 0))
+            case "volume": #expect(env.command == .volume(deviceId: exp.deviceId ?? "", percent: exp.percent ?? 0))
+            case "mute": #expect(env.command == .mute(deviceId: exp.deviceId ?? "", isMuted: exp.isMuted ?? false))
+            case "mediaPlayPause": #expect(env.command == .mediaPlayPause(deviceId: exp.deviceId ?? ""))
             case "focus": #expect(env.command == .focus(deviceId: exp.deviceId ?? ""))
             default: Issue.record("Unknown kind \(exp.kind)")
             }
@@ -829,6 +833,54 @@ struct AppURLCommandTests {
         #expect(!urlResult.isError)
         let updatedCommands = await provider.executedCommands
         #expect(updatedCommands.last == .setFanPresetMode(entityId: "fan.readonly_speed", presetMode: "Auto"))
+    }
+
+    @Test("MCP 2.0 cover-position, media controls, sanitized automationStatus, and zero-placeholder MCP config path")
+    @MainActor
+    func mcpV2CoverMediaSnapshotAndConfigPath() async throws {
+        func mkCover(_ id: String, _ name: String, _ sub: CoverSubtype, _ pos: Int) -> SmartDevice {
+            SmartDevice(id: id, name: name, roomId: "living", roomName: "客厅", model: "lumi.\(sub.rawValue)", isOnline: true, kind: .cover(CoverSpec(entityId: "cover.\(id)", subtype: sub, positionPercent: pos, positionWritable: true, openDescription: "Open", closeDescription: "Close")))
+        }
+        let tv = SmartDevice(id: "dev_tv", name: "客厅电视", roomId: "living", roomName: "客厅", model: "xiaomi.tv.s1", isOnline: true, kind: .tv(TVSpec(mediaEntityId: "media_player.tv", state: "on", volumePercent: 40, isMuted: false, muteSwitchEntityId: "switch.tv_mute", volumeWritable: true, playback: MediaPlaybackState(state: .paused, canPlayPause: true))))
+        let provider = MockHomeProvider(snapshot: SynthesizedHome(rooms: [RoomArea(id: "living", name: "客厅", sortOrder: 0)], devices: [mkCover("curtain", "客厅窗帘", .curtain, 80), mkCover("garage", "车库门", .garageDoor, 100), mkCover("window", "书房开窗器", .windowOpener, 50), tv]))
+        let store = HomeStore(provider: provider, defaults: InMemoryUserDefaults())
+        try await store.waitForTestSnapshot()
+
+        #expect(!(await store.executeRaycastCoverPosition(deviceId: "curtain", percent: 45)).isError)
+        #expect((await provider.executedCommands).last == .setNumberValue(entityId: "cover.curtain", value: 45))
+        var confirmCalls = 0
+        store.manualControlConfirmationHandler = { _ in confirmCalls += 1; return false }
+        for (id, pct) in [("garage", 0), ("garage", 50), ("window", 0), ("window", 50)] {
+            #expect((await store.executeRaycastCoverPosition(deviceId: id, percent: pct)).isError)
+        }
+        #expect(confirmCalls == 4)
+        store.manualControlConfirmationHandler = { _ in true }
+        #expect(!(await store.executeRaycastCoverPosition(deviceId: "window", percent: 0)).isError)
+        #expect((await provider.executedCommands).last == .setNumberValue(entityId: "cover.window", value: 0))
+
+        #expect(!(await store.executeRaycastVolume(deviceId: "dev_tv", percent: 35)).isError)
+        #expect((await provider.executedCommands).last == .mediaSetVolume(entityId: "media_player.tv", volumeLevel: 0.35))
+        #expect(!(await store.executeRaycastMute(deviceId: "dev_tv", isMuted: true)).isError)
+        let afterMute = (await provider.executedCommands).count
+        let repeatMute = await store.executeRaycastMute(deviceId: "dev_tv", isMuted: true)
+        let countAfterRepeat = (await provider.executedCommands).count
+        #expect(!repeatMute.isError && countAfterRepeat == afterMute)
+        #expect(!(await store.executeRaycastMediaPlayPause(deviceId: "dev_tv")).isError)
+        #expect((await provider.executedCommands).last == .mediaPlayPause(entityId: "media_player.tv"))
+
+        let rule = AutomationRule(trigger: .calendarMeetingStartingSoon, action: .quickAction(.lightsOff))
+        store.recordAutomationRun(rule, at: Date(), reason: .cooldown)
+        let snap = store.buildRaycastSnapshot()
+        let tvSnap = try #require(snap.devices.first { $0.id == "dev_tv" })
+        #expect(tvSnap.capabilities.volumeWritable == true && tvSnap.capabilities.muteWritable == true && tvSnap.capabilities.canPlayPause == true)
+        #expect(snap.automationStatus?.skippedCount == 1 && snap.automationStatus?.recentRuns.first?.skipReason == "cooldown")
+
+        let bundled = "/Applications/MenuBarHome.app/Contents/Resources/cli/mijia-mcp"; let devPath = "/tmp/repo/scripts/mijia-mcp"
+        #expect(CompanionIntegrationConfig.resolveMCPCommandPath(bundleResourceURL: URL(fileURLWithPath: "/Applications/MenuBarHome.app/Contents/Resources", isDirectory: true), executableURL: nil, currentDirectoryURL: URL(fileURLWithPath: "/tmp/repo", isDirectory: true), pathEnvironment: "/opt/bin", isExecutable: { $0 == bundled || $0 == devPath }) == bundled)
+        #expect(CompanionIntegrationConfig.resolveMCPCommandPath(bundleResourceURL: nil, executableURL: nil, currentDirectoryURL: URL(fileURLWithPath: "/tmp/repo/sub", isDirectory: true), pathEnvironment: "/opt/bin", isExecutable: { $0 == devPath }) == devPath)
+        #expect(CompanionIntegrationConfig.resolveMCPCommandPath(bundleResourceURL: nil, executableURL: nil, currentDirectoryURL: URL(fileURLWithPath: "/tmp/none", isDirectory: true), pathEnvironment: "/opt/bin", isExecutable: { $0 == "/opt/bin/mijia-mcp" }) == "/opt/bin/mijia-mcp")
+        let cfg = CompanionIntegrationConfig.mcpConfigJSON(snapshotURL: URL(fileURLWithPath: "/tmp/snap.json"), mcpCommandPath: bundled)
+        #expect(cfg.contains(bundled) && !cfg.contains("/ABSOLUTE/PATH/TO/"))
     }
 }
 

@@ -51,6 +51,8 @@ public struct RaycastDeviceCapabilities: Codable, Equatable, Sendable {
     public var positionWritable: Bool
     public var positionPercent: Int?
     public var canMoveCover: Bool
+    public var volumeWritable, muteWritable, isMuted, canPlayPause: Bool?
+    public var volumePercent: Int?
     public var isHighRisk: Bool
 
     public init(
@@ -78,6 +80,7 @@ public struct RaycastDeviceCapabilities: Codable, Equatable, Sendable {
         positionWritable: Bool = false,
         positionPercent: Int? = nil,
         canMoveCover: Bool = false,
+        volumeWritable: Bool? = nil, volumePercent: Int? = nil, muteWritable: Bool? = nil, isMuted: Bool? = nil, canPlayPause: Bool? = nil,
         isHighRisk: Bool = false
     ) {
         self.canTogglePower = canTogglePower
@@ -104,6 +107,8 @@ public struct RaycastDeviceCapabilities: Codable, Equatable, Sendable {
         self.positionWritable = positionWritable
         self.positionPercent = positionPercent
         self.canMoveCover = canMoveCover
+        self.volumeWritable = volumeWritable; self.volumePercent = volumePercent
+        self.muteWritable = muteWritable; self.isMuted = isMuted; self.canPlayPause = canPlayPause
         self.isHighRisk = isHighRisk
     }
 }
@@ -263,6 +268,26 @@ public struct RaycastClimateItem: Codable, Equatable, Sendable {
     }
 }
 
+/// Sanitized automation run record (controlled enums only; no calendar titles, window names, SSIDs, or credentials).
+public struct RaycastAutomationRunItem: Codable, Equatable, Sendable {
+    public var ruleId, trigger, result, at: String
+    public var skipReason: String?
+    public init(ruleId: String, trigger: String, result: String, skipReason: String? = nil, at: String) {
+        self.ruleId = ruleId; self.trigger = trigger; self.result = result; self.skipReason = skipReason; self.at = at
+    }
+}
+
+/// Sanitized automation health and run/skip summary exported to `raycast-snapshot.json`.
+public struct RaycastAutomationStatus: Codable, Equatable, Sendable {
+    public var enabled: Bool
+    public var ruleCount, enabledRuleCount, executedCount, skippedCount: Int
+    public var recentRuns: [RaycastAutomationRunItem]
+    public init(enabled: Bool, ruleCount: Int, enabledRuleCount: Int, executedCount: Int, skippedCount: Int, recentRuns: [RaycastAutomationRunItem] = []) {
+        self.enabled = enabled; self.ruleCount = ruleCount; self.enabledRuleCount = enabledRuleCount
+        self.executedCount = executedCount; self.skippedCount = skippedCount; self.recentRuns = recentRuns
+    }
+}
+
 /// Versioned snapshot written by `MenuBarHome` for `raycast-mijia` to read without touching credentials.
 public struct RaycastSnapshot: Codable, Equatable, Sendable {
     public static let currentSchemaVersion = 1
@@ -278,6 +303,7 @@ public struct RaycastSnapshot: Codable, Equatable, Sendable {
     public var climate: [RaycastClimateItem]
     public var environmentReadings: [RaycastClimateItem]
     public var lastCommandFeedback: RaycastCommandFeedback?
+    public var automationStatus: RaycastAutomationStatus?
 
     public init(
         schemaVersion: Int = Self.currentSchemaVersion,
@@ -290,7 +316,8 @@ public struct RaycastSnapshot: Codable, Equatable, Sendable {
         scenes: [RaycastSceneItem],
         climate: [RaycastClimateItem],
         environmentReadings: [RaycastClimateItem],
-        lastCommandFeedback: RaycastCommandFeedback? = nil
+        lastCommandFeedback: RaycastCommandFeedback? = nil,
+        automationStatus: RaycastAutomationStatus? = nil
     ) {
         self.schemaVersion = schemaVersion
         self.updatedAt = updatedAt
@@ -303,6 +330,7 @@ public struct RaycastSnapshot: Codable, Equatable, Sendable {
         self.climate = climate
         self.environmentReadings = environmentReadings
         self.lastCommandFeedback = lastCommandFeedback
+        self.automationStatus = automationStatus
     }
 
     func hasSameExportedContent(as other: RaycastSnapshot) -> Bool {
@@ -351,14 +379,40 @@ public struct CompanionCheckReport: Equatable, Sendable {
 /// Builds copyable configuration snippets for local companions without editing external files
 /// or exposing `bridgeToken` / home credentials (ADR-0013, P6a-M).
 public enum CompanionIntegrationConfig {
-    public static let placeholderMCPCommandPath = "/ABSOLUTE/PATH/TO/MenuBarHome/scripts/mijia-mcp"
+    public static let defaultMCPCommandFallback = "mijia-mcp"
+
+    /// Resolves `mijia-mcp`: bundled `.app/Contents/Resources/cli/mijia-mcp` -> dev `scripts/mijia-mcp` -> installed `.app` -> `PATH`.
+    public static func resolveMCPCommandPath(
+        bundleResourceURL: URL? = Bundle.main.resourceURL,
+        executableURL: URL? = Bundle.main.executableURL,
+        currentDirectoryURL: URL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true),
+        homeDirectoryURL: URL = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true),
+        pathEnvironment: String? = ProcessInfo.processInfo.environment["PATH"],
+        isExecutable: (String) -> Bool = { FileManager.default.isExecutableFile(atPath: $0) }
+    ) -> String? {
+        var candidates: [String] = bundleResourceURL.map { [$0.appendingPathComponent("cli/mijia-mcp").standardizedFileURL.path] } ?? []
+        for seed in [executableURL?.deletingLastPathComponent(), currentDirectoryURL].compactMap({ $0 }) {
+            var dir = seed.standardizedFileURL
+            for _ in 0..<6 {
+                candidates.append(dir.appendingPathComponent("scripts/mijia-mcp").path)
+                let parent = dir.deletingLastPathComponent()
+                if parent.path == dir.path { break }
+                dir = parent
+            }
+        }
+        candidates.append("/Applications/MenuBarHome.app/Contents/Resources/cli/mijia-mcp")
+        candidates.append(homeDirectoryURL.appendingPathComponent("Applications/MenuBarHome.app/Contents/Resources/cli/mijia-mcp").standardizedFileURL.path)
+        candidates.append(contentsOf: (pathEnvironment ?? "").split(separator: ":").filter { !$0.isEmpty }.map { URL(fileURLWithPath: String($0), isDirectory: true).appendingPathComponent("mijia-mcp").standardizedFileURL.path })
+        var seen: Set<String> = []
+        return candidates.first { seen.insert($0).inserted && isExecutable($0) }
+    }
 
     public static func mcpConfigJSON(
         snapshotURL: URL = RaycastSnapshotExporter.defaultSnapshotURL,
         mcpCommandPath: String? = nil
     ) -> String {
         let trimmed = mcpCommandPath?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let command = (trimmed?.isEmpty == false) ? trimmed! : placeholderMCPCommandPath
+        let command = (trimmed?.isEmpty == false) ? trimmed! : (resolveMCPCommandPath() ?? defaultMCPCommandFallback)
         let payload: [String: Any] = [
             "mcpServers": ["menubarhome": ["command": command, "env": ["MENUBARMIJIA_SNAPSHOT_PATH": snapshotURL.path]]]
         ]
@@ -929,6 +983,17 @@ extension HomeStore {
             )
         }
 
+        let automationRules = automationRuleStore.load()
+        let automationStatus = RaycastAutomationStatus(
+            enabled: eventAutomationEnabled, ruleCount: automationRules.count,
+            enabledRuleCount: automationRules.filter(\.isEnabled).count,
+            executedCount: automationRunHistory.filter { $0.result == .executed }.count,
+            skippedCount: automationRunHistory.filter { $0.result == .skipped }.count,
+            recentRuns: automationRunHistory.prefix(15).map {
+                RaycastAutomationRunItem(ruleId: $0.ruleId.uuidString, trigger: $0.trigger.rawValue, result: $0.result.rawValue, skipReason: $0.reason?.rawValue, at: Self.raycastISO8601String(from: $0.time))
+            }
+        )
+
         return RaycastSnapshot(
             schemaVersion: RaycastSnapshot.currentSchemaVersion,
             updatedAt: isoNow,
@@ -940,7 +1005,8 @@ extension HomeStore {
             scenes: sceneItems,
             climate: climateItems,
             environmentReadings: climateItems,
-            lastCommandFeedback: lastRaycastCommandFeedback
+            lastCommandFeedback: lastRaycastCommandFeedback,
+            automationStatus: automationStatus
         )
     }
 
@@ -1216,6 +1282,10 @@ extension HomeStore {
                 canMoveCover: isWritable && s.canMove,
                 isHighRisk: isHighRisk || s.subtype == .garageDoor || s.subtype == .windowOpener
             )
+        case .speaker(let s):
+            return RaycastDeviceCapabilities(canTogglePower: isWritable && device.kind.canTogglePower, volumeWritable: isWritable && s.volumeWritable, volumePercent: s.volumePresent ? s.volumePercent : nil, muteWritable: isWritable && s.muteSwitchEntityId != nil, isMuted: s.isMuted, canPlayPause: isWritable && s.playback?.canPlayPause == true, isHighRisk: isHighRisk)
+        case .tv(let s):
+            return RaycastDeviceCapabilities(canTogglePower: isWritable && device.kind.canTogglePower, volumeWritable: isWritable && s.volumeWritable, volumePercent: s.volumePresent ? s.volumePercent : nil, muteWritable: isWritable && (LGWebOSProtocol.isLGEntity(s.mediaEntityId) || s.muteSwitchEntityId != nil), isMuted: s.isMuted, canPlayPause: isWritable && s.playback?.canPlayPause == true, isHighRisk: isHighRisk)
         default:
             return RaycastDeviceCapabilities(
                 canTogglePower: isWritable && device.kind.canTogglePower,

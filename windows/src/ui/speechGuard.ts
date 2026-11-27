@@ -11,9 +11,13 @@ import { correctSpeechTranscript } from "../core/assistant.js";
 import { miSessionExpiryState } from "../core/miCloud/session.js";
 import { hasDetailDrawer, type SmartDevice } from "../core/models.js";
 import { planQuickAction, quickActionTitle, type QuickActionId } from "../core/quickActions.js";
+import { AutomationRuleStore } from "../core/automationEngine.js";
+import { AutomationRunHistory } from "../core/automationRun.js";
+import { defaultSafetyStorage } from "../core/safetyAndHealth.js";
 import {
   RaycastBridgeTokenManager,
   buildRaycastSnapshot,
+  buildSanitizedAutomationStatus,
   formatDynamicTraySummary,
   type RaycastCommandFeedback,
   type RaycastSnapshot,
@@ -965,6 +969,14 @@ export function getLatestRaycastSnapshotForHost(host: MenuMijiaWindowsApp): Rayc
         }
       : null;
 
+  const automationEngine = host.activityCenter?.automationEngine;
+  const fallbackStorage = automationEngine ? null : defaultSafetyStorage();
+  const automationStatus = buildSanitizedAutomationStatus({
+    enabled: host.settings.eventAutomationEnabled !== false,
+    rules: automationEngine ? automationEngine.store.load() : new AutomationRuleStore(fallbackStorage!).load(),
+    history: automationEngine ? automationEngine.history.load() : new AutomationRunHistory(fallbackStorage!).load(),
+  });
+
   return buildRaycastSnapshot({
     connectionMode: host.settings.connectionMode,
     selectedHomeId: host.settings.selectedHomeId,
@@ -981,6 +993,7 @@ export function getLatestRaycastSnapshotForHost(host: MenuMijiaWindowsApp): Rayc
     allOffOverrides: host.settings.allOffOverrides,
     undoSummary: activeUndo,
     ...(state.lastCommandFeedback ? { lastCommandFeedback: state.lastCommandFeedback } : {}),
+    ...(automationStatus ? { automationStatus } : {}),
   });
 }
 
@@ -1192,6 +1205,7 @@ interface NativeCompanionStatus {
   readonly snapshotExists?: boolean;
   readonly snapshotModifiedMs?: number | null;
   readonly forwardingReady?: boolean;
+  readonly mcpScriptPath?: string | null;
 }
 
 async function readNativeCompanionStatus(): Promise<NativeCompanionStatus | null> {
@@ -1206,29 +1220,26 @@ async function readNativeCompanionStatus(): Promise<NativeCompanionStatus | null
 }
 
 /**
- * MCP client config for 复制配置. It names the snapshot path only: the `bridgeToken` stays in the
- * owner-only snapshot file and is never put on the shared clipboard.
+ * MCP client config for 复制配置. Resolves the bundled or dev `mijia-mcp` path (falling back to
+ * `mijia-mcp` on PATH rather than an unusable placeholder); `bridgeToken` stays in the snapshot.
  */
-export function buildCompanionConfigText(snapshotPath: string | null): string {
+export function buildCompanionConfigText(
+  snapshotPath: string | null,
+  mcpScriptPath?: string | null,
+): string {
   const env = snapshotPath ? { MENUBARMIJIA_SNAPSHOT_PATH: snapshotPath } : {};
-  return JSON.stringify(
-    {
-      mcpServers: {
-        menubarhome: {
-          command: "python",
-          args: [tr3("<MenuBarHome 源码目录>\\scripts\\mijia-mcp", "<MenuBarHome 原始碼目錄>\\scripts\\mijia-mcp", "<MenuBarHome source folder>\\scripts\\mijia-mcp")],
-          env,
-        },
-      },
-    },
-    null,
-    2,
-  );
+  const resolved = mcpScriptPath?.trim() || "";
+  const server = !resolved
+    ? { command: "mijia-mcp", env }
+    : /\.(?:exe|cmd|bat)$/i.test(resolved)
+      ? { command: resolved, env }
+      : { command: "python", args: [resolved], env };
+  return JSON.stringify({ mcpServers: { menubarhome: server } }, null, 2);
 }
 
 export async function copyCompanionConfig(host: MenuMijiaWindowsApp): Promise<boolean> {
   const status = await readNativeCompanionStatus();
-  const text = buildCompanionConfigText(status?.snapshotPath ?? null);
+  const text = buildCompanionConfigText(status?.snapshotPath ?? null, status?.mcpScriptPath ?? null);
   const nav = host.root.ownerDocument?.defaultView?.navigator ?? globalThis.navigator;
   try {
     if (typeof nav?.clipboard?.writeText !== "function") return false;

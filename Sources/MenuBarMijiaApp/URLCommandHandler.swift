@@ -23,6 +23,10 @@ final class URLCommandHandler {
         case colorTemp(SmartDevice, Int)
         case temperature(SmartDevice, Double)
         case fan(SmartDevice, Int?, String?)
+        case coverPosition(SmartDevice, Int)
+        case volume(SmartDevice, Int)
+        case mute(SmartDevice, Bool)
+        case mediaPlayPause(SmartDevice)
         case focus(SmartDevice)
         case focusRoom(RoomArea)
 
@@ -306,6 +310,10 @@ final class URLCommandHandler {
         case .fan(let deviceId, let percent, let preset):
             guard let device = Self.device(deviceId, in: store) else { return nil }
             return .fan(device, percent, preset)
+        case .coverPosition(let id, let pct): return Self.device(id, in: store).map { .coverPosition($0, pct) }
+        case .volume(let id, let pct): return Self.device(id, in: store).map { .volume($0, pct) }
+        case .mute(let id, let muted): return Self.device(id, in: store).map { .mute($0, muted) }
+        case .mediaPlayPause(let id): return Self.device(id, in: store).map { .mediaPlayPause($0) }
         case .focus(let deviceId):
             guard let device = Self.device(deviceId, in: store) else { return nil }
             return .focus(device)
@@ -324,7 +332,9 @@ final class URLCommandHandler {
     private func resolvedCapabilityRejectionMessage(for resolved: Resolved, store: HomeStore) -> String? {
         switch resolved {
         case .toggle(let device), .power(let device, _), .brightness(let device, _),
-             .colorTemp(let device, _), .temperature(let device, _), .fan(let device, _, _), .focus(let device):
+             .colorTemp(let device, _), .temperature(let device, _), .fan(let device, _, _),
+             .coverPosition(let device, _), .volume(let device, _), .mute(let device, _),
+             .mediaPlayPause(let device), .focus(let device):
             return store.capabilityControlRejectionMessage(forDeviceId: device.id)
         case .focusRoom:
             // Navigating to a room writes nothing, so the capability gate has nothing to refuse.
@@ -341,7 +351,9 @@ final class URLCommandHandler {
         case .toggle(let id):
             return store.capabilityControlRejectionMessage(forDeviceId: id, allowNameMatch: true)
         case .power(let id, _), .brightness(let id, _),
-             .colorTemp(let id, _), .temperature(let id, _), .fan(let id, _, _), .focus(let id):
+             .colorTemp(let id, _), .temperature(let id, _), .fan(let id, _, _),
+             .coverPosition(let id, _), .volume(let id, _), .mute(let id, _),
+             .mediaPlayPause(let id), .focus(let id):
             return store.capabilityControlRejectionMessage(forDeviceId: id)
         case .focusRoom:
             return nil
@@ -412,6 +424,14 @@ final class URLCommandHandler {
                 "把\(device.name)风速切换到「\(preset ?? "")」",
                 "Set \(device.name) fan mode to \"\(preset ?? "")\""
             )
+        case .coverPosition(let device, let percent):
+            return L10n.tr("把\(device.name)位置调到 \(percent)%", "Set \(device.name) position to \(percent)%")
+        case .volume(let device, let percent):
+            return L10n.tr("把\(device.name)音量调到 \(percent)%", "Set \(device.name) volume to \(percent)%")
+        case .mute(let device, let isMuted):
+            return isMuted ? L10n.format("将「%@」静音", "Mute \"%@\"", device.name) : L10n.format("取消「%@」静音", "Unmute \"%@\"", device.name)
+        case .mediaPlayPause(let device):
+            return L10n.format("切换「%@」播放/暂停", "Toggle play/pause on \"%@\"", device.name)
         case .focus(let device):
             return L10n.format("打开「%@」详情", "Open \"%@\" details", device.name)
         case .focusRoom(let room):
@@ -629,6 +649,10 @@ final class URLCommandHandler {
         case .fan(let device, let percent, let preset):
             let outcome = await store.executeRaycastFan(deviceId: device.id, percent: percent, preset: preset)
             finish(outcome.message, isError: outcome.isError, envelope: envelope, store: store)
+        case .coverPosition(let d, let p): let o = await store.executeRaycastCoverPosition(deviceId: d.id, percent: p); finish(o.message, isError: o.isError, envelope: envelope, store: store)
+        case .volume(let d, let p): let o = await store.executeRaycastVolume(deviceId: d.id, percent: p); finish(o.message, isError: o.isError, envelope: envelope, store: store)
+        case .mute(let d, let m): let o = await store.executeRaycastMute(deviceId: d.id, isMuted: m); finish(o.message, isError: o.isError, envelope: envelope, store: store)
+        case .mediaPlayPause(let d): let o = await store.executeRaycastMediaPlayPause(deviceId: d.id); finish(o.message, isError: o.isError, envelope: envelope, store: store)
         case .focus(let device):
             let outcome = store.focusRaycastDevice(deviceId: device.id)
             finish(outcome.message, isError: outcome.isError, envelope: envelope, store: store)
@@ -664,6 +688,10 @@ final class URLCommandHandler {
         case .fan(let deviceId, let percent, let preset):
             if let percent { return "fan:\(deviceId):\(percent)" }
             return "fan:\(deviceId):\(preset ?? "")"
+        case .coverPosition(let deviceId, let percent): return "cover-position:\(deviceId):\(percent)"
+        case .volume(let deviceId, let percent): return "volume:\(deviceId):\(percent)"
+        case .mute(let deviceId, let isMuted): return "mute:\(deviceId):\(isMuted ? "on" : "off")"
+        case .mediaPlayPause(let deviceId): return "media-play-pause:\(deviceId)"
         case .focus(let deviceId): return "focus:\(deviceId)"
         case .focusRoom(let roomId): return "focus-room:\(roomId)"
         }

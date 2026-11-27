@@ -118,6 +118,10 @@ if [ ! -d "$RESOURCE_BUNDLE" ]; then
     exit 1
 fi
 cp -R "$RESOURCE_BUNDLE" "$APP_DIR/Contents/Resources/MenuBarMijia_MijiaCore.bundle"
+mkdir -p "$APP_DIR/Contents/Resources/cli"
+cp "$ROOT/scripts/mijia" "$APP_DIR/Contents/Resources/cli/mijia"
+cp "$ROOT/scripts/mijia-mcp" "$APP_DIR/Contents/Resources/cli/mijia-mcp"
+chmod 755 "$APP_DIR/Contents/Resources/cli/mijia" "$APP_DIR/Contents/Resources/cli/mijia-mcp"
 
 if [ "${PTZ_BRIDGE:-1}" = "1" ]; then
     PATCHED_GO2RTC="$ROOT/scripts/go2rtc-ptz/out/go2rtc-universal"

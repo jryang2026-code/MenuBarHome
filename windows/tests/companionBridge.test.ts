@@ -1183,4 +1183,48 @@ describe("Queued external URLs: data-source switch, hidden panel & lock probes",
     assert.equal(updatedLamp.kind.kind === "light" ? updatedLamp.kind.isOn : true, false);
     assert.equal(app.settings.allOffOverrides["cover.garage_door"], true, "old override is preserved");
   });
+
+  it("dispatches cover-position (confirming garage/window even at 0%), media controls, and sanitized automationStatus", async () => {
+    const app = startDemoApp({ enableRaycastIntegration: true, allowDirectURLControl: true });
+    await flushAsync();
+    const token = getActiveRaycastBridgeTokenForHost(app)!;
+    const mkCover = (id: string, name: string, subtype: "curtain" | "garage-door" | "window-opener", pos: number): SmartDevice => ({
+      id, name, roomId: "living", roomName: "客厅", model: `lumi.${subtype}`, isOnline: true,
+      kind: { kind: "cover", entityId: id, subtype, positionPercent: pos, positionWritable: true, openDescription: "Open", closeDescription: "Close", pauseDescription: null, batteryPercent: null, faultText: null, motion: "stopped" },
+    });
+    const tv: SmartDevice = { id: "tv.living", name: "客厅电视", roomId: "living", roomName: "客厅", model: "xiaomi.tv.s1", isOnline: true, kind: { kind: "tv", mediaEntityId: "media_player.tv", remoteEntityId: null, state: "on", volumePercent: 40, volumeWritable: true, isMuted: false, muteSwitchEntityId: "switch.tv_mute", currentSource: null, availableSources: [], turnOnButtonId: null, isScreenOff: false, playback: { state: "paused", title: null, subtitle: null, appName: null, artworkURL: null, durationSec: null, positionSec: null, positionUpdatedAt: null, playbackRate: 1, canPlayPause: true, canSeek: false, canSkipTrack: false } } };
+    app.devices = [mkCover("cover.curtain", "客厅窗帘", "curtain", 80), mkCover("cover.garage", "车库门", "garage-door", 100), mkCover("cover.window", "书房开窗器", "window-opener", 60), tv];
+    app.render(); await flushAsync();
+
+    await enqueueIncomingOpenUrl(app, `menumijia://cover-position?device=cover.curtain&percent=45&id=req_c1&token=${token}`);
+    await flushAsync();
+    assert.equal(app.devices[0]?.kind.kind === "cover" ? app.devices[0].kind.positionPercent : null, 45);
+    for (const hazardousId of ["cover.garage", "cover.window"]) {
+      await enqueueIncomingOpenUrl(app, `menumijia://cover-position?device=${hazardousId}&percent=0&id=req_${hazardousId}&token=${token}`);
+      await flushAsync();
+      assert.equal(pendingHighRiskDeviceId(app), hazardousId);
+      assert.equal(getLatestRaycastSnapshotForHost(app).lastCommandFeedback?.isError, true);
+      app.pendingHighRisk = null;
+    }
+
+    const sent: DeviceCommand[] = [];
+    const origApply = app.applyCommand.bind(app);
+    app.applyCommand = async (cmd: DeviceCommand, readBack?: boolean) => { sent.push(cmd); return origApply(cmd, readBack); };
+    await enqueueIncomingOpenUrl(app, `menumijia://volume?device=tv.living&percent=35&id=req_vol&token=${token}`);
+    await enqueueIncomingOpenUrl(app, `menumijia://mute?device=tv.living&muted=true&id=req_m1&token=${token}`);
+    const afterMute = sent.length;
+    await enqueueIncomingOpenUrl(app, `menumijia://mute?device=tv.living&muted=true&id=req_m2&token=${token}`);
+    assert.equal(sent.length, afterMute, "repeat mute is an idempotent no-op");
+    await enqueueIncomingOpenUrl(app, `menumijia://media-play-pause?device=tv.living&id=req_pp&token=${token}`);
+    assert.ok(sent.some((c) => c.kind === "mediaSetVolume" && Math.abs(c.level - 0.35) < 1e-6));
+    assert.ok(sent.some((c) => c.kind === "setSwitch" && c.entityId === "switch.tv_mute" && c.isOn === true));
+    assert.ok(sent.some((c) => c.kind === "mediaPlayPause" && c.entityId === "media_player.tv"));
+
+    app.activityCenter?.automationEngine.history.append({ ruleId: "rule-1", trigger: "calendarMeetingStartingSoon", result: "skipped", reason: "cooldown", time: Date.now() });
+    const snap = getLatestRaycastSnapshotForHost(app);
+    const tvSnap = snap.devices.find((d) => d.id === "tv.living");
+    assert.equal(tvSnap?.capabilities.volumeWritable && tvSnap?.capabilities.muteWritable && tvSnap?.capabilities.canPlayPause, true);
+    assert.equal(snap.automationStatus?.skippedCount, 1);
+    assert.equal(snap.automationStatus?.recentRuns[0]?.skipReason, "cooldown");
+  });
 });

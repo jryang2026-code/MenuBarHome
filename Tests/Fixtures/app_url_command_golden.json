@@ -108,6 +108,66 @@
       }
     },
     {
+      "url": "menumijia://cover-position?device=dev_curtain&percent=35",
+      "expected": {
+        "kind": "coverPosition",
+        "deviceId": "dev_curtain",
+        "percent": 35,
+        "controlsDevice": true
+      }
+    },
+    {
+      "url": "menumijia://cover_position?device=dev_curtain&value=0",
+      "expected": {
+        "kind": "coverPosition",
+        "deviceId": "dev_curtain",
+        "percent": 0,
+        "controlsDevice": true
+      }
+    },
+    {
+      "url": "menumijia://volume?device=dev_tv&percent=42",
+      "expected": {
+        "kind": "volume",
+        "deviceId": "dev_tv",
+        "percent": 42,
+        "controlsDevice": true
+      }
+    },
+    {
+      "url": "menumijia://mute?device=dev_tv&muted=true",
+      "expected": {
+        "kind": "mute",
+        "deviceId": "dev_tv",
+        "isMuted": true,
+        "controlsDevice": true
+      }
+    },
+    {
+      "url": "menumijia://media-play-pause?device=dev_speaker",
+      "expected": {
+        "kind": "mediaPlayPause",
+        "deviceId": "dev_speaker",
+        "controlsDevice": true
+      }
+    },
+    {
+      "url": "menumijia://cover-position?device=dev_curtain&percent=101",
+      "expected": null
+    },
+    {
+      "url": "menumijia://volume?device=dev_tv&percent=-1",
+      "expected": null
+    },
+    {
+      "url": "menumijia://mute?device=dev_tv&muted=maybe",
+      "expected": null
+    },
+    {
+      "url": "menumijia://media-play-pause",
+      "expected": null
+    },
+    {
       "url": "menumijia://focus?device=dev_fan&token=0123456789abcdef0123456789abcdef&id=req-42",
       "expected": {
         "kind": "focus",

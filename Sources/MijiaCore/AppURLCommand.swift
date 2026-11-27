@@ -24,6 +24,14 @@ public enum AppURLCommand: Equatable, Sendable {
     case temperature(deviceId: String, celsius: Double)
     /// `menumijia://fan?device=<id>&percent=<1…100>` or `&preset=<mode>`
     case fan(deviceId: String, percent: Int?, preset: String?)
+    /// `menumijia://cover-position?device=<id>&percent=0…100`
+    case coverPosition(deviceId: String, percent: Int)
+    /// `menumijia://volume?device=<id>&percent=0…100`
+    case volume(deviceId: String, percent: Int)
+    /// `menumijia://mute?device=<id>&muted=true|false`
+    case mute(deviceId: String, isMuted: Bool)
+    /// `menumijia://media-play-pause?device=<id>`
+    case mediaPlayPause(deviceId: String)
     /// `menumijia://focus?device=<id>` opens the panel on that device's drawer.
     case focus(deviceId: String)
     /// `menumijia://focus?room=<id>` opens the panel filtered to that room. Spotlight uses it for
@@ -34,7 +42,9 @@ public enum AppURLCommand: Equatable, Sendable {
     public var controlsDevice: Bool {
         switch self {
         case .focus, .focusRoom: return false
-        case .toggle, .scene, .ask, .power, .brightness, .colorTemp, .temperature, .fan: return true
+        case .toggle, .scene, .ask, .power, .brightness, .colorTemp, .temperature, .fan,
+             .coverPosition, .volume, .mute, .mediaPlayPause:
+            return true
         }
     }
 }
@@ -221,6 +231,22 @@ public enum AppURLParser {
             if rawPreset != nil, preset == nil { return nil }
             guard (percent != nil) != (preset != nil) else { return nil }
             command = .fan(deviceId: deviceId, percent: percent, preset: preset)
+        case "coverposition":
+            guard let deviceId = query["device"], deviceId.count <= maximumNameLength,
+                  let percent = integer(query["percent"] ?? query["value"], in: brightnessRange) else { return nil }
+            command = .coverPosition(deviceId: deviceId, percent: percent)
+        case "volume":
+            guard let deviceId = query["device"], deviceId.count <= maximumNameLength,
+                  let percent = integer(query["percent"] ?? query["value"], in: brightnessRange) else { return nil }
+            command = .volume(deviceId: deviceId, percent: percent)
+        case "mute":
+            guard let deviceId = query["device"], deviceId.count <= maximumNameLength,
+                  let raw = query["muted"] ?? query["on"] ?? query["state"],
+                  let isMuted = boolean(raw) else { return nil }
+            command = .mute(deviceId: deviceId, isMuted: isMuted)
+        case "mediaplaypause":
+            guard let deviceId = query["device"], deviceId.count <= maximumNameLength else { return nil }
+            command = .mediaPlayPause(deviceId: deviceId)
         case "focus":
             // One route, two targets: `device` keeps the documented behaviour, `room` is the
             // Spotlight room hit. Both only navigate, so neither reaches a device write. A link

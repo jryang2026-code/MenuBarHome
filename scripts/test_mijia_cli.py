@@ -798,7 +798,7 @@ class MijiaMcpTests(unittest.TestCase):
         listed = mijia.handle_mcp_message(ctx, {"jsonrpc": "2.0", "id": 1, "method": "resources/list"})
         assert listed is not None
         uris = [item["uri"] for item in listed["result"]["resources"]]
-        self.assertEqual(uris, ["mijia://status", "mijia://devices", "mijia://scenes"])
+        self.assertEqual(uris, ["mijia://status", "mijia://devices", "mijia://scenes", "mijia://sensors", "mijia://automations"])
 
         for uri in uris:
             read = mijia.handle_mcp_message(
@@ -828,15 +828,19 @@ class MijiaMcpTests(unittest.TestCase):
         self.assertEqual(status["structuredContent"]["deviceCount"], 5)
         self.assertNotIn(TOKEN, json.dumps(status, ensure_ascii=False))
 
-    READ_ONLY_TOOL_NAMES = frozenset({"focus_device", "get_home_status", "list_devices"})
+    READ_ONLY_TOOL_NAMES = frozenset({"focus_device", "get_automation_status", "get_home_status", "get_sensor_summary", "list_devices"})
     CONTROL_TOOL_NAMES = frozenset(
         {
             "ask_home",
+            "media_play_pause",
             "run_scene",
+            "set_cover_position",
             "set_device_power",
             "set_fan",
             "set_light_brightness",
             "set_light_color_temp",
+            "set_media_mute",
+            "set_media_volume",
             "set_temperature",
             "toggle_device",
         }
@@ -851,17 +855,20 @@ class MijiaMcpTests(unittest.TestCase):
         ctx, _ = self.make_ctx()
         tools = self.list_tools(ctx)
         self.assertEqual(set(tools), self.READ_ONLY_TOOL_NAMES | self.CONTROL_TOOL_NAMES)
-        # 默认会话仍然暴露全部工具，只是写工具的注解不再声称“纯增量”
         for name in self.CONTROL_TOOL_NAMES:
             annotations = tools[name]["annotations"]
             self.assertFalse(annotations["readOnlyHint"], name)
             self.assertTrue(annotations["destructiveHint"], name)
+            self.assertEqual(annotations["openWorldHint"], name == "ask_home", name)
         for name in self.READ_ONLY_TOOL_NAMES:
             annotations = tools[name]["annotations"]
             self.assertTrue(annotations["readOnlyHint"], name)
             self.assertFalse(annotations["destructiveHint"], name)
-        self.assertTrue(tools["set_device_power"]["annotations"]["idempotentHint"])
-        self.assertFalse(tools["toggle_device"]["annotations"]["idempotentHint"])
+            self.assertFalse(annotations["openWorldHint"], name)
+        for name in ("set_device_power", "set_cover_position", "set_media_volume", "set_media_mute"):
+            self.assertTrue(tools[name]["annotations"]["idempotentHint"], name)
+        for name in ("toggle_device", "media_play_pause", "ask_home"):
+            self.assertFalse(tools[name]["annotations"]["idempotentHint"], name)
 
     def test_read_only_mode_hides_control_tools_and_rejects_their_calls(self) -> None:
         ctx, app = self.make_ctx(read_only=True)
@@ -904,7 +911,11 @@ class MijiaMcpTests(unittest.TestCase):
             ctx, {"jsonrpc": "2.0", "id": 5, "method": "resources/list"}
         )
         assert resources is not None
-        self.assertEqual(len(resources["result"]["resources"]), 3)
+        self.assertEqual(len(resources["result"]["resources"]), 5)
+        for blocked_tool, blocked_args in (("ask_home", {"text": "开灯"}), ("set_cover_position", {"device": "客厅窗帘", "percent": 50})):
+            r = mijia.handle_mcp_message(ctx, {"jsonrpc": "2.0", "id": 6, "method": "tools/call", "params": {"name": blocked_tool, "arguments": blocked_args}})
+            assert r is not None and r["result"]["isError"] and "--read-only" in r["result"]["content"][0]["text"]
+        self.assertEqual(app.opened, [])
 
     def test_mijia_mcp_executable_read_only_flag_reaches_the_server(self) -> None:
         lines = [
@@ -1221,6 +1232,54 @@ class MijiaMcpTests(unittest.TestCase):
         self.assertEqual(code, mijia.EXIT_LOCAL_ERROR)
         self.assertEqual(app.opened, [])
         self.assertIn("4096", err_buf.getvalue())
+
+    def test_mcp_v2_sensors_automations_doctor_and_cover_media(self) -> None:
+        mk = lambda i, n, r, rn, cat, caps, **kw: {"id": i, "name": n, "roomId": r, "roomName": rn, "roomSortOrder": 0, "category": cat, "categoryTitle": cat, "model": f"m.{cat}", "stateText": "ok", "isOnline": True, "isActiveOn": True, "isPrimaryToggleable": True, "isFavorite": False, "pinyinInitials": i, "pinyinFull": "", "roomPinyinInitials": r, "capabilities": caps, **kw}
+        snap = make_snapshot()
+        snap["environmentReadings"] = [{"id": "e1", "label": "书房温湿度计", "roomName": "书房", "temperature": 24.0, "humidity": 50, "battery": 15, "bridgeToken": TOKEN, "secret": "leak"}, {"id": "e2", "label": "客厅温湿度计", "roomName": "客厅", "temperature": 26.0, "humidity": 60, "battery": 90}]
+        snap["devices"].extend([
+            mk("dev_sensor", "书房门磁", "study", "书房", "sensor", {}, bridgeToken=TOKEN),
+            mk("dev_curtain", "客厅窗帘", "living", "客厅", "cover", {"canTogglePower": True, "positionWritable": True, "canMoveCover": True}),
+            mk("dev_airer", "阳台晾衣架", "living", "客厅", "cover", {"canTogglePower": False, "positionWritable": False, "canMoveCover": True}, isPrimaryToggleable=False),
+            mk("dev_tv", "客厅电视", "living", "客厅", "tv", {"canTogglePower": True, "volumeWritable": True, "muteWritable": True, "canPlayPause": True}),
+            mk("dev_ro_spk", "卫生间音箱", "study", "书房", "speaker", {"canTogglePower": True, "volumeWritable": False, "muteWritable": False, "canPlayPause": False}),
+        ])
+        snap["automationStatus"] = {"enabled": True, "ruleCount": 2, "enabledRuleCount": 1, "executedCount": 1, "skippedCount": 1, "ssid": "SecretWiFi", "windowTitle": "Payroll.xlsx", "recentRuns": [{"ruleId": "rule-1", "trigger": "meetingStarted", "result": "executed", "at": "2026-11-06T08:00:00Z", "calendarTitle": "Secret Board"}, {"ruleId": "rule-2", "trigger": "wifiConnected", "result": "skipped", "skipReason": "cooldown", "at": "2026-11-06T07:55:00Z", "ssid": "Home5G"}, {"ruleId": "bad id!", "trigger": "bad trig", "result": "executed", "at": "2026-11-06T07:50:00Z"}]}
+        self.path.write_text(json.dumps(snap), encoding="utf-8")
+
+        sensors, _ = self.call_tool("get_sensor_summary", {"room": "书房"})
+        sc = sensors["structuredContent"]
+        self.assertEqual((sensors["isError"], sc["readingCount"], sc["sensorDeviceCount"], sc["avgTemperature"], sc["lowBatteryCount"]), (False, 1, 1, 24.0, 1))
+        self.assertTrue(TOKEN not in json.dumps(sensors, ensure_ascii=False) and "secret" not in json.dumps(sensors, ensure_ascii=False))
+
+        auto, _ = self.call_tool("get_automation_status", {"limit": 5})
+        auto_str = json.dumps(auto, ensure_ascii=False)
+        for bad in (TOKEN, "SecretWiFi", "Payroll.xlsx", "Secret Board", "Home5G", "bad id!"): self.assertNotIn(bad, auto_str)
+        self.assertEqual((auto["isError"], len(auto["structuredContent"]["recentRuns"]), auto["structuredContent"]["recentRuns"][1]["skipReason"]), (False, 2, "cooldown"))
+
+        for tool, args, prefix, key, val in (("set_cover_position", {"device": "客厅窗帘", "percent": 45}, "menumijia://cover-position?", "percent", "45"), ("set_cover_position", {"device": "阳台晾衣架", "percent": 100}, "menumijia://cover-position?", "percent", "100"), ("set_media_volume", {"device": "客厅电视", "percent": 35}, "menumijia://volume?", "percent", "35"), ("set_media_mute", {"device": "客厅电视", "muted": True}, "menumijia://mute?", "muted", "true"), ("media_play_pause", {"device": "客厅电视"}, "menumijia://media-play-pause?", "device", "dev_tv")):
+            res, app = self.call_tool(tool, args)
+            self.assertFalse(res["isError"], tool); self.assertTrue(app.opened[-1].startswith(prefix)); self.assertEqual(app.query()[key], val)
+        for bad_tool, bad_args in (("set_cover_position", {"device": "阳台晾衣架", "percent": 50}), ("set_media_volume", {"device": "卫生间音箱", "percent": 20}), ("set_media_mute", {"device": "卫生间音箱", "muted": True}), ("media_play_pause", {"device": "卫生间音箱"}), ("set_media_volume", {"device": "客厅电视", "percent": True})):
+            bad_res, app = self.call_tool(bad_tool, bad_args)
+            self.assertTrue(bad_res["isError"], bad_tool); self.assertEqual(app.opened, [])
+
+        cli_app = FakeApp(self.path)
+        for argv, prefix in ((["cover-position", "客厅窗帘", "60"], "menumijia://cover-position?"), (["volume", "客厅电视", "40"], "menumijia://volume?"), (["mute", "客厅电视", "off"], "menumijia://mute?"), (["media-play-pause", "客厅电视"], "menumijia://media-play-pause?")):
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(mijia.main([*argv, "--snapshot", str(self.path)], opener=cli_app.opener, now=self.now, sleep=self.sleep), 0)
+            self.assertTrue(cli_app.opened[-1].startswith(prefix))
+
+        doc_out = io.StringIO()
+        with contextlib.redirect_stdout(doc_out):
+            self.assertEqual(mijia.main(["mcp", "--doctor", "--snapshot", str(self.path)], wall_now=lambda: 1793952060.0), 0)
+        self.assertTrue("MCP 就绪" in doc_out.getvalue() and TOKEN not in doc_out.getvalue())
+        completed = subprocess.run([sys.executable, str(MCP_SCRIPT), "--doctor", "--json", "--snapshot", str(self.path)], capture_output=True, text=True, encoding="utf-8", check=False, timeout=10)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        doc_json = json.loads(completed.stdout)
+        self.assertTrue(doc_json["ok"] and doc_json["cliExecutable"] and doc_json["mcpExecutable"] and TOKEN not in completed.stdout)
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(mijia.main(["doctor", "--snapshot", str(self.path.with_name("missing.json"))]), mijia.EXIT_LOCAL_ERROR)
 
     def test_ensure_utf8_stdio_reconfigures_non_utf8_windows_pipe(self) -> None:
         raw_out = io.BytesIO()
