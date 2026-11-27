@@ -5,6 +5,7 @@ import (
 	"com.menubarhome.tv-bridge/internal/ws"
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/tls"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -693,16 +694,84 @@ type HisenseVIDAA struct {
 func NewHisenseVIDAA(addr, credential string) *HisenseVIDAA {
 	return &HisenseVIDAA{Base: Base{id: "hisense_vidaa_mqtt", addr: addr, client: httpClient(), sleeping: false}, Credential: credential}
 }
-func (d *HisenseVIDAA) Probe() error {
+func mqttStr(s string) []byte {
+	b := make([]byte, 2+len(s))
+	binary.BigEndian.PutUint16(b[:2], uint16(len(s)))
+	copy(b[2:], s)
+	return b
+}
+func mqttPacket(hdr byte, body []byte) []byte {
+	n := len(body)
+	var rem []byte
+	for {
+		b := byte(n % 128)
+		n /= 128
+		if n > 0 {
+			b |= 0x80
+		}
+		rem = append(rem, b)
+		if n == 0 {
+			break
+		}
+	}
+	out := make([]byte, 0, 1+len(rem)+len(body))
+	return append(append(append(out, hdr), rem...), body...)
+}
+func (d *HisenseVIDAA) mqttCreds() (string, string) {
+	if u, p, ok := strings.Cut(d.Credential, ":"); ok && u != "" {
+		return u, p
+	}
+	return "hisenseservice", "multimqttservice"
+}
+func (d *HisenseVIDAA) mqttDo(topic, payload string) error {
 	target := d.addr
 	if _, _, err := net.SplitHostPort(target); err != nil {
 		target = net.JoinHostPort(target, "36669")
 	}
-	c, e := net.DialTimeout("tcp", target, 3*time.Second)
-	if e != nil {
-		return e
+	dl := &net.Dialer{Timeout: 3 * time.Second}
+	raw, err := dl.Dial("tcp", target)
+	if err != nil {
+		return err
 	}
-	return c.Close()
+	_ = raw.SetDeadline(time.Now().Add(5 * time.Second))
+	tlsConn := tls.Client(raw, &tls.Config{InsecureSkipVerify: true})
+	var c net.Conn = tlsConn
+	if err := tlsConn.Handshake(); err != nil {
+		_ = raw.Close()
+		c, err = dl.Dial("tcp", target)
+		if err != nil {
+			return err
+		}
+		_ = c.SetDeadline(time.Now().Add(5 * time.Second))
+	}
+	defer c.Close()
+	user, pass := d.mqttCreds()
+	var connBody []byte
+	connBody = append(connBody, 0x00, 0x04, 'M', 'Q', 'T', 'T', 0x04, 0xC2, 0x00, 0x1E)
+	connBody = append(connBody, mqttStr("menubarhome-tv")...)
+	connBody = append(connBody, mqttStr(user)...)
+	connBody = append(connBody, mqttStr(pass)...)
+	if _, err := c.Write(mqttPacket(0x10, connBody)); err != nil {
+		return err
+	}
+	var ack [4]byte
+	if _, err := io.ReadFull(c, ack[:]); err != nil {
+		return err
+	}
+	if ack[0] != 0x20 || ack[1] != 0x02 || ack[3] != 0x00 {
+		return fmt.Errorf("mqtt connack error %d", ack[3])
+	}
+	if topic != "" {
+		pub := append(mqttStr(topic), payload...)
+		if _, err := c.Write(mqttPacket(0x30, pub)); err != nil {
+			return err
+		}
+	}
+	_, _ = c.Write([]byte{0xE0, 0x00})
+	return nil
+}
+func (d *HisenseVIDAA) Probe() error {
+	return d.mqttDo("", "")
 }
 func (d *HisenseVIDAA) Snapshot() (Snapshot, error) {
 	return Snapshot{ID: d.id, Name: "Hisense VIDAA"}, d.Probe()
@@ -711,7 +780,46 @@ func (d *HisenseVIDAA) Execute(v string, a map[string]any) error {
 	if e := commandAllowed(v, a); e != nil {
 		return e
 	}
-	return errors.New("unsupported Hisense VIDAA action")
+	const keyTopic = "/remoteapp/tv/remote_service/menubarhome$normal/actions/sendkey"
+	switch v {
+	case "power.set":
+		return d.mqttDo(keyTopic, "KEY_POWER")
+	case "mute.set":
+		return d.mqttDo(keyTopic, "KEY_MUTE")
+	case "volume.set":
+		raw, ok := argVal(a, "level", "volume")
+		if !ok {
+			return errors.New("invalid volume")
+		}
+		f, err := strconv.ParseFloat(fmt.Sprint(raw), 64)
+		if err != nil || !(f >= 0 && f <= 100) {
+			return errors.New("invalid volume")
+		}
+		return d.mqttDo("/remoteapp/tv/platform_service/menubarhome$normal/actions/changevolume", strconv.Itoa(int(f+0.5)))
+	case "input.select":
+		s, _ := a["source"].(string)
+		s = strings.TrimSpace(s)
+		if s == "" {
+			return errors.New("invalid source")
+		}
+		b, _ := json.Marshal(map[string]string{"sourceid": s, "sourcename": s})
+		return d.mqttDo("/remoteapp/tv/ui_service/menubarhome$normal/actions/changesource", string(b))
+	case "media.play", "media.playPause":
+		return d.mqttDo(keyTopic, "KEY_PLAY")
+	case "media.pause":
+		return d.mqttDo(keyTopic, "KEY_PAUSE")
+	case "media.stop":
+		return d.mqttDo(keyTopic, "KEY_STOP")
+	case "remote.key":
+		keys := map[string]string{"up": "KEY_UP", "down": "KEY_DOWN", "left": "KEY_LEFT", "right": "KEY_RIGHT", "select": "KEY_OK", "back": "KEY_RETURNS", "home": "KEY_HOME", "menu": "KEY_MENU", "volumeUp": "KEY_VOLUMEUP", "volumeDown": "KEY_VOLUMEDOWN", "mute": "KEY_MUTE", "source": "KEY_SOURCE", "channelUp": "KEY_CHANNELUP", "channelDown": "KEY_CHANNELDOWN", "playPause": "KEY_PLAY", "info": "KEY_INFO"}
+		code, ok := keys[fmt.Sprint(a["key"])]
+		if !ok {
+			return errors.New("unsupported Hisense key")
+		}
+		return d.mqttDo(keyTopic, code)
+	default:
+		return errors.New("unsupported Hisense VIDAA action")
+	}
 }
 
 func ForID(id, addr string) TVDriver {
