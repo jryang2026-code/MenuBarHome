@@ -39,9 +39,16 @@ struct HAHomeSnapshot {
     static let supportedSmartHomeDomains: Set<String> = [
         "light", "switch", "climate", "cover", "fan", "humidifier",
         "vacuum", "valve", "water_heater", "lock", "camera", "media_player",
-        "scene", "script", "button", "sensor", "binary_sensor", "select",
+        "remote", "scene", "script", "button", "sensor", "binary_sensor", "select",
         "number", "notify", "event",
     ]
+
+    func remoteProfile(for entityId: String) -> HARemoteProfile {
+        let entity = entities.first(where: { $0.entity_id == entityId })
+        let device = entity?.device_id.flatMap { devId in devices.first(where: { $0.id == devId }) }
+        let friendly = states[entityId]?.attributes["friendly_name"]?.stringValue ?? entity?.name ?? device?.name_by_user ?? device?.name
+        return HARemoteProfile.infer(platform: entity?.platform, manufacturer: device?.manufacturer, model: device?.model, identifiers: device?.identifiers, entityId: entityId, friendlyName: friendly)
+    }
 
     static func isSupportedSmartHomeDomain(_ entityId: String) -> Bool {
         guard let dotIndex = entityId.firstIndex(of: ".") else { return false }

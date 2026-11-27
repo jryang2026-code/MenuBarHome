@@ -766,19 +766,21 @@ public enum MiotSynthesizer {
     }
 
     /// Services whose zero-argument key actions the TV remote pad may call.
-    static let tvRemoteServiceNames: Set<String> = ["remote-control", "television", "stb"]
+    static let tvRemoteServiceNames: Set<String> = ["remote-control", "television", "stb", "ir-tv-control"]
 
     /// `TVRemoteKey.rawValue` → action address for each key a Xiaomi TV publishes as a no-argument action.
     static func tvRemoteActions(_ r: MiotReader) -> [String: String] {
         var result: [String: String] = [:]
         let services = r.spec.services.filter { tvRemoteServiceNames.contains($0.shortName) }
         for key in TVRemoteKey.allCases {
-            for service in services {
-                if let action = service.actions.first(where: {
-                    $0.inputProperties.isEmpty && key.miotActionNames.contains($0.shortName)
-                }) {
-                    result[key.rawValue] = MiotAddress.makeAction(did: r.did, siid: service.iid, aiid: action.iid)
-                    break
+            outer: for name in key.miotActionNames {
+                for service in services {
+                    if let action = service.actions.first(where: {
+                        $0.inputProperties.isEmpty && $0.shortName == name
+                    }) {
+                        result[key.rawValue] = MiotAddress.makeAction(did: r.did, siid: service.iid, aiid: action.iid)
+                        break outer
+                    }
                 }
             }
         }

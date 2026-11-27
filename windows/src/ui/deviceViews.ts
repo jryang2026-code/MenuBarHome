@@ -4,7 +4,7 @@ import { trText } from "../core/quickActions.js";
 import type { SpeakerTextMode } from "../core/miCloud/speakerActions.js";
 import { renderApplianceDrawer, renderClimateSwingRow, renderCoverDrawer, renderGenericDrawer, renderPlugDrawer, renderSpeakerCommandBar } from "./detailDrawers.js";
 import { renderMoreSettings } from "./facetViews.js";
-import { renderTvMediaSection, tvDrawerHasMedia } from "./tvMediaDrawer.js";
+import { renderSpeakerMediaSection, renderTvMediaSection, speakerDrawerHasMedia, tvDrawerHasMedia } from "./tvMediaDrawer.js";
 import {
   deviceCanTogglePower, devicePresentsAsActive, deviceReadout, deviceStatusSummary, hasDetailDrawer,
   localizeAirQuality, localizeApplianceMode, localizeFanPreset, localizeFridgeMode, localizeNightShot,
@@ -447,10 +447,12 @@ function renderPrimaryDrawer(
     }
     if (k.kind === "speaker") {
       const id = escapeHtml(dev.id);
+      const mediaSection = speakerDrawerHasMedia(k) ? renderSpeakerMediaSection(dev, k, escapeHtml) : "";
       const commandBar = renderSpeakerCommandBar(dev, k, escapeHtml, speakerDrawerState);
-      if (!k.volumeWritable && !k.muteSwitchEntityId && !k.sleepModeEntityId && !commandBar) return "";
+      if (!k.volumeWritable && !k.muteSwitchEntityId && !k.sleepModeEntityId && !commandBar && !mediaSection) return "";
       return `
         <div class="cc-tile-drawer">
+          ${mediaSection}
           ${k.volumeWritable ? `<div class="cc-slider-group">
             <div class="cc-slider-label">
               <span>${t("音量")}</span>

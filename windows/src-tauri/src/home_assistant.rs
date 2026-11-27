@@ -41,9 +41,40 @@ const DRAIN_TIMEOUT: Duration = Duration::from_secs(7);
 const CONNECT_TOTAL_TIMEOUT: Duration = Duration::from_secs(8);
 const CONNECT_PER_ADDRESS_TIMEOUT: Duration = Duration::from_secs(5);
 
+const MEDIA_ARTWORK_MAX_BYTES: usize = 4 * 1024 * 1024;
+const MEDIA_ARTWORK_CACHE_CAPACITY: usize = 24;
+const MEDIA_ARTWORK_TIMEOUT_MS: u64 = 8_000;
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HaMediaArtwork { pub mime_type: String, pub data_base64: String }
+
+#[derive(Default)]
+struct MediaArtworkCache { entries: std::collections::HashMap<String, HaMediaArtwork>, order: Vec<String> }
+
+impl MediaArtworkCache {
+    fn get(&mut self, key: &str) -> Option<HaMediaArtwork> {
+        let item = self.entries.get(key)?.clone();
+        self.order.retain(|k| k != key);
+        self.order.push(key.to_string());
+        Some(item)
+    }
+    fn insert(&mut self, key: String, value: HaMediaArtwork) {
+        self.entries.insert(key.clone(), value);
+        self.order.retain(|k| k != &key);
+        self.order.push(key);
+        while self.order.len() > MEDIA_ARTWORK_CACHE_CAPACITY {
+            let oldest = self.order.remove(0);
+            self.entries.remove(&oldest);
+        }
+    }
+    fn clear(&mut self) { self.entries.clear(); self.order.clear(); }
+}
+
 pub(crate) struct HaConnections {
     registration: Mutex<HaRegistration>,
     network_epoch: watch::Sender<u64>,
+    artwork_cache: Mutex<MediaArtworkCache>,
 }
 
 impl Default for HaConnections {
@@ -52,6 +83,7 @@ impl Default for HaConnections {
         Self {
             registration: Mutex::default(),
             network_epoch,
+            artwork_cache: Mutex::default(),
         }
     }
 }
@@ -124,6 +156,7 @@ impl HaConnections {
                     network_epoch,
                 })
             });
+            if let Ok(mut cache) = self.artwork_cache.lock() { cache.clear(); }
         }
         Ok(generation)
     }
@@ -279,6 +312,97 @@ pub(crate) async fn ha_http(
     task.http(crate::network::native_http_with_scope(
         url, None, headers, None, None, timeout_ms, Some(scope),
     )).await
+}
+
+/// SHA-256 of HA scope + artwork path, so `?token=` never enters cache keys or logs.
+pub(crate) fn media_artwork_cache_key(scope: &str, artwork_path: &str) -> String {
+    let raw = format!("{scope}|{}", artwork_path.trim());
+    digest(&SHA256, raw.as_bytes()).as_ref().iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Enforces same-origin HA `/api/media_player_proxy/` artwork paths (mirrors macOS `MediaArtworkLoader`).
+pub(crate) fn resolve_ha_media_artwork_url(base_url: &str, artwork_path: &str) -> Result<(reqwest::Url, String, bool), String> {
+    let scope = connection_scope(base_url)?;
+    let base_parsed = reqwest::Url::parse(base_url.trim()).map_err(|_| "Invalid Home Assistant URL")?;
+    let base_origin = crate::network::url_origin(&base_parsed).ok_or("Invalid Home Assistant URL")?;
+    let base_ascii = base_parsed.origin().ascii_serialization();
+    let base_prefix = scope.strip_prefix(&base_ascii).unwrap_or("");
+    let trimmed = artwork_path.trim();
+    let has_bad_path = |p: &str| {
+        let lower = p.to_ascii_lowercase();
+        lower.contains("%2e") || lower.contains("%2f") || lower.contains("%5c")
+            || p.split('/').any(|seg| seg == "." || seg == "..")
+    };
+    if trimmed.is_empty() || trimmed.starts_with("//") || trimmed.contains('\\') || trimmed.contains('#')
+        || trimmed.chars().any(|c| c.is_control()) || has_bad_path(trimmed.split('?').next().unwrap_or("")) {
+        return Err("Invalid Home Assistant artwork path".into());
+    }
+    let resolved = if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+        reqwest::Url::parse(trimmed).map_err(|_| "Invalid Home Assistant artwork URL")?
+    } else if trimmed.starts_with('/') {
+        let joined = if !base_prefix.is_empty() && trimmed.starts_with(&format!("{base_prefix}/api/media_player_proxy/")) {
+            format!("{base_ascii}{trimmed}")
+        } else {
+            format!("{scope}{trimmed}")
+        };
+        reqwest::Url::parse(&joined).map_err(|_| "Invalid Home Assistant artwork URL")?
+    } else {
+        return Err("Home Assistant artwork path must stay on /api/media_player_proxy/".into());
+    };
+    if !resolved.username().is_empty() || resolved.password().is_some() || resolved.fragment().is_some()
+        || crate::network::url_origin(&resolved).as_deref() != Some(base_origin.as_str())
+        || has_bad_path(resolved.path()) {
+        return Err("Home Assistant artwork URL must match the configured HA origin".into());
+    }
+    let target = format!("{}{}", resolved.origin().ascii_serialization(), resolved.path());
+    let Some(tail) = target.strip_prefix(&format!("{scope}/api/media_player_proxy/")) else {
+        return Err("Home Assistant artwork path must start with /api/media_player_proxy/".into());
+    };
+    if tail.trim().is_empty() { return Err("Home Assistant artwork path is missing entity segment".into()); }
+    let has_entity_token = resolved.query_pairs().any(|(k, v)| k == "token" && !v.is_empty());
+    Ok((resolved, scope, has_entity_token))
+}
+
+/// Restricts artwork responses to safe raster image types (never SVG/HTML).
+pub(crate) fn validate_artwork_mime(content_type: Option<&str>, body: &[u8]) -> Result<String, String> {
+    if body.is_empty() { return Err("Home Assistant artwork response is empty".into()); }
+    let raw = content_type.and_then(|v| v.split(';').next()).map(|v| v.trim().to_ascii_lowercase()).unwrap_or_default();
+    match raw.as_str() {
+        "image/jpeg" | "image/jpg" => return Ok("image/jpeg".into()),
+        "image/png" | "image/webp" | "image/gif" | "image/avif" => return Ok(raw),
+        "" | "application/octet-stream" => {}
+        _ => return Err("Unsupported Home Assistant artwork content type".into()),
+    }
+    if body.starts_with(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]) { Ok("image/png".into()) }
+    else if body.starts_with(&[0xFF, 0xD8, 0xFF]) { Ok("image/jpeg".into()) }
+    else if body.starts_with(b"GIF87a") || body.starts_with(b"GIF89a") { Ok("image/gif".into()) }
+    else if body.len() >= 12 && &body[..4] == b"RIFF" && &body[8..12] == b"WEBP" { Ok("image/webp".into()) }
+    else { Err("Unsupported Home Assistant artwork payload".into()) }
+}
+
+#[tauri::command]
+pub(crate) async fn ha_media_artwork(
+    connections: tauri::State<'_, HaConnections>, base_url: String, generation: u64, token: Option<String>, artwork_path: String,
+) -> Result<HaMediaArtwork, String> {
+    let task = connections.acquire(&base_url, generation)?;
+    let (url, scope, has_entity_token) = resolve_ha_media_artwork_url(&base_url, &artwork_path)?;
+    let cache_key = media_artwork_cache_key(&scope, &artwork_path);
+    if let Some(hit) = connections.artwork_cache.lock().ok().and_then(|mut c| c.get(&cache_key)) { return Ok(hit); }
+    let mut headers = std::collections::HashMap::new();
+    if !has_entity_token {
+        if let Some(bearer) = token.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            headers.insert("Authorization".into(), format!("Bearer {bearer}"));
+        }
+    }
+    let resp = task.http(crate::network::native_http_bytes_with_scope(
+        url.to_string(), Some("GET".into()), (!headers.is_empty()).then_some(headers), None,
+        Some(false), Some(MEDIA_ARTWORK_TIMEOUT_MS), Some(scope), MEDIA_ARTWORK_MAX_BYTES,
+    )).await?;
+    if !(200..300).contains(&resp.status) { return Err(format!("Home Assistant artwork HTTP {}", resp.status)); }
+    let mime_type = validate_artwork_mime(resp.headers.get("content-type").map(String::as_str), &resp.body)?;
+    let artwork = HaMediaArtwork { mime_type, data_base64: crate::camera::base64_encode(&resp.body) };
+    if let Ok(mut cache) = connections.artwork_cache.lock() { cache.insert(cache_key, artwork.clone()); }
+    Ok(artwork)
 }
 
 fn endpoint(base_url: &str, token: &str) -> Result<String, String> {
@@ -873,11 +997,15 @@ fn validate_call(command: &HaServiceCall) -> Result<(), String> {
                 "turn_on",
                 "turn_off",
                 "media_play_pause",
+                "media_next_track",
+                "media_previous_track",
+                "media_seek",
                 "volume_set",
                 "volume_mute",
                 "select_source",
             ],
         ),
+        ("remote", &["send_command"]),
         ("vacuum", &["start", "pause", "return_to_base"]),
         ("scene", &["turn_on"]),
         ("script", &["turn_on"]),
@@ -914,6 +1042,8 @@ fn validate_call(command: &HaServiceCall) -> Result<(), String> {
         ("media_player", "volume_set") => &["volume_level"],
         ("media_player", "volume_mute") => &["is_volume_muted"],
         ("media_player", "select_source") => &["source"],
+        ("media_player", "media_seek") => &["seek_position"],
+        ("remote", "send_command") => &["command"],
         _ => &[],
     };
     if command.data.keys().any(|key| !keys.contains(&key.as_str())) {
@@ -1708,5 +1838,39 @@ mod tests {
             worker.await.unwrap();
         });
         peer.join().unwrap();
+    }
+
+    #[test]
+    fn media_artwork_enforces_same_origin_proxy_path_mime_and_redacted_cache_key() {
+        let base = "http://ha.local:8123";
+        let path = "/api/media_player_proxy/media_player.tv?token=secret-token&cache=1";
+        let (url, scope, has_token) = resolve_ha_media_artwork_url(base, path).unwrap();
+        assert_eq!(url.as_str(), "http://ha.local:8123/api/media_player_proxy/media_player.tv?token=secret-token&cache=1");
+        assert!(has_token && scope == "http://ha.local:8123");
+        let key = media_artwork_cache_key(&scope, path);
+        assert!(key.len() == 64 && !key.contains("secret-token"));
+        assert!(!resolve_ha_media_artwork_url("https://home.example.com/hass", "/api/media_player_proxy/media_player.sp").unwrap().2);
+        for bad in ["http://evil.example/api/media_player_proxy/media_player.tv", "/api/camera_proxy/camera.front?token=abc", "/api/media_player_proxy/../states", "/api/media_player_proxy/%2e%2e/states", "/api/media_player_proxy/", "//evil.example/api/media_player_proxy/x"] {
+            assert!(resolve_ha_media_artwork_url(base, bad).is_err(), "expected reject: {bad}");
+        }
+        assert_eq!(validate_artwork_mime(Some("image/jpeg; charset=binary"), &[0xFF, 0xD8, 0xFF]).unwrap(), "image/jpeg");
+        assert_eq!(validate_artwork_mime(None, &[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]).unwrap(), "image/png");
+        assert!(validate_artwork_mime(Some("image/svg+xml"), b"<svg/>").is_err());
+        assert!(validate_artwork_mime(Some("image/png"), &[]).is_err());
+    }
+
+    #[test]
+    fn allows_media_transport_seek_and_remote_send_command() {
+        for service in ["media_play_pause", "media_next_track", "media_previous_track"] {
+            assert!(validate_call(&HaServiceCall { domain: "media_player".into(), service: service.into(), entity_id: "media_player.living_speaker".into(), data: Default::default() }).is_ok());
+        }
+        let mut seek = HaServiceCall { domain: "media_player".into(), service: "media_seek".into(), entity_id: "media_player.living_tv".into(), data: Default::default() };
+        seek.data.insert("seek_position".into(), json!(42.5));
+        assert!(validate_call(&seek).is_ok());
+        let mut remote = HaServiceCall { domain: "remote".into(), service: "send_command".into(), entity_id: "remote.apple_tv".into(), data: Default::default() };
+        remote.data.insert("command".into(), json!("select"));
+        assert!(validate_call(&remote).is_ok());
+        remote.data.insert("device".into(), json!("bad"));
+        assert!(validate_call(&remote).is_err());
     }
 }

@@ -1,5 +1,5 @@
-import type { MediaPlaybackState, TvRemoteKey } from "./models.js";
-import { TV_REMOTE_KEYS } from "./models.js";
+import type { HaRemoteProfile, MediaPlaybackState, TvRemoteKey } from "./models.js";
+import { HA_REMOTE_PROFILES, TV_REMOTE_KEYS } from "./models.js";
 
 /** HA `MediaPlayerEntityFeature` bits (matches macOS `MediaPlaybackState`). */
 export const MEDIA_FEATURE = { pause: 1, seek: 2, previousTrack: 16, nextTrack: 32, play: 16384 } as const;
@@ -110,29 +110,66 @@ export class MediaSeekGuard {
   }
 }
 
-/** HA `remote.send_command` names most TV integrations accept. */
-export const HA_REMOTE_COMMAND: Readonly<Record<TvRemoteKey, string>> = {
-  up: "UP", down: "DOWN", left: "LEFT", right: "RIGHT", select: "ENTER", back: "BACK",
-  home: "HOME", menu: "MENU", volumeUp: "VOLUME_UP", volumeDown: "VOLUME_DOWN", mute: "MUTE", source: "INPUT",
+/** Ecosystem-specific HA `remote.send_command` key tables (mirrors macOS `HARemoteProfile`). */
+export const HA_REMOTE_PROFILE_COMMANDS: Readonly<Record<HaRemoteProfile, Readonly<Record<TvRemoteKey, string>>>> = {
+  appleTV: { up: "up", down: "down", left: "left", right: "right", select: "select", back: "menu", home: "home", menu: "menu", volumeUp: "volume_up", volumeDown: "volume_down", mute: "mute", source: "top_menu" },
+  androidTV: { up: "DPAD_UP", down: "DPAD_DOWN", left: "DPAD_LEFT", right: "DPAD_RIGHT", select: "DPAD_CENTER", back: "BACK", home: "HOME", menu: "MENU", volumeUp: "VOLUME_UP", volumeDown: "VOLUME_DOWN", mute: "MUTE", source: "TV_INPUT" },
+  sonyBravia: { up: "Up", down: "Down", left: "Left", right: "Right", select: "Confirm", back: "Return", home: "Home", menu: "Options", volumeUp: "VolumeUp", volumeDown: "VolumeDown", mute: "Mute", source: "Input" },
+  roku: { up: "Up", down: "Down", left: "Left", right: "Right", select: "Select", back: "Back", home: "Home", menu: "Info", volumeUp: "VolumeUp", volumeDown: "VolumeDown", mute: "VolumeMute", source: "Input" },
+  generic: { up: "UP", down: "DOWN", left: "LEFT", right: "RIGHT", select: "ENTER", back: "BACK", home: "HOME", menu: "MENU", volumeUp: "VOLUME_UP", volumeDown: "VOLUME_DOWN", mute: "MUTE", source: "INPUT" },
 };
+export const HA_REMOTE_COMMAND: Readonly<Record<TvRemoteKey, string>> = HA_REMOTE_PROFILE_COMMANDS.generic;
+export const isHaRemoteProfile = (value: unknown): value is HaRemoteProfile =>
+  typeof value === "string" && (HA_REMOTE_PROFILES as readonly string[]).includes(value);
 
-/** MIoT action short names a Xiaomi TV spec may publish for each key. */
+function matchHaRemoteDomain(raw: unknown): HaRemoteProfile | null {
+  const domain = typeof raw === "string" ? raw.trim().toLowerCase() : "";
+  if (domain === "apple_tv" || domain === "appletv") return "appleTV";
+  if (["androidtv_remote", "androidtv", "android_tv", "android_tv_remote", "google_tv"].includes(domain)) return "androidTV";
+  if (["braviatv", "bravia_tv", "sony_bravia", "sony_bravia_psk"].includes(domain)) return "sonyBravia";
+  return domain === "roku" ? "roku" : null;
+}
+
+/** Deterministically infers an HA `remote.send_command` dialect (mirrors macOS `HARemoteProfile.infer`). */
+export function inferHaRemoteProfile(clues: {
+  readonly platform?: string | null; readonly manufacturer?: string | null; readonly model?: string | null;
+  readonly identifiers?: unknown; readonly entityId?: string | null; readonly friendlyName?: string | null;
+}): HaRemoteProfile {
+  const byPlatform = matchHaRemoteDomain(clues.platform);
+  if (byPlatform) return byPlatform;
+  if (Array.isArray(clues.identifiers)) {
+    for (const pair of clues.identifiers) {
+      const byId = Array.isArray(pair) ? matchHaRemoteDomain(pair[0]) : null;
+      if (byId) return byId;
+    }
+  }
+  const mfg = (clues.manufacturer ?? "").toLowerCase();
+  const text = `${mfg} ${(clues.model ?? "").toLowerCase()} ${(clues.entityId ?? "").toLowerCase()} ${(clues.friendlyName ?? "").toLowerCase()}`;
+  if (text.includes("apple_tv") || text.includes("appletv") || text.includes("apple tv") || (mfg.includes("apple") && text.includes("tv"))) return "appleTV";
+  if (["androidtv", "android_tv", "android tv", "google_tv", "google tv", "shield", "chromecast"].some((k) => text.includes(k))) return "androidTV";
+  if (text.includes("bravia") || text.includes("sony")) return "sonyBravia";
+  return text.includes("roku") ? "roku" : "generic";
+}
+
+export const haRemoteCommand = (key: TvRemoteKey, profile: HaRemoteProfile = "generic"): string =>
+  HA_REMOTE_PROFILE_COMMANDS[profile][key];
+
+/** MIoT action short names a Xiaomi TV spec may publish for each key (priority order, verified against `miot-spec.org`). */
 export const MIOT_REMOTE_ACTION_NAMES: Readonly<Record<TvRemoteKey, readonly string[]>> = {
-  up: ["up", "press-up", "key-up"],
-  down: ["down", "press-down", "key-down"],
-  left: ["left", "press-left", "key-left"],
-  right: ["right", "press-right", "key-right"],
-  select: ["ok", "confirm", "select", "enter", "press-ok"],
-  back: ["back", "return", "press-back"],
-  home: ["home", "press-home", "go-home"],
-  menu: ["menu", "press-menu"],
-  volumeUp: ["volume-up"],
-  volumeDown: ["volume-down"],
-  mute: ["mute-on", "mute"],
-  source: ["input", "source", "switch-input"],
+  up: ["press-up", "up", "key-up"],
+  down: ["press-down", "down", "key-down"],
+  left: ["press-left", "left", "key-left"],
+  right: ["press-right", "right", "key-right"],
+  select: ["press-ok", "ok", "confirm", "press-confirm", "select", "enter"],
+  back: ["press-back", "back", "return", "press-return"],
+  home: ["press-home", "home", "go-home"],
+  menu: ["press-menu", "menu", "press-settings"],
+  volumeUp: ["press-volume-up", "volume-up", "key-volume-up"],
+  volumeDown: ["press-volume-down", "volume-down", "key-volume-down"],
+  mute: ["press-mute", "mute", "mute-on", "toggle-mute"],
+  source: ["press-source", "press-input", "input", "source", "switch-input"],
 };
-
-export const TV_REMOTE_SERVICE_NAMES: readonly string[] = ["remote-control", "television", "stb"];
+export const TV_REMOTE_SERVICE_NAMES: readonly string[] = ["remote-control", "television", "stb", "ir-tv-control"];
 
 export function isTvRemoteKey(value: unknown): value is TvRemoteKey {
   return typeof value === "string" && (TV_REMOTE_KEYS as readonly string[]).includes(value);

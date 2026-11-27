@@ -265,7 +265,7 @@ extension HomeStore {
                 command = .pressButton(entityId: actionId)
             } else if !turnOn, let actionId = s.powerOffActionId {
                 command = .pressButton(entityId: actionId)
-            } else if MiotAddress.parse(s.mediaEntityId) != nil {
+            } else if MiotAddress.parse(s.mediaEntityId) != nil || s.mediaEntityId.hasPrefix("media_player.") {
                 command = .setSwitch(entityId: s.mediaEntityId, isOn: turnOn)
             } else {
                 toggleExpanded(current.id)
@@ -2177,10 +2177,8 @@ extension HomeStore {
             entityId = LGWebOSProtocol.muteEntityId
         } else if let muteEid = s.muteSwitchEntityId {
             entityId = muteEid
-        } else if MiotAddress.parse(s.mediaEntityId) != nil {
-            return
         } else {
-            entityId = s.mediaEntityId
+            return
         }
         let nextMuted = !s.isMuted
         var updated = previous
@@ -2247,33 +2245,32 @@ extension HomeStore {
 
     public enum MediaTransport: Sendable { case playPause, next, previous }
 
-    /// Play/pause and track skip. The TV reports the resulting state; nothing is shown ahead of it.
+    private static func mediaPlaybackTarget(for kind: DeviceKind) -> (entityId: String, playback: MediaPlaybackState)? {
+        switch kind {
+        case .tv(let s): return s.playback.map { (s.mediaEntityId, $0) }
+        case .speaker(let s): return s.playback.map { (s.mediaEntityId, $0) }
+        default: return nil
+        }
+    }
+
+    /// Play/pause and track skip for TVs and speakers. The device reports the resulting state.
     public func sendMediaTransport(_ deviceId: String, _ transport: MediaTransport) {
-        guard let device = controllableDevice(deviceId), case .tv(let s) = device.kind,
-              let playback = s.playback else { return }
+        guard let device = controllableDevice(deviceId), let target = Self.mediaPlaybackTarget(for: device.kind) else { return }
         let command: DeviceCommand
         switch transport {
-        case .playPause:
-            guard playback.canPlayPause else { return }
-            command = .mediaPlayPause(entityId: s.mediaEntityId)
-        case .next:
-            guard playback.canSkipTrack else { return }
-            command = .mediaNextTrack(entityId: s.mediaEntityId)
-        case .previous:
-            guard playback.canSkipTrack else { return }
-            command = .mediaPreviousTrack(entityId: s.mediaEntityId)
+        case .playPause: guard target.playback.canPlayPause else { return }; command = .mediaPlayPause(entityId: target.entityId)
+        case .next: guard target.playback.canSkipTrack else { return }; command = .mediaNextTrack(entityId: target.entityId)
+        case .previous: guard target.playback.canSkipTrack else { return }; command = .mediaPreviousTrack(entityId: target.entityId)
         }
         commitManualWrite(from: device, to: nil, command: command, lock: nil)
     }
 
     /// One seek per finished drag; the drawer's `MediaSeekGuard` holds the bar on the target meanwhile.
     public func seekMedia(_ deviceId: String, toSeconds target: Double) {
-        guard target.isFinite,
-              let device = controllableDevice(deviceId), case .tv(let s) = device.kind,
-              let playback = s.playback, playback.canSeek,
-              let duration = playback.durationSec, duration > 0 else { return }
+        guard target.isFinite, let device = controllableDevice(deviceId), let media = Self.mediaPlaybackTarget(for: device.kind),
+              media.playback.canSeek, let duration = media.playback.durationSec, duration > 0 else { return }
         let clamped = min(max(target, 0), duration)
-        commitManualWrite(from: device, to: nil, command: .mediaSeek(entityId: s.mediaEntityId, positionSec: clamped), lock: nil)
+        commitManualWrite(from: device, to: nil, command: .mediaSeek(entityId: media.entityId, positionSec: clamped), lock: nil)
     }
 
     /// A Xiaomi TV's own key action wins; otherwise the paired Home Assistant `remote.*`.

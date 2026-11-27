@@ -2034,13 +2034,15 @@ export function tvRemoteActions(did: string, spec: MiotDeviceSpec): Partial<Reco
   const result: Partial<Record<TvRemoteKey, string>> = {};
   const services = spec.services.filter((s) => TV_REMOTE_SERVICE_NAMES.includes(miotShortName(s.type)));
   for (const key of TV_REMOTE_KEYS) {
-    for (const service of services) {
-      const action = service.actions.find(
-        (a) => (a.in?.length ?? 0) === 0 && MIOT_REMOTE_ACTION_NAMES[key].includes(miotShortName(a.type)),
-      );
-      if (action) {
-        result[key] = makeMiotActionAddress(did, service.iid, action.iid);
-        break;
+    outer: for (const name of MIOT_REMOTE_ACTION_NAMES[key]) {
+      for (const service of services) {
+        const action = service.actions.find(
+          (a) => (a.in?.length ?? 0) === 0 && miotShortName(a.type) === name,
+        );
+        if (action) {
+          result[key] = makeMiotActionAddress(did, service.iid, action.iid);
+          break outer;
+        }
       }
     }
   }

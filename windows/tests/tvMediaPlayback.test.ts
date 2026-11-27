@@ -1,11 +1,16 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { afterEach, describe, it } from "node:test";
 import type { Window } from "happy-dom";
 
-import { HomeAssistantSynthesizer, haServiceCall } from "../src/core/homeAssistant.js";
+import { HomeAssistantSynthesizer, haServiceCall, homeAssistantCommand } from "../src/core/homeAssistant.js";
+import { resetHaTransportGateForTests } from "../src/core/haTransportGate.js";
 import { setLanguage } from "../src/core/i18n.js";
 import {
   extrapolatedPosition,
+  haRemoteCommand,
+  inferHaRemoteProfile,
   MediaSeekGuard,
   playbackFromHomeAssistant,
   progressStyle,
@@ -13,20 +18,16 @@ import {
 import { MiotCommandMapper } from "../src/core/miCloud/command.js";
 import type { MiotDeviceSpec } from "../src/core/miCloud/spec.js";
 import { MiotSynthesizer } from "../src/core/miCloud/synthesis.js";
-import { hasDetailDrawer, type MediaPlaybackState, type SmartDevice, type TvSpec } from "../src/core/models.js";
+import { hasDetailDrawer, type HaRemoteProfile, type MediaPlaybackState, type SmartDevice, type SpeakerSpec, type TvRemoteKey, type TvSpec } from "../src/core/models.js";
 import type { MenuMijiaWindowsApp } from "../src/ui/app.js";
-import {
-  bindTvMediaEvents,
-  disposeTvMediaEvents,
-  renderTvMediaSection,
-  tvDrawerHasMedia,
-  tvProgressTickerActive,
-} from "../src/ui/tvMediaDrawer.js";
+import { bindTvMediaEvents, clearMediaArtworkCache, disposeTvMediaEvents, mediaArtworkCacheKey, renderSpeakerMediaSection, renderTvMediaSection, speakerDrawerHasMedia, tvDrawerHasMedia, tvProgressTickerActive } from "../src/ui/tvMediaDrawer.js";
 import { closeTestWindow, mountTestWindow } from "./uiHarness.js";
 
 let activeDom: Window | null = null;
 
 afterEach(async () => {
+  clearMediaArtworkCache();
+  resetHaTransportGateForTests();
   if (activeDom) {
     await closeTestWindow(activeDom);
     activeDom = null;
@@ -169,7 +170,11 @@ describe("TV Now Playing and remote pad (macOS TVMediaPlaybackTests parity)", ()
         {
           iid: 5, type: "urn:miot-spec-v2:service:remote-control:00007880:xiaomi-tv:1", description: "Remote",
           properties: [],
-          actions: [action(1, "up"), action(2, "down"), action(3, "ok"), action(4, "back"), action(5, "home"), action(6, "left", [9])],
+          actions: [
+            action(1, "up"), action(2, "down"), action(3, "ok"), action(4, "back"), action(5, "home"),
+            action(6, "left", [9]), action(7, "press-volume-up"), action(8, "press-volume-down"),
+            action(9, "press-settings"), action(10, "press-menu"),
+          ],
         },
       ],
     } as unknown as MiotDeviceSpec;
@@ -185,9 +190,15 @@ describe("TV Now Playing and remote pad (macOS TVMediaPlaybackTests parity)", ()
     assert.equal(tv.kind.miotRemoteActions?.up, "miot-action:tv9:5:1");
     assert.equal(tv.kind.miotRemoteActions?.select, "miot-action:tv9:5:3");
     assert.equal(tv.kind.miotRemoteActions?.left, undefined);
+    assert.equal(tv.kind.miotRemoteActions?.volumeUp, "miot-action:tv9:5:7");
+    assert.equal(tv.kind.miotRemoteActions?.volumeDown, "miot-action:tv9:5:8");
+    assert.equal(tv.kind.miotRemoteActions?.menu, "miot-action:tv9:5:10", "press-menu wins over press-settings");
     const select = tv.kind.miotRemoteActions?.select ?? "";
     assert.deepEqual(MiotCommandMapper.map({ kind: "remoteSendKey", entityId: select, key: "select" }, spec), {
       kind: "action", call: { did: "tv9", siid: 5, aiid: 3, inputs: [] },
+    });
+    assert.deepEqual(MiotCommandMapper.map({ kind: "remoteSendKey", entityId: "miot-action:tv9:5:7", key: "volumeUp" }, spec), {
+      kind: "action", call: { did: "tv9", siid: 5, aiid: 7, inputs: [] },
     });
     assert.throws(() => MiotCommandMapper.map({ kind: "remoteSendKey", entityId: select, key: "home" }, spec));
     const mediaEntityId = tv.kind.mediaEntityId;
@@ -260,5 +271,100 @@ describe("TV Now Playing and remote pad (macOS TVMediaPlaybackTests parity)", ()
     assert.equal(intervals.size, 0);
     dom.document.dispatchEvent(new dom.Event("visibilitychange"));
     assert.equal(intervals.size, 0, "dispose removes the visibility listener");
+  });
+
+  it("adapts HA remote.send_command keys per TV ecosystem (golden parity)", () => {
+    const golden = JSON.parse(readFileSync(resolve(import.meta.dirname, "../../Tests/Fixtures/ha_remote_commands_golden.json"), "utf8")) as {
+      inferenceCases: Array<{ name: string; platform?: string; manufacturer?: string; model?: string; identifiers?: unknown; entityId?: string; friendlyName?: string; expectedProfile: HaRemoteProfile }>;
+      commandTable: Record<HaRemoteProfile, Record<TvRemoteKey, string>>;
+    };
+    for (const c of golden.inferenceCases) assert.equal(inferHaRemoteProfile(c), c.expectedProfile, c.name);
+    for (const [profile, map] of Object.entries(golden.commandTable) as Array<[HaRemoteProfile, Record<TvRemoteKey, string>]>) {
+      for (const [key, expected] of Object.entries(map) as Array<[TvRemoteKey, string]>) {
+        assert.equal(haRemoteCommand(key, profile), expected, `${profile}.${key}`);
+        assert.equal(haServiceCall({ kind: "remoteSendKey", entityId: "remote.tv", key, profile }).data.command, expected);
+      }
+    }
+    const home = HomeAssistantSynthesizer.synthesize({
+      areas: [{ area_id: "living", name: "客厅" }],
+      devices: [{ id: "atv", name: "客厅电视", area_id: "living", manufacturer: "Google", model: "Google TV" }],
+      entities: [{ entity_id: "media_player.living_gtv", device_id: "atv" }, { entity_id: "remote.living_gtv", device_id: "atv", platform: "androidtv_remote" }],
+      states: [
+        { entity_id: "media_player.living_gtv", state: "playing", attributes: { device_class: "tv", media_title: "Show" } },
+        { entity_id: "remote.living_gtv", state: "on", attributes: {} },
+      ],
+    });
+    const tv = home.devices.find((d) => d.id === "atv");
+    assert.ok(tv && tv.kind.kind === "tv" && tv.kind.remoteProfile === "androidTV");
+    const enriched = homeAssistantCommand({ kind: "remoteSendKey", entityId: "remote.living_gtv", key: "select" }, home.devices);
+    assert.equal(haServiceCall(enriched).data.command, "DPAD_CENTER");
+  });
+
+  it("gives HA SpeakerSpec Now Playing parity and routes transport/seek controls (#564)", () => {
+    setLanguage("zh-Hans");
+    const home = HomeAssistantSynthesizer.synthesize({
+      areas: [{ area_id: "study", name: "书房" }],
+      devices: [{ id: "sp1", name: "Sonos 书房", area_id: "study", model: "Sonos Era 100" }],
+      entities: [{ entity_id: "media_player.sonos_study", device_id: "sp1" }],
+      states: [{ entity_id: "media_player.sonos_study", state: "playing", attributes: { media_title: "Kind of Blue", media_artist: "Miles Davis", media_duration: 300, media_position: 45, supported_features: 1 | 2 | 16 | 32 | 16384 } }],
+    });
+    const sp = home.devices.find((d) => d.id === "sp1");
+    assert.ok(sp && sp.kind.kind === "speaker" && sp.kind.playback?.title === "Kind of Blue" && speakerDrawerHasMedia(sp.kind) && hasDetailDrawer(sp));
+    activeDom = mountTestWindow();
+    const root = document.getElementById("app") as HTMLElement;
+    root.innerHTML = renderSpeakerMediaSection(sp, sp.kind, escapeHtml);
+    const sent: unknown[] = [];
+    const host = { root, devices: [sp], executeSingleCommand: async (_d: SmartDevice, cmd: unknown) => { sent.push(cmd); }, render: () => {} } as unknown as MenuMijiaWindowsApp;
+    bindTvMediaEvents(host);
+    root.querySelector<HTMLButtonElement>('[data-tvmedia="sp1|playPause"]')?.click();
+    root.querySelector<HTMLButtonElement>('[data-tvmedia="sp1|next"]')?.click();
+    const slider = root.querySelector<HTMLInputElement>('input[data-tvseek="sp1"]');
+    assert.ok(slider);
+    slider.value = "120";
+    slider.dispatchEvent(new Event("input"));
+    slider.dispatchEvent(new Event("change"));
+    assert.deepEqual(sent, [{ kind: "mediaPlayPause", entityId: "media_player.sonos_study" }, { kind: "mediaNextTrack", entityId: "media_player.sonos_study" }, { kind: "mediaSeek", entityId: "media_player.sonos_study", positionSec: 120 }]);
+    disposeTvMediaEvents(host);
+  });
+
+  it("loads authenticated HA artwork via ha_media_artwork, caches by SHA-256, and falls back safely (#564)", async () => {
+    setLanguage("zh-Hans");
+    const dom = activeDom = mountTestWindow();
+    const calls: Array<{ cmd: string; args: Record<string, unknown> }> = [];
+    let mode: "ok" | "unsafeMime" | "fail" = "ok";
+    (dom as unknown as { __TAURI_INTERNALS__: { invoke: (cmd: string, args: Record<string, unknown>) => Promise<unknown> } }).__TAURI_INTERNALS__ = {
+      invoke: async (cmd, args) => {
+        calls.push({ cmd, args });
+        if (cmd === "ha_set_connection") return 1;
+        if (cmd !== "ha_media_artwork") return null;
+        if (mode === "fail") throw new Error("network error");
+        return mode === "unsafeMime" ? { mimeType: "image/svg+xml", dataBase64: "PHN2Zy8+" } : { mimeType: "image/png", dataBase64: "iVBORw0KGgo=" };
+      },
+    };
+    const path = "/api/media_player_proxy/media_player.tv?token=secret-artwork-token";
+    const key = mediaArtworkCacheKey("http://ha.local:8123/", path);
+    assert.ok(key.length === 64 && !key.includes("secret-artwork-token"));
+    const kind: SpeakerSpec = { kind: "speaker", mediaEntityId: "media_player.tv", state: "playing", volumePercent: 30, isMuted: false, muteSwitchEntityId: null, sleepModeEntityId: null, isSleepMode: false, volumeWritable: true, playback: playback({ title: "Track", artworkURL: path, canPlayPause: true }) };
+    const dev = { id: "sp-art", name: "音箱", roomId: "r", roomName: "客厅", model: "sonos", isOnline: true, kind } as SmartDevice;
+    const root = document.getElementById("app") as HTMLElement;
+    root.innerHTML = renderSpeakerMediaSection(dev, kind, escapeHtml);
+    assert.ok(!root.innerHTML.includes("secret-artwork-token"), "entity token never enters DOM");
+    const host = { root, devices: [dev], settings: { haBaseURL: "http://ha.local:8123", haToken: "ha-bearer" }, executeSingleCommand: async () => {}, render: () => {} } as unknown as MenuMijiaWindowsApp;
+    bindTvMediaEvents(host);
+    await new Promise((r) => setTimeout(r, 15));
+    assert.equal(root.querySelector<HTMLImageElement>("img.cc-tv-artwork-img")?.src, "data:image/png;base64,iVBORw0KGgo=");
+    const artCalls = calls.filter((c) => c.cmd === "ha_media_artwork");
+    assert.ok(artCalls.length === 1 && artCalls[0]!.args.token === null);
+    bindTvMediaEvents(host);
+    await new Promise((r) => setTimeout(r, 5));
+    assert.equal(calls.filter((c) => c.cmd === "ha_media_artwork").length, 1, "re-bind uses SHA-256 cache");
+    for (const bad of ["unsafeMime", "fail"] as const) {
+      clearMediaArtworkCache(); mode = bad;
+      root.innerHTML = renderSpeakerMediaSection(dev, kind, escapeHtml);
+      bindTvMediaEvents(host);
+      await new Promise((r) => setTimeout(r, 15));
+      assert.equal(root.querySelector("img.cc-tv-artwork-img"), null, bad);
+      assert.ok(root.querySelector(".cc-tv-artwork svg"), bad);
+    }
   });
 });
