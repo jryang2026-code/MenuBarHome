@@ -1016,6 +1016,8 @@ public final class HomeStore {
     @ObservationIgnored public var adapterCommandHandler: (@MainActor (DeviceCommand) async throws -> Void)?
     /// Told about every panel/system/low-power change so an adapter can poll, sleep or stop.
     @ObservationIgnored public var adapterPollingContextHandler: (@MainActor (PollingContext) -> Void)?
+    /// Notified when `capabilityGeneration` advances so a running adapter stays in sync.
+    @ObservationIgnored public var adapterCapabilityGenerationHandler: (@MainActor (Int) -> Void)?
     public var onOpenCameraLiveView: ((SmartDevice) -> Void)?
     public internal(set) var activeLiveCameraDeviceId: String?
     public static let cameraStreamURLsKey = ViewPreferenceKeys.cameraStreamURLs
@@ -1287,7 +1289,13 @@ public final class HomeStore {
     }
     public internal(set) var capabilityResolutionMode: CapabilityInstallResolutionMode = .freshInstall
     public internal(set) var identityMigrationDiagnostic: String?
-    public internal(set) var capabilityGeneration: Int = 0
+    public internal(set) var capabilityGeneration: Int = 0 {
+        didSet {
+            if capabilityGeneration != oldValue {
+                adapterCapabilityGenerationHandler?(capabilityGeneration)
+            }
+        }
+    }
     public internal(set) var haCredentialGeneration: Int = 0
     #if DEBUG
     public func bumpHACredentialGenerationForTesting() { haCredentialGeneration &+= 1 }

@@ -302,6 +302,25 @@ struct TVBridgeStoreTests {
         #expect(home.adapterDevices.isEmpty)
         #expect(store.status == .disabled)
     }
+
+    @Test("Passes dynamic capabilityGeneration from HomeStore into initialize, contextChanged, and control.execute")
+    func dynamicCapabilityGenerationPassthrough() async throws {
+        let harness = Harness(); let store = enabledStore(harness)
+        let home = HomeStore(provider: SilentProvider(), defaultsSuiteName: harness.suite + ".capgen")
+        defer { UserDefaults.standard.removePersistentDomain(forName: harness.suite + ".capgen") }
+        #expect(home.applyDeviceCategorySelection([.tv, .light]) == .applied); store.attach(to: home)
+        let expectedInitGen = Int(store.currentCapabilityGeneration); #expect(expectedInitGen > 1)
+        await store.refresh()?.value
+        let initReq = try #require(await harness.transport.requests.first { $0.method == "initialize" })
+        let initParams = try #require(try JSONSerialization.jsonObject(with: initReq.params ?? Data()) as? [String: Any])
+        #expect(initParams["capabilityGeneration"] as? Int == expectedInitGen)
+        #expect(home.applyDeviceCategorySelection(Set(DeviceCategoryID.allCases)) == .applied); await store.waitForPendingWork()
+        let nextGen = Int(store.currentCapabilityGeneration); #expect(nextGen > expectedInitGen)
+        try await store.execute(.mediaPlayPause(entityId: "adapter:com.menubarhome.tv-bridge:tv-a"))
+        let execReq = try #require(await harness.transport.requests.last { $0.method == "control.execute" })
+        let execParams = try #require(try JSONSerialization.jsonObject(with: execReq.params ?? Data()) as? [String: Any])
+        #expect(execParams["capabilityGeneration"] as? Int == nextGen)
+    }
 }
 
 /// Holds `initialize` open until released, so a test can switch the bridge off mid-start.

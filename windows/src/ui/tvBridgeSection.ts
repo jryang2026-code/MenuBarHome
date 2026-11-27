@@ -17,6 +17,7 @@ import {
   type TVBridgeFrame,
   type TVBridgePollingContext,
 } from "../core/tvBridgePlugin.js";
+import { getCapabilityGeneration } from "../core/miAccountControl.js";
 import { secureStoreDelete, secureStoreGet, secureStoreSet, tvBridgeCredentialName } from "../core/secureStore.js";
 
 /**
@@ -184,6 +185,8 @@ export interface TVBridgeControllerDeps {
   readonly storage?: TVBridgeStorage | null;
   readonly secrets?: TVBridgeSecrets;
   readonly onChange?: () => void;
+  /** Live host capability generation (`>= 1`); defaults to the capability selection store counter. */
+  readonly getCapabilityGeneration?: () => number;
   /** Delay before an idle bridge stops after the panel hides; defaults to `idleShutdownSeconds`. */
   readonly idleShutdownMs?: number;
 }
@@ -194,6 +197,7 @@ export class TVBridgeController {
   private readonly storage: TVBridgeStorage | null;
   private readonly invokeFn: TVBridgeInvoke | null;
   private readonly secrets: TVBridgeSecrets;
+  private readonly capabilityGenerationFn: () => number;
   onChange: () => void;
   config: TVBridgeConfig;
   status: TVBridgeStatus;
@@ -224,6 +228,7 @@ export class TVBridgeController {
     this.storage = deps.storage === undefined ? defaultStorage() : deps.storage;
     this.invokeFn = deps.invoke === undefined ? defaultInvoke() : deps.invoke;
     this.secrets = deps.secrets ?? defaultSecrets();
+    this.capabilityGenerationFn = deps.getCapabilityGeneration ?? getCapabilityGeneration;
     this.onChange = deps.onChange ?? (() => undefined);
     this.idleShutdownMs = deps.idleShutdownMs;
     this.config = loadConfig(this.storage);
@@ -342,12 +347,18 @@ export class TVBridgeController {
     return run;
   }
 
+  onCapabilityGenerationChanged(): void {
+    if (!this.config.isEnabled || !this.lifecycle?.isRunning) return;
+    this.track(this.contextChanged({ panelVisible: this.panelVisible, systemActive: this.panelVisible, lowPower: false }));
+  }
+
   /** `stillAllowed` runs after the bridge is up and right before the write; `false` sends nothing. */
-  async execute(command: DeviceCommand, stillAllowed?: () => Promise<boolean>): Promise<void> {
+  async execute(command: DeviceCommand, stillAllowed?: () => Promise<boolean>, capabilityGeneration?: number): Promise<void> {
     if (!this.config.isEnabled) throw new Error("TV bridge is off");
     const routed = toTVBridgeCommand(command);
     if (!routed) throw new Error("Unsupported TV bridge command");
-    const frame = mapTVBridgeCommand(routed.command, routed.deviceId, 1);
+    const capGen = this.normalizeCapabilityGeneration(capabilityGeneration ?? this.capabilityGenerationFn());
+    const frame = mapTVBridgeCommand(routed.command, routed.deviceId, capGen);
     await this.request(frame.method ?? "control.execute", frame.params, async () => {
       const allowed = stillAllowed ? await stillAllowed() : true;
       if (!allowed || !this.config.isEnabled) throw new Error("TV bridge write refused");
@@ -432,9 +443,18 @@ export class TVBridgeController {
     void task.finally(() => this.pending.delete(task));
   }
 
+  private normalizeCapabilityGeneration(value: number): number {
+    const n = Math.floor(value);
+    return Number.isFinite(n) && n >= 1 ? n : 1;
+  }
+
+  private currentCapabilityGeneration(): number {
+    return this.normalizeCapabilityGeneration(this.capabilityGenerationFn());
+  }
+
   private contextChanged(context: TVBridgePollingContext): Promise<void> {
     const lifecycle = this.lifecycle;
-    return lifecycle?.contextChanged(context).catch(() => {
+    return lifecycle?.contextChanged(context, this.currentCapabilityGeneration()).catch(() => {
       if (this.lifecycle === lifecycle) this.lifecycle = null;
     }) ?? Promise.resolve();
   }
@@ -494,7 +514,7 @@ export class TVBridgeController {
         return { ...rest, ...(macAddress ? { mac: macAddress } : {}), ...(credential ? { credential } : {}) };
       }));
       if (stale()) throw new Error("TV bridge switched off while starting");
-      const init = await send({ jsonrpc: "2.0", id: crypto.randomUUID(), method: "initialize", params: { supportedProtocolVersions: ["1.0"], capabilityGeneration: 1, config: { devices } } });
+      const init = await send({ jsonrpc: "2.0", id: crypto.randomUUID(), method: "initialize", params: { supportedProtocolVersions: ["1.0"], capabilityGeneration: this.currentCapabilityGeneration(), config: { devices } } });
       if (init.error) throw new Error(typeof init.error === "string" ? init.error : init.error.message);
       if (stale()) throw new Error("TV bridge switched off while starting");
     } catch (error) {

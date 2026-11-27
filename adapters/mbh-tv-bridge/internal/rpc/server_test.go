@@ -2,6 +2,7 @@ package rpc
 
 import (
 	"bytes"
+	"com.menubarhome.tv-bridge/internal/driver"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -70,5 +71,27 @@ func TestSleep(t *testing.T) {
 	r := s.Handle(req(1, "host.contextChanged", map[string]bool{"panelVisible": false, "systemActive": true}))
 	if r.Error != nil || !s.sleeping {
 		t.Fatal("not sleeping")
+	}
+}
+
+type stubPairer struct{ driver.Base; key string }
+func (p *stubPairer) Probe() error                                { return nil }
+func (p *stubPairer) Snapshot() (driver.Snapshot, error)          { return driver.Snapshot{ID: "lg_webos_ssap"}, nil }
+func (p *stubPairer) Execute(string, map[string]any) error        { return nil }
+func (p *stubPairer) Pair() (string, error)                       { return p.key, nil }
+func TestPairingBeginAndDynamicCapabilityGeneration(t *testing.T) {
+	s := New(&bytes.Buffer{}, t.TempDir())
+	if r := s.Handle(req(1, "initialize", map[string]any{"supportedProtocolVersions": []string{"1.0"}, "capabilityGeneration": 4, "config": map[string]any{"devices": []map[string]any{{"nativeId": "lg1", "driver": "lg_webos_ssap", "host": "127.0.0.1", "port": 1, "mac": "AA:BB:CC:DD:EE:FF"}}}})); r.Error != nil {
+		t.Fatalf("initialize failed: %+v", r.Error)
+	}
+	if r := s.Handle(req(2, "control.execute", map[string]any{"nativeId": "lg1", "grantId": "g1", "verb": "power.set", "args": map[string]any{"isOn": false}, "capabilityGeneration": 1})); r.Error == nil {
+		t.Fatal("stale capabilityGeneration must be rejected")
+	}
+	if r := s.Handle(req(3, "pairing.begin", map[string]any{"nativeId": "missing"})); r.Error == nil || r.Error.Code != -32005 {
+		t.Fatalf("unknown device pairing must return -32005, got %+v", r.Error)
+	}
+	s.devices["lg1"] = &stubPairer{key: "paired-key-42"}
+	if r := s.Handle(req(4, "pairing.begin", map[string]any{"nativeId": "lg1", "method": "tvUserConsent"})); r.Error != nil || r.Result.(map[string]any)["clientKey"] != "paired-key-42" {
+		t.Fatalf("pairing.begin did not return clientKey: %+v", r)
 	}
 }

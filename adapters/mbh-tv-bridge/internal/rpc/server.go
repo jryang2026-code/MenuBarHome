@@ -149,6 +149,11 @@ func (s *Server) Handle(r Request) Response {
 				addr = net.JoinHostPort(d.Host, fmt.Sprint(d.Port))
 			}
 			if drv := driver.ForConfig(canonicalDriverID(d.Driver), addr, d.Credential); drv != nil {
+				if d.MAC != "" {
+					if setter, ok := drv.(driver.MACSetter); ok {
+						setter.SetMAC(d.MAC)
+					}
+				}
 				s.devices[d.NativeID] = drv
 				name := d.Name
 				if name == "" {
@@ -320,8 +325,19 @@ func (s *Server) Handle(r Request) Response {
 			return errResp(r.ID, -32001, "artwork exceeds 256 KiB")
 		}
 		return Response{JSONRPC: "2.0", ID: r.ID, Result: map[string]any{"path": realFull}}
-	case "pairing.begin", "pairing.submit", "pairing.cancel":
-		return Response{JSONRPC: "2.0", ID: r.ID, Result: map[string]any{"ok": true}}
+	case "pairing.begin":
+		var p struct{ NativeID, Method string }
+		if (len(r.Params) > 0 && json.Unmarshal(r.Params, &p) != nil) || p.NativeID == "" { return errResp(r.ID, -32602, "invalid params") }
+		s.mu.Lock(); drv, ok := s.devices[p.NativeID]; s.mu.Unlock()
+		if !ok { return errResp(r.ID, -32005, "device unavailable") }
+		res := map[string]any{"ok": true, "pairingId": "pair-" + p.NativeID, "instructions": []string{"Confirm pairing on TV"}}
+		if pairer, ok := drv.(driver.Pairer); ok {
+			key, err := pairer.Pair(); if err != nil { return errResp(r.ID, -32002, err.Error()) }
+			res["paired"], res["clientKey"] = true, key
+		}
+		return Response{JSONRPC: "2.0", ID: r.ID, Result: res}
+	case "pairing.submit", "pairing.cancel":
+		return Response{JSONRPC: "2.0", ID: r.ID, Result: map[string]any{"ok": true, "paired": r.Method == "pairing.submit", "cancelled": r.Method == "pairing.cancel"}}
 	default:
 		return errResp(r.ID, -32601, "method not found")
 	}

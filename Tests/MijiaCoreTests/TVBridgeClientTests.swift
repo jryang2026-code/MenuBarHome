@@ -206,4 +206,21 @@ extension TVBridgeClientTests {
         XCTAssertEqual(transport.childProcess.terminationStatus, SIGKILL)
         XCTAssertNotEqual(kill(pid, 0), 0, "exec-replaced SIGTERM-ignoring child must be escalated to SIGKILL and reaped")
     }
+
+    func testStdioTransportRequestTimeoutAndSanitizedStderrRingBuffer() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("tv-bridge-timeout-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true); defer { try? FileManager.default.removeItem(at: dir) }
+        let script = dir.appendingPathComponent("slow-bridge.sh")
+        try Data("#!/bin/sh\necho 'connect failed client-key=\"lg-secret-77\" Bearer tok999' >&2\nexec sleep 5\n".utf8).write(to: script)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
+        let transport = try StdioTVBridgeTransport.launch(binaryPath: script.path, dataDir: dir, manifestPath: dir.appendingPathComponent("adapter-manifest.json"), requestTimeout: 0.25)
+        defer { transport.terminateProcessImmediately(gracePeriod: 0.05) }
+        let start = Date()
+        do { _ = try await transport.request(TVBridgeFrame(method: "health.ping", params: Data("{}".utf8))); XCTFail("expected timeout") } catch TVBridgeError.transport(let msg) {
+            XCTAssertLessThan(Date().timeIntervalSince(start), 3.0); XCTAssertTrue(msg.contains("timed out"), msg); XCTAssertFalse(msg.contains("lg-secret-77")); XCTAssertFalse(msg.contains("tok999"))
+        }
+        let deadline = Date().addingTimeInterval(1.0)
+        while transport.recentStderr.isEmpty && Date() < deadline { try? await Task.sleep(for: .milliseconds(20)) }
+        let stderr = transport.recentStderr; XCTAssertTrue(stderr.contains("[REDACTED]"), stderr); XCTAssertFalse(stderr.contains("lg-secret-77")); XCTAssertFalse(stderr.contains("tok999"))
+    }
 }

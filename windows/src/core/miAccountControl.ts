@@ -189,6 +189,12 @@ function readCapabilityStorage(storage: StorageLike | null): { readonly parsed: 
   } catch { return { parsed: null, corruptRaw: raw, readError: false }; }
 }
 
+let capabilitySelectionGeneration = 1;
+
+export function getCapabilityGeneration(): number {
+  return capabilitySelectionGeneration;
+}
+
 function writeCapabilityStorageRecord(storage: StorageLike | null, record: ParsedCapabilityStorageRecord, quarantineRaw: string | null): boolean {
   if (!storage) return false;
   try {
@@ -210,6 +216,7 @@ function writeCapabilityStorageRecord(storage: StorageLike | null, record: Parse
       ...(record.knownDisabledHaDevices.length > 0 ? { knownDisabledHaDevices: record.knownDisabledHaDevices } : {}),
       ...(record.knownDisabledHaScenes.length > 0 ? { knownDisabledHaScenes: record.knownDisabledHaScenes } : {}),
     }));
+    capabilitySelectionGeneration += 1;
     return true;
   } catch { return false; }
 }

@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"net/url"
@@ -51,6 +52,9 @@ type TVDriver interface {
 	Sleep() error
 	Close() error
 }
+
+type Pairer interface{ Pair() (string, error) }
+type MACSetter interface{ SetMAC(string) }
 type Base struct {
 	id, addr string
 	client   *http.Client
@@ -129,57 +133,97 @@ func commandAllowed(verb string, args map[string]any) error {
 	return nil
 }
 
+func clampInt(v, lo, hi int) int { if v < lo { return lo }; if v > hi { return hi }; return v }
+func parseVolumeLevel(a map[string]any) (int, error) {
+	raw, ok := argVal(a, "level", "volume")
+	f, err := strconv.ParseFloat(fmt.Sprint(raw), 64)
+	if !ok || err != nil || math.IsNaN(f) || math.IsInf(f, 0) || f < 0 || f > 100 { return 0, errors.New("invalid volume") }
+	return int(math.Round(f)), nil
+}
+func parseBoolArg(a map[string]any, keys ...string) (bool, error) {
+	raw, ok := argVal(a, keys...); b, bOk := raw.(bool)
+	if !ok || !bOk { return false, errors.New("invalid boolean argument") }
+	return b, nil
+}
+func sanitizeErr(err error, secrets ...string) error {
+	if err == nil { return nil }
+	msg := err.Error()
+	for _, s := range secrets { if s = strings.TrimSpace(s); len(s) >= 2 { msg = strings.ReplaceAll(msg, s, "[REDACTED]") } }
+	return errors.New(msg)
+}
+
 type Xiaomi struct{ Base }
 
-func NewXiaomi(addr string) *Xiaomi {
-	return &Xiaomi{Base: Base{id: "xiaomi_mitv_6095", addr: ensureHTTPBase(addr), client: httpClient()}}
+func NewXiaomi(addr string) *Xiaomi { return &Xiaomi{Base: Base{id: "xiaomi_mitv_6095", addr: ensureHTTPBase(addr), client: httpClient()}} }
+func (d *Xiaomi) aliveInfo() (string, error) {
+	var r struct{ Status *int; Data struct{ DeviceName string } }
+	if err := getJSON(d.client, d.addr+"/request?action=isalive", &r); err != nil { return "", err }
+	if r.Status != nil && *r.Status != 0 { return "", fmt.Errorf("xiaomi isalive status %d", *r.Status) }
+	if name := strings.TrimSpace(r.Data.DeviceName); name != "" { return name, nil }
+	return "Xiaomi TV", nil
 }
-func (d *Xiaomi) Probe() error {
-	var x any
-	return getJSON(d.client, d.addr+"/request?action=isalive", &x)
+func (d *Xiaomi) Probe() error { _, err := d.aliveInfo(); return err }
+func (d *Xiaomi) getVolumeState() (cur, maxVol int, muted, hasMuted bool, err error) {
+	var r struct {
+		Volume, MaxVolume *int; Muted *bool
+		Data struct{ Volum, MaxVolum, Volume, MaxVolume *int; Muted *bool }
+	}
+	if err = getJSON(d.client, d.addr+"/general?action=getvolume", &r); err != nil { return 0, 100, false, false, err }
+	if r.Data.Muted != nil { muted, hasMuted = *r.Data.Muted, true } else if r.Muted != nil { muted, hasMuted = *r.Muted, true }
+	switch {
+	case r.Data.Volum != nil: cur, maxVol = *r.Data.Volum, 15; if r.Data.MaxVolum != nil && *r.Data.MaxVolum > 0 { maxVol = *r.Data.MaxVolum }
+	case r.Data.Volume != nil: cur, maxVol = *r.Data.Volume, 100; if r.Data.MaxVolume != nil && *r.Data.MaxVolume > 0 { maxVol = *r.Data.MaxVolume }
+	case r.Volume != nil: cur, maxVol = *r.Volume, 100; if r.MaxVolume != nil && *r.MaxVolume > 0 { maxVol = *r.MaxVolume }
+	default: return 0, 100, muted, hasMuted, errors.New("xiaomi getvolume missing volume field")
+	}
+	return clampInt(cur, 0, maxVol), maxVol, muted, hasMuted, nil
 }
 func (d *Xiaomi) Snapshot() (Snapshot, error) {
-	var x struct {
-		Volume int `json:"volume"`
+	name, err := d.aliveInfo(); if err != nil { return Snapshot{}, err }
+	snap := Snapshot{ID: d.id, Name: name, Power: "on"}
+	if cur, maxVol, muted, _, vErr := d.getVolumeState(); vErr == nil && maxVol > 0 {
+		snap.Volume, snap.Muted = clampInt(int(math.Round(float64(cur)*100.0/float64(maxVol))), 0, 100), muted
 	}
-	e := getJSON(d.client, d.addr+"/general?action=getvolume", &x)
-	return Snapshot{ID: d.id, Name: "Xiaomi TV", Volume: x.Volume}, e
+	return snap, nil
 }
-func (d *Xiaomi) Execute(v string, a map[string]any) error {
-	if e := commandAllowed(v, a); e != nil {
-		return e
-	}
-	if v == "input.select" {
-		s, _ := a["source"].(string)
-		if !strings.HasPrefix(s, "hdmi") {
-			return errors.New("invalid source")
-		}
-		r, e := d.client.Get(d.addr + "/controller?action=changesource&source=" + url.QueryEscape(s))
-		if e != nil {
-			return e
-		}
-		defer r.Body.Close()
-		_, _ = io.Copy(io.Discard, r.Body)
-		if r.StatusCode >= 300 {
-			return fmt.Errorf("http status %s", r.Status)
-		}
-		return nil
-	}
-	k := fmt.Sprint(a["key"])
-	codes := map[string]string{"up": "up", "down": "down", "left": "left", "right": "right", "select": "enter", "back": "back", "home": "home", "menu": "menu", "volumeUp": "volumeup", "volumeDown": "volumedown", "mute": "mute", "source": "source", "channelUp": "channelup", "channelDown": "channeldown", "playPause": "playpause", "info": "info"}
-	code, ok := codes[k]
-	if !ok {
-		return errors.New("unsupported remote key")
-	}
-	r, e := d.client.Get(d.addr + "/controller?action=keyevent&keycode=" + url.QueryEscape(code))
-	if e != nil {
-		return e
-	}
-	defer r.Body.Close()
-	if r.StatusCode >= 300 {
-		return fmt.Errorf("http status %s", r.Status)
-	}
+func (d *Xiaomi) getControl(path string) error {
+	r, err := d.client.Get(d.addr + path); if err != nil { return err }
+	defer r.Body.Close(); _, _ = io.Copy(io.Discard, io.LimitReader(r.Body, 64<<10))
+	if r.StatusCode >= 300 { return fmt.Errorf("http status %s", r.Status) }
 	return nil
+}
+func (d *Xiaomi) sendKey(code string) error { return d.getControl("/controller?action=keyevent&keycode=" + url.QueryEscape(code)) }
+func (d *Xiaomi) Execute(v string, a map[string]any) error {
+	if e := commandAllowed(v, a); e != nil { return e }
+	switch v {
+	case "power.set":
+		isOn, err := parseBoolArg(a, "isOn"); if err != nil { return err }
+		alive := d.Probe() == nil
+		if isOn { if alive { return nil }; return errors.New("xiaomi tv offline; cold wake unavailable") }
+		if !alive { return nil }; return d.sendKey("power")
+	case "volume.set":
+		level, err := parseVolumeLevel(a); if err != nil { return err }
+		cur, maxVol, _, _, err := d.getVolumeState(); if err != nil { return err }
+		diff := clampInt(int(math.Round(float64(level)*float64(maxVol)/100.0)), 0, maxVol) - cur
+		code := "volumeup"; if diff < 0 { code, diff = "volumedown", -diff }
+		for range clampInt(diff, 0, 50) { if err := d.sendKey(code); err != nil { return err } }
+		return nil
+	case "mute.set":
+		desired, err := parseBoolArg(a, "isMuted", "muted"); if err != nil { return err }
+		if _, _, curMuted, hasMuted, err := d.getVolumeState(); err == nil && hasMuted && curMuted == desired { return nil }
+		return d.sendKey("mute")
+	case "input.select":
+		s, _ := a["source"].(string); src := strings.ToLower(strings.NewReplacer(" ", "", "_", "").Replace(strings.TrimSpace(s)))
+		if !map[string]bool{"hdmi1": true, "hdmi2": true, "hdmi3": true, "hdmi4": true, "av": true, "dtmb": true, "atv": true, "vga": true}[src] { return errors.New("invalid source") }
+		return d.getControl("/controller?action=changesource&source=" + url.QueryEscape(src))
+	case "remote.key":
+		code, ok := map[string]string{"up": "up", "down": "down", "left": "left", "right": "right", "select": "enter", "back": "back", "home": "home", "menu": "menu", "volumeUp": "volumeup", "volumeDown": "volumedown", "mute": "mute", "source": "source", "channelUp": "channelup", "channelDown": "channeldown", "playPause": "playpause", "info": "info"}[fmt.Sprint(a["key"])]
+		if !ok { return errors.New("unsupported remote key") }
+		return d.sendKey(code)
+	case "media.playPause", "media.play", "media.pause", "media.stop", "media.next", "media.previous":
+		return d.sendKey(map[string]string{"media.playPause": "playpause", "media.play": "play", "media.pause": "pause", "media.stop": "stop", "media.next": "next", "media.previous": "previous"}[v])
+	default: return errors.New("unsupported Xiaomi action")
+	}
 }
 
 type Sony struct {
@@ -634,71 +678,32 @@ func (d *AndroidADB) Execute(v string, a map[string]any) error {
 
 type LG struct {
 	Base
-	TLS       bool
-	ClientKey string
+	TLS          bool
+	ClientKey    string
+	MAC, wolTarget       string
+	Timeout, PairTimeout time.Duration
+	mediaPlaying         bool
 }
 
 func NewLG(addr string, tlsOn bool) *LG {
 	return &LG{Base: Base{id: "lg_webos_ssap", addr: addr, client: httpClient(), sleeping: false}, TLS: tlsOn}
 }
-func (d *LG) Probe() error {
-	if !d.TLS {
-		return errors.New("LG websocket disabled")
-	}
-	c, e := ws.Dial("wss://" + d.addr + "/")
-	if e != nil {
-		return e
-	}
-	return c.Close()
-}
-func (d *LG) Snapshot() (Snapshot, error) {
-	if e := d.Probe(); e != nil {
-		return Snapshot{}, e
-	}
-	return Snapshot{ID: d.id, Name: "LG webOS"}, nil
-}
-func (d *LG) Execute(v string, a map[string]any) error {
-	if e := commandAllowed(v, a); e != nil {
-		return e
-	}
-	if !d.TLS {
-		return errors.New("LG websocket disabled")
-	}
-	c, e := ws.Dial("wss://" + d.addr + "/")
-	if e != nil {
-		return e
-	}
-	defer c.Close()
-	uri := map[string]string{"power.set": "ssap://system/turnOff", "power.screenOff": "ssap://com.webos.service.tv.display/turnOffScreen", "volume.set": "ssap://audio/setVolume", "mute.set": "ssap://audio/setMute"}[v]
-	if uri == "" {
-		return errors.New("unsupported LG action")
-	}
-	payload := a
-	switch v {
-	case "volume.set":
-		vol, _ := argVal(a, "level", "volume")
-		payload = map[string]any{"volume": vol}
-	case "mute.set":
-		muted, _ := argVal(a, "isMuted", "muted")
-		payload = map[string]any{"mute": muted}
-	}
-	b, _ := json.Marshal(map[string]any{"id": "1", "type": "request", "uri": uri, "payload": payload})
-	return c.WriteText(b)
-}
 
 type HisenseVIDAA struct {
 	Base
 	Credential string
+	Timeout    time.Duration
 }
 
 func NewHisenseVIDAA(addr, credential string) *HisenseVIDAA {
 	return &HisenseVIDAA{Base: Base{id: "hisense_vidaa_mqtt", addr: addr, client: httpClient(), sleeping: false}, Credential: credential}
 }
-func mqttStr(s string) []byte {
+func mqttStr(s string) ([]byte, error) {
+	if len(s) > 0xffff { return nil, errors.New("mqtt string too long") }
 	b := make([]byte, 2+len(s))
 	binary.BigEndian.PutUint16(b[:2], uint16(len(s)))
 	copy(b[2:], s)
-	return b
+	return b, nil
 }
 func mqttPacket(hdr byte, body []byte) []byte {
 	n := len(body)
@@ -728,44 +733,34 @@ func (d *HisenseVIDAA) mqttDo(topic, payload string) error {
 	if _, _, err := net.SplitHostPort(target); err != nil {
 		target = net.JoinHostPort(target, "36669")
 	}
-	dl := &net.Dialer{Timeout: 3 * time.Second}
+	user, pass := d.mqttCreds()
+	redact := func(err error) error { if d.Credential == "" { return err }; return sanitizeErr(err, d.Credential, user, pass) }
+	budget := 5 * time.Second; if d.Timeout > 0 { budget = d.Timeout }
+	deadline := time.Now().Add(budget)
+	dl := &net.Dialer{Timeout: budget, Deadline: deadline}
 	raw, err := dl.Dial("tcp", target)
-	if err != nil {
-		return err
-	}
-	_ = raw.SetDeadline(time.Now().Add(5 * time.Second))
+	if err != nil { return redact(err) }
+	_ = raw.SetDeadline(deadline)
 	tlsConn := tls.Client(raw, &tls.Config{InsecureSkipVerify: true})
 	var c net.Conn = tlsConn
 	if err := tlsConn.Handshake(); err != nil {
 		_ = raw.Close()
+		if !time.Now().Before(deadline) { return redact(err) }
 		c, err = dl.Dial("tcp", target)
-		if err != nil {
-			return err
-		}
-		_ = c.SetDeadline(time.Now().Add(5 * time.Second))
+		if err != nil { return redact(err) }
+		_ = c.SetDeadline(deadline)
 	}
 	defer c.Close()
-	user, pass := d.mqttCreds()
-	var connBody []byte
-	connBody = append(connBody, 0x00, 0x04, 'M', 'Q', 'T', 'T', 0x04, 0xC2, 0x00, 0x1E)
-	connBody = append(connBody, mqttStr("menubarhome-tv")...)
-	connBody = append(connBody, mqttStr(user)...)
-	connBody = append(connBody, mqttStr(pass)...)
-	if _, err := c.Write(mqttPacket(0x10, connBody)); err != nil {
-		return err
-	}
+	connBody := []byte{0x00, 0x04, 'M', 'Q', 'T', 'T', 0x04, 0xC2, 0x00, 0x1E}
+	for _, f := range []string{"menubarhome-tv", user, pass} { enc, err := mqttStr(f); if err != nil { return redact(err) }; connBody = append(connBody, enc...) }
+	if _, err := c.Write(mqttPacket(0x10, connBody)); err != nil { return redact(err) }
 	var ack [4]byte
-	if _, err := io.ReadFull(c, ack[:]); err != nil {
-		return err
-	}
-	if ack[0] != 0x20 || ack[1] != 0x02 || ack[3] != 0x00 {
-		return fmt.Errorf("mqtt connack error %d", ack[3])
-	}
+	if _, err := io.ReadFull(c, ack[:]); err != nil { return redact(err) }
+	if ack[0] != 0x20 || ack[1] != 0x02 { return errors.New("invalid mqtt connack") }
+	if ack[3] != 0x00 { return fmt.Errorf("mqtt connack refused (%d)", ack[3]) }
 	if topic != "" {
-		pub := append(mqttStr(topic), payload...)
-		if _, err := c.Write(mqttPacket(0x30, pub)); err != nil {
-			return err
-		}
+		tEnc, err := mqttStr(topic); if err != nil { return redact(err) }
+		if _, err := c.Write(mqttPacket(0x30, append(tEnc, payload...))); err != nil { return redact(err) }
 	}
 	_, _ = c.Write([]byte{0xE0, 0x00})
 	return nil
@@ -774,7 +769,8 @@ func (d *HisenseVIDAA) Probe() error {
 	return d.mqttDo("", "")
 }
 func (d *HisenseVIDAA) Snapshot() (Snapshot, error) {
-	return Snapshot{ID: d.id, Name: "Hisense VIDAA"}, d.Probe()
+	if err := d.Probe(); err != nil { return Snapshot{}, err }
+	return Snapshot{ID: d.id, Name: "Hisense VIDAA", Power: "on"}, nil
 }
 func (d *HisenseVIDAA) Execute(v string, a map[string]any) error {
 	if e := commandAllowed(v, a); e != nil {
@@ -783,19 +779,14 @@ func (d *HisenseVIDAA) Execute(v string, a map[string]any) error {
 	const keyTopic = "/remoteapp/tv/remote_service/menubarhome$normal/actions/sendkey"
 	switch v {
 	case "power.set":
+		if _, err := parseBoolArg(a, "isOn"); err != nil { return err }
 		return d.mqttDo(keyTopic, "KEY_POWER")
 	case "mute.set":
+		if _, err := parseBoolArg(a, "isMuted", "muted"); err != nil { return err }
 		return d.mqttDo(keyTopic, "KEY_MUTE")
 	case "volume.set":
-		raw, ok := argVal(a, "level", "volume")
-		if !ok {
-			return errors.New("invalid volume")
-		}
-		f, err := strconv.ParseFloat(fmt.Sprint(raw), 64)
-		if err != nil || !(f >= 0 && f <= 100) {
-			return errors.New("invalid volume")
-		}
-		return d.mqttDo("/remoteapp/tv/platform_service/menubarhome$normal/actions/changevolume", strconv.Itoa(int(f+0.5)))
+		vol, err := parseVolumeLevel(a); if err != nil { return err }
+		return d.mqttDo("/remoteapp/tv/platform_service/menubarhome$normal/actions/changevolume", strconv.Itoa(vol))
 	case "input.select":
 		s, _ := a["source"].(string)
 		s = strings.TrimSpace(s)

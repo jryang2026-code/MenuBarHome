@@ -1516,7 +1516,7 @@ async function applyTVBridgeCommand(
     await bridge.execute(command, async () => {
       late = await refusal();
       return late === null;
-    });
+    }, host.capabilityGeneration);
     return true;
   } catch {
     if (late !== null) return late === "" ? false : fail(late);

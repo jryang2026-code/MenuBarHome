@@ -1,22 +1,83 @@
 use crate::job_object::ManagedCameraProcess;
 use ring::digest::{digest, SHA256};
 use serde_json::Value;
+use std::collections::VecDeque;
 use std::fs;
-use std::io::{self, BufRead, BufReader, Write};
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{ChildStdin, ChildStdout, Command, Stdio};
-use std::sync::{LazyLock, Mutex};
+use std::sync::mpsc::{self, RecvTimeoutError};
+use std::sync::{Arc, LazyLock, Mutex};
+use std::time::Duration;
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 
 const MAX_FRAME_BYTES: usize = 8 * 1024 * 1024;
+const DEFAULT_RPC_TIMEOUT: Duration = Duration::from_secs(15);
+const STDERR_MAX_LINES: usize = 32;
+const STDERR_MAX_BYTES: usize = 4096;
+const STDERR_MAX_LINE_BYTES: usize = 512;
+
+#[derive(Default)]
+struct StderrRingBuffer { lines: VecDeque<String>, total_bytes: usize }
+impl StderrRingBuffer {
+    fn push_line(&mut self, raw: &str) {
+        let s = sanitize_stderr_line(raw); let t = s.trim(); if t.is_empty() { return; }
+        let mut end = t.len().min(STDERR_MAX_LINE_BYTES); while end > 0 && !t.is_char_boundary(end) { end -= 1; }
+        let clipped = t[..end].to_string(); self.total_bytes += clipped.len(); self.lines.push_back(clipped);
+        while self.lines.len() > STDERR_MAX_LINES || self.total_bytes > STDERR_MAX_BYTES {
+            if let Some(old) = self.lines.pop_front() { self.total_bytes = self.total_bytes.saturating_sub(old.len()); } else { break; }
+        }
+    }
+    fn summary(&self) -> String { self.lines.iter().cloned().collect::<Vec<_>>().join(" | ") }
+}
+
+fn sanitize_stderr_line(raw: &str) -> String {
+    const KEYS: &[&str] = &["credential", "client-key", "client_key", "clientkey", "password", "passwd", "token", "psk", "secret", "authorization", "cookie", "pin"];
+    let clean: String = raw.chars().filter(|&c| c >= ' ' || c == '\t').collect();
+    let (mut url_clean, mut rest) = (String::with_capacity(clean.len()), clean.as_str());
+    while let Some(idx) = rest.find("://") {
+        url_clean.push_str(&rest[..idx + 3]); rest = &rest[idx + 3..];
+        let end = rest.find(|c: char| c.is_whitespace() || matches!(c, '/' | '?' | '#')).unwrap_or(rest.len());
+        if let Some(at) = rest[..end].rfind('@') { url_clean.push_str("[REDACTED]@"); rest = &rest[at + 1..]; }
+    }
+    url_clean.push_str(rest);
+    let (b, low) = (url_clean.as_bytes(), url_clean.to_ascii_lowercase());
+    let (mut out, mut i) = (String::with_capacity(url_clean.len()), 0);
+    while i < b.len() {
+        let boundary = i == 0 || !b[i - 1].is_ascii_alphanumeric();
+        if boundary {
+            if let Some(p) = ["bearer ", "basic "].iter().find(|&&p| low[i..].starts_with(p)) {
+                out.push_str(&url_clean[i..i + p.len()]); i += p.len();
+                while i < b.len() && b[i] == b' ' { out.push(' '); i += 1; }
+                while i < b.len() && !b[i].is_ascii_whitespace() && !matches!(b[i], b'"' | b'\'' | b',' | b';' | b'}' | b']') { i += 1; }
+                out.push_str("[REDACTED]"); continue;
+            }
+            if let Some(&k) = KEYS.iter().find(|&&k| low[i..].starts_with(k) && !b.get(i + k.len()).is_some_and(|x| x.is_ascii_alphanumeric() || *x == b'_' || *x == b'-')) {
+                let mut j = i + k.len();
+                if b.get(j).is_some_and(|&x| x == b'"' || x == b'\'') { j += 1; }
+                while b.get(j).is_some_and(|x| x.is_ascii_whitespace()) { j += 1; }
+                if b.get(j).is_some_and(|&x| x == b':' || x == b'=') {
+                    j += 1; while b.get(j).is_some_and(|x| x.is_ascii_whitespace()) { j += 1; }
+                    out.push_str(&url_clean[i..j]);
+                    if let Some(&p) = ["bearer ", "basic "].iter().find(|&&p| low[j..].starts_with(p)) { j += p.len(); while j < b.len() && b[j] == b' ' { j += 1; } }
+                    if let Some(&q @ (b'"' | b'\'')) = b.get(j) { j += 1; while j < b.len() && b[j] != q { j += 1; } if j < b.len() { j += 1; } }
+                    else { while j < b.len() && !b[j].is_ascii_whitespace() && !matches!(b[j], b',' | b'&' | b';' | b'}' | b']') { j += 1; } }
+                    out.push_str("[REDACTED]"); i = j; continue;
+                }
+            }
+        }
+        let ch = url_clean[i..].chars().next().unwrap(); out.push(ch); i += ch.len_utf8();
+    }
+    out
+}
 
 struct TvBridgeProcess {
-    process: ManagedCameraProcess,
-    stdin: ChildStdin,
-    stdout: BufReader<ChildStdout>,
+    _process: ManagedCameraProcess, stdin: ChildStdin, responses: mpsc::Receiver<io::Result<Vec<u8>>>,
+    stderr_ring: Arc<Mutex<StderrRingBuffer>>, request_timeout: Duration,
 }
+impl TvBridgeProcess { fn recent_stderr(&self) -> String { self.stderr_ring.lock().map(|g| g.summary()).unwrap_or_default() } }
 
 static TV_BRIDGE: LazyLock<Mutex<Option<TvBridgeProcess>>> =
     LazyLock::new(|| Mutex::new(None));
@@ -141,6 +202,50 @@ fn read_limited_line(reader: &mut BufReader<ChildStdout>) -> io::Result<Vec<u8>>
     Ok(line)
 }
 
+fn launch_bridge_process(mut command: Command, request_timeout: Duration) -> Result<TvBridgeProcess, String> {
+    command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    #[cfg(windows)]
+    command.creation_flags(0x0800_0000);
+    let mut child = command.spawn().map_err(|e| format!("启动 TV bridge 失败：{e}"))?;
+    let (Some(stdin), Some(stdout), Some(stderr)) = (child.stdin.take(), child.stdout.take(), child.stderr.take()) else {
+        let _ = child.kill(); let _ = child.wait(); return Err("TV bridge 管道不可用".to_string());
+    };
+    let process = ManagedCameraProcess::bind(child)?;
+    let stderr_ring = Arc::new(Mutex::new(StderrRingBuffer::default()));
+    let ring_clone = Arc::clone(&stderr_ring);
+    let _ = std::thread::Builder::new().name("tv-bridge-stderr".into()).spawn(move || {
+        let (mut reader, mut chunk, mut acc) = (BufReader::new(stderr), [0u8; 512], Vec::new());
+        while let Ok(n) = reader.read(&mut chunk) {
+            if n == 0 { break; }
+            for &b in &chunk[..n] {
+                if b == b'\n' || acc.len() >= STDERR_MAX_LINE_BYTES { if let Ok(mut g) = ring_clone.lock() { g.push_line(&String::from_utf8_lossy(&acc)); } acc.clear(); } else if b != b'\r' { acc.push(b); }
+            }
+        }
+        if !acc.is_empty() { if let Ok(mut g) = ring_clone.lock() { g.push_line(&String::from_utf8_lossy(&acc)); } }
+    });
+    let (tx, rx) = mpsc::sync_channel(4);
+    let _ = std::thread::Builder::new().name("tv-bridge-stdout".into()).spawn(move || {
+        let mut reader = BufReader::new(stdout);
+        loop { let res = read_limited_line(&mut reader); if matches!(&res, Ok(l) if l.is_empty()) { break; } let done = res.is_err(); if tx.send(res).is_err() || done { break; } }
+    });
+    Ok(TvBridgeProcess { _process: process, stdin, responses: rx, stderr_ring, request_timeout })
+}
+
+fn with_stderr(base: String, bridge: &TvBridgeProcess) -> String {
+    let tail = bridge.recent_stderr(); if tail.is_empty() { base } else { format!("{base}（stderr: {tail}）") }
+}
+
+fn send_request_to_process(bridge: &mut TvBridgeProcess, frame_json: &str, request_id: &str) -> Result<String, String> {
+    if let Err(e) = writeln!(bridge.stdin, "{frame_json}").and_then(|_| bridge.stdin.flush()) { return Err(with_stderr(format!("写入 TV bridge 失败：{e}"), bridge)); }
+    let response = match bridge.responses.recv_timeout(bridge.request_timeout) {
+        Ok(Ok(line)) if !line.is_empty() && line.ends_with(b"\n") => line,
+        Ok(Ok(_)) | Err(RecvTimeoutError::Disconnected) => return Err(with_stderr("TV bridge 已关闭 stdout".to_string(), bridge)),
+        Ok(Err(e)) => return Err(with_stderr(format!("读取 TV bridge 响应失败：{e}"), bridge)),
+        Err(RecvTimeoutError::Timeout) => return Err(with_stderr("TV bridge RPC 请求超时".to_string(), bridge)),
+    };
+    validate_response(&response, request_id)
+}
+
 #[tauri::command]
 pub(crate) fn tv_bridge_start(binary_path: String, expected_sha256: Option<String>) -> Result<(), String> {
     let binary_path = std::path::absolute(binary_path)
@@ -158,37 +263,13 @@ pub(crate) fn tv_bridge_start(binary_path: String, expected_sha256: Option<Strin
         .current_dir(&data_dir)
         .env_clear()
         .env("MBH_DATA_DIR", &data_dir)
-        .env("MBH_MANIFEST_PATH", &manifest_path)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
+        .env("MBH_MANIFEST_PATH", &manifest_path);
     for name in ["SYSTEMROOT", "PATH"] {
         if let Some(value) = std::env::var_os(name) {
             command.env(name, value);
         }
     }
-    #[cfg(windows)]
-    command.creation_flags(0x0800_0000);
-
-    let mut child = command.spawn().map_err(|error| format!("启动 TV bridge 失败：{error}"))?;
-    let stdin = match child.stdin.take() {
-        Some(stdin) => stdin,
-        None => {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err("TV bridge stdin 不可用".to_string());
-        }
-    };
-    let stdout = match child.stdout.take() {
-        Some(stdout) => stdout,
-        None => {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err("TV bridge stdout 不可用".to_string());
-        }
-    };
-    let process = ManagedCameraProcess::bind(child)?;
-    *guard = Some(TvBridgeProcess { process, stdin, stdout: BufReader::new(stdout) });
+    *guard = Some(launch_bridge_process(command, DEFAULT_RPC_TIMEOUT)?);
     Ok(())
 }
 
@@ -196,35 +277,14 @@ pub(crate) fn tv_bridge_start(binary_path: String, expected_sha256: Option<Strin
 pub(crate) fn tv_bridge_request(frame: Value) -> Result<String, String> {
     let (frame_json, request_id) = prepare_request(frame)?;
     let mut guard = TV_BRIDGE.lock().map_err(|_| "TV bridge 状态不可用".to_string())?;
-    let write_result = {
+    let result = {
         let bridge = guard.as_mut().ok_or_else(|| "TV bridge 尚未启动".to_string())?;
-        writeln!(bridge.stdin, "{frame_json}").and_then(|_| bridge.stdin.flush())
+        send_request_to_process(bridge, &frame_json, &request_id)
     };
-    if let Err(error) = write_result {
+    if result.is_err() {
         kill_process(&mut guard);
-        return Err(format!("写入 TV bridge 失败：{error}"));
     }
-    let response = match {
-        let bridge = guard.as_mut().expect("TV bridge state was checked above");
-        read_limited_line(&mut bridge.stdout)
-    } {
-        Ok(line) if !line.is_empty() && line.ends_with(b"\n") => line,
-        Ok(_) => {
-            kill_process(&mut guard);
-            return Err("TV bridge 已关闭 stdout".to_string());
-        }
-        Err(error) => {
-            kill_process(&mut guard);
-            return Err(format!("读取 TV bridge 响应失败：{error}"));
-        }
-    };
-    match validate_response(&response, &request_id) {
-        Ok(response) => Ok(response),
-        Err(error) => {
-            kill_process(&mut guard);
-            Err(error)
-        }
-    }
+    result
 }
 
 #[tauri::command]
@@ -283,5 +343,28 @@ mod tests {
     fn shutdown_is_idempotent_when_empty() {
         tv_bridge_shutdown().unwrap();
         tv_bridge_shutdown().unwrap();
+    }
+
+    #[test]
+    fn stderr_ring_buffer_bounds_and_redacts_secrets() {
+        let mut ring = StderrRingBuffer::default();
+        ring.push_line(r#"connect failed client-key="lg-key-42" mqtt://u:Pass99@192.168.1.9:36669 Authorization: Bearer tok123"#);
+        let text = ring.summary();
+        assert!(text.contains("[REDACTED]") && !text.contains("lg-key-42") && !text.contains("Pass99") && !text.contains("tok123"), "{text}");
+        for i in 0..80 { ring.push_line(&format!("line-{i}: {}", "x".repeat(120))); }
+        assert!(ring.lines.len() <= STDERR_MAX_LINES && ring.total_bytes <= STDERR_MAX_BYTES);
+    }
+
+    #[test]
+    fn rpc_request_times_out_and_captures_sanitized_stderr() {
+        #[cfg(windows)]
+        let cmd = { let mut c = Command::new("cmd"); c.args(["/C", "echo bridge err password=Secret777 1>&2 & ping -n 6 127.0.0.1 >nul"]); c };
+        #[cfg(not(windows))]
+        let cmd = { let mut c = Command::new("sh"); c.args(["-c", "echo 'bridge err password=Secret777' >&2; sleep 5"]); c };
+        let mut bridge = launch_bridge_process(cmd, Duration::from_millis(200)).unwrap();
+        let start = std::time::Instant::now();
+        let err = send_request_to_process(&mut bridge, r#"{"jsonrpc":"2.0","id":"t1","method":"health.ping"}"#, "t1").unwrap_err();
+        assert!(start.elapsed() < Duration::from_secs(3) && err.contains("超时") && !err.contains("Secret777"), "{err}");
+        assert!(!bridge.recent_stderr().contains("Secret777"));
     }
 }

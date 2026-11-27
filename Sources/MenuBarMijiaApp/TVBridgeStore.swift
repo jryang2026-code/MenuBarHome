@@ -109,6 +109,7 @@ final class TVBridgeStore {
 
     var isEnabled: Bool { config.isEnabled }
     var effectiveBinaryPath: String? { config.binaryPath ?? detectedBinaryPath }
+    var currentCapabilityGeneration: UInt64 { UInt64(max(0, home?.capabilityGeneration ?? 0)) + 1 }
 
     init(
         defaults: UserDefaults = .standard,
@@ -152,6 +153,9 @@ final class TVBridgeStore {
         }
         home.adapterPollingContextHandler = { [weak self] context in
             self?.pollingContextChanged(context)
+        }
+        home.adapterCapabilityGenerationHandler = { [weak self] _ in
+            self?.syncCapabilityGeneration()
         }
         home.setAdapterDevices(devices)
     }
@@ -234,11 +238,12 @@ final class TVBridgeStore {
         }
         let manager = resolvedManager()
         let token = generation
+        let capGen = currentCapabilityGeneration
         isRefreshing = true
         let task = Task { [weak self] in
             guard let self, token == self.generation, self.config.isEnabled else { return }
             let result: Result<[SmartDevice], Error>
-            do { result = .success(try await manager.snapshot()) } catch { result = .failure(error) }
+            do { result = .success(try await manager.snapshot(capabilityGeneration: capGen)) } catch { result = .failure(error) }
             // Switched off or reconfigured while starting: the retired manager must not keep a process.
             guard token == self.generation, self.config.isEnabled else {
                 await manager.shutdown()
@@ -265,8 +270,9 @@ final class TVBridgeStore {
             // The panel may have closed while the bridge was starting: the close found nothing to stop.
             if running, !panelVisible, idleTask == nil, let manager {
                 let hidden = TVBridgePollingContext(panelVisible: false, systemActive: true, lowPower: false)
+                let capGen = currentCapabilityGeneration
                 track { [weak self] in
-                    await manager.updatePollingContext(hidden)
+                    await manager.updatePollingContext(hidden, capabilityGeneration: capGen)
                     guard let self, self.manager === manager, !self.panelVisible, self.config.isEnabled else { return }
                     self.scheduleIdleShutdown(manager)
                 }
@@ -287,8 +293,9 @@ final class TVBridgeStore {
             let bridgeContext = TVBridgePollingContext(
                 panelVisible: context.panelVisible, systemActive: context.systemActive, lowPower: context.lowPower
             )
+            let capGen = currentCapabilityGeneration
             track { [weak self] in
-                await manager.updatePollingContext(bridgeContext)
+                await manager.updatePollingContext(bridgeContext, capabilityGeneration: capGen)
                 let running = await manager.isRunning
                 guard let self, self.manager === manager else { return }
                 if !running, self.status == .running { self.status = self.idleStatus }
@@ -308,8 +315,9 @@ final class TVBridgeStore {
             throw TVBridgeError.unsupportedCommand
         }
         let manager = resolvedManager()
+        let capGen = currentCapabilityGeneration
         do {
-            try await manager.execute(deviceId: deviceId, command: bridgeCommand, capabilityGeneration: 1)
+            try await manager.execute(deviceId: deviceId, command: bridgeCommand, capabilityGeneration: capGen)
         } catch {
             if self.manager === manager { status = .failed(Self.friendlyMessage(for: error)) }
             throw error
@@ -381,6 +389,16 @@ final class TVBridgeStore {
             _ = done.wait(timeout: .now() + timeout)
         }
         StdioTVBridgeTransport.terminateAllImmediately(gracePeriod: timeout)
+    }
+
+    private func syncCapabilityGeneration() {
+        guard config.isEnabled, let manager else { return }
+        let capGen = currentCapabilityGeneration
+        let ctx = TVBridgePollingContext(panelVisible: panelVisible, systemActive: true, lowPower: false)
+        track {
+            guard await manager.isRunning else { return }
+            await manager.updatePollingContext(ctx, capabilityGeneration: capGen)
+        }
     }
 
     private func scheduleIdleShutdown(_ manager: TVBridgePluginManager) {

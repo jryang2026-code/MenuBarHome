@@ -477,4 +477,16 @@ describe("TV bridge section", () => {
     await ctrl.settle();
     assert.equal(calls.filter((c) => c.cmd === "tv_bridge_start").length, startsBefore);
   });
+
+  it("propagates dynamic host capabilityGeneration to initialize, host.contextChanged, and control.execute", async () => {
+    let capGen = 4; const rec = recordingInvoke();
+    const ctrl = new TVBridgeController({ storage: memoryStorage(), secrets: memorySecrets(), invoke: rec.invoke, getCapabilityGeneration: () => capGen });
+    ctrl.onPanelShown(); ctrl.setEnabled(true); ctrl.setBinaryPath("C:\\Tools\\mbh-tv-bridge.exe");
+    await ctrl.addDevice({ name: "卧室电视", roomName: "", driver: "lg_webos_ssap", host: "192.168.1.9" }); await ctrl.settle();
+    assert.equal((rec.calls.find((c) => c.frame?.method === "initialize")!.frame!.params as { capabilityGeneration: number }).capabilityGeneration, 4);
+    capGen = 7; ctrl.onCapabilityGenerationChanged(); await ctrl.settle();
+    assert.equal((rec.calls.filter((c) => c.frame?.method === "host.contextChanged").at(-1)!.frame!.params as { capabilityGeneration: number }).capabilityGeneration, 7);
+    await ctrl.execute({ kind: "mediaPlayPause", entityId: ID }); await ctrl.settle();
+    assert.equal((rec.calls.find((c) => c.frame?.method === "control.execute")!.frame!.params as { capabilityGeneration: number }).capabilityGeneration, 7);
+  });
 });
