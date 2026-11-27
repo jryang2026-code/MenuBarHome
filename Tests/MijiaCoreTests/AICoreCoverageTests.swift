@@ -62,22 +62,27 @@ struct AICoreCoverageTests {
 
         let mock = MockHomeProvider(snapshot: SynthesizedHome(devices: [Self.deskLamp, garage], scenes: []))
         let store = HomeStore(provider: mock, defaultsSuiteName: "test.shortcut.\(UUID().uuidString)")
+        store.assistantAutoResetTiming = .never
         try await store.waitForTestSnapshot()
         var mem = store.userHabitMemory
-        #expect(mem.learnPhraseShortcut(phrase: "开个门", intents: [DeviceIntent(targetId: "c2", operation: .coverPosition(50))], devices: store.devices, scenes: []))
-        #expect(mem.learnPhraseShortcut(phrase: "我要看书", intents: [DeviceIntent(targetId: "dev_lamp", operation: .power(true))], devices: store.devices, scenes: []))
+        let learnedGarage = mem.learnPhraseShortcut(phrase: "开个门", intents: [DeviceIntent(targetId: "c2", operation: .coverPosition(50))], devices: store.devices, scenes: [])
+        let learnedLamp = mem.learnPhraseShortcut(phrase: "我要看书", intents: [DeviceIntent(targetId: "dev_lamp", operation: .power(true))], devices: store.devices, scenes: [])
+        #expect(learnedGarage && learnedLamp)
         store.userHabitMemory = mem
 
         var prompted = false
         store.manualControlConfirmationHandler = { _ in prompted = true; return false }
         let denied = try #require(await store.runAssistantCommand("开个门"))
-        #expect(prompted && denied.intents.isEmpty && (await mock.executedCommands).isEmpty)
+        let cmdsAfterDenied = await mock.executedCommands
+        #expect(prompted && denied.intents.isEmpty && cmdsAfterDenied.isEmpty)
         store.setScreenLocked(true)
         let locked = try #require(await store.runAssistantCommand("我要看书"))
-        #expect(locked.intents.isEmpty && locked.reply == store.screenLockBlockedMessage && (await mock.executedCommands).isEmpty)
+        let cmdsAfterLocked = await mock.executedCommands
+        #expect(locked.intents.isEmpty && locked.reply == store.screenLockBlockedMessage && cmdsAfterLocked.isEmpty)
         store.setScreenLocked(false)
         let ok = try #require(await store.runAssistantCommand("我要看书"))
-        #expect(ok.source == .local && (await mock.executedCommands) == [.setLightPower(entityId: "light.study_desk", isOn: true)])
+        let cmdsAfterOk = await mock.executedCommands
+        #expect(ok.source == .local && cmdsAfterOk == [.setLightPower(entityId: "light.study_desk", isOn: true)])
     }
 
     @Test("Chat catalog token budget, response_format JSON schema fallback retry, and Ollama preset")
