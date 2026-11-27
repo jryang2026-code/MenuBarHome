@@ -35,7 +35,7 @@ _Avoid_: Plugin manifest（插件清单）、Dynamic registry（动态注册表�
 _Avoid_: Silent drop（静默丢弃）、Filter-only disable（仅过滤隐藏）
 
 **RaycastSnapshot（伴生快照）**：
-写到 `~/Library/Application Support/MenuBarMijia/raycast-snapshot.json`（`0600`）的只读状态与 `lastCommandFeedback`，供 `raycast/`、`scripts/mijia` 与 `scripts/mijia-mcp` 检索使用，隔离真实凭据，受 `currentSchemaVersion` 契约保护。
+写到 `~/Library/Application Support/MenuBarMijia/raycast-snapshot.json`（macOS，`0600`）或 `%LOCALAPPDATA%\MenuBarMijia\raycast-snapshot.json`（Windows）的只读状态、脱敏 `automationStatus`、媒体/开合能力与 `lastCommandFeedback`，供 `raycast/`、随包内置的 `scripts/mijia`（含 `mijia doctor`）与 `scripts/mijia-mcp`（MCP Server 2.0：5 资源 / 17 工具）检索使用，隔离真实凭据，受 `currentSchemaVersion` 契约保护。
 _Avoid_: 缓存文件、数据库
 
 **BridgeToken（伴生令牌）**：
@@ -247,3 +247,19 @@ _Avoid_: Cloud recording（云录像）
 **HotkeyBinding（自定义全局热键绑定）**：
 绑定到单个设备电源、场景、快捷动作或本地氛围的自定义全局快捷键（双端上限 8 组，`Sources/MijiaCore/HotkeyShortcut.swift`、`windows/src/ui/hotkeyBindings.ts`），执行路径复用面板锁屏拦截与高风险确认，macOS 附带非激活态提示浮层（`Sources/MenuBarMijiaApp/MacOSPrivacyAndHUD.swift` `HotkeyHUDController`）。
 _Avoid_: Panel hotkey（主面板呼出热键）
+
+**MediaPlaybackState（正在播放与防回跳进度态）**：
+HA `media_player.*`、小米 MIoT 电视与音箱共享的四维播放态模型（`Sources/MijiaCore/MediaPlayback.swift`、`windows/src/core/mediaPlayback.ts`，配合 `MediaArtworkLoader.swift` / `ha_media_artwork` 同源鉴权封面代理与 2 秒防回跳 `MediaSeekGuard`）；仅当协议同时上报 `canSeek`、`duration` 与 `position` 时渲染可拖拽进度条，遥控键通过 `Tests/Fixtures/ha_remote_commands_golden.json` 按生态自适应映射。
+_Avoid_: Fake progress bar（伪进度条）、Player widget（播放器组件）
+
+**DDCCIDisplayController（外接显示器 DDC/CI 控制）**：
+默认关闭、按需探测的原生外接显示器控制模块（macOS `Sources/MijiaCore/DDC/DDCCIDisplayController.swift` / `Sources/MenuBarMijiaApp/ExternalDisplayStore.swift`；Windows `windows/src-tauri/src/ddc_ci.rs` / `windows/src/ui/ddcDisplaySection.ts`），仅开放可回读的亮度（`0x10`）、输入源（`0x60`）、音量（`0x62`）与静音（`0x8D`），严格禁用电源关屏码 `0xD6`（见 `Shared/tvProtocolCatalog.json` 与 ADR-0026）。
+_Avoid_: Monitor power switch（显示器电源开关）
+
+**TVBridge（进程外多品牌电视桥接插件，`mbh-tv-bridge`）**：
+遵循 ADR-0024 v1 与 ADR-0026 封闭命令动词表的可选独立 Go 单二进制进程（`adapters/mbh-tv-bridge/`，macOS `Sources/MijiaCore/TVBridge/TVBridgeClient.swift` / `Sources/MenuBarMijiaApp/TVBridgeStore.swift`，Windows `windows/src-tauri/src/tv_bridge.rs` / `windows/src/ui/tvBridgeSection.ts`），纯局域网运行且面板收起即停机；按 ID / MAC / 规范名执行非劫持去重，默认聚焦 `lg_webos_ssap`、`xiaomi_mitv_6095` 与 `hisense_vidaa_mqtt` 三大首发品牌。
+_Avoid_: Built-in TV backend（内置电视后端）、Third-party plugin loader（动态插件加载器）
+
+**DesktopAmbientContext（受控枚举桌面情境）**：
+遵循 ADR-0015 隐私边界的纯布尔/枚举桌面状态投影（`Sources/MijiaCore/DesktopAmbientContext.swift`、`windows/src/core/assistant/desktopContext.ts`），仅允许 `inMeeting`、`externalDisplayConnected`、`focusActive`、`lateNightWork`、`mediaPlaying` 5 个受控标签进入 AI 提示词与主动推荐排序，类型层面排除窗口标题、日历标题与 Wi-Fi SSID 等自由文本。
+_Avoid_: Raw OS telemetry（原始系统文本遥测）

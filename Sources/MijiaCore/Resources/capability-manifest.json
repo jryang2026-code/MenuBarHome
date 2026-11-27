@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "hostCoreCapabilityMatrixIds": [
     "keyboard-search", "global-hotkey", "local-command", "quick-actions", "all-off-undo",
-    "app-intents", "url-scheme", "layout-resize", "visual-look", "code-signing",
+    "app-intents", "url-scheme", "external-display-ddc", "layout-resize", "visual-look", "code-signing",
     "switch-light-mark"
   ],
   "capabilities": [
@@ -25,7 +25,7 @@
     { "id": "fridge", "kind": "deviceCategory", "dependsOn": [], "defaultOnFreshInstall": true, "startupPolicy": "readPlanWhenEnabled", "platforms": { "macos": "supported", "windows": "supported" }, "capabilityMatrix": { "coverage": "mapped", "rowIds": ["fridges-kitchen"] } },
     { "id": "vacuum", "kind": "deviceCategory", "dependsOn": [], "defaultOnFreshInstall": true, "startupPolicy": "readPlanWhenEnabled", "platforms": { "macos": "supported", "windows": "supported" }, "capabilityMatrix": { "coverage": "baselineUnlisted", "rowIds": [] } },
     { "id": "speaker", "kind": "deviceCategory", "dependsOn": [], "defaultOnFreshInstall": true, "startupPolicy": "readPlanWhenEnabled", "platforms": { "macos": "supported", "windows": "supported" }, "capabilityMatrix": { "coverage": "mapped", "rowIds": ["dehumidifiers-blankets-diffusers-speakers"] } },
-    { "id": "tv", "kind": "deviceCategory", "dependsOn": [], "defaultOnFreshInstall": true, "startupPolicy": "readPlanWhenEnabled", "platforms": { "macos": "supported", "windows": "supported" }, "capabilityMatrix": { "coverage": "baselineUnlisted", "rowIds": [] } },
+    { "id": "tv", "kind": "deviceCategory", "dependsOn": [], "defaultOnFreshInstall": true, "startupPolicy": "readPlanWhenEnabled", "platforms": { "macos": "supported", "windows": "supported" }, "capabilityMatrix": { "coverage": "mapped", "rowIds": ["tv-media-bridge"] } },
     { "id": "camera", "kind": "deviceCategory", "dependsOn": [], "defaultOnFreshInstall": true, "startupPolicy": "readPlanWhenEnabled", "platforms": { "macos": "supported", "windows": "supported" }, "capabilityMatrix": { "coverage": "mapped", "rowIds": ["camera-live"] } },
     { "id": "sensor", "kind": "deviceCategory", "dependsOn": [], "defaultOnFreshInstall": true, "startupPolicy": "readPlanWhenEnabled", "platforms": { "macos": "supported", "windows": "supported" }, "capabilityMatrix": { "coverage": "mapped", "rowIds": ["locks-sensors"] } },
     { "id": "valve", "kind": "deviceCategory", "dependsOn": [], "defaultOnFreshInstall": true, "startupPolicy": "readPlanWhenEnabled", "platforms": { "macos": "supported", "windows": "supported" }, "capabilityMatrix": { "coverage": "mapped", "rowIds": ["ha-humidifiers-water-heaters-valves"] } },

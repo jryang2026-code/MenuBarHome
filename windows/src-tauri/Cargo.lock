@@ -1999,7 +1999,7 @@ dependencies = [
 
 [[package]]
 name = "menubarmijia-windows"
-version = "1.4.0"
+version = "1.5.0"
 dependencies = [
  "aes",
  "cbc",

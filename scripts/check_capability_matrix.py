@@ -334,6 +334,72 @@ CODE_ANCHORS = (
         },
     },
     {
+        "id": "tv-media-bridge",
+        "macos": {
+            "checks": (
+                {
+                    "path": "Sources/MijiaCore/MediaPlayback.swift",
+                    "symbol": "MediaPlaybackState",
+                },
+                {
+                    "path": "Sources/MenuBarMijiaApp/TVDetailDrawer.swift",
+                    "symbol": "TVDetailDrawer",
+                },
+                {
+                    "path": "Sources/MenuBarMijiaApp/TVBridgeStore.swift",
+                    "symbol": "TVBridgeStore",
+                },
+            ),
+        },
+        "windows": {
+            "checks": (
+                {
+                    "path": "windows/src/core/mediaPlayback.ts",
+                    "symbol": "MediaPlaybackState",
+                },
+                {
+                    "path": "windows/src/ui/tvMediaDrawer.ts",
+                    "symbol": "renderTvMediaSection",
+                },
+                {
+                    "path": "windows/src/ui/tvBridgeSection.ts",
+                    "symbol": "getTVBridgeController",
+                },
+                {
+                    "path": "windows/src-tauri/src/tv_bridge.rs",
+                    "symbol": "tv_bridge_start",
+                },
+            ),
+        },
+    },
+    {
+        "id": "external-display-ddc",
+        "macos": {
+            "checks": (
+                {
+                    "path": "Sources/MijiaCore/DDC/DDCCIDisplayController.swift",
+                    "symbol": "DDCCIDisplayController",
+                },
+                {
+                    "path": "Sources/MenuBarMijiaApp/ExternalDisplayStore.swift",
+                    "symbol": "ExternalDisplayStore",
+                },
+            ),
+        },
+        "windows": {
+            "checks": (
+                {
+                    "path": "windows/src-tauri/src/ddc_ci.rs",
+                    "symbol": "ddc_list_displays",
+                },
+                {
+                    "path": "windows/src/ui/ddcDisplaySection.ts",
+                    "symbol": "getDdcDisplayController",
+                },
+            ),
+        },
+    },
+    {
         "id": "camera-live",
         "macos": {
             "path": "Sources/MenuBarMijiaApp/CameraLivePanelController.swift",

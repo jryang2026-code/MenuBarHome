@@ -86,7 +86,7 @@ brew install --cask jryang2026-code/tap/menubarhome
 
 **macOS · DMG**
 
-Download `MenuBarHome-<version>.dmg` (for example, `MenuBarHome-1.4.0.dmg`) from [GitHub Releases](https://github.com/jryang2026-code/MenuBarHome/releases/latest) and drag `MenuBarHome.app` into Applications.
+Download `MenuBarHome-<version>.dmg` (for example, `MenuBarHome-1.5.0.dmg`) from [GitHub Releases](https://github.com/jryang2026-code/MenuBarHome/releases/latest) and drag `MenuBarHome.app` into Applications.
 
 > The project isn't enrolled in the paid Apple Developer Program, so the app isn't notarized. If macOS Gatekeeper blocks the first launch:
 > 1. Double-click `/Applications/MenuBarHome.app` and click **Done** (or **OK**) to dismiss the warning dialog.
@@ -97,17 +97,17 @@ Download `MenuBarHome-<version>.dmg` (for example, `MenuBarHome-1.4.0.dmg`) from
 >    xattr -dr com.apple.quarantine /Applications/MenuBarHome.app
 >    ```
 
-Verify the DMG download against `MenuBarHome-1.4.0.dmg.sha256` from the same release:
+Verify the DMG download against `MenuBarHome-1.5.0.dmg.sha256` from the same release:
 
 ```bash
-shasum -a 256 MenuBarHome-1.4.0.dmg
+shasum -a 256 MenuBarHome-1.5.0.dmg
 # Or verify automatically if the .sha256 file is in the same directory:
-shasum -a 256 -c MenuBarHome-1.4.0.dmg.sha256
+shasum -a 256 -c MenuBarHome-1.5.0.dmg.sha256
 ```
 
 **Windows 11**
 
-Download `MenuBarHome-<version>-windows-x64-setup.exe` (for example, `MenuBarHome-1.4.0-windows-x64-setup.exe`) or `MenuBarHome-<version>-windows-x64.msi` (for example, `MenuBarHome-1.4.0-windows-x64.msi`) from [GitHub Releases](https://github.com/jryang2026-code/MenuBarHome/releases/latest).
+Download `MenuBarHome-<version>-windows-x64-setup.exe` (for example, `MenuBarHome-1.5.0-windows-x64-setup.exe`) or `MenuBarHome-<version>-windows-x64.msi` (for example, `MenuBarHome-1.5.0-windows-x64.msi`) from [GitHub Releases](https://github.com/jryang2026-code/MenuBarHome/releases/latest).
 
 > The installer isn't signed with a commercial Authenticode certificate. If Windows SmartScreen blocks it:
 > 1. When the blue **Windows protected your PC** prompt appears, click **More info**.
@@ -116,11 +116,11 @@ Download `MenuBarHome-<version>-windows-x64-setup.exe` (for example, `MenuBarHom
 Verify the Windows installer in PowerShell against the corresponding `.sha256` file on the release page:
 
 ```powershell
-# For the EXE installer (compare with MenuBarHome-1.4.0-windows-x64-setup.exe.sha256)
-Get-FileHash -Algorithm SHA256 .\MenuBarHome-1.4.0-windows-x64-setup.exe
+# For the EXE installer (compare with MenuBarHome-1.5.0-windows-x64-setup.exe.sha256)
+Get-FileHash -Algorithm SHA256 .\MenuBarHome-1.5.0-windows-x64-setup.exe
 
-# For the MSI installer (compare with MenuBarHome-1.4.0-windows-x64.msi.sha256)
-Get-FileHash -Algorithm SHA256 .\MenuBarHome-1.4.0-windows-x64.msi
+# For the MSI installer (compare with MenuBarHome-1.5.0-windows-x64.msi.sha256)
+Get-FileHash -Algorithm SHA256 .\MenuBarHome-1.5.0-windows-x64.msi
 ```
 
 ### 2. Connect your home
@@ -128,7 +128,7 @@ Get-FileHash -Algorithm SHA256 .\MenuBarHome-1.4.0-windows-x64.msi
 Click the menu bar (or tray) icon to open the panel, open Settings `⚙️`, and pick one:
 
 - **Mi Cloud Connect (recommended):** choose "Mi Cloud Connect", scan the QR code with the Mi Home app on your phone, and your homes, rooms, and devices sync in. CN, SG, DE, US, and RU servers are supported. On both macOS and Windows you can add more accounts and see all their devices in one panel. If your sign-in is about to expire, the panel warns you 3 days ahead, and a quick re-scan in the panel renews it.
-- **Home Assistant:** enter your instance address (for example `http://192.168.1.100:8123`; reverse-proxy subpaths work too) and a long-lived access token. Both macOS and Windows can find Home Assistant on your local network. The token is kept in the macOS Keychain or Windows Credential Manager.<br>
+- **Home Assistant (including other ecosystems):** enter your instance address (for example `http://192.168.1.100:8123`; reverse-proxy subpaths work too) and a long-lived access token. Both macOS and Windows can find Home Assistant on your local network. The token is kept in the macOS Keychain or Windows Credential Manager. **Ecosystem boundary:** MenuBarHome connects directly to Mi Home and Home Assistant (plus optional local generic IP cameras, DDC/CI displays, and the LAN TV bridge); devices from **Google Home, Apple HomeKit (HomeKit Device), Tuya, Aqara/Matter/Zigbee**, and other platforms integrate cleanly through Home Assistant aggregation.<br>
   If macOS says "Local network connection blocked by macOS", allow MenuBarHome under **System Settings → Privacy & Security → Local Network**.
 - **Demo mode:** try the whole interface with virtual devices, no account needed.
 
@@ -180,13 +180,15 @@ The tray app uses the Classic two-column split-tile panel by default and also of
 
 ## What Else It Does
 
-- **Works with a lot of devices.** Lights, ACs, fans, plugs, TVs (including MIoT TVs and set-top boxes), curtains, clothes airers, air purifiers, humidifiers, fridges, water heaters, washers and dryers, bath heaters, range hoods, robot vacuums, cameras, locks, and all sorts of sensors. Mi devices without a dedicated card still get a generic one. [Check your own devices here.](docs/supported-devices.md)
+- **Works with a lot of devices.** Lights, ACs, fans, plugs, TVs (including MIoT TVs and set-top boxes), curtains, clothes airers, air purifiers, humidifiers, fridges, water heaters, washers and dryers, bath heaters, range hoods, robot vacuums, speakers (with Now Playing and XiaoAI TTS/directive controls on both platforms), cameras, locks, and all sorts of sensors. Mi devices without a dedicated card still get a generic one. [Check your own devices here.](docs/supported-devices.md)
+- **TVs, Now Playing, External Monitors (DDC/CI) & Optional Multi-Brand TV Bridge.** Home Assistant TVs/speakers and Xiaomi MIoT TVs get a shared **Now Playing** view (playback status, metadata, authenticated same-origin HA artwork with SHA-256 LRU cache, and a draggable seek bar with a 2 s anti-snap-back guard shown only when `canSeek` + `duration` + `position` are reported) plus a collapsible D-pad remote (ecosystem-adapted HA `remote.send_command` for Apple TV / Android TV / Sony Bravia / Roku / generic + verified MIoT actions). Under Settings → General on both platforms, you can also enable **External Display Control (DDC/CI)** (off by default, zero background traffic when off: brightness, DP/HDMI/USB-C input switching, and volume/mute when read back; power-off `0xD6` is strictly forbidden for firmware safety) and the optional out-of-process **Multi-Brand TV Bridge** (`mbh-tv-bridge`, LAN-only Go binary that shuts down when the panel closes and never hijacks a TV already connected via HA or Mi Home), defaulting to **LG webOS** (SSAP + WoL), **Xiaomi / Redmi** (HTTP 6095), and **Hisense** (overseas VIDAA MQTT 3.1.1) with other brands behind an experimental toggle.
+- **On-Device & Ambient-Aware AI.** Everyday commands (including `0–100%` curtains/covers and `1–100%` fan speed) are parsed locally with pinyin/homophone matching and 3-way miss diagnostics; macOS also learns 0 ms phrase shortcuts after 3 consistent hits. On **macOS 26+** with Apple Intelligence enabled, Settings → AI explicitly surfaces an **Apple Foundation Models** status card with one-click default opt-in, API-key-free connection checks, and on-device proactive suggestions. Both macOS and Windows feed only strictly controlled boolean desktop ambient signals (`inMeeting`, `externalDisplayConnected`, `focusActive`, `lateNightWork`, `mediaPlaying` — never window titles, calendar titles, or Wi-Fi SSIDs) into AI prompts and "For You" ranking. Windows voice input adds a panel-focused `Ctrl+M` toggle (`Esc` to abort), home-vocabulary hotword post-correction, and diff-preview confirmation.
 - **Camera windows, still wall & PiP.** Click a camera for a pinned live view (independent always-on-top PiP on Windows, 3:4 portrait layout for doorbells, optional auto-open countdown on doorbell/alarm events with up to 2 pinned switches, and listen-only audio where supported by the stream). A 2×2 still wall keeps recent snapshots and a 7-day camera event history; dual-lens models can switch lenses, and pan-tilt cameras turn when you drag the picture. Non-Xiaomi IP cameras (RTSP, ONVIF, Hikvision ISAPI, Dahua, Tapo) can be added under Settings → advanced connections as **read-only generic cameras**: live view and PiP only (no PTZ, talk-back, or camera settings), LAN or `.local` hosts unless you explicitly allow a public address, and passwords kept in the Keychain / Windows Credential Manager, never in config files.
 - **Climate trends and energy logs.** Sensors show a 24-hour hover sparkline right on the card plus full 24-hour and 7-day charts; plugs keep a daily energy log, and with your electricity rate entered you get a cost estimate.
-- **Moods, room groups & "For You" suggestions.** Save a room's current device states as a local **Mood** (up to 32) and replay it with one click or a global hotkey. Rooms with two or more controllable devices of the same kind show auto-group capsules. Based on what you usually turn on and when, "For You" surfaces likely next actions; habits stay on your machine and can be reviewed or cleared anytime.
-- **Multiple accounts, two sources & LAN-first speed.** Sign in to several Xiaomi accounts at once, or run Mi Home and Home Assistant side by side; the same physical device is merged automatically. Compatible Wi-Fi Mi devices prefer direct LAN control with explicit write acknowledgements, and macOS probes cloud-offline Xiaomi devices on the LAN as a read-only reachability hint.
+- **Moods, room groups & "For You" suggestions.** Save a room's current device states as a local **Mood** (up to 32) and replay it with one click or a global hotkey. Rooms with two or more controllable devices of the same kind show auto-group capsules. Based on what you usually turn on, when, and your current desktop ambient state, "For You" surfaces likely next actions; habits stay on your machine and can be reviewed or cleared anytime.
+- **Multiple accounts, two sources & LAN-first speed.** Sign in to several Xiaomi accounts at once, or run Mi Home and Home Assistant side by side; the same physical device is merged automatically. Compatible Wi-Fi Mi devices prefer direct LAN control with explicit write acknowledgements (falling back cleanly to Mi Cloud for legacy non-MIoT LAN devices), and macOS probes cloud-offline Xiaomi devices on the LAN as a read-only reachability hint.
 - **Context-aware automations, safety alerts & weekly report.** Rules can run on schedules, lasting conditions, or Mac frontmost apps (with one-click Meeting and Movie templates on macOS), and context restoration automatically restores prior power states when a session ends. Interactive safety notifications let you turn off a device or view a doorbell live feed right from the alert (guarded by screen lock), and a weekly home health report highlights frequent disconnects and standby power draw.
-- **Plugs into your tools.** Custom global hotkeys (up to 8 device, scene, quick-action, or mood bindings on both platforms, with a non-focus-stealing HUD on macOS), Apple Shortcuts, `menumijia://` links, a Raycast extension, a command-line tool, and an MCP server, so AI tools like Claude and Cursor can check on and control your home without ever seeing your account credentials.
+- **Plugs into your tools.** Custom global hotkeys (up to 8 device, scene, quick-action, or mood bindings on both platforms, with a non-focus-stealing HUD on macOS), Apple Shortcuts, `menumijia://` links, a Raycast extension, a bundled local CLI (`mijia doctor`), and **MCP Server 2.0** (bundled with zero-placeholder Settings **Copy Config**), so AI tools like Claude and Cursor can check on and control your home without ever seeing your account credentials.
 
 For what each platform supports, see the [platform comparison](docs/platform-matrix.md).
 
@@ -196,28 +198,29 @@ For what each platform supports, see the [platform comparison](docs/platform-mat
 
 ### Keyboard Navigation
 
-`⌥M` opens the panel on macOS and `Alt+M` opens it on Windows; you can also bind up to 8 custom global hotkeys to individual devices, scenes, quick actions, or moods on both platforms. Typing to search, `↑`/`↓`, `Return`/`Space`, `→`/`←`, `⌘K` / `Ctrl+K` (toggle Shortcuts drawer), and `Esc` work on both platforms; `Tab` cycles room tabs on macOS.
+`⌥M` opens the panel on macOS and `Alt+M` opens it on Windows; you can also bind up to 8 custom global hotkeys to individual devices, scenes, quick actions, or moods on both platforms. Typing to search, `↑`/`↓`, `Return`/`Space`, `→`/`←`, `Tab` (cycle room tabs), `⌘K` / `Ctrl+K` (toggle Shortcuts drawer), and `Esc` work on both platforms; `Ctrl+M` toggles voice listening in the focused Windows panel.
 
 | Shortcut | Action |
 | :--- | :--- |
 | `⌥M` / `Alt+M` | Toggle the MenuBarHome panel (macOS / Windows) |
 | `⌘K` / `Ctrl+K` | Expand or collapse the Shortcuts drawer (Quick Actions, Scenes, and For You) |
+| Hold `⌥M` / `Ctrl+M` | Hold to talk on macOS; toggle hands-free voice listening in the focused Windows panel (`Esc` cancels) |
 | Custom hotkeys (up to 8) | Trigger a bound device, scene, quick action, or mood globally (with confirmation on high-risk targets) |
 | Type letters | Instant search by device name, room, or pinyin initials (e.g. `sftd`) |
 | `↑` / `↓` | Navigate through search matches and device cards |
 | `Return` / `Space` | Toggle the focused device; expand the detail drawer if not directly switchable |
 | `→` / `←` | Press Right to open details; then use Left and Right to adjust light brightness, AC temperature, cover position, or volume (Windows also adjusts fan speed) |
-| `Tab` | Switch between room tabs (macOS) |
-| `Esc` | Clear search query, close drawer, or dismiss panel |
+| `Tab` | Switch between room tabs (macOS & Windows) |
+| `Esc` | Clear search query, abort voice input, close drawer, or dismiss panel |
 
 ### Local Natural Language Commands
 
-These phrases are parsed locally **without any AI API key** or cloud model tokens:
+These phrases are parsed locally **without any AI API key** or cloud model tokens (with pinyin/initials/homophone fallback matching):
 
 - **Power:** "turn off study light", "turn on living room ac", "turn off all lights"
 - **Lighting presets:** "study light moonlight mode", "daylight mode"
 - **Adjustments:** "dimmer", "brighter", "set bedroom light to 40%"
-- **Climate & Fan:** "set ac to 24 degrees", "warmer", "fan natural wind"
+- **Climate, Fan & Covers:** "set ac to 24 degrees", "warmer", "fan natural wind", "set living room fan to 60%", "open living room curtain to 50%" (garage doors, window openers, and clothes airers always ask for confirmation)
 - **State queries:** "which lights are on?", "is the study lamp on?", "living room temperature" (answered locally from current device state)
 - **Timers:** "in 10 minutes turn off study light", "cancel timer"
 - **Undo:** "undo", "revert" (active for 10 minutes after any batch execution)
@@ -233,11 +236,13 @@ macOS is a native Swift 6 app; Windows 11 is a separate Tauri v2 implementation.
 | Area | macOS 14+ | Windows 11 |
 | :--- | :---: | :---: |
 | Mi Home QR connect | ✅ | ✅ |
-| Home Assistant | ✅ | ✅ |
+| Home Assistant (aggregates HomeKit / Google Home / Tuya / Matter) | ✅ | ✅ |
 | Keyboard search and global hotkey | ✅ `⌥M` | ✅ `Alt+M` |
-| Voice | ✅ hold to talk or hands-free | ⚠️ hands-free only |
-| Local commands and optional AI | ✅ | ✅ |
+| Voice | ✅ hold to talk or hands-free | ⚠️ hands-free (`Ctrl+M` + hotword correction) |
+| Local commands & AI assistant | ✅ + Apple Foundation Models (macOS 26+) | ✅ local rules + cloud / Ollama |
 | All Off and Undo | ✅ | ✅ |
+| TV Now Playing, seek, remote & optional TV bridge | ✅ | ✅ |
+| External display control (DDC/CI) | ✅ | ✅ |
 | Camera live view | ✅ | ✅ |
 | Read-only generic IP cameras (RTSP/ONVIF/ISAPI/Dahua/Tapo) | ✅ | ✅ |
 | Several Xiaomi accounts at once | ✅ | ✅ |
@@ -252,14 +257,16 @@ The full device-by-device table, with every capability and its status, is in [do
 
 ## Raycast Extension, Local CLI & MCP Server
 
-MenuBarHome can hand its device list to a companion without sharing any credential. Turn on **Settings → 通用 → 自动化与外部控制 → Raycast 集成** (**Settings → General → Automation & External Control → Raycast integration**) on macOS (or **Settings → All-Off & Updates → Raycast & Local CLI / MCP Integration** on Windows): the app writes `~/Library/Application Support/MenuBarMijia/raycast-snapshot.json` on macOS (mode `0600`) or `%LOCALAPPDATA%\MenuBarMijia\raycast-snapshot.json` on Windows with your devices, scenes, quick actions, environment readings, the last command result, and a random local bridge token. Links that carry the token skip the external-link confirmation prompt; high-risk devices still ask, and the lock-screen block still applies on both platforms. Turning the integration off deletes the file and revokes the token. The contract and the trade-offs behind it are in [ADR-0013](docs/adr/0013-raycast-companion-contract.md).
+MenuBarHome can hand its device list to a companion without sharing any credential. Turn on **Settings → 通用 → 自动化与外部控制 → 高级 → Raycast / CLI / MCP 集成** (**Settings → General → Automation & External Control → Advanced → Raycast / CLI / MCP integration**) on macOS (or **Settings → Safety & Alerts → Raycast / CLI / MCP integration** on Windows): the app writes `~/Library/Application Support/MenuBarMijia/raycast-snapshot.json` on macOS (mode `0600`) or `%LOCALAPPDATA%\MenuBarMijia\raycast-snapshot.json` on Windows with your devices, scenes, quick actions, environment readings, sanitized automation summary, the last command result, and a random local bridge token. Links that carry the token skip the external-link confirmation prompt; high-risk devices still ask, and the lock-screen block still applies on both platforms. Turning the integration off deletes the file and revokes the token. The contract and the trade-offs behind it are in [ADR-0013](docs/adr/0013-raycast-companion-contract.md).
+
+Both the macOS app bundle (`MenuBarHome.app/Contents/Resources/cli/`) and the Windows installer (`cli/` resources) ship `scripts/mijia` and `scripts/mijia-mcp` inside the package. Clicking **Copy Config** in Settings resolves the real installed path automatically with zero placeholder paths to edit.
 
 **Why you still see the old name.** The app is MenuBarHome, but the integration surface kept its original names so existing Raycast commands, Shortcuts, scripts and MCP configs keep working:
 
 | You will see | What it is | Use this |
 | :--- | :--- | :--- |
 | `menumijia://…` | The URL scheme every companion sends. It is a compatibility contract ([ADR-0013](docs/adr/0013-raycast-companion-contract.md)), so companions keep sending it | Keep `menumijia://`; `menubarhome://` is accepted as an exact alias |
-| `scripts/mijia`, `scripts/mijia-mcp` | The CLI and MCP server | `scripts/menubarhome` is the same CLI under the new name; `mijia` keeps working |
+| `scripts/mijia`, `scripts/mijia-mcp` | The bundled CLI and MCP server | `scripts/menubarhome` is the same CLI under the new name; `mijia` keeps working |
 | `MenuBarMijia/` data folder, `MenuBarMijiaApp` process | The app's data directory and process name | Nothing to do; your sign-in and settings live there |
 | MCP key `menubarmijia` | A label in your MCP client's config, and the server's reported name | Name it anything; the example below uses `menubarhome` |
 
@@ -268,10 +275,11 @@ MenuBarHome can hand its device list to a companion without sharing any credenti
 
 ### Local CLI
 
-`scripts/mijia` is a dependency-free Python 3 script. Keep MenuBarHome running while you use it.
+`scripts/mijia` is a dependency-free Python 3 script (bundled inside the app or runnable from a repo checkout). Keep MenuBarHome running while you use it.
 
 | Command | What it does |
 | :--- | :--- |
+| `scripts/mijia doctor [--json]` | One-line health check: companion integration state, snapshot freshness, and CLI/MCP executable paths (same as `scripts/mijia mcp --doctor`) |
 | `scripts/mijia list [--room 书房] [--json]` | Visible devices grouped by room, with online state and readings |
 | `scripts/mijia list --format alfred [--room 书房]` | Alfred Script Filter JSON: one item per device, ↵ flips its power, ⌘ shows it in the panel |
 | `scripts/mijia list --format swiftbar [--room 书房]` | SwiftBar / xbar plugin text: a menu bar header, one clickable line per device with its state |
@@ -282,10 +290,12 @@ MenuBarHome can hand its device list to a companion without sharing any credenti
 | `scripts/mijia color-temp 书房台灯 4000` | Set light colour temperature (`1000`–`20000` K) |
 | `scripts/mijia temperature 书房空调 25` | Set target temperature (`-30`–`100` ℃) |
 | `scripts/mijia fan 客厅风扇 --percent 60` / `--preset 自然风` | Set fan speed percentage (`1`–`100`%) or a reported preset mode |
+| `scripts/mijia cover-position 客厅窗帘 50` | Set curtain or cover position (`0`–`100`%; garage doors and window openers always require confirmation in-app) |
+| `scripts/mijia volume 客厅电视 35` / `mute 客厅电视 on` / `media-play-pause 客厅电视` | Control TV or speaker volume (`0`–`100`%), mute state, and play/pause |
 | `scripts/mijia focus 书房台灯` | Reveal the device's room and detail drawer in the panel without actuating hardware |
 | `scripts/mijia scene 观影模式` | Run a Home Assistant scene or a built-in quick action (全屋关灯, 一键全关, 撤销…) |
 | `scripts/mijia ask "把客厅灯调到 40%"` | One natural-language command, with the app's own parsing and confirmation |
-| `scripts/mijia mcp` (or `scripts/mijia-mcp`) | Run the local MCP server over stdio |
+| `scripts/mijia mcp` (or `scripts/mijia-mcp`) | Run local MCP Server 2.0 over stdio |
 
 `scripts/menubarhome` runs the same program: `scripts/menubarhome list` is `scripts/mijia list`.
 
@@ -300,11 +310,11 @@ For SwiftBar, save a two-line plugin in the plugin folder, for example
 
 ```sh
 #!/bin/sh
-exec /ABSOLUTE/PATH/TO/MenuBarHome/scripts/mijia list --format swiftbar
+exec /Applications/MenuBarHome.app/Contents/Resources/cli/mijia list --format swiftbar
 ```
 
 For Alfred, add a **Script Filter** with the keyword `mijia` whose script runs
-`/ABSOLUTE/PATH/TO/MenuBarHome/scripts/mijia list --format alfred`, then connect it to an **Open URL**
+`/Applications/MenuBarHome.app/Contents/Resources/cli/mijia list --format alfred`, then connect it to an **Open URL**
 action so the selected `arg` is opened. Each item's ⌘ variant opens the device in the panel instead of
 flipping it. `--icon /Applications/MenuBarHome.app` sets the item icon when the app lives elsewhere;
 without it the script uses the installed app's icon, or Alfred's workflow icon.
@@ -313,21 +323,23 @@ Both formats put the local bridge token in the links, exactly like every other C
 only skips the generic "an external link wants to run this" prompt, and the app still asks before a
 high-risk device changes state and refuses controls while the screen is locked.
 
-### Local MCP Server (Claude Desktop / Claude Code / Cursor)
+### Local MCP Server 2.0 (Claude Desktop / Claude Code / Cursor)
 
-`scripts/mijia-mcp` (or `scripts/mijia mcp`) speaks MCP JSON-RPC 2.0 over stdio using only the Python 3 standard library. It exposes read-only resources (`mijia://status`, `mijia://devices`, `mijia://scenes`) and tools (`list_devices`, `get_home_status`, `toggle_device`, `set_device_power`, `set_light_brightness`, `set_light_color_temp`, `set_temperature`, `set_fan`, `run_scene`, `ask_home`, `focus_device`). The server uses `bridgeToken` internally to dispatch `menumijia://` links and strips `bridgeToken` from every MCP resource and tool response so it never enters the model's context.
+`scripts/mijia-mcp` (or `scripts/mijia mcp`) speaks MCP JSON-RPC 2.0 over stdio using only the Python 3 standard library. It exposes **5 read-only resources** (`mijia://status`, `mijia://devices`, `mijia://scenes`, `mijia://sensors`, `mijia://automations`) and **17 tools** — 5 read-only (`list_devices`, `get_home_status`, `get_sensor_summary`, `get_automation_status`, `focus_device`) and 12 control tools (`toggle_device`, `set_device_power`, `set_light_brightness`, `set_light_color_temp`, `set_temperature`, `set_fan`, `set_cover_position`, `set_media_volume`, `set_media_mute`, `media_play_pause`, `run_scene`, `ask_home`). The server uses `bridgeToken` internally to dispatch `menumijia://` links and strips `bridgeToken` and OS free-text strings (calendar/window titles, Wi-Fi SSIDs) from every MCP resource and tool response so secrets never enter the model's context.
+
+Click **Copy Config** inside Settings to copy a ready-to-paste config pointing directly at your installed `mijia-mcp` (zero placeholder paths). On macOS with the app in `/Applications`, it looks like:
 
 ```json
 {
   "mcpServers": {
     "menubarhome": {
-      "command": "/ABSOLUTE/PATH/TO/MenuBarHome/scripts/mijia-mcp"
+      "command": "/Applications/MenuBarHome.app/Contents/Resources/cli/mijia-mcp"
     }
   }
 }
 ```
 
-Every control tool carries `destructiveHint: true`, so MCP clients that honour the annotations ask before running one. To give an AI session read-only access, add `--read-only` to the same entry (`"args": ["--read-only"]`, or run `scripts/mijia mcp --read-only`): `tools/list` then advertises only `list_devices`, `get_home_status` and `focus_device`, and any control call comes back as an error naming the flag instead of touching a device.
+Run `mijia doctor` (or `mijia-mcp --doctor`) anytime for a one-line health summary. Every control tool carries `destructiveHint: true` (and `ask_home` also sets `openWorldHint: true`), so MCP clients that honour the annotations ask before running one. To give an AI session read-only access, add `--read-only` to the same entry (`"args": ["--read-only"]`, or run `scripts/mijia mcp --read-only`): `tools/list` then advertises only the 5 read-only tools (`list_devices`, `get_home_status`, `get_sensor_summary`, `get_automation_status`, `focus_device`), and any control call comes back as an error naming the flag instead of touching a device.
 
 ### Raycast
 
@@ -341,17 +353,18 @@ Every control tool carries `destructiveHint: true`, so MCP clients that honour t
 
 ### Know before you connect
 
-- **Mi Cloud Connect uses an unofficial client API.** It is not an official Xiaomi integration. Xiaomi can rate-limit requests or flag an account (risk control) at any time, and this project cannot promise it won't happen. The app polls less when the panel is closed or the screen is locked, reserves rate-limit capacity for user control writes with exponential backoff, and routes eligible Wi-Fi devices over direct LAN miIO first. If you'd rather not take that risk, connect Home Assistant with Xiaomi's official [xiaomi_home](https://github.com/XiaoMi/ha_xiaomi_home) integration instead.
+- **Mi Cloud Connect uses an unofficial client API.** It is not an official Xiaomi integration. Xiaomi can rate-limit requests or flag an account (risk control) at any time, and this project cannot promise it won't happen. The app polls less when the panel is closed or the screen is locked, reserves rate-limit capacity for user control writes with exponential backoff, and routes eligible Wi-Fi devices over direct LAN miIO first (falling back to Mi Cloud for legacy non-MIoT LAN devices). If you'd rather not take that risk, connect Home Assistant with Xiaomi's official [xiaomi_home](https://github.com/XiaoMi/ha_xiaomi_home) integration instead.
 - **You will need to scan again.** The app does not store the long-lived `passToken` and does not renew a sign-in silently ([ADR-0004](docs/adr/0004-no-pass-token-storage.md)). How long a sign-in lasts is decided by Xiaomi's server and is shown in Settings when it is known; the panel warns you 3 days before it ends, and re-scanning takes a few seconds.
+- **Ecosystem scope.** Direct built-in connectors are Mi Home and Home Assistant (plus optional local generic IP cameras, DDC/CI displays, and the LAN multi-brand TV bridge). **Google Home, Apple HomeKit (HomeKit Device), Tuya, Aqara/Matter/Zigbee**, and other platforms are brought in via **Home Assistant** aggregation.
 - **The apps are not code-signed commercially.** macOS needs **Open Anyway** on first launch and Windows shows a SmartScreen prompt (see [Install](#1-install)).
-- **Windows is not at full feature parity.** Windows 11 only; voice is hands-free only (no hold-to-talk); event automation covers lock/unlock, power/battery, display/suspend, camera/mic, Focus/fullscreen/presentation, Wi-Fi, schedules, and sensor rules with context restore (no Calendar, lid-closed sleep, or frontmost-app triggers); no Apple Shortcuts. See the [platform comparison](#platform-comparison).
+- **Windows platform differences.** Windows 11 only; voice uses hands-free dictation (`Ctrl+M` toggle + hotword post-correction + diff preview, no hold-to-talk); event automation covers lock/unlock, power/battery, display/suspend, camera/mic, Focus/fullscreen/presentation, Wi-Fi, schedules, and sensor rules with context restore (no Calendar, lid-closed sleep, or frontmost-app triggers); no Apple Foundation Models or Apple Shortcuts. See the [platform comparison](#platform-comparison).
 
 ### Safety and privacy
 
 - Account credentials live only in the macOS Keychain or Windows Credential Manager, never in plain config files or logs.
 - Turning on a heater, switching a plug, or starting a robot vacuum always asks first; turning them off happens right away.
-- While your Mac is locked, manual control is refused by default, so nobody can play with your lights while you're away from the desk.
-- Everyday commands are parsed on your machine. Only when you've set up an AI service and a command can't be understood locally does that command, with the relevant device details, go to the service you chose.
+- While your computer is locked, manual control is refused by default on both macOS and Windows, so nobody can play with your lights while you're away from the desk.
+- Everyday commands are parsed on your machine (and on macOS 26+ with Apple Intelligence, complex commands can also run on-device via Apple Foundation Models). Only when you've set up a cloud AI service and a command can't be understood locally does that command, with the relevant device details and boolean-only desktop ambient tags, go to the service you chose.
 - In-app updates are verified against an Ed25519 signature whose private key is kept offline.
 
 <details>
@@ -366,7 +379,9 @@ MenuBarHome is an independent open-source project, not an official Xiaomi app. M
 | Xiaomi Home / Mijia | Signed-in account `userId`, `cUserId`, `ssecurity`, `serviceToken`, cloud region, and declared expiry (`passToken` is dropped on login; multi-account on both macOS and Windows) | macOS Keychain (one generic-password item) or Windows Credential Manager (`mi_session` and `mi_session_<slotId>`) |
 | Home Assistant | The long-lived access token (the instance URL is not secret) | macOS Keychain or Windows Credential Manager (`ha_token`) |
 | AI assistants | Per-provider API keys, plus non-secret imported-key labels, custom-endpoint bindings, and remembered cloud-consent endpoints | Per-provider API keys in macOS Keychain or Windows Credential Manager (`assistant_api_key_<preset>`); non-secret metadata in app preferences |
-| LG webOS TV | The pairing client key issued by the TV | macOS Keychain |
+| Read-only generic cameras | Per-camera RTSP / ONVIF / ISAPI / Dahua / Tapo credentials (handed to go2rtc in memory only, never written to `go2rtc.yaml`) | macOS Keychain or Windows Credential Manager (`generic-camera:<id>`) |
+| LG webOS TV (built-in) | The pairing client key issued by the TV | macOS Keychain |
+| Multi-brand TV bridge (`mbh-tv-bridge`) | Per-TV pairing client keys / bridge credentials (injected at runtime only) | macOS Keychain (`tvBridge.cred.<nativeId>`) or Windows Credential Manager (`tv-bridge:<id>`) |
 
 macOS encrypts these Keychain items at rest and protects them with the login Keychain; MenuBarHome writes them with `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`, so they are available after the first unlock but are never synced to iCloud or another Mac. Neither platform stores secrets in plain `UserDefaults`, WebView `localStorage`, or log files. macOS may ask for Keychain permission after an app update because the build signature changes; answering "Always Allow" covers later reads and writes.
 

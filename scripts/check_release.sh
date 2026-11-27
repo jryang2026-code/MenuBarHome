@@ -218,6 +218,8 @@ validate_tag() {
     local lock_top="" lock_root=""
     read -r lock_top lock_root < <(package_lock_versions) \
         || fail "无法读取 windows/package-lock.json 的版本号"
+    lock_top="${lock_top%$'\r'}"
+    lock_root="${lock_root%$'\r'}"
     [ "$lock_top" = "$version" ] && [ "$lock_root" = "$version" ] \
         || fail "windows/package-lock.json 的版本（version=$lock_top, packages[''].version=$lock_root）与 VERSION=$version 不一致"
 
