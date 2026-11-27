@@ -6,7 +6,6 @@ import (
 	"crypto/sha1"
 	"crypto/sha256"
 	"crypto/tls"
-	"crypto/x509"
 	"encoding/base64"
 	"encoding/binary"
 	"errors"
@@ -14,6 +13,7 @@ import (
 	"io"
 	mathrand "math/rand"
 	"net"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -25,30 +25,45 @@ type Conn struct {
 	r *bufio.Reader
 }
 
-func Dial(raw string) (*Conn, error) { return DialWithFingerprint(raw, "") }
-func DialWithFingerprint(raw, expected string) (*Conn, error) {
-	secure := strings.HasPrefix(raw, "wss://")
-	u := strings.TrimPrefix(strings.TrimPrefix(raw, "ws://"), "wss://")
-	host, path := u, "/"
-	if i := strings.IndexByte(u, '/'); i >= 0 {
-		host, path = u[:i], u[i:]
+func Dial(raw string) (*Conn, error) { return DialWithCertificateCheck(raw, nil) }
+func DialWithCertificateCheck(raw string, check func(string) error) (*Conn, error) {
+	u, err := url.Parse(raw)
+	if err != nil || u.Hostname() == "" || u.User != nil || (u.Scheme != "ws" && u.Scheme != "wss") {
+		return nil, errors.New("invalid WebSocket endpoint")
+	}
+	host := u.Host
+	if u.Port() == "" {
+		port := "80"
+		if u.Scheme == "wss" {
+			port = "443"
+		}
+		host = net.JoinHostPort(u.Hostname(), port)
 	}
 	d := net.Dialer{Timeout: 5 * time.Second}
 	var c net.Conn
 	var e error
-	if secure {
-		c, e = tls.DialWithDialer(&d, "tcp", host, &tls.Config{InsecureSkipVerify: true, ServerName: strings.Split(host, ":")[0], VerifyPeerCertificate: func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
-			if len(rawCerts) == 0 {
-				return errors.New("missing certificate")
+	if u.Scheme == "wss" {
+		tlsConn, err := tls.DialWithDialer(&d, "tcp", host, &tls.Config{InsecureSkipVerify: true, ServerName: u.Hostname()})
+		if err != nil {
+			return nil, err
+		}
+		if check != nil {
+			chain := tlsConn.ConnectionState().PeerCertificates
+			if len(chain) == 0 {
+				_ = tlsConn.Close()
+				return nil, errors.New("missing WebSocket peer certificate")
 			}
-			sum := sha256.Sum256(rawCerts[0])
-			got := fmt.Sprintf("%x", sum[:])
-			if expected != "" && !strings.EqualFold(got, expected) {
-				return errors.New("TLS fingerprint mismatch")
+			sum := sha256.Sum256(chain[0].Raw)
+			if err := check(fmt.Sprintf("%x", sum)); err != nil {
+				_ = tlsConn.Close()
+				return nil, err
 			}
-			return nil
-		}})
+		}
+		c = tlsConn
 	} else {
+		if check != nil {
+			return nil, errors.New("TLS required for WebSocket certificate check")
+		}
 		c, e = d.Dial("tcp", host)
 	}
 	if e != nil {
@@ -61,7 +76,9 @@ func DialWithFingerprint(raw, expected string) (*Conn, error) {
 		return closeOnErr(e)
 	}
 	key := base64.StdEncoding.EncodeToString(rawKey)
-	fmt.Fprintf(c, "GET %s HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\n\r\n", path, host, key)
+	if _, err := fmt.Fprintf(c, "GET %s HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\n\r\n", u.RequestURI(), u.Host, key); err != nil {
+		return closeOnErr(err)
+	}
 	br := bufio.NewReader(c)
 	status, e := br.ReadString('\n')
 	if e != nil {

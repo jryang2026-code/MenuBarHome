@@ -3,9 +3,11 @@ package driver
 import (
 	"bytes"
 	"com.menubarhome.tv-bridge/internal/ws"
+	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -53,7 +55,6 @@ type TVDriver interface {
 	Close() error
 }
 
-type Pairer interface{ Pair() (string, error) }
 type MACSetter interface{ SetMAC(string) }
 type Base struct {
 	id, addr string
@@ -73,6 +74,20 @@ func (b *Base) ID() string     { return b.id }
 func (b *Base) Sleep() error   { b.mu.Lock(); b.sleeping = true; b.mu.Unlock(); return nil }
 func (b *Base) Close() error   { return nil }
 func httpClient() *http.Client { return &http.Client{Timeout: 5 * time.Second} }
+func sameOriginHTTPClient() *http.Client {
+	client := httpClient()
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		origin := via[0].URL
+		if req.URL.Scheme != origin.Scheme || !strings.EqualFold(req.URL.Host, origin.Host) {
+			return errors.New("cross-origin TV redirect refused")
+		}
+		if len(via) >= 10 {
+			return errors.New("too many TV redirects")
+		}
+		return nil
+	}
+	return client
+}
 func getJSON(c *http.Client, u string, out any) error {
 	r, e := c.Get(u)
 	if e != nil {
@@ -154,7 +169,7 @@ func sanitizeErr(err error, secrets ...string) error {
 
 type Xiaomi struct{ Base }
 
-func NewXiaomi(addr string) *Xiaomi { return &Xiaomi{Base: Base{id: "xiaomi_mitv_6095", addr: ensureHTTPBase(addr), client: httpClient()}} }
+func NewXiaomi(addr string) *Xiaomi { return &Xiaomi{Base: Base{id: "xiaomi_mitv_6095", addr: ensureHTTPBase(addr), client: sameOriginHTTPClient()}} }
 func (d *Xiaomi) aliveInfo() (string, error) {
 	var r struct{ Status *int; Data struct{ DeviceName string } }
 	if err := getJSON(d.client, d.addr+"/request?action=isalive", &r); err != nil { return "", err }
@@ -186,42 +201,68 @@ func (d *Xiaomi) Snapshot() (Snapshot, error) {
 	}
 	return snap, nil
 }
-func (d *Xiaomi) getControl(path string) error {
-	r, err := d.client.Get(d.addr + path); if err != nil { return err }
-	defer r.Body.Close(); _, _ = io.Copy(io.Discard, io.LimitReader(r.Body, 64<<10))
-	if r.StatusCode >= 300 { return fmt.Errorf("http status %s", r.Status) }
-	return nil
+func (d *Xiaomi) getControl(ctx context.Context, path string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, d.addr+path, nil)
+	if err != nil {
+		return err
+	}
+	r, err := d.client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer r.Body.Close()
+	if r.StatusCode >= 300 {
+		return fmt.Errorf("http status %s", r.Status)
+	}
+	_, err = io.Copy(io.Discard, io.LimitReader(r.Body, 64<<10))
+	return err
 }
-func (d *Xiaomi) sendKey(code string) error { return d.getControl("/controller?action=keyevent&keycode=" + url.QueryEscape(code)) }
+func (d *Xiaomi) sendKey(ctx context.Context, code string) error {
+	return d.getControl(ctx, "/controller?action=keyevent&keycode=" + url.QueryEscape(code))
+}
 func (d *Xiaomi) Execute(v string, a map[string]any) error {
 	if e := commandAllowed(v, a); e != nil { return e }
+	ctx := context.Background()
 	switch v {
 	case "power.set":
 		isOn, err := parseBoolArg(a, "isOn"); if err != nil { return err }
 		alive := d.Probe() == nil
 		if isOn { if alive { return nil }; return errors.New("xiaomi tv offline; cold wake unavailable") }
-		if !alive { return nil }; return d.sendKey("power")
+		if !alive { return nil }; return d.sendKey(ctx, "power")
 	case "volume.set":
 		level, err := parseVolumeLevel(a); if err != nil { return err }
 		cur, maxVol, _, _, err := d.getVolumeState(); if err != nil { return err }
-		diff := clampInt(int(math.Round(float64(level)*float64(maxVol)/100.0)), 0, maxVol) - cur
+		target := maxVol
+		if level < 100 {
+			target = int(math.Round(float64(level) * float64(maxVol) / 100.0))
+		}
+		diff := target - cur
 		code := "volumeup"; if diff < 0 { code, diff = "volumedown", -diff }
-		for range clampInt(diff, 0, 50) { if err := d.sendKey(code); err != nil { return err } }
+		if diff > 100 {
+			return errors.New("xiaomi volume target requires more than 100 key presses")
+		}
+		ctx, cancel := context.WithTimeout(ctx, d.client.Timeout)
+		defer cancel()
+		for step := range diff {
+			if err := d.sendKey(ctx, code); err != nil {
+				return fmt.Errorf("xiaomi volume target incomplete after %d of %d key presses: %w", step, diff, err)
+			}
+		}
 		return nil
 	case "mute.set":
 		desired, err := parseBoolArg(a, "isMuted", "muted"); if err != nil { return err }
 		if _, _, curMuted, hasMuted, err := d.getVolumeState(); err == nil && hasMuted && curMuted == desired { return nil }
-		return d.sendKey("mute")
+		return d.sendKey(ctx, "mute")
 	case "input.select":
 		s, _ := a["source"].(string); src := strings.ToLower(strings.NewReplacer(" ", "", "_", "").Replace(strings.TrimSpace(s)))
 		if !map[string]bool{"hdmi1": true, "hdmi2": true, "hdmi3": true, "hdmi4": true, "av": true, "dtmb": true, "atv": true, "vga": true}[src] { return errors.New("invalid source") }
-		return d.getControl("/controller?action=changesource&source=" + url.QueryEscape(src))
+		return d.getControl(ctx, "/controller?action=changesource&source=" + url.QueryEscape(src))
 	case "remote.key":
 		code, ok := map[string]string{"up": "up", "down": "down", "left": "left", "right": "right", "select": "enter", "back": "back", "home": "home", "menu": "menu", "volumeUp": "volumeup", "volumeDown": "volumedown", "mute": "mute", "source": "source", "channelUp": "channelup", "channelDown": "channeldown", "playPause": "playpause", "info": "info"}[fmt.Sprint(a["key"])]
 		if !ok { return errors.New("unsupported remote key") }
-		return d.sendKey(code)
+		return d.sendKey(ctx, code)
 	case "media.playPause", "media.play", "media.pause", "media.stop", "media.next", "media.previous":
-		return d.sendKey(map[string]string{"media.playPause": "playpause", "media.play": "play", "media.pause": "pause", "media.stop": "stop", "media.next": "next", "media.previous": "previous"}[v])
+		return d.sendKey(ctx, map[string]string{"media.playPause": "playpause", "media.play": "play", "media.pause": "pause", "media.stop": "stop", "media.next": "next", "media.previous": "previous"}[v])
 	default: return errors.New("unsupported Xiaomi action")
 	}
 }
@@ -232,7 +273,7 @@ type Sony struct {
 }
 
 func NewSony(addr, psk string) *Sony {
-	return &Sony{Base: Base{id: "sony_bravia_psk", addr: ensureHTTPBase(addr), client: httpClient()}, PSK: psk}
+	return &Sony{Base: Base{id: "sony_bravia_psk", addr: ensureHTTPBase(addr), client: sameOriginHTTPClient()}, PSK: psk}
 }
 func (d *Sony) do(req *http.Request) (*http.Response, error) {
 	if d.PSK != "" {
@@ -682,7 +723,11 @@ type LG struct {
 	ClientKey    string
 	MAC, wolTarget       string
 	Timeout, PairTimeout time.Duration
+	mediaMu              sync.Mutex
 	mediaPlaying         bool
+	trustMu              sync.Mutex
+	fingerprint          string
+	pairingPath          string
 }
 
 func NewLG(addr string, tlsOn bool) *LG {
@@ -693,6 +738,9 @@ type HisenseVIDAA struct {
 	Base
 	Credential string
 	Timeout    time.Duration
+	Plaintext  bool
+	muted      bool
+	playing    bool
 }
 
 func NewHisenseVIDAA(addr, credential string) *HisenseVIDAA {
@@ -723,10 +771,14 @@ func mqttPacket(hdr byte, body []byte) []byte {
 	return append(append(append(out, hdr), rem...), body...)
 }
 func (d *HisenseVIDAA) mqttCreds() (string, string) {
-	if u, p, ok := strings.Cut(d.Credential, ":"); ok && u != "" {
+	const defaultUser = "hisenseservice"
+	if d.Credential == "" {
+		return defaultUser, "multimqttservice"
+	}
+	if u, p, ok := strings.Cut(d.Credential, ":"); ok {
 		return u, p
 	}
-	return "hisenseservice", "multimqttservice"
+	return defaultUser, d.Credential
 }
 func (d *HisenseVIDAA) mqttDo(topic, payload string) error {
 	target := d.addr
@@ -741,14 +793,21 @@ func (d *HisenseVIDAA) mqttDo(topic, payload string) error {
 	raw, err := dl.Dial("tcp", target)
 	if err != nil { return redact(err) }
 	_ = raw.SetDeadline(deadline)
-	tlsConn := tls.Client(raw, &tls.Config{InsecureSkipVerify: true})
-	var c net.Conn = tlsConn
-	if err := tlsConn.Handshake(); err != nil {
-		_ = raw.Close()
-		if !time.Now().Before(deadline) { return redact(err) }
-		c, err = dl.Dial("tcp", target)
-		if err != nil { return redact(err) }
-		_ = c.SetDeadline(deadline)
+	c := raw
+	if !d.Plaintext {
+		tlsConn := tls.Client(raw, &tls.Config{InsecureSkipVerify: true})
+		if err := tlsConn.Handshake(); err == nil {
+			c = tlsConn
+		} else {
+			_ = raw.Close()
+			var headerErr tls.RecordHeaderError
+			if !errors.As(err, &headerErr) || headerErr.Conn == nil {
+				return redact(err)
+			}
+			c, err = dl.Dial("tcp", target)
+			if err != nil { return redact(err) }
+			_ = c.SetDeadline(deadline)
+		}
 	}
 	defer c.Close()
 	connBody := []byte{0x00, 0x04, 'M', 'Q', 'T', 'T', 0x04, 0xC2, 0x00, 0x1E}
@@ -776,14 +835,20 @@ func (d *HisenseVIDAA) Execute(v string, a map[string]any) error {
 	if e := commandAllowed(v, a); e != nil {
 		return e
 	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	const keyTopic = "/remoteapp/tv/remote_service/menubarhome$normal/actions/sendkey"
 	switch v {
 	case "power.set":
-		if _, err := parseBoolArg(a, "isOn"); err != nil { return err }
+		isOn, err := parseBoolArg(a, "isOn"); if err != nil { return err }
+		if isOn { return d.Probe() }
 		return d.mqttDo(keyTopic, "KEY_POWER")
 	case "mute.set":
-		if _, err := parseBoolArg(a, "isMuted", "muted"); err != nil { return err }
-		return d.mqttDo(keyTopic, "KEY_MUTE")
+		muted, err := parseBoolArg(a, "isMuted", "muted"); if err != nil { return err }
+		if muted == d.muted { return nil }
+		if err := d.mqttDo(keyTopic, "KEY_MUTE"); err != nil { return err }
+		d.muted = muted
+		return nil
 	case "volume.set":
 		vol, err := parseVolumeLevel(a); if err != nil { return err }
 		return d.mqttDo("/remoteapp/tv/platform_service/menubarhome$normal/actions/changevolume", strconv.Itoa(vol))
@@ -795,22 +860,35 @@ func (d *HisenseVIDAA) Execute(v string, a map[string]any) error {
 		}
 		b, _ := json.Marshal(map[string]string{"sourceid": s, "sourcename": s})
 		return d.mqttDo("/remoteapp/tv/ui_service/menubarhome$normal/actions/changesource", string(b))
-	case "media.play", "media.playPause":
-		return d.mqttDo(keyTopic, "KEY_PLAY")
-	case "media.pause":
-		return d.mqttDo(keyTopic, "KEY_PAUSE")
-	case "media.stop":
-		return d.mqttDo(keyTopic, "KEY_STOP")
+	case "media.play", "media.pause", "media.stop", "media.playPause":
+		return d.sendMediaKey(keyTopic, v)
 	case "remote.key":
-		keys := map[string]string{"up": "KEY_UP", "down": "KEY_DOWN", "left": "KEY_LEFT", "right": "KEY_RIGHT", "select": "KEY_OK", "back": "KEY_RETURNS", "home": "KEY_HOME", "menu": "KEY_MENU", "volumeUp": "KEY_VOLUMEUP", "volumeDown": "KEY_VOLUMEDOWN", "mute": "KEY_MUTE", "source": "KEY_SOURCE", "channelUp": "KEY_CHANNELUP", "channelDown": "KEY_CHANNELDOWN", "playPause": "KEY_PLAY", "info": "KEY_INFO"}
-		code, ok := keys[fmt.Sprint(a["key"])]
+		key, _ := a["key"].(string)
+		if key == "playPause" { return d.sendMediaKey(keyTopic, "media.playPause") }
+		keys := map[string]string{"up": "KEY_UP", "down": "KEY_DOWN", "left": "KEY_LEFT", "right": "KEY_RIGHT", "select": "KEY_OK", "back": "KEY_RETURNS", "home": "KEY_HOME", "menu": "KEY_MENU", "volumeUp": "KEY_VOLUMEUP", "volumeDown": "KEY_VOLUMEDOWN", "mute": "KEY_MUTE", "source": "KEY_SOURCE", "channelUp": "KEY_CHANNELUP", "channelDown": "KEY_CHANNELDOWN", "info": "KEY_INFO"}
+		code, ok := keys[key]
 		if !ok {
 			return errors.New("unsupported Hisense key")
 		}
-		return d.mqttDo(keyTopic, code)
+		if err := d.mqttDo(keyTopic, code); err != nil { return err }
+		if key == "mute" { d.muted = !d.muted }
+		return nil
 	default:
 		return errors.New("unsupported Hisense VIDAA action")
 	}
+}
+
+func (d *HisenseVIDAA) sendMediaKey(topic, verb string) error {
+	playing := verb == "media.play" || (verb == "media.playPause" && !d.playing)
+	key := "KEY_PAUSE"
+	if playing {
+		key = "KEY_PLAY"
+	} else if verb == "media.stop" {
+		key = "KEY_STOP"
+	}
+	if err := d.mqttDo(topic, key); err != nil { return err }
+	d.playing = playing
+	return nil
 }
 
 func ForID(id, addr string) TVDriver {
@@ -863,8 +941,24 @@ type Samsung struct {
 func NewSamsung(addr string) *Samsung {
 	return &Samsung{Base: Base{id: "samsung_tizen_ws", addr: addr, client: httpClient(), sleeping: false}}
 }
+func (d *Samsung) dial() (*ws.Conn, error) {
+	query := url.Values{"name": {base64.StdEncoding.EncodeToString([]byte("MenuBarHome"))}}
+	if d.Token != "" {
+		query.Set("token", d.Token)
+	}
+	addr := d.addr
+	if _, _, err := net.SplitHostPort(addr); err != nil {
+		addr = net.JoinHostPort(strings.Trim(addr, "[]"), "8002")
+	}
+	endpoint := url.URL{Scheme: "wss", Host: addr, Path: "/api/v2/channels/samsung.remote.control", RawQuery: query.Encode()}
+	c, err := ws.Dial(endpoint.String())
+	if err != nil {
+		return nil, errors.New("Samsung remote WebSocket connection failed")
+	}
+	return c, nil
+}
 func (d *Samsung) Probe() error {
-	c, e := ws.Dial("wss://" + d.addr + "/")
+	c, e := d.dial()
 	if e != nil {
 		return e
 	}
@@ -877,7 +971,7 @@ func (d *Samsung) Execute(v string, a map[string]any) error {
 	if e := commandAllowed(v, a); e != nil {
 		return e
 	}
-	c, e := ws.Dial("wss://" + d.addr + "/")
+	c, e := d.dial()
 	if e != nil {
 		return e
 	}

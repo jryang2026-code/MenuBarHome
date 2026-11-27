@@ -32,16 +32,21 @@ func (d *LG) ioTimeout() time.Duration { if d.Timeout > 0 { return d.Timeout }; 
 func lgExtractHost(raw string) string {
 	if u, err := url.Parse(raw); err == nil && u.Hostname() != "" { return u.Hostname() }
 	if h, _, err := net.SplitHostPort(raw); err == nil { return h }
-	return raw
+	return strings.Trim(raw, "[]")
 }
 func (d *LG) dialAndRegister(waitPrompt bool, timeout time.Duration) (*ws.Conn, string, error) {
 	raw := strings.TrimSpace(d.addr)
 	if !strings.HasPrefix(raw, "ws://") && !strings.HasPrefix(raw, "wss://") {
 		if !d.TLS { return nil, "", errors.New("LG websocket disabled") }
-		raw = strings.TrimRight(raw, "/"); if _, _, err := net.SplitHostPort(raw); err != nil { raw = net.JoinHostPort(raw, "3001") }
+		raw = strings.TrimRight(raw, "/"); if _, _, err := net.SplitHostPort(raw); err != nil { raw = net.JoinHostPort(strings.Trim(raw, "[]"), "3001") }
 		raw = "wss://" + raw + "/"
-	} else if strings.Count(raw, "/") < 3 { raw += "/" }
-	key := d.getKey(); c, err := ws.Dial(raw); if err != nil { return nil, "", sanitizeErr(err, key) }
+	}
+	key := d.getKey()
+	if waitPrompt {
+		key = ""
+	}
+	c, err := ws.DialWithCertificateCheck(raw, d.verifyFingerprint)
+	if err != nil { return nil, "", sanitizeErr(err, key) }
 	_ = c.SetDeadline(time.Now().Add(timeout))
 	pl := map[string]any{"forcePairing": false, "pairingType": "PROMPT", "manifest": lgManifest}; if key != "" { pl["client-key"] = key }
 	reg, _ := json.Marshal(map[string]any{"type": "register", "id": "register_0", "payload": pl})
@@ -50,8 +55,8 @@ func (d *LG) dialAndRegister(waitPrompt bool, timeout time.Duration) (*ws.Conn, 
 		b, err := c.ReadText(); if err != nil { _ = c.Close(); return nil, "", sanitizeErr(err, key) }
 		var m ssapMsg; if json.Unmarshal(b, &m) != nil { continue }
 		if m.Type == "registered" {
-			nk, _ := m.Payload["client-key"].(string); if nk = strings.TrimSpace(nk); nk != "" { d.mu.Lock(); d.ClientKey = nk; d.mu.Unlock() }
-			return c, nk, nil
+			nk, _ := m.Payload["client-key"].(string)
+			return c, strings.TrimSpace(nk), nil
 		}
 		if m.Type == "response" { if pt, _ := m.Payload["pairingType"].(string); pt == "PROMPT" && !waitPrompt { _ = c.Close(); return nil, "", errors.New("LG pairing required") } }
 		if m.Type == "error" { _ = c.Close(); em := strings.TrimSpace(m.Error); if em == "" { em = "LG registration rejected" }; return nil, "", sanitizeErr(errors.New(em), key) }
@@ -73,7 +78,17 @@ func (d *LG) ssapCall(c *ws.Conn, id, uri string, payload map[string]any) (map[s
 func (d *LG) Pair() (string, error) {
 	to := 15 * time.Second; if d.PairTimeout > 0 { to = d.PairTimeout }
 	c, key, err := d.dialAndRegister(true, to); if err != nil { return "", err }
-	_ = c.Close(); if key == "" { return "", errors.New("LG pairing returned empty client key") }; return key, nil
+	_ = c.Close()
+	if key == "" { return "", errors.New("LG pairing returned empty client key") }
+	if d.pairingPath != "" {
+		if err := writeLGPrivateFile(d.pairingPath+".key", key, false); err != nil {
+			return "", errors.New("LG pairing credential could not be saved")
+		}
+	}
+	d.mu.Lock()
+	d.ClientKey = key
+	d.mu.Unlock()
+	return key, nil
 }
 func (d *LG) Probe() error { c, _, err := d.dialAndRegister(false, d.ioTimeout()); if err != nil { return err }; return c.Close() }
 func (d *LG) Snapshot() (Snapshot, error) {
@@ -134,10 +149,15 @@ func (d *LG) Execute(v string, a map[string]any) error {
 		if comp := strings.ToUpper(strings.NewReplacer(" ", "", "_", "").Replace(s)); len(comp) == 5 && strings.HasPrefix(comp, "HDMI") && comp[4] >= '1' && comp[4] <= '4' { s = "HDMI_" + comp[4:] }
 		_, err = d.ssapCall(c, "in_1", "ssap://tv/switchInput", map[string]any{"inputId": s})
 	case "media.play", "media.pause", "media.stop", "media.playPause":
-		d.mu.Lock(); next := v == "media.play" || (v == "media.playPause" && !d.mediaPlaying); d.mediaPlaying = next; d.mu.Unlock()
+		d.mediaMu.Lock()
+		defer d.mediaMu.Unlock()
+		next := v == "media.play" || (v == "media.playPause" && !d.mediaPlaying)
 		uri := map[string]string{"media.play": "ssap://media.controls/play", "media.pause": "ssap://media.controls/pause", "media.stop": "ssap://media.controls/stop"}[v]
 		if v == "media.playPause" { uri = "ssap://media.controls/pause"; if next { uri = "ssap://media.controls/play" } }
 		_, err = d.ssapCall(c, "media_1", uri, nil)
+		if err == nil {
+			d.mediaPlaying = next
+		}
 	case "remote.key":
 		k, _ := a["key"].(string)
 		if uri, ok := map[string]string{"volumeUp": "ssap://audio/volumeUp", "volumeDown": "ssap://audio/volumeDown", "channelUp": "ssap://tv/channelUp", "channelDown": "ssap://tv/channelDown"}[k]; ok { _, err = d.ssapCall(c, "rk_1", uri, nil); return err }
@@ -146,7 +166,13 @@ func (d *LG) Execute(v string, a map[string]any) error {
 		p, err := d.ssapCall(c, "ptr_1", "ssap://com.webos.service.networkinput/getPointerInputSocket", nil); if err != nil { return err }
 		sp, _ := p["socketPath"].(string); u, err := url.Parse(sp)
 		if err != nil || (u.Scheme != "ws" && u.Scheme != "wss") || !strings.EqualFold(u.Hostname(), lgExtractHost(d.addr)) { return errors.New("invalid LG pointer socket path") }
-		pc, err := ws.Dial(sp); if err != nil { return sanitizeErr(err, d.getKey()) }
+		dial := ws.Dial
+		if u.Scheme == "wss" {
+			dial = func(endpoint string) (*ws.Conn, error) {
+				return ws.DialWithCertificateCheck(endpoint, d.verifyFingerprint)
+			}
+		}
+		pc, err := dial(sp); if err != nil { return sanitizeErr(err, d.getKey()) }
 		defer pc.Close(); _ = pc.SetDeadline(time.Now().Add(d.ioTimeout())); return pc.WriteText([]byte("type:button\nname:" + btn + "\n\n"))
 	default: return errors.New("unsupported LG action")
 	}
