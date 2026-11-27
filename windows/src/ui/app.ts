@@ -147,7 +147,7 @@ import { disposeTvMediaEvents } from "./tvMediaDrawer.js";
 import { activeRoomOptions } from "./roomOrderEditor.js";
 import { buildHostCapabilityContext, foldGrouped, getHostHaLifecyclePhase, haCacheIfEnabled, isDualSourceEnabled, isHostHaEnabled, isHostMiSessionEnabled, refreshDevices, refreshHADevices, resolveHostMiSelectionState } from "./cloudRefresh.js";
 import { hasSecondaryMiAccountsInIndex, miAccountId } from "../core/miAccountsStore.js";
-import { evaluateAutomationRuleWriteGate, evaluateDeviceEntityWriteGate, evaluateIntentsWriteGate, evaluateQuickActionSourceWriteGate, planWritableAllOff, queueMiAccountReenableFromLogin, writeMiAccountSelectionMutation } from "../core/miAccountControl.js";
+import { evaluateAutomationRuleWriteGate, evaluateDeviceEntityWriteGate, evaluateIntentsWriteGate, evaluateQuickActionSourceWriteGate, getCapabilityGeneration, planWritableAllOff, queueMiAccountReenableFromLogin, writeMiAccountSelectionMutation } from "../core/miAccountControl.js";
 import { subscribeHaScopeLifecycle } from "../core/haTransportGate.js";
 import { executeIntents, executeSingleCommand, getRunningBatch, getUndoActionBatch, habitSequences, lastHabitAction, unrecordHabits, type ExecuteIntentsOptions } from "./intentExecution.js";
 import { getAutomationUndoRunId, type AutomationRule } from "../core/automationEngine.js";
@@ -416,6 +416,7 @@ export class MenuMijiaWindowsApp {
       },
     })) return false;
     this.cameraLive.setCameraCategoryEnabled(normalized.includes("camera"));
+    getTVBridgeController().onCapabilityGenerationChanged();
     // The demo home is synthesized locally, so nothing prunes it on refresh: it is rebuilt here.
     // Real sources refresh after the caller finishes pausing.
     if (this.settings.connectionMode === "demo" && !isDualSourceEnabled(this)) {
@@ -614,6 +615,10 @@ export class MenuMijiaWindowsApp {
   /** Advances on every home switch inside the same source; caches keyed on the home read it. */
   public get homeRevision(): number {
     return this.sourceEpoch.homeRevision;
+  }
+  /** Monotonic capability generation (`>= 1`) shared with out-of-process adapters. */
+  public get capabilityGeneration(): number {
+    return getCapabilityGeneration();
   }
   public lastCloudRefreshAt: number | null = null;
   /**

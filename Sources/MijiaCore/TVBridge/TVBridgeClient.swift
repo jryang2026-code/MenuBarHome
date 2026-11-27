@@ -3,6 +3,7 @@ import Darwin
 #elseif canImport(Glibc)
 import Glibc
 #endif
+import Dispatch
 import Foundation
 #if canImport(CryptoKit)
 import CryptoKit
@@ -20,28 +21,100 @@ public protocol TVBridgeTransport: Sendable { func request(_ frame: TVBridgeFram
 public actor MockTVBridgeTransport: TVBridgeTransport { public var requests:[TVBridgeFrame]=[]; public private(set) var closeCount=0; private let responder:@Sendable (TVBridgeFrame)throws->TVBridgeFrame; public init(responder:@escaping @Sendable (TVBridgeFrame)throws->TVBridgeFrame){self.responder=responder}; public func request(_ f:TVBridgeFrame)throws->TVBridgeFrame{requests.append(f);return try responder(f)}; public func close()async{closeCount += 1} }
 
 public final class StdioTVBridgeTransport: TVBridgeTransport, @unchecked Sendable {
-    private let process: Process; private let processBirth: SupervisedProcessIdentity.Birth?; private let input: FileHandle; private let output: FileHandle; private let lock = NSLock(); private var buffer = Data()
+    public static let defaultRequestTimeout: TimeInterval = 15.0
+    private let process: Process; private let processBirth: SupervisedProcessIdentity.Birth?; private let input: FileHandle; private let output: FileHandle; private let requestTimeout: TimeInterval; private let ioQueue = DispatchQueue(label: "com.menubarhome.tv-bridge.stdio"); private let stderrRing = StderrRing(); private var buffer = Data()
     private struct LiveEntry { let process: Process; let birth: SupervisedProcessIdentity.Birth? }
     internal var childProcess: Process { process }
-    public init(process: Process, input: FileHandle, output: FileHandle) {
-        self.process = process
-        self.processBirth = process.isRunning ? SupervisedProcessIdentity.Birth.capture(pid: process.processIdentifier) : nil
-        self.input = input; self.output = output
+    public var recentStderr: String { stderrRing.snapshot() }
+    private struct SendableHandle: @unchecked Sendable { let handle: FileHandle }
+    public init(process: Process, input: FileHandle, output: FileHandle, errorOutput: FileHandle? = nil, requestTimeout: TimeInterval = StdioTVBridgeTransport.defaultRequestTimeout) {
+        self.process = process; self.processBirth = process.isRunning ? SupervisedProcessIdentity.Birth.capture(pid: process.processIdentifier) : nil
+        self.input = input; self.output = output; self.requestTimeout = max(0.05, requestTimeout)
+        if let errHandle = errorOutput {
+            let box = SendableHandle(handle: errHandle); let ring = self.stderrRing
+            DispatchQueue.global(qos: .utility).async {
+                let fd = box.handle.fileDescriptor; var tmp = [UInt8](repeating: 0, count: 2048)
+                while true {
+                    let n = tmp.withUnsafeMutableBytes { Self.posixRead(fd: fd, buffer: $0.baseAddress!, count: $0.count) }
+                    if n < 0 { if errno == EINTR { continue }; break }
+                    guard n > 0 else { break }; ring.append(Data(tmp.prefix(n)))
+                }
+                withExtendedLifetime(box) {}
+            }
+        }
     }
-    public static func launch(binaryPath: String, dataDir: URL, manifestPath: URL) throws -> Self {
-        let p = Process(); let i = Pipe(); let o = Pipe()
+    public static func launch(binaryPath: String, dataDir: URL, manifestPath: URL, requestTimeout: TimeInterval = defaultRequestTimeout) throws -> Self {
+        let p = Process(); let i = Pipe(); let o = Pipe(); let e = Pipe()
         p.executableURL = URL(fileURLWithPath: binaryPath); p.arguments = []; p.currentDirectoryURL = dataDir
         p.environment = ["PATH": ProcessInfo.processInfo.environment["PATH"] ?? "/usr/bin:/bin", "HOME": dataDir.path, "MBH_DATA_DIR": dataDir.path, "MBH_MANIFEST_PATH": manifestPath.path]
-        p.standardInput = i; p.standardOutput = o; p.standardError = FileHandle.nullDevice; try p.run()
-        let transport = Self(process: p, input: i.fileHandleForWriting, output: o.fileHandleForReading)
-        LiveProcesses.shared.insert(p, birth: transport.processBirth)
-        return transport
+        p.standardInput = i; p.standardOutput = o; p.standardError = e; try p.run()
+        let transport = Self(process: p, input: i.fileHandleForWriting, output: o.fileHandleForReading, errorOutput: e.fileHandleForReading, requestTimeout: requestTimeout)
+        LiveProcesses.shared.insert(p, birth: transport.processBirth); return transport
     }
-    public func request(_ frame: TVBridgeFrame) async throws -> TVBridgeFrame { try readFrame(frame) }
+    public static func sanitizeStderr(_ raw: String) -> String {
+        var text = String(raw.unicodeScalars.filter { $0.value >= 0x20 || $0 == "\t" })
+        for (p, r) in [(#"([a-zA-Z][a-zA-Z0-9+.-]*://)[^/\s@]+@"#, "$1[REDACTED]@"), (#"(?i)\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+"#, "$1 [REDACTED]"), (#"(?i)(["']?(?:credential|client[-_]?key|password|passwd|token|psk|secret|authorization|cookie|pin)["']?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,&;}\]]+)"#, "$1[REDACTED]")] {
+            if let rx = try? NSRegularExpression(pattern: p) { text = rx.stringByReplacingMatches(in: text, range: NSRange(text.startIndex..., in: text), withTemplate: r) }
+        }
+        return text
+    }
+    private final class StderrRing: @unchecked Sendable {
+        private let lock = NSLock(); private var lines: [String] = []; private var bytes = 0; private var pending = ""
+        func append(_ data: Data) {
+            let chunk = String(decoding: data, as: UTF8.self); guard !chunk.isEmpty else { return }
+            lock.withLock {
+                pending.append(chunk)
+                while let nl = pending.firstIndex(of: "\n") { push(String(pending[..<nl])); pending.removeSubrange(...nl) }
+                if pending.utf8.count > 512 { push(String(pending.prefix(512))); pending.removeAll(keepingCapacity: true) }
+            }
+        }
+        func snapshot() -> String {
+            lock.withLock { var out = lines; let tail = pending.trimmingCharacters(in: .whitespacesAndNewlines); if !tail.isEmpty { out.append(StdioTVBridgeTransport.sanitizeStderr(tail)) }; return out.joined(separator: "\n") }
+        }
+        private func push(_ raw: String) {
+            let clean = StdioTVBridgeTransport.sanitizeStderr(raw).trimmingCharacters(in: .whitespacesAndNewlines); guard !clean.isEmpty else { return }
+            let clipped = clean.count > 384 ? String(clean.prefix(384)) + "…" : clean
+            lines.append(clipped); bytes += clipped.utf8.count
+            while (lines.count > 32 || bytes > 4096), !lines.isEmpty { bytes -= lines.removeFirst().utf8.count }
+        }
+    }
+    private static func posixPoll(fd: Int32, events: Int16, timeoutMs: Int32) -> (Int32, Int16) {
+        var pfd = pollfd(fd: fd, events: events, revents: 0)
+        #if canImport(Darwin)
+        return (Darwin.poll(&pfd, 1, timeoutMs), pfd.revents)
+        #elseif canImport(Glibc)
+        return (Glibc.poll(&pfd, 1, timeoutMs), pfd.revents)
+        #else
+        return (1, 0)
+        #endif
+    }
+    private static func posixRead(fd: Int32, buffer: UnsafeMutableRawPointer, count: Int) -> Int {
+        #if canImport(Darwin)
+        return Darwin.read(fd, buffer, count)
+        #elseif canImport(Glibc)
+        return Glibc.read(fd, buffer, count)
+        #else
+        return 0
+        #endif
+    }
+    public func request(_ frame: TVBridgeFrame) async throws -> TVBridgeFrame {
+        try await withCheckedThrowingContinuation { cont in ioQueue.async { do { cont.resume(returning: try self.readFrame(frame)) } catch { cont.resume(throwing: error) } } }
+    }
     private func readFrame(_ frame: TVBridgeFrame) throws -> TVBridgeFrame {
-      lock.lock(); defer { lock.unlock() }
-      let payload = try frame.encoded() + Data([10]); guard payload.count <= 8 * 1024 * 1024 else { throw TVBridgeError.frameTooLarge }; try input.write(contentsOf: payload)
-      while true { if let nl = buffer.firstIndex(of: 10) { let line = Data(buffer[..<nl]); buffer.removeSubrange(...nl); let decoded=try TVBridgeFrame.decode(line); guard decoded.id == frame.id else { throw TVBridgeError.invalidFrame }; return decoded }; let chunk = try output.read(upToCount: 4096) ?? Data(); guard !chunk.isEmpty else { throw TVBridgeError.notRunning }; buffer.append(chunk); guard buffer.count <= 8 * 1024 * 1024 else { throw TVBridgeError.frameTooLarge } }
+        let deadline = Date().addingTimeInterval(requestTimeout); let payload = try frame.encoded() + Data([10]); guard payload.count <= 8 * 1024 * 1024 else { throw TVBridgeError.frameTooLarge }
+        let (wrc, wrev) = Self.posixPoll(fd: input.fileDescriptor, events: Int16(POLLOUT), timeoutMs: Int32(max(1, min(Int(Int32.max), Int((deadline.timeIntervalSinceNow * 1000).rounded(.down))))))
+        if wrc == 0 { throw TVBridgeError.transport("RPC write timed out") }; if wrc < 0 || (wrev & Int16(POLLERR | POLLHUP | POLLNVAL)) != 0 { throw TVBridgeError.notRunning }
+        try input.write(contentsOf: payload); let outFD = output.fileDescriptor; var tmp = [UInt8](repeating: 0, count: 4096)
+        while true {
+            if let nl = buffer.firstIndex(of: 10) { let line = Data(buffer[..<nl]); buffer.removeSubrange(...nl); let decoded = try TVBridgeFrame.decode(line); guard decoded.id == frame.id else { throw TVBridgeError.invalidFrame }; return decoded }
+            let remMs = Int((deadline.timeIntervalSinceNow * 1000).rounded(.down))
+            let (rc, _) = remMs > 0 ? Self.posixPoll(fd: outFD, events: Int16(POLLIN), timeoutMs: Int32(min(remMs, Int(Int32.max)))) : (0, 0)
+            if rc == 0 { let detail = recentStderr; throw TVBridgeError.transport(detail.isEmpty ? "RPC request timed out" : "RPC request timed out: \(detail)") }
+            if rc < 0 { if errno == EINTR { continue }; throw TVBridgeError.notRunning }
+            let n = tmp.withUnsafeMutableBytes { Self.posixRead(fd: outFD, buffer: $0.baseAddress!, count: $0.count) }
+            if n < 0 { if errno == EINTR { continue }; throw TVBridgeError.notRunning }; guard n > 0 else { throw TVBridgeError.notRunning }
+            buffer.append(tmp, count: n); guard buffer.count <= 8 * 1024 * 1024 else { throw TVBridgeError.frameTooLarge }
+        }
     }
     public func close() async { await terminateProcessAsync() }
     private static func isStillOwned(_ process: Process, birth: SupervisedProcessIdentity.Birth?) -> Bool {
@@ -139,10 +212,10 @@ public actor TVBridgePluginManager {
  public private(set) var hardwareIdentifiers:[String:[String]]=[:]
  public init(config:TVBridgeConfig,transport:TVBridgeTransport?=nil,transportFactory: (@Sendable (TVBridgeConfig) throws -> TVBridgeTransport)?=nil,credentialResolver: (@Sendable (String) -> String?)?=nil){self.config=config;self.transport=transport;self.transportFactory=transportFactory;self.credentialResolver=credentialResolver}
  public func updateConfig(_ c:TVBridgeConfig)async{config=c;if !c.isEnabled{await shutdown()}}
- public func startIfNeeded() async throws { guard config.isEnabled else { throw TVBridgeError.disabled }; if isRunning { return }; do { if let p=config.binaryPath,let e=config.expectedBinarySHA256 { try verifyBinary(at:URL(fileURLWithPath:p),expected:e) }; if transport == nil { if let factory=transportFactory { transport=try factory(config) } else if let path=config.binaryPath { let dir=FileManager.default.urls(for:.applicationSupportDirectory,in:.userDomainMask)[0].appendingPathComponent("MenuBarMijia/TVBridge",isDirectory:true); try FileManager.default.createDirectory(at:dir,withIntermediateDirectories:true); let manifest=URL(fileURLWithPath:path).deletingLastPathComponent().appendingPathComponent("adapter-manifest.json"); transport=try StdioTVBridgeTransport.launch(binaryPath:path,dataDir:dir,manifestPath:manifest) } }; guard transport != nil else { throw TVBridgeError.notRunning }; let devices=config.devices.map { d -> [String:Any] in var x:[String:Any] = ["nativeId":d.nativeId,"driver":d.driver.rawValue,"host":d.host,"name":d.name,"roomName":d.roomName]; if let p=d.port{x["port"]=p}; if let m=d.macAddress{x["mac"]=m}; if let slot=d.credentialSlot,let c=credentialResolver?(slot){x["credential"]=c}; return x }; let result=try await call("initialize",["supportedProtocolVersions":["1.0"],"capabilityGeneration":1,"config":["devices":devices]]); if let e=config.expectedManifestDigest,value(result,"manifestDigest") != e { throw TVBridgeError.manifestMismatch }; isRunning=true; lastActive=Date() } catch { await transport?.close(); transport=nil; isRunning=false; throw error } }
- public func snapshot()async throws->[SmartDevice]{guard config.isEnabled else{throw TVBridgeError.disabled};if !isRunning { try await startIfNeeded() };let d=try JSONDecoder().decode(TVBridgeSnapshot.self,from:try await call("snapshot",[:]));lastActive=Date();var ids:[String:[String]]=[:];for x in d.devices{let configured=config.devices.first{$0.nativeId == x.nativeId}?.macAddress.flatMap(DeviceIdentityNormalizer.macAddress(from:));let all=Array(Set(x.macAddresses+(configured.map{[$0]} ?? []))).sorted();if !all.isEmpty{ids["adapter:com.menubarhome.tv-bridge:\(x.nativeId)"]=all}};hardwareIdentifiers=ids;return d.devices.map(project)}
+ public func startIfNeeded(capabilityGeneration: UInt64 = 1) async throws { guard config.isEnabled else { throw TVBridgeError.disabled }; if isRunning { return }; do { if let p=config.binaryPath,let e=config.expectedBinarySHA256 { try verifyBinary(at:URL(fileURLWithPath:p),expected:e) }; if transport == nil { if let factory=transportFactory { transport=try factory(config) } else if let path=config.binaryPath { let dir=FileManager.default.urls(for:.applicationSupportDirectory,in:.userDomainMask)[0].appendingPathComponent("MenuBarMijia/TVBridge",isDirectory:true); try FileManager.default.createDirectory(at:dir,withIntermediateDirectories:true); let manifest=URL(fileURLWithPath:path).deletingLastPathComponent().appendingPathComponent("adapter-manifest.json"); transport=try StdioTVBridgeTransport.launch(binaryPath:path,dataDir:dir,manifestPath:manifest) } }; guard transport != nil else { throw TVBridgeError.notRunning }; let devices=config.devices.map { d -> [String:Any] in var x:[String:Any] = ["nativeId":d.nativeId,"driver":d.driver.rawValue,"host":d.host,"name":d.name,"roomName":d.roomName]; if let p=d.port{x["port"]=p}; if let m=d.macAddress{x["mac"]=m}; if let slot=d.credentialSlot,let c=credentialResolver?(slot){x["credential"]=c}; return x }; let gen=max(UInt64(1),capabilityGeneration); let result=try await call("initialize",["supportedProtocolVersions":["1.0"],"capabilityGeneration":gen,"config":["devices":devices]]); if let e=config.expectedManifestDigest,value(result,"manifestDigest") != e { throw TVBridgeError.manifestMismatch }; isRunning=true; lastActive=Date() } catch { await transport?.close(); transport=nil; isRunning=false; throw error } }
+ public func snapshot(capabilityGeneration: UInt64 = 1)async throws->[SmartDevice]{guard config.isEnabled else{throw TVBridgeError.disabled};if !isRunning { try await startIfNeeded(capabilityGeneration: capabilityGeneration) };let d=try JSONDecoder().decode(TVBridgeSnapshot.self,from:try await call("snapshot",[:]));lastActive=Date();var ids:[String:[String]]=[:];for x in d.devices{let configured=config.devices.first{$0.nativeId == x.nativeId}?.macAddress.flatMap(DeviceIdentityNormalizer.macAddress(from:));let all=Array(Set(x.macAddresses+(configured.map{[$0]} ?? []))).sorted();if !all.isEmpty{ids["adapter:com.menubarhome.tv-bridge:\(x.nativeId)"]=all}};hardwareIdentifiers=ids;return d.devices.map(project)}
  public func healthPing()async throws{_ = try await call("health.ping",[:])}
- public func execute(deviceId:String,command:TVBridgeCommand,capabilityGeneration:UInt64)async throws{guard config.isEnabled else{throw TVBridgeError.disabled};if !isRunning { try await startIfNeeded() };let (v,a)=map(command);let n=deviceId.hasPrefix("adapter:com.menubarhome.tv-bridge:") ? String(deviceId.dropFirst("adapter:com.menubarhome.tv-bridge:".count)):deviceId;_ = try await call("control.execute",["nativeId":n,"verb":v,"args":a,"grantId":UUID().uuidString,"capabilityGeneration":capabilityGeneration]);lastActive=Date()}
+ public func execute(deviceId:String,command:TVBridgeCommand,capabilityGeneration:UInt64)async throws{guard config.isEnabled else{throw TVBridgeError.disabled};let gen=max(UInt64(1),capabilityGeneration);if !isRunning { try await startIfNeeded(capabilityGeneration: gen) };let (v,a)=map(command);let n=deviceId.hasPrefix("adapter:com.menubarhome.tv-bridge:") ? String(deviceId.dropFirst("adapter:com.menubarhome.tv-bridge:".count)):deviceId;_ = try await call("control.execute",["nativeId":n,"verb":v,"args":a,"grantId":UUID().uuidString,"capabilityGeneration":gen]);lastActive=Date()}
  public func updatePollingContext(_ c:TVBridgePollingContext,capabilityGeneration:UInt64?=nil)async{guard config.isEnabled,transport != nil else{return};var p:[String:Any] = ["panelVisible":c.panelVisible,"systemActive":c.systemActive,"lowPower":c.lowPower];if let g=capabilityGeneration{p["capabilityGeneration"]=g};_ = try? await call("host.contextChanged",p);if !c.panelVisible && !c.systemActive && Date().timeIntervalSince(lastActive)>=Double(config.idleShutdownSeconds){await shutdown()}}
  public func shutdown()async{if transport != nil{_ = try? await call("shutdown",[:]);await transport?.close()};transport=nil;isRunning=false}
  private func call(_ m:String,_ p:[String:Any])async throws->Data { guard let t=transport else { throw TVBridgeError.notRunning }; let request=TVBridgeFrame(method:m,params:try JSONSerialization.data(withJSONObject:p)); do { let r=try await t.request(request); guard r.id == request.id else { await transport?.close(); transport=nil; isRunning=false; throw TVBridgeError.invalidFrame }; if let e=r.error { throw TVBridgeError.rpcError(code:e.code,message:e.message) }; return r.result ?? Data("{}".utf8) } catch let e as TVBridgeError { if case .rpcError = e { throw e }; await transport?.close(); transport=nil; isRunning=false; throw e } catch { await transport?.close(); transport=nil; isRunning=false; throw error } }

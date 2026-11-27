@@ -302,6 +302,29 @@ struct TVBridgeStoreTests {
         #expect(home.adapterDevices.isEmpty)
         #expect(store.status == .disabled)
     }
+
+    @Test("Passes dynamic capabilityGeneration from HomeStore into initialize, contextChanged, and control.execute")
+    func dynamicCapabilityGenerationPassthrough() async throws {
+        let harness = Harness(); let store = enabledStore(harness)
+        let home = HomeStore(provider: SilentProvider(), defaultsSuiteName: harness.suite + ".capgen")
+        defer { UserDefaults.standard.removePersistentDomain(forName: harness.suite + ".capgen") }
+        let allTypes = Set(DeviceCategoryID.allCases)
+        #expect(home.applyDeviceCategorySelection(allTypes.subtracting([.plug])) == .applied); store.attach(to: home)
+        let expectedInitGen = Int(store.currentCapabilityGeneration); #expect(expectedInitGen > 1)
+        store.pollingContextChanged(PollingContext(panelVisible: true)); await store.waitForPendingWork()
+        let initReq = try #require(await harness.transport.requests.first { $0.method == "initialize" })
+        let initParams = try #require(try JSONSerialization.jsonObject(with: initReq.params ?? Data()) as? [String: Any])
+        #expect(initParams["capabilityGeneration"] as? Int == expectedInitGen)
+        #expect(home.applyDeviceCategorySelection(allTypes) == .applied); await store.waitForPendingWork()
+        let nextGen = Int(store.currentCapabilityGeneration); #expect(nextGen > expectedInitGen)
+        let ctxReq = try #require(await harness.transport.requests.last { $0.method == "host.contextChanged" })
+        let ctxParams = try #require(try JSONSerialization.jsonObject(with: ctxReq.params ?? Data()) as? [String: Any])
+        #expect(ctxParams["capabilityGeneration"] as? Int == nextGen)
+        try await store.execute(.mediaPlayPause(entityId: "adapter:com.menubarhome.tv-bridge:tv-a")); await store.waitForPendingWork()
+        let execReq = try #require(await harness.transport.requests.last { $0.method == "control.execute" })
+        let execParams = try #require(try JSONSerialization.jsonObject(with: execReq.params ?? Data()) as? [String: Any])
+        #expect(execParams["capabilityGeneration"] as? Int == nextGen)
+    }
 }
 
 /// Holds `initialize` open until released, so a test can switch the bridge off mid-start.
