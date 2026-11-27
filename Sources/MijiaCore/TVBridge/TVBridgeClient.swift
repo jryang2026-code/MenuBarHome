@@ -20,11 +20,12 @@ public protocol TVBridgeTransport: Sendable { func request(_ frame: TVBridgeFram
 public actor MockTVBridgeTransport: TVBridgeTransport { public var requests:[TVBridgeFrame]=[]; public private(set) var closeCount=0; private let responder:@Sendable (TVBridgeFrame)throws->TVBridgeFrame; public init(responder:@escaping @Sendable (TVBridgeFrame)throws->TVBridgeFrame){self.responder=responder}; public func request(_ f:TVBridgeFrame)throws->TVBridgeFrame{requests.append(f);return try responder(f)}; public func close()async{closeCount += 1} }
 
 public final class StdioTVBridgeTransport: TVBridgeTransport, @unchecked Sendable {
-    private let process: Process; private let processIdentity: SupervisedProcessIdentity?; private let input: FileHandle; private let output: FileHandle; private let lock = NSLock(); private var buffer = Data()
-    private struct LiveEntry { let process: Process; let identity: SupervisedProcessIdentity? }
+    private let process: Process; private let processBirth: SupervisedProcessIdentity.Birth?; private let input: FileHandle; private let output: FileHandle; private let lock = NSLock(); private var buffer = Data()
+    private struct LiveEntry { let process: Process; let birth: SupervisedProcessIdentity.Birth? }
+    internal var childProcess: Process { process }
     public init(process: Process, input: FileHandle, output: FileHandle) {
         self.process = process
-        self.processIdentity = process.isRunning ? SupervisedProcessIdentity.snapshot(pid: process.processIdentifier)?.identity : nil
+        self.processBirth = process.isRunning ? SupervisedProcessIdentity.Birth.capture(pid: process.processIdentifier) : nil
         self.input = input; self.output = output
     }
     public static func launch(binaryPath: String, dataDir: URL, manifestPath: URL) throws -> Self {
@@ -33,7 +34,7 @@ public final class StdioTVBridgeTransport: TVBridgeTransport, @unchecked Sendabl
         p.environment = ["PATH": ProcessInfo.processInfo.environment["PATH"] ?? "/usr/bin:/bin", "HOME": dataDir.path, "MBH_DATA_DIR": dataDir.path, "MBH_MANIFEST_PATH": manifestPath.path]
         p.standardInput = i; p.standardOutput = o; p.standardError = FileHandle.nullDevice; try p.run()
         let transport = Self(process: p, input: i.fileHandleForWriting, output: o.fileHandleForReading)
-        LiveProcesses.shared.insert(p, identity: transport.processIdentity)
+        LiveProcesses.shared.insert(p, birth: transport.processBirth)
         return transport
     }
     public func request(_ frame: TVBridgeFrame) async throws -> TVBridgeFrame { try readFrame(frame) }
@@ -43,45 +44,72 @@ public final class StdioTVBridgeTransport: TVBridgeTransport, @unchecked Sendabl
       while true { if let nl = buffer.firstIndex(of: 10) { let line = Data(buffer[..<nl]); buffer.removeSubrange(...nl); let decoded=try TVBridgeFrame.decode(line); guard decoded.id == frame.id else { throw TVBridgeError.invalidFrame }; return decoded }; let chunk = try output.read(upToCount: 4096) ?? Data(); guard !chunk.isEmpty else { throw TVBridgeError.notRunning }; buffer.append(chunk); guard buffer.count <= 8 * 1024 * 1024 else { throw TVBridgeError.frameTooLarge } }
     }
     public func close() async { await terminateProcessAsync() }
-    private static func isStillOwned(_ process: Process, identity: SupervisedProcessIdentity?) -> Bool {
+    private static func isStillOwned(_ process: Process, birth: SupervisedProcessIdentity.Birth?) -> Bool {
         guard process.isRunning, process.processIdentifier > 1 else { return false }
         #if canImport(Darwin)
-        if let identity { return SupervisedProcessIdentity.snapshot(pid: process.processIdentifier)?.identity == identity }
+        if let birth { return SupervisedProcessIdentity.Birth.capture(pid: process.processIdentifier) == birth }
         #endif
         return true
     }
+    private static func reapAsync(_ process: Process) async {
+        guard process.processIdentifier > 0 else { return }
+        if !process.isRunning {
+            process.waitUntilExit()
+            return
+        }
+        await Task.detached(priority: .userInitiated) {
+            process.waitUntilExit()
+        }.value
+    }
     private func terminateProcessAsync(gracePeriod: TimeInterval = 0.2) async {
         defer { LiveProcesses.shared.remove(process) }
-        guard Self.isStillOwned(process, identity: processIdentity) else { return }
+        guard Self.isStillOwned(process, birth: processBirth) else {
+            if process.processIdentifier > 0 && !process.isRunning { process.waitUntilExit() }
+            return
+        }
         process.terminate()
         let steps = max(1, Int((max(gracePeriod, 0) / 0.02).rounded(.up)))
-        for _ in 0..<steps { guard Self.isStillOwned(process, identity: processIdentity) else { return }; try? await Task.sleep(for: .milliseconds(20)) }
-        guard Self.isStillOwned(process, identity: processIdentity) else { return }
+        for _ in 0..<steps {
+            guard Self.isStillOwned(process, birth: processBirth) else {
+                await Self.reapAsync(process)
+                return
+            }
+            try? await Task.sleep(for: .milliseconds(20))
+        }
+        guard Self.isStillOwned(process, birth: processBirth) else {
+            await Self.reapAsync(process)
+            return
+        }
         _ = kill(process.processIdentifier, SIGKILL)
-        for _ in 0..<10 { guard process.isRunning else { return }; try? await Task.sleep(for: .milliseconds(10)) }
+        await Self.reapAsync(process)
     }
     private static func terminateEntries(_ entries: [LiveEntry], gracePeriod: TimeInterval) {
-        let active = entries.filter { isStillOwned($0.process, identity: $0.identity) }
+        let active = entries.filter { isStillOwned($0.process, birth: $0.birth) }
         guard !active.isEmpty else { return }
         for entry in active { entry.process.terminate() }
         let deadline = Date().addingTimeInterval(max(gracePeriod, 0))
-        while Date() < deadline { if active.allSatisfy({ !isStillOwned($0.process, identity: $0.identity) }) { return }; Thread.sleep(forTimeInterval: 0.01) }
-        let killed = active.filter { isStillOwned($0.process, identity: $0.identity) }
+        while Date() < deadline {
+            if active.allSatisfy({ !isStillOwned($0.process, birth: $0.birth) }) {
+                for entry in active { entry.process.waitUntilExit() }
+                return
+            }
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        let killed = active.filter { isStillOwned($0.process, birth: $0.birth) }
         for entry in killed { _ = kill(entry.process.processIdentifier, SIGKILL) }
-        let killDeadline = Date().addingTimeInterval(0.1)
-        while !killed.isEmpty && Date() < killDeadline { if killed.allSatisfy({ !$0.process.isRunning }) { return }; Thread.sleep(forTimeInterval: 0.01) }
+        for entry in active { entry.process.waitUntilExit() }
     }
     /// Kills the child without taking the request `lock`: `SIGTERM` → short wait → `SIGKILL` (matching `SupervisedProcess`).
     public func terminateProcessImmediately(gracePeriod: TimeInterval = 0.2) {
         defer { LiveProcesses.shared.remove(process) }
-        Self.terminateEntries([LiveEntry(process: process, identity: processIdentity)], gracePeriod: gracePeriod)
+        Self.terminateEntries([LiveEntry(process: process, birth: processBirth)], gracePeriod: gracePeriod)
     }
     /// App quit: sends `SIGTERM`, waits briefly, then escalates stubborn bridge children to `SIGKILL`.
     public static func terminateAllImmediately(gracePeriod: TimeInterval = 0.2) { terminateEntries(LiveProcesses.shared.drain(), gracePeriod: gracePeriod) }
     private final class LiveProcesses: @unchecked Sendable {
         static let shared = LiveProcesses()
         private let lock = NSLock(); private var processes: [ObjectIdentifier: LiveEntry] = [:]
-        func insert(_ p: Process, identity: SupervisedProcessIdentity?) { lock.withLock { processes[ObjectIdentifier(p)] = LiveEntry(process: p, identity: identity) } }
+        func insert(_ p: Process, birth: SupervisedProcessIdentity.Birth?) { lock.withLock { processes[ObjectIdentifier(p)] = LiveEntry(process: p, birth: birth) } }
         func remove(_ p: Process) { lock.withLock { _ = processes.removeValue(forKey: ObjectIdentifier(p)) } }
         func drain() -> [LiveEntry] { lock.withLock { let all = Array(processes.values); processes.removeAll(); return all } }
     }

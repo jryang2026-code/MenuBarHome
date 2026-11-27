@@ -111,19 +111,65 @@ extension TVBridgeClientTests {
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: dir) }
         let script = dir.appendingPathComponent("stubborn-bridge.sh")
-        try Data("#!/bin/sh\ntrap '' TERM\necho $$ > \"$MBH_DATA_DIR/pid.tmp\"\nmv \"$MBH_DATA_DIR/pid.tmp\" \"$MBH_DATA_DIR/pid\"\nwhile true; do sleep 0.2; done\n".utf8).write(to: script)
+        try Data("#!/bin/sh\ntrap '' TERM\nprintf '%s\\n' \"$$\" > \"$MBH_DATA_DIR/pid.tmp\"\nmv \"$MBH_DATA_DIR/pid.tmp\" \"$MBH_DATA_DIR/pid\"\nwhile true; do sleep 0.2; done\n".utf8).write(to: script)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
         let transport = try StdioTVBridgeTransport.launch(binaryPath: script.path, dataDir: dir, manifestPath: dir.appendingPathComponent("adapter-manifest.json"))
+        defer {
+            let childPID = transport.childProcess.processIdentifier
+            if childPID > 1, transport.childProcess.isRunning {
+                _ = kill(childPID, SIGKILL)
+                transport.childProcess.waitUntilExit()
+            }
+        }
         let pidFile = dir.appendingPathComponent("pid")
-        let waitDeadline = Date().addingTimeInterval(2.0)
+        let waitDeadline = Date().addingTimeInterval(10.0)
         while !FileManager.default.fileExists(atPath: pidFile.path) && Date() < waitDeadline { Thread.sleep(forTimeInterval: 0.01) }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: pidFile.path), "stubborn child did not finish installing SIGTERM trap")
         let pid = try XCTUnwrap(Int32(try String(contentsOf: pidFile, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)))
-        defer { if pid > 1 { _ = kill(pid, SIGKILL) } }
+        XCTAssertEqual(pid, transport.childProcess.processIdentifier)
         XCTAssertEqual(kill(pid, 0), 0)
         StdioTVBridgeTransport.terminateAllImmediately(gracePeriod: 0.05)
-        let exitDeadline = Date().addingTimeInterval(2.0)
-        while kill(pid, 0) == 0 && Date() < exitDeadline { Thread.sleep(forTimeInterval: 0.01) }
-        XCTAssertNotEqual(kill(pid, 0), 0, "SIGTERM-ignoring child must be escalated to SIGKILL")
-        _ = transport
+        XCTAssertFalse(transport.childProcess.isRunning, "child must be reaped before terminateAllImmediately returns")
+        XCTAssertEqual(transport.childProcess.terminationReason, .uncaughtSignal)
+        XCTAssertEqual(transport.childProcess.terminationStatus, SIGKILL)
+        XCTAssertNotEqual(kill(pid, 0), 0, "SIGTERM-ignoring child must be escalated to SIGKILL and reaped")
+    }
+
+    func testCloseEscalatesToSigkillAfterExecReplacesChildImage() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("tv-bridge-exec-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let script = dir.appendingPathComponent("exec-wrapper.sh")
+        let body = """
+        #!/bin/sh
+        while [ ! -f "$MBH_DATA_DIR/go" ]; do sleep 0.01; done
+        if [ -x /bin/zsh ]; then NEXT=/bin/zsh; else NEXT=/bin/bash; fi
+        exec "$NEXT" -c 'trap "" TERM; printf "%s\\n" "$$" > "$1.tmp" && mv "$1.tmp" "$1"; while true; do sleep 0.2; done' bridge "$MBH_DATA_DIR/pid"
+        """
+        try Data((body + "\n").utf8).write(to: script)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
+        let transport = try StdioTVBridgeTransport.launch(binaryPath: script.path, dataDir: dir, manifestPath: dir.appendingPathComponent("adapter-manifest.json"))
+        defer {
+            let childPID = transport.childProcess.processIdentifier
+            if childPID > 1, transport.childProcess.isRunning {
+                _ = kill(childPID, SIGKILL)
+                transport.childProcess.waitUntilExit()
+            }
+        }
+        try Data().write(to: dir.appendingPathComponent("go"))
+        let pidFile = dir.appendingPathComponent("pid")
+        let waitDeadline = Date().addingTimeInterval(10.0)
+        while !FileManager.default.fileExists(atPath: pidFile.path) && Date() < waitDeadline {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: pidFile.path), "exec-replaced child did not finish installing SIGTERM trap")
+        let pid = try XCTUnwrap(Int32(try String(contentsOf: pidFile, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)))
+        XCTAssertEqual(pid, transport.childProcess.processIdentifier)
+        XCTAssertEqual(kill(pid, 0), 0)
+        await transport.close()
+        XCTAssertFalse(transport.childProcess.isRunning, "exec-replaced child must be reaped before close returns")
+        XCTAssertEqual(transport.childProcess.terminationReason, .uncaughtSignal)
+        XCTAssertEqual(transport.childProcess.terminationStatus, SIGKILL)
+        XCTAssertNotEqual(kill(pid, 0), 0, "exec-replaced SIGTERM-ignoring child must be escalated to SIGKILL and reaped")
     }
 }
