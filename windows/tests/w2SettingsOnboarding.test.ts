@@ -246,7 +246,7 @@ describe("Wave 2 · A16 Multi-Step Onboarding Guide & Custom Preset Latch", () =
     );
     assert.equal(typedOllama.selectedPreset, "ollama");
     assert.equal(typedOllama.showsCustomEndpointFields, true, "latch must stay open while typing");
-    assert.equal(typedOllama.model, "qwen2.5:7b");
+    assert.equal(typedOllama.model, "qwen3:8b");
   });
 
   it("supports Xiaomi QR / Home Assistant / Demo switching, launch-at-login, AI presets, and reopen from Settings", async () => {
@@ -324,7 +324,7 @@ describe("Wave 2 · A16 Multi-Step Onboarding Guide & Custom Preset Latch", () =
 
     type("#onboarding-base-url", "http://localhost:11434/v1");
     assert.ok(document.querySelector("#onboarding-base-url"), "custom URL field stays mounted while typing");
-    assert.equal(field("#onboarding-model").value, "qwen2.5:7b");
+    assert.equal(field("#onboarding-model").value, "qwen3:8b");
 
     await click("#btn-finish-onboarding");
     assert.equal(app.activeSheet, "none");

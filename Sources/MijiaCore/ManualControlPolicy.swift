@@ -457,6 +457,12 @@ public enum ManualControlPolicy {
             return L10n.format("设为 %@", "set to %@", L10n.temperature(celsius))
         case .fanSpeed(let speed):
             return L10n.format("风速调为%@", "set fan speed to %@", IntentReply.fanSpeedLabel(speed))
+        case .fanPercentage(let percent):
+            return L10n.format("风速调为 %@%", "set fan speed to %@%", String(percent))
+        case .coverPosition(let percent):
+            if percent == 0 { return L10n.tr("关闭", "close") }
+            if percent == 100 { return L10n.tr("打开", "open") }
+            return L10n.format("开至 %@%", "set position to %@%", String(percent))
         case .oscillation(let isOn):
             return isOn ? L10n.tr("开启摇头", "enable oscillation") : L10n.tr("关闭摇头", "disable oscillation")
         default:

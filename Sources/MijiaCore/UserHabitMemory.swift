@@ -508,6 +508,63 @@ public struct UserHabitMemory: Codable, Equatable, Sendable {
         return receipt
     }
 
+    /// Minimum consistent hits before a learned phrase short-circuits locally at 0ms.
+    public static let learnedShortcutMinCount = 3
+
+    private static func shortcutKey(_ raw: String) -> String {
+        raw.components(separatedBy: .whitespacesAndNewlines).joined().lowercased()
+    }
+
+    /// 0ms local lookup for a learned spoken phrase; requires repeated consistent hits and re-validates targets against live devices/scenes.
+    public func learnedShortcutPlan(
+        for utterance: String,
+        devices: [SmartDevice],
+        scenes: [HomeScene],
+        minCount: Int = UserHabitMemory.learnedShortcutMinCount
+    ) -> IntentPlan? {
+        let key = Self.shortcutKey(utterance)
+        guard key.count >= 2,
+              let matched = phrases.first(where: { Self.shortcutKey($0.phrase) == key && $0.count >= minCount }) else {
+            return nil
+        }
+        let raw = matched.targets.compactMap { t in Self.decodeOperation(t.operationKey).map { DeviceIntent(targetId: t.targetId, operation: $0) } }
+        let intents = IntentValidator.sanitize(raw, devices: devices, scenes: scenes)
+        guard !intents.isEmpty else { return nil }
+        return IntentPlan(intents: intents, reply: IntentReply.describe(intents, devices: devices, scenes: scenes), source: .local)
+    }
+
+    /// Saves a short model-resolved phrase for 0ms local replay once repeated consistently (Windows parity).
+    @discardableResult
+    public mutating func learnPhraseShortcut(
+        phrase: String,
+        intents: [DeviceIntent],
+        devices: [SmartDevice],
+        scenes: [HomeScene],
+        now: Date = Date()
+    ) -> RecordingReceipt? {
+        let clean = phrase.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard clean.count >= 2, clean.count <= 18, !intents.isEmpty else { return nil }
+        let targets = intents.compactMap { i in Self.encodeOperation(i.operation).map { PhraseTarget(targetId: i.targetId, operationKey: $0) } }
+        let summary = Self.describe(intents: intents, devices: devices, scenes: scenes)
+        guard targets.count == intents.count, !summary.isEmpty else { return nil }
+        let bucket = TimeBucket.from(date: now), key = Self.shortcutKey(clean)
+        var receipt = RecordingReceipt()
+        receipt.preserveLastAction = true
+        if let idx = phrases.firstIndex(where: { Self.shortcutKey($0.phrase) == key }) {
+            let previous = phrases[idx]
+            receipt.phrase = RecordingReceipt.PhraseChange(phrase: previous.phrase, previous: previous)
+            phrases[idx].count = previous.targets == targets ? previous.count + 1 : 1
+            phrases[idx].bucket = bucket; phrases[idx].summary = summary
+            phrases[idx].targets = targets; phrases[idx].lastRecordedAt = now
+        } else {
+            receipt.phrase = RecordingReceipt.PhraseChange(phrase: clean, previous: nil)
+            phrases.insert(PhraseMemory(phrase: clean, bucket: bucket, summary: summary, count: 1, targets: targets, lastRecordedAt: now), at: 0)
+        }
+        phrases.sort { Self.ranksBefore(countA: $0.count, lastA: $0.lastRecordedAt, countB: $1.count, lastB: $1.lastRecordedAt, now: now) }
+        if phrases.count > Self.maxPhrases { phrases = Array(phrases.prefix(Self.maxPhrases)) }
+        return receipt
+    }
+
     /// Undoes the exact changes from one `record` call, leaving earlier habits untouched (#34).
     public mutating func unrecord(_ receipt: RecordingReceipt) {
         let referenceNow = receipt.recordedLastAction?.recordedAt
@@ -963,8 +1020,10 @@ public struct UserHabitMemory: Codable, Equatable, Sendable {
             return "temp:\(rounded)"
         case .activateScene: return "scene:activate"
         case .fanSpeed(let v): return "fan:\(v)"
+        case .fanPercentage(let pct): return "fanpct:\(pct)"
+        case .coverPosition(let pct): return "coverpos:\(pct)"
         case .oscillation(let on): return on ? "swing:on" : "swing:off"
-        case .brightnessStep, .temperatureStep, .fanPercentage: return nil
+        case .brightnessStep, .temperatureStep: return nil
         }
     }
 
@@ -981,6 +1040,8 @@ public struct UserHabitMemory: Codable, Equatable, Sendable {
         case ("temp", let v): return Double(v).map(IntentOperation.targetTemperature)
         case ("scene", "activate"): return .activateScene
         case ("fan", let v): return .fanSpeed(v)
+        case ("fanpct", let v): return Int(v).map(IntentOperation.fanPercentage)
+        case ("coverpos", let v): return Int(v).map(IntentOperation.coverPosition)
         case ("swing", "on"): return .oscillation(true)
         case ("swing", "off"): return .oscillation(false)
         default: return nil
@@ -1033,7 +1094,14 @@ public struct UserHabitMemory: Codable, Equatable, Sendable {
         case .oscillation(let on):
             guard case .fan(let spec) = dev.kind, spec.swingWritable, spec.isOscillating != nil else { return false }
             return !spec.isOn || spec.isOscillating != on
-        case .brightnessStep, .temperatureStep, .fanPercentage:
+        case .fanPercentage(let pct):
+            guard case .fan(let spec) = dev.kind, spec.speedWritable, let current = spec.percentage else { return false }
+            return !spec.isOn || current != pct
+        case .coverPosition(let pct):
+            guard case .cover(let spec) = dev.kind else { return false }
+            let writable = spec.positionWritable || (pct == 100 && spec.openDescription != nil) || (pct == 0 && spec.closeDescription != nil)
+            return writable && spec.positionPercent != pct
+        case .brightnessStep, .temperatureStep:
             return false
         }
     }
@@ -1069,11 +1137,17 @@ public struct UserHabitMemory: Codable, Equatable, Sendable {
         case .activateScene: return nil
         case .fanSpeed(let v):
             return L10n.format("%@·风速%@", "%@ · Fan %@", dev.name, IntentReply.fanSpeedLabel(v))
+        case .fanPercentage(let pct):
+            return L10n.format("%@·风速%@%", "%@ · Fan %@%", dev.name, String(pct))
+        case .coverPosition(let pct):
+            if pct == 0 { return L10n.format("关闭%@", "Close %@", dev.name) }
+            if pct == 100 { return L10n.format("打开%@", "Open %@", dev.name) }
+            return L10n.format("%@·开至%@%", "%@ · %@%", dev.name, String(pct))
         case .oscillation(let on):
             return on
                 ? L10n.format("%@·摇头", "%@ · Swing On", dev.name)
                 : L10n.format("%@·停止摇头", "%@ · Swing Off", dev.name)
-        case .brightnessStep, .temperatureStep, .fanPercentage: return nil
+        case .brightnessStep, .temperatureStep: return nil
         }
     }
 

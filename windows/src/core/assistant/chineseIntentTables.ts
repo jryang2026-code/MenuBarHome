@@ -9,8 +9,12 @@ export interface RoomScope {
 }
 
 export const CN_POWER_VERBS: Readonly<Record<string, boolean>> = {
-  打开: true, 开启: true, 开: true,
-  关闭: false, 关掉: false, 关上: false, 熄灭: false, 熄掉: false, 关: false,
+  打开: true, 开启: true, 开: true, 拉开: true, 拉起: true,
+  关闭: false, 关掉: false, 关上: false, 熄灭: false, 熄掉: false, 关: false, 拉上: false, 合上: false,
+};
+
+export const CN_COVER_POSITION_WORDS: Readonly<Record<string, number>> = {
+  开到一半: 50, 拉到一半: 50, 开一半: 50, 拉一半: 50, 半开: 50,
 };
 
 export const CN_BRIGHTNESS_WORDS: Readonly<Record<string, number>> = {
@@ -82,6 +86,7 @@ export const CN_CATEGORY_WORDS: Readonly<Record<string, IntentCategory>> = {
   电视: "tv", 电视机: "tv",
   摄像头: "camera", 摄像机: "camera", 监控: "camera",
   阀门: "valve", 水阀: "valve", 气阀: "valve", 燃气阀: "valve", 总阀: "valve",
+  窗帘: "cover", 布帘: "cover", 纱帘: "cover", 卷帘: "cover", 百叶窗: "cover", 开窗器: "cover", 车库门: "cover", 晾衣架: "cover",
 };
 
 export const CN_ROOM_ALIASES: Readonly<Record<string, readonly string[]>> = {
@@ -242,6 +247,15 @@ export function extractChineseNumericOps(state: { rest: string }): IntentOperati
     const percent = spokenChineseNumber(prefixed ?? suffixed ?? "");
     if (percent === null) return phrase;
     ops.push({ kind: "fanPercentage", percent });
+    return CONSUMED_MARKER;
+  });
+
+  // Consume cover position percentages before bare percentages become brightness.
+  const coverRegex = /(?:(?<=窗帘|布帘|纱帘|卷帘|百叶窗|开窗器|车库门|晾衣架)(?:打开|开启|开到|开至|拉开到|拉开|拉到|拉至|关到|关至|合到|调到|调至|调为|设为|设置为|到|为)?|(?:开到|开至|拉开到|拉到|拉至|关到|关至|合到))(?:百分之([0-9]{1,3}|[零一二两三四五六七八九十百]+)(?![0-9%％])|([0-9]{1,3}|[零一二两三四五六七八九十百]+)[%％])/g;
+  state.rest = state.rest.replace(coverRegex, (phrase, prefixed: string | undefined, suffixed: string | undefined) => {
+    const percent = spokenChineseNumber(prefixed ?? suffixed ?? "");
+    if (percent === null) return phrase;
+    ops.push({ kind: "coverPosition", percent });
     return CONSUMED_MARKER;
   });
 

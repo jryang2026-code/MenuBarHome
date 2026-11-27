@@ -44,3 +44,12 @@ function truncateGraphemes(source: string, limit: number): string {
 export function sanitizePromptText(raw: string, limit: number): string {
   return truncateGraphemes(stripPromptScalars(raw), limit);
 }
+
+/** Conservative token estimate matching macOS `PromptText.estimatedTokens`. */
+export function estimatedPromptTokens(text: string): number {
+  let total = 0;
+  for (const ch of text) {
+    total += (ch.codePointAt(0) ?? 0) <= 0x7f ? 0.25 : 1.0;
+  }
+  return Math.ceil(total);
+}

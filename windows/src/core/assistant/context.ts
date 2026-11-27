@@ -17,6 +17,7 @@ export interface AssistantContext {
   readonly habitSummary: string;
   /** Controlled boolean-only desktop signals (ADR-0015; never carries free-text OS titles/SSIDs). */
   readonly desktopContext?: DesktopAmbientContext;
+  readonly favoriteDeviceIds?: readonly string[];
 }
 
 export const EMPTY_ASSISTANT_CONTEXT: AssistantContext = {

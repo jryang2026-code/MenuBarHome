@@ -2023,6 +2023,7 @@ describe("LocalIntentParser, DelayPhrase, UndoPhrase, and ModelIntentResolver", 
         case "hvacMode": return { targetId: item.targetId, operation: { kind: "hvacMode", mode: String(item.value) } };
         case "targetTemperature": return { targetId: item.targetId, operation: { kind: "targetTemperature", celsius: Number(item.value) } };
         case "fanPercentage": return { targetId: item.targetId, operation: { kind: "fanPercentage", percent: Number(item.value) } };
+        case "coverPosition": return { targetId: item.targetId, operation: { kind: "coverPosition", percent: Number(item.value) } };
         case "fanSpeed": return { targetId: item.targetId, operation: { kind: "fanSpeed", speed: String(item.value) } };
         case "oscillation": return { targetId: item.targetId, operation: { kind: "oscillation", enabled: Boolean(item.value) } };
         default: throw new Error(`Unknown kind: ${item.kind}`);
@@ -2263,6 +2264,9 @@ function parseConfirmationOperation(raw: unknown, rowId: string): DeviceIntent["
     case "brightness":
       if (typeof raw.percent !== "number") throw new Error(`${rowId} brightness`);
       return { kind: "brightness", percent: raw.percent };
+    case "coverPosition":
+      if (typeof raw.percent !== "number") throw new Error(`${rowId} coverPosition`);
+      return { kind: "coverPosition", percent: raw.percent };
     case "fanSpeed":
       if (typeof raw.speed !== "string") throw new Error(`${rowId} fanSpeed`);
       return { kind: "fanSpeed", speed: raw.speed };
@@ -2596,7 +2600,7 @@ function smartDeviceFromConfirmation(device: ConfirmationFixtureDevice): SmartDe
 it("matches the shared confirmation table in confirmation_golden.json", () => {
   const raw = readFileSync(resolve(process.cwd(), "../Tests/Fixtures/confirmation_golden.json"), "utf8");
   const rows = parseConfirmationRows(raw);
-  assert.equal(rows.length, 96);
+  assert.equal(rows.length, 103);
   assert.equal(new Set(rows.map((row) => row.id)).size, rows.length);
   for (const row of rows) {
     if (row.device) assert.equal(row.device.id, row.id, row.id);

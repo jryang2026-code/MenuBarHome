@@ -57,7 +57,7 @@ export const ASSISTANT_PROVIDER_PRESETS: ReadonlyArray<AssistantProviderPresetIn
     title: "智谱 GLM (BigModel)",
     shortTitle: "智谱 GLM",
     defaultBaseURL: "https://open.bigmodel.cn/api/paas/v4",
-    defaultModel: "glm-4-flash",
+    defaultModel: "glm-4.5-flash",
     keyPlaceholder: "粘贴智谱开放平台 API Key",
   },
   {
@@ -73,7 +73,7 @@ export const ASSISTANT_PROVIDER_PRESETS: ReadonlyArray<AssistantProviderPresetIn
     title: "OpenAI",
     shortTitle: "OpenAI",
     defaultBaseURL: "https://api.openai.com/v1",
-    defaultModel: "gpt-4o-mini",
+    defaultModel: "gpt-4.1-mini",
     keyPlaceholder: "粘贴 OpenAI API Key (sk-...)",
   },
   {
@@ -97,7 +97,7 @@ export const ASSISTANT_PROVIDER_PRESETS: ReadonlyArray<AssistantProviderPresetIn
     title: "Ollama 本地模型",
     shortTitle: "Ollama",
     defaultBaseURL: "http://localhost:11434/v1",
-    defaultModel: "qwen2.5:7b",
+    defaultModel: "qwen3:8b",
     keyPlaceholder: "Ollama 本地接口免密（可留空）",
   },
   {

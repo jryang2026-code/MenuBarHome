@@ -20,6 +20,8 @@ enum FoundationAssistantOperation: Equatable {
     case targetTemperature(Double)
     case activateScene
     case fanSpeed(String)
+    case fanPercentage(Int)
+    case coverPosition(Int)
     case oscillation(Bool)
     case brightnessStep(Int)
     case temperatureStep(Double)
@@ -72,6 +74,8 @@ extension FoundationAssistantOperation {
         case .targetTemperature(let celsius): return .targetTemperature(celsius)
         case .activateScene: return .activateScene
         case .fanSpeed(let speed): return .fanSpeed(speed)
+        case .fanPercentage(let percent): return .fanPercentage(percent)
+        case .coverPosition(let percent): return .coverPosition(percent)
         case .oscillation(let isOn): return .oscillation(isOn)
         case .brightnessStep(let delta): return .brightnessStep(delta)
         case .temperatureStep(let delta): return .temperatureStep(delta)

@@ -496,6 +496,7 @@ export type IntentOperation =
   | { readonly kind: "temperatureStep"; readonly delta: number }
   | { readonly kind: "fanSpeed"; readonly speed: string }
   | { readonly kind: "fanPercentage"; readonly percent: number }
+  | { readonly kind: "coverPosition"; readonly percent: number }
   | { readonly kind: "oscillation"; readonly enabled: boolean }
   | { readonly kind: "activateScene" };
 

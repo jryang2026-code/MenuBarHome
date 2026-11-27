@@ -24,7 +24,11 @@ public struct DesktopAmbientContext: Codable, Equatable, Sendable {
         self.focusActive = focusActive; self.lateNightWork = lateNightWork; self.mediaPlaying = mediaPlaying
     }
     public var activeSignals: [DesktopAmbientSignal] {
-        [(inMeeting, .inMeeting), (externalDisplayConnected, .externalDisplayConnected), (focusActive, .focusActive), (lateNightWork, .lateNightWork), (mediaPlaying, .mediaPlaying)].compactMap { $0.0 ? $0.1 : nil }
+        let pairs: [(Bool, DesktopAmbientSignal)] = [
+            (inMeeting, .inMeeting), (externalDisplayConnected, .externalDisplayConnected),
+            (focusActive, .focusActive), (lateNightWork, .lateNightWork), (mediaPlaying, .mediaPlaying),
+        ]
+        return pairs.compactMap { $0.0 ? $0.1 : nil }
     }
     public var hasActiveSignals: Bool { !activeSignals.isEmpty }
     public var promptSummary: String { activeSignals.isEmpty ? "" : "桌面情境：" + activeSignals.map(\.promptTag).joined(separator: "、") }

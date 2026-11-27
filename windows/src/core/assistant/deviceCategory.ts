@@ -1,7 +1,7 @@
 import { deviceCardShape, type DeviceCardShape, type SmartDevice } from "../models.js";
 import { toSimplifiedChinese } from "./chineseIntentTables.js";
 
-export type IntentCategory = "light" | "climate" | "heater" | "fan" | "airPurifier" | "dehumidifier" | "diffuser" | "plug" | "vacuum" | "tv" | "camera" | "valve" | "other";
+export type IntentCategory = "light" | "climate" | "heater" | "fan" | "airPurifier" | "dehumidifier" | "diffuser" | "plug" | "vacuum" | "tv" | "camera" | "valve" | "cover" | "other";
 
 /**
  * A `humidifier` service drawn as an appliance, or the humidifier card itself, is shown as a fan.
@@ -286,6 +286,7 @@ export function deviceCategory(dev: SmartDevice): IntentCategory {
   if (dev.kind.kind === "plug") return "plug";
   if (dev.kind.kind === "vacuum") return "vacuum";
   if (dev.kind.kind === "camera") return "camera";
+  if (dev.kind.kind === "cover") return "cover";
   if (dev.kind.kind === "appliance") {
     if (isHumidifierAppliance(dev)) return "airPurifier";
     if (isValveDevice(dev)) return "valve";

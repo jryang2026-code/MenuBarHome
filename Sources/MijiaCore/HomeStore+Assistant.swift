@@ -913,14 +913,27 @@ extension HomeStore {
         let catalogDevices = categoryVisibleDevices
         var plan: IntentPlan
         var habitSummary: String?
-        if let local = LocalIntentParser.parse(
+        let localOutcome = LocalIntentParser.parseWithDiagnostic(
             utterance,
             devices: catalogDevices,
             scenes: scenes,
             panelRoom: panelRoom,
             usageOrder: userHabitMemory.usageOrder()
-        ) {
+        )
+        if case .matched(let local) = localOutcome {
             plan = local
+        } else if let shortcut = userHabitMemory.learnedShortcutPlan(
+            for: utterance,
+            devices: catalogDevices,
+            scenes: scenes
+        ) {
+            plan = shortcut
+        } else if case .missed(let missReason) = localOutcome, missReason != .unrecognizedPhrasing {
+            let message = missReason == .unsupportedAction
+                ? L10n.tr("该设备不支持此操作", "This device does not support that action")
+                : L10n.tr("未找到匹配的设备，请检查房间或设备名称", "No matching device found; check the room or device name")
+            setAssistantState(.failed(message))
+            return nil
         } else if homeBackend == .demo {
             // 演示模式完全离线（#47）：本地解析不了的指令绝不送云端。
             setAssistantState(.failed(L10n.tr(
@@ -2070,6 +2083,19 @@ extension HomeStore {
                 scenes: scenes
             )
             userHabitMemory = memory
+        } else if origin == .aiAutomatic, plan.source == .model, isHabitLearningEnabled,
+                  failedNames.isEmpty, offlineNames.isEmpty, cancelledCount == 0, plan.suggestions.isEmpty,
+                  let utteranceForShortcut = recordedUtterance, !succeededIntents.isEmpty {
+            var memory = userHabitMemory
+            if let receipt = memory.learnPhraseShortcut(
+                phrase: utteranceForShortcut,
+                intents: succeededIntents,
+                devices: devices,
+                scenes: scenes
+            ) {
+                habitReceipt = receipt
+                userHabitMemory = memory
+            }
         }
 
         let timerInterrupted = timerGeneration != nil && outcomes.count < plan.intents.count && !runtimeAllowsWrites()
@@ -2475,6 +2501,32 @@ extension HomeStore {
                 command: .setSwitch(entityId: s.entityId, isOn: on),
                 restore: [restore]
             )
+
+        case (.power(let on), .cover(var s)):
+            let cmd: DeviceCommand? = if let opt = (on ? s.openDescription : s.closeDescription) { DeviceCommand.setSelectOption(entityId: s.entityId, option: opt) }
+                else if s.positionWritable { DeviceCommand.setNumberValue(entityId: s.entityId, value: on ? 100 : 0) }
+                else { nil }
+            guard let command = cmd else { return nil }
+            let restore: [DeviceCommand] = if s.positionWritable, let prev = s.positionPercent { [DeviceCommand.setNumberValue(entityId: s.entityId, value: Double(prev))] }
+                else if let prev = s.positionPercent, let opt = (prev == 0 ? s.closeDescription : s.openDescription) { [DeviceCommand.setSelectOption(entityId: s.entityId, option: opt)] }
+                else { [] }
+            s.positionPercent = on ? 100 : 0; s.motion = on ? .opening : .closing
+            updated.kind = .cover(s)
+            return AssistantEffect(updated: updated, command: command, restore: restore)
+
+        case (.coverPosition(let percent), .cover(var s)):
+            let clamped = max(0, min(100, percent))
+            let cmd: DeviceCommand? = if s.positionWritable { DeviceCommand.setNumberValue(entityId: s.entityId, value: Double(clamped)) }
+                else if clamped == 100, let open = s.openDescription { DeviceCommand.setSelectOption(entityId: s.entityId, option: open) }
+                else if clamped == 0, let close = s.closeDescription { DeviceCommand.setSelectOption(entityId: s.entityId, option: close) }
+                else { nil }
+            guard let command = cmd else { return nil }
+            let prev = s.positionPercent
+            let restore: [DeviceCommand] = (s.positionWritable && prev != nil) ? [DeviceCommand.setNumberValue(entityId: s.entityId, value: Double(prev!))] : []
+            s.positionPercent = CoverSpec.snappedPosition(clamped)
+            if let prev, clamped != prev { s.motion = clamped > prev ? .opening : .closing }
+            updated.kind = .cover(s)
+            return AssistantEffect(updated: updated, command: command, restore: restore)
 
         case (.fanPercentage(let percent), .fan(let s)):
             guard s.speedWritable, let previousPercent = s.percentage,

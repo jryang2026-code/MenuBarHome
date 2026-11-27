@@ -777,7 +777,49 @@
         },
         {
           "utterance": "打开客厅窗帘",
+          "expected": [
+            {"targetId": "cov_living_curtain", "kind": "power", "value": true}
+          ]
+        },
+        {
+          "utterance": "关闭客厅窗帘",
+          "expected": [
+            {"targetId": "cov_living_curtain", "kind": "power", "value": false}
+          ]
+        },
+        {
+          "utterance": "客厅窗帘开到 50%",
+          "expected": [
+            {"targetId": "cov_living_curtain", "kind": "coverPosition", "value": 50}
+          ]
+        },
+        {
+          "utterance": "把客厅窗帘拉到百分之三十",
+          "expected": [
+            {"targetId": "cov_living_curtain", "kind": "coverPosition", "value": 30}
+          ]
+        },
+        {
+          "utterance": "客厅窗帘半开",
+          "expected": [
+            {"targetId": "cov_living_curtain", "kind": "coverPosition", "value": 50}
+          ]
+        },
+        {
+          "utterance": "客厅窗帘亮度50%",
           "expected": null
+        },
+        {
+          "utterance": "open living room curtain",
+          "expected": [
+            {"targetId": "cov_living_curtain", "kind": "power", "value": true}
+          ]
+        },
+        {
+          "utterance": "set living room curtain to 50%",
+          "expected": [
+            {"targetId": "cov_living_curtain", "kind": "coverPosition", "value": 50}
+          ]
         }
       ]
     },
