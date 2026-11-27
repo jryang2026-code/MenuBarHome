@@ -9,19 +9,23 @@ public struct AssistantContext: Equatable, Sendable {
     public var habitSummary: String
     /// Favorite device ids, used only by the on-device prompt to keep preferred entries visible.
     public var favoriteDeviceIds: [String]
+    /// Controlled boolean-only desktop signals (ADR-0015; never carries free-text OS titles/SSIDs).
+    public var desktopContext: DesktopAmbientContext
 
     public init(
         timeSummary: String = "",
         environmentSummary: String = "",
         activeDevicesSummary: String = "",
         habitSummary: String = "",
-        favoriteDeviceIds: [String] = []
+        favoriteDeviceIds: [String] = [],
+        desktopContext: DesktopAmbientContext = .empty
     ) {
         self.timeSummary = timeSummary
         self.environmentSummary = environmentSummary
         self.activeDevicesSummary = activeDevicesSummary
         self.habitSummary = habitSummary
         self.favoriteDeviceIds = favoriteDeviceIds
+        self.desktopContext = desktopContext
     }
 }
 
@@ -762,7 +766,8 @@ public struct UserHabitMemory: Codable, Equatable, Sendable {
         scenes: [HomeScene],
         limit: Int = 4,
         favoriteIds: [String] = [],
-        environmentReadings: [EnvironmentReading] = []
+        environmentReadings: [EnvironmentReading] = [],
+        desktopContext: DesktopAmbientContext = .empty
     ) -> [AssistantSuggestion] {
         let bucket = TimeBucket.from(date: now)
         let todayDayType = DayType.from(date: now)
@@ -794,6 +799,44 @@ public struct UserHabitMemory: Codable, Equatable, Sendable {
             guard results.count < limit else { return }
             results.append(AssistantSuggestion(id: id, title: title, confidencePercent: nil, intents: intents))
         }
+
+        if desktopContext.hasActiveSignals {
+            let desktopLimit = min(2, limit)
+            let deskTerms = ["补光", "台灯", "护眼", "挂灯", "屏幕", "书房", "办公", "工作", "氛围", "灯带", "desk", "study", "monitor", "fill", "key", "lamp", "strip"]
+            let isOffLight: (SmartDevice, Bool) -> Bool = { d, desk in
+                guard d.isOnline, case .light(let s) = d.kind, !s.isOn else { return false }
+                return !desk || deskTerms.contains { "\(d.name) \(d.roomName)".lowercased().contains($0) }
+            }
+            let isNoisy: (SmartDevice, Bool) -> Bool = { d, fan in
+                guard d.isOnline else { return false }
+                switch d.kind {
+                case .vacuum(let s): return s.isCleaning
+                case .tv(let s): return s.state != "off" && s.state != "standby"
+                case .fan(let s): return fan && s.isOn
+                default: return false
+                }
+            }
+            let addDesktop: (String, SmartDevice?, IntentOperation) -> Void = { tag, dev, op in
+                guard let dev, results.count < desktopLimit, !seenTargets.contains(dev.id) else { return }
+                let intent = DeviceIntent(targetId: dev.id, operation: op)
+                guard Self.isActionable(intent, devices: devices, scenes: scenes), let title = Self.suggestionTitle(for: intent, devices: devices, scenes: scenes) else { return }
+                seenTargets.insert(dev.id); append("ambient:desktop:\(tag):\(dev.id)", title, [intent])
+            }
+            let offLight = devices.first { isOffLight($0, true) } ?? devices.first { isOffLight($0, false) }
+            if desktopContext.inMeeting { addDesktop("inMeeting:light", offLight, .power(true)); addDesktop("inMeeting:quiet", devices.first { isNoisy($0, true) }, .power(false)) }
+            if desktopContext.lateNightWork {
+                if let offLight { addDesktop("lateNight:light", offLight, .power(true)) }
+                else if let lit = devices.first(where: { guard $0.isOnline, case .light(let s) = $0.kind, s.isOn else { return false }; return s.availableEffects.contains { $0.caseInsensitiveCompare("night") == .orderedSame } || (s.brightnessPercent ?? 0) >= 65 }), case .light(let s) = lit.kind {
+                    addDesktop("lateNight:comfort", lit, s.availableEffects.contains { $0.caseInsensitiveCompare("night") == .orderedSame } ? .lightEffect("Night") : .brightness(35))
+                }
+            }
+            if desktopContext.externalDisplayConnected { addDesktop("display:light", offLight, .power(true)) }
+            if desktopContext.focusActive { addDesktop("focus:quiet", devices.first { isNoisy($0, false) }, .power(false)); addDesktop("focus:light", offLight, .power(true)) }
+            if desktopContext.mediaPlaying {
+                addDesktop("media:dim", devices.first { guard $0.isOnline, case .light(let s) = $0.kind else { return false }; return s.isOn && (s.brightnessPercent ?? 0) >= 60 }, .brightness(30))
+            }
+        }
+        guard results.count < limit else { return results }
 
         // Phase 1: learned habits for the current context.
         for candidate in candidates {

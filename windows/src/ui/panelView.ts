@@ -99,7 +99,7 @@ export function renderPanel(host: MenuMijiaWindowsApp): void {
       ? `<button
                 class="cc-circle-btn ${inSpotlight ? "is-small cc-spotlight-mic " : ""}${host.isListeningVoice ? "is-recording" : ""}"
                 id="btn-mic"
-                title="${t("语音控制")}"
+                title="${t("语音控制")} (Ctrl+M)"
                 aria-label="${t("语音控制")}"
                 aria-pressed="${host.isListeningVoice}"
               >

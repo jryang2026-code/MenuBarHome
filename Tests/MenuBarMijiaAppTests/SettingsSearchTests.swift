@@ -532,5 +532,16 @@ struct SettingsSearchTests {
         store.deviceTransportDiagnostics[sensor.id] = DeviceTransportDiagnostics(route: .localNetworkBlocked)
         #expect(SensorCardView.showsStaleTransportReadout(device: sensor, store: store) == true)
     }
+
+    @Test("Apple Intelligence local model card state covers active, opt-in, and unavailable fallback")
+    func localFoundationModelCardStateAndSearch() {
+        #expect(SettingsSearch.search("Apple Intelligence").first?.anchor == .assistantLocalModel)
+        let active = AssistantLocalModelCardState.resolve(availability: .available, route: .localFoundation, aiEnabled: true)
+        #expect(active.isReady && active.isActiveDefault && active.primaryActionTitle == nil)
+        let optIn = AssistantLocalModelCardState.resolve(availability: .available, route: .configuredEndpoint, aiEnabled: true)
+        #expect(optIn.isReady && !optIn.isActiveDefault && optIn.primaryActionTitle != nil)
+        let unavail = AssistantLocalModelCardState.resolve(availability: .unavailable("需要 macOS 26"), route: .unconfigured, aiEnabled: false)
+        #expect(!unavail.isReady && unavail.primaryActionTitle == nil && unavail.detailText.contains("macOS 26"))
+    }
 }
 
