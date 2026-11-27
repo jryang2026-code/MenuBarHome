@@ -32,6 +32,7 @@ import json
 import math
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -972,33 +973,120 @@ def validate_cover_position(device: dict, raw_percent: object) -> int:
 
 
 def _require_media_caps(device: dict) -> dict:
-    if _fold(device.get("category")) not in ("tv", "speaker"): raise CliError(f"{_device_label(device)} 不是电视或音箱")
-    return device.get("capabilities") or {}
+    if _fold(device.get("category")) not in ("tv", "speaker"):
+        raise CliError(f"{_device_label(device)} 不是电视或音箱")
+    caps = device.get("capabilities")
+    return caps if isinstance(caps, dict) else {}
 
 
 def validate_media_volume(device: dict, raw_percent: object) -> int:
     percent = _require_int(raw_percent, "音量百分比", 0, 100)
-    if _require_media_caps(device).get("volumeWritable") is False: raise CliError(f"{_device_label(device)} 不支持调节音量")
+    if _require_media_caps(device).get("volumeWritable") is not True:
+        raise CliError(f"{_device_label(device)} 不支持调节音量")
     return percent
 
 
 def validate_media_mute(device: dict, raw_muted: object) -> bool:
-    if isinstance(raw_muted, bool): muted = raw_muted
+    if isinstance(raw_muted, bool):
+        muted = raw_muted
     elif isinstance(raw_muted, str) and raw_muted.strip().lower() in ("1", "true", "on", "yes", "0", "false", "off", "no"):
         muted = raw_muted.strip().lower() in ("1", "true", "on", "yes")
-    else: raise CliError("静音状态（muted）必须是布尔值 true 或 false")
-    if _require_media_caps(device).get("muteWritable") is False: raise CliError(f"{_device_label(device)} 不支持静音控制")
+    else:
+        raise CliError("静音状态（muted）必须是布尔值 true 或 false")
+    if _require_media_caps(device).get("muteWritable") is not True:
+        raise CliError(f"{_device_label(device)} 不支持静音控制")
     return muted
 
 
 def validate_media_play_pause(device: dict) -> None:
-    if _require_media_caps(device).get("canPlayPause") is False: raise CliError(f"{_device_label(device)} 不支持播放/暂停控制")
+    if _require_media_caps(device).get("canPlayPause") is not True:
+        raise CliError(f"{_device_label(device)} 不支持播放/暂停控制")
 
 
-_SAFE_ENUM_TOKEN = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
+# Exact union of macOS `AutomationTrigger` (`Sources/MijiaCore/AutomationRule.swift`)
+# and Windows `AUTOMATION_TRIGGERS` + `"manual"` (`windows/src/core/automationEngine.ts`, `automationRun.ts`).
+_ALLOWED_AUTOMATION_TRIGGERS = frozenset(
+    {
+        "scheduledTime",
+        "away",
+        "back",
+        "screenLocked",
+        "screenUnlocked",
+        "displaySleep",
+        "displayWake",
+        "lidClosedSleep",
+        "systemSleep",
+        "systemWake",
+        "externalDisplayConnected",
+        "externalDisplayDisconnected",
+        "cameraInUse",
+        "cameraNotInUse",
+        "microphoneInUse",
+        "microphoneNotInUse",
+        "powerConnected",
+        "powerDisconnected",
+        "batteryBelowThreshold",
+        "powerSaverChanged",
+        "wifiNetworkJoined",
+        "wifiNetworkLeft",
+        "focusModeEnabled",
+        "focusModeDisabled",
+        "calendarMeetingStartingSoon",
+        "lateNightUsage",
+        "frontmostAppBecame",
+        "frontmostAppLeft",
+        "sensorThreshold",
+        "manual",
+    }
+)
+# Exact shared `AutomationSkipReason` enum across macOS and Windows.
+_ALLOWED_AUTOMATION_SKIP_REASONS = frozenset(
+    {
+        "conditionFalse",
+        "singleAlreadyRunning",
+        "screenLocked",
+        "writeGateDenied",
+        "deviceOffline",
+        "error",
+        "cooldown",
+        "superseded",
+        "noActionNeeded",
+    }
+)
+# Real rule IDs: UUID (`UUID().uuidString` / `crypto.randomUUID()`) or Windows fallback `auto-rule-<ts>-<n>`.
+_SAFE_RULE_ID_RE = re.compile(
+    r"\A(?:[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}|auto-rule-\d{1,20}-\d{1,10})\Z"
+)
+_ISO8601_TIMESTAMP_RE = re.compile(
+    r"\A(\d{4}-\d{2}-\d{2})[Tt](\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?([Zz]|[+-]\d{2}:\d{2})\Z"
+)
 _SAFE_READING_KEYS = ("id", "label", "roomName", "temperature", "humidity", "battery", "updatedAt")
 _SAFE_SENSOR_KEYS = ("id", "name", "roomId", "roomName", "stateText", "isOnline", "model")
 DOCTOR_STALE_SECONDS = 600.0
+
+
+def _parse_iso8601_timestamp(value: object) -> tuple[str, datetime] | None:
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    match = _ISO8601_TIMESTAMP_RE.match(text)
+    if not match:
+        return None
+    date_part, time_part, frac_part, tz_part = match.groups()
+    if tz_part not in ("Z", "z"):
+        tz_hour = int(tz_part[1:3])
+        tz_min = int(tz_part[4:6])
+        if tz_hour > 23 or tz_min > 59:
+            return None
+    iso = f"{date_part}T{time_part}"
+    if frac_part:
+        iso += "." + frac_part[:6].ljust(6, "0")
+    iso += "+00:00" if tz_part in ("Z", "z") else tz_part
+    try:
+        dt = datetime.fromisoformat(iso)
+    except ValueError:
+        return None
+    return text, dt
 
 
 def build_sensor_summary_payload(snapshot: dict, *, room: str | None = None) -> dict:
@@ -1020,24 +1108,67 @@ def format_sensor_summary_text(payload: dict) -> str:
     return "\n".join(lines)
 
 
-def _safe_token(value: object) -> str | None:
-    return value.strip() if isinstance(value, str) and _SAFE_ENUM_TOKEN.match(value.strip()) else None
+def _safe_rule_id(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    return text if _SAFE_RULE_ID_RE.match(text) else None
+
+
+def _safe_automation_enum(value: object, allowed: frozenset[str]) -> str | None:
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    return text if text in allowed else None
 
 
 def build_automation_status_payload(snapshot: dict, *, limit: int = 15) -> dict:
-    clean = public_snapshot(snapshot); raw = clean.get("automationStatus")
+    clean = public_snapshot(snapshot)
+    raw = clean.get("automationStatus")
+    parsed_updated = _parse_iso8601_timestamp(clean.get("updatedAt"))
+    safe_updated_at = parsed_updated[0] if parsed_updated else None
     if not isinstance(raw, dict):
-        return {"available": False, "updatedAt": clean.get("updatedAt"), "enabled": False, "ruleCount": 0, "enabledRuleCount": 0, "executedCount": 0, "skippedCount": 0, "recentRuns": []}
+        return {
+            "available": False,
+            "updatedAt": safe_updated_at,
+            "enabled": False,
+            "ruleCount": 0,
+            "enabledRuleCount": 0,
+            "executedCount": 0,
+            "skippedCount": 0,
+            "recentRuns": [],
+        }
+    raw_runs = raw.get("recentRuns")
+    candidates = raw_runs[: max(limit, 200)] if isinstance(raw_runs, list) else []
     runs = []
-    for entry in (raw.get("recentRuns") or [])[:limit]:
-        if not isinstance(entry, dict): continue
-        res, trig, rid, at = entry.get("result"), _safe_token(entry.get("trigger")), _safe_token(entry.get("ruleId")), entry.get("at")
-        if res not in ("executed", "skipped") or not trig or not rid or not isinstance(at, str): continue
-        row: dict = {"ruleId": rid, "trigger": trig, "result": res, "at": at}
-        if res == "skipped" and (reason := _safe_token(entry.get("skipReason"))): row["skipReason"] = reason
+    for entry in candidates:
+        if len(runs) >= limit:
+            break
+        if not isinstance(entry, dict):
+            continue
+        res = entry.get("result")
+        trig = _safe_automation_enum(entry.get("trigger"), _ALLOWED_AUTOMATION_TRIGGERS)
+        rid = _safe_rule_id(entry.get("ruleId"))
+        at_parsed = _parse_iso8601_timestamp(entry.get("at"))
+        if res not in ("executed", "skipped") or not trig or not rid or not at_parsed:
+            continue
+        row: dict = {"ruleId": rid, "trigger": trig, "result": res, "at": at_parsed[0]}
+        if res == "skipped":
+            reason = _safe_automation_enum(entry.get("skipReason"), _ALLOWED_AUTOMATION_SKIP_REASONS)
+            if reason is not None:
+                row["skipReason"] = reason
         runs.append(row)
     nonneg = lambda v: v if isinstance(v, int) and not isinstance(v, bool) and v >= 0 else 0
-    return {"available": True, "updatedAt": clean.get("updatedAt"), "enabled": bool(raw.get("enabled")), "ruleCount": nonneg(raw.get("ruleCount")), "enabledRuleCount": nonneg(raw.get("enabledRuleCount")), "executedCount": nonneg(raw.get("executedCount")), "skippedCount": nonneg(raw.get("skippedCount")), "recentRuns": runs}
+    return {
+        "available": True,
+        "updatedAt": safe_updated_at,
+        "enabled": bool(raw.get("enabled")),
+        "ruleCount": nonneg(raw.get("ruleCount")),
+        "enabledRuleCount": nonneg(raw.get("enabledRuleCount")),
+        "executedCount": nonneg(raw.get("executedCount")),
+        "skippedCount": nonneg(raw.get("skippedCount")),
+        "recentRuns": runs,
+    }
 
 
 def format_automation_status_text(payload: dict) -> str:
@@ -1047,33 +1178,149 @@ def format_automation_status_text(payload: dict) -> str:
     return "\n".join(lines)
 
 
-def _is_script_executable(path: Path) -> bool:
-    return path.is_file() and (sys.platform == "win32" or os.access(path, os.X_OK))
+def _parse_shebang_command(first_line: bytes) -> tuple[str, str | None] | None:
+    shebang = first_line[2:].decode("utf-8", errors="replace").strip()
+    parts = shebang.split()
+    if not parts:
+        return None
+    interp = parts[0]
+    if Path(interp).name.lower() in ("env", "env.exe"):
+        args = parts[1:]
+        idx = 0
+        while idx < len(args):
+            tok = args[idx]
+            if tok == "--":
+                idx += 1
+                break
+            if tok in ("-u", "--unset", "-C", "--chdir"):
+                idx += 2
+                continue
+            if tok == "-S":
+                idx += 1
+                continue
+            if tok.startswith("-") or "=" in tok:
+                idx += 1
+                continue
+            break
+        if idx >= len(args):
+            return None
+        return interp, args[idx]
+    return interp, None
 
 
-def build_doctor_report(path: Path, *, cli_path: Path | None = None, mcp_path: Path | None = None, wall_now: Callable[[], float] = time.time) -> dict:
-    r_cli = cli_path or Path(__file__).resolve(); r_mcp = mcp_path or r_cli.with_name("mijia-mcp")
+def _is_script_executable(
+    path: Path,
+    *,
+    platform: str | None = None,
+    which: Callable[[str], str | None] | None = None,
+) -> bool:
+    if not path.is_file():
+        return False
+    resolved_platform = sys.platform if platform is None else platform
+    which_fn = shutil.which if which is None else which
+    if resolved_platform != "win32" and not os.access(path, os.X_OK):
+        return False
+    try:
+        with path.open("rb") as fh:
+            first_line = fh.readline(512)
+    except OSError:
+        return False
+    if not first_line.startswith(b"#!"):
+        return True
+    parsed = _parse_shebang_command(first_line)
+    if parsed is None:
+        return False
+    interp, env_target = parsed
+    if resolved_platform == "win32":
+        target = env_target or interp
+        if not env_target and not target.startswith("/") and (":" in target or "\\" in target):
+            return Path(target).is_file()
+        cmd = Path(target).name if "/" in target else target
+        if cmd == "python3":
+            return bool(which_fn("python3") or which_fn("python"))
+        return bool(which_fn(cmd))
+    if not (os.path.isfile(interp) and os.access(interp, os.X_OK)):
+        return False
+    if env_target is None:
+        return True
+    if "/" in env_target:
+        return os.path.isfile(env_target) and os.access(env_target, os.X_OK)
+    return bool(which_fn(env_target))
+
+
+def build_doctor_report(
+    path: Path,
+    *,
+    cli_path: Path | None = None,
+    mcp_path: Path | None = None,
+    wall_now: Callable[[], float] = time.time,
+) -> dict:
+    r_cli = cli_path or Path(__file__).resolve()
+    r_mcp = mcp_path or r_cli.with_name("mijia-mcp")
     cli_ok, mcp_ok = _is_script_executable(r_cli), _is_script_executable(r_mcp)
-    comp_ok = has_tok = fresh = False; is_stale, age_s, devs, scenes, issue = True, None, 0, 0, None
+    comp_ok = has_tok = fresh = False
+    is_stale, age_s, devs, scenes, issue = True, None, 0, 0, None
     try:
         snap = load_snapshot(path)
-        comp_ok, has_tok, is_stale = True, bool(str(snap.get("bridgeToken") or "").strip()), bool(snap.get("isStale"))
-        devs, scenes = sum(1 for d in (snap.get("devices") or []) if isinstance(d, dict)), sum(1 for s in (snap.get("scenes") or []) if isinstance(s, dict))
-        if isinstance(snap.get("updatedAt"), str) and snap["updatedAt"].strip():
-            try:
-                dt = datetime.fromisoformat(snap["updatedAt"].strip().replace("Z", "+00:00"))
-                age_s = round(max(0.0, wall_now() - (dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)).timestamp()), 1)
-            except ValueError: pass
-        fresh = (not is_stale) and (age_s is None or age_s <= DOCTOR_STALE_SECONDS)
-        issue = "快照缺少本机令牌" if not has_tok else ("快照已标记过期" if is_stale else None)
-    except CliError as error: issue = _scrub_token(str(error))
-    return {"ok": comp_ok and has_tok and not is_stale and cli_ok and mcp_ok, "companionEnabled": comp_ok, "hasBridgeToken": has_tok, "snapshotPath": str(path), "isStale": is_stale, "fresh": fresh, "ageSeconds": age_s, "deviceCount": devs, "sceneCount": scenes, "cliPath": str(r_cli), "cliExecutable": cli_ok, "mcpPath": str(r_mcp), "mcpExecutable": mcp_ok, "issue": issue}
+        comp_ok = True
+        has_tok = bool(str(snap.get("bridgeToken") or "").strip())
+        is_stale = bool(snap.get("isStale"))
+        devs = sum(1 for d in (snap.get("devices") or []) if isinstance(d, dict))
+        scenes = sum(1 for s in (snap.get("scenes") or []) if isinstance(s, dict))
+        parsed_updated = _parse_iso8601_timestamp(snap.get("updatedAt"))
+        if parsed_updated is not None:
+            age_s = round(max(0.0, wall_now() - parsed_updated[1].timestamp()), 1)
+        fresh = (not is_stale) and (age_s is not None) and (age_s <= DOCTOR_STALE_SECONDS)
+        if not has_tok:
+            issue = "快照缺少本机令牌"
+        elif is_stale:
+            issue = "快照已标记过期"
+        elif age_s is None:
+            issue = "快照缺少有效更新时间"
+        elif not fresh:
+            issue = f"快照已超过 {int(DOCTOR_STALE_SECONDS)} 秒未更新"
+        elif not (cli_ok and mcp_ok):
+            issue = "CLI/MCP 脚本不可执行或缺少可用解释器"
+    except CliError as error:
+        issue = _scrub_token(str(error))
+    ok = comp_ok and has_tok and fresh and cli_ok and mcp_ok
+    return {
+        "ok": ok,
+        "companionEnabled": comp_ok,
+        "hasBridgeToken": has_tok,
+        "snapshotPath": str(path),
+        "isStale": is_stale,
+        "fresh": fresh,
+        "ageSeconds": age_s,
+        "deviceCount": devs,
+        "sceneCount": scenes,
+        "cliPath": str(r_cli),
+        "cliExecutable": cli_ok,
+        "mcpPath": str(r_mcp),
+        "mcpExecutable": mcp_ok,
+        "issue": issue,
+    }
+
 
 def format_doctor_line(r: dict) -> str:
-    comp = f"已开启（{r['deviceCount']} 设备/{r['sceneCount']} 场景）" if (r["companionEnabled"] and r["hasBridgeToken"]) else ("缺少令牌" if r["companionEnabled"] else "未开启")
+    comp = (
+        f"已开启（{r['deviceCount']} 设备/{r['sceneCount']} 场景）"
+        if (r["companionEnabled"] and r["hasBridgeToken"])
+        else ("缺少令牌" if r["companionEnabled"] else "未开启")
+    )
     age = f"（{int(r['ageSeconds'])}s 前）" if r["ageSeconds"] is not None else ""
-    fresh = "缺失" if not r["companionEnabled"] else (f"已过期{age}" if r["isStale"] else f"{'新鲜' if r['fresh'] else '偏旧'}{age}")
-    return f"{'✅ MCP 就绪' if r['ok'] else '❌ MCP 异常'} | 伴生：{comp} | 快照：{fresh} | CLI/MCP：{'可执行' if (r['cliExecutable'] and r['mcpExecutable']) else '不可执行/缺失'}（{r['mcpPath']}）"
+    if not r["companionEnabled"]:
+        fresh = "缺失"
+    elif r["isStale"]:
+        fresh = f"已过期{age}"
+    elif r["ageSeconds"] is None:
+        fresh = "时间缺失"
+    else:
+        fresh = f"{'新鲜' if r['fresh'] else '偏旧'}{age}"
+    return (
+        f"{'✅ MCP 就绪' if r['ok'] else '❌ MCP 异常'} | 伴生：{comp} | 快照：{fresh} | "
+        f"CLI/MCP：{'可执行' if (r['cliExecutable'] and r['mcpExecutable']) else '不可执行/缺失'}（{r['mcpPath']}）"
+    )
 
 def command_doctor(path: Path, *, as_json: bool = False, wall_now: Callable[[], float] = time.time) -> int:
     report = build_doctor_report(path, wall_now=wall_now)

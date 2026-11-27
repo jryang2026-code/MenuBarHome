@@ -195,14 +195,16 @@ extension HomeStore {
     /// verified post-modal live device so callers never overwrite cloud updates from the modal spin.
     private func raycastConfirm(
         _ operation: IntentOperation,
-        for device: SmartDevice
+        for device: SmartDevice,
+        forceConfirmation: Bool = false
     ) -> (device: SmartDevice?, context: ModalDeviceContext?, refusal: RaycastDirectResult?) {
         let preConfirmToastId = toastNotice?.id
         guard let resolved = confirmAndResolveManualControl(
             operation,
             for: device,
             requireOnline: true,
-            showOfflineToast: true
+            showOfflineToast: true,
+            forceConfirmation: forceConfirmation
         ) else {
             let msg = (toastNotice?.id != preConfirmToastId ? toastNotice?.message : nil)
                 ?? L10n.format("已取消「%@」的操作", "Cancelled the action for \"%@\"", device.name)
@@ -354,10 +356,12 @@ extension HomeStore {
             return (false, "", false)
         }
         let clamped = max(0, min(100, percent))
-        let confirmOp: IntentOperation = (alwaysConfirmWindowOpener && initialSpec.subtype == .windowOpener)
-            ? .power(true)
-            : (clamped > 0 ? .power(true) : .power(false))
-        let confirmed = raycastConfirm(confirmOp, for: device)
+        let forceWindowOpenerConfirmation = alwaysConfirmWindowOpener && initialSpec.subtype == .windowOpener
+        let confirmed = raycastConfirm(
+            .coverPosition(clamped),
+            for: device,
+            forceConfirmation: forceWindowOpenerConfirmation
+        )
         if let refusal = confirmed.refusal { return refusal }
         guard let current = confirmed.device,
               case .cover(var spec) = current.kind,

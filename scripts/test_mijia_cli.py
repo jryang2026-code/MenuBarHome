@@ -7,10 +7,12 @@
 from __future__ import annotations
 
 import contextlib
+from datetime import datetime, timezone
 import importlib.machinery
 import importlib.util
 import io
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -1244,7 +1246,38 @@ class MijiaMcpTests(unittest.TestCase):
             mk("dev_tv", "客厅电视", "living", "客厅", "tv", {"canTogglePower": True, "volumeWritable": True, "muteWritable": True, "canPlayPause": True}),
             mk("dev_ro_spk", "卫生间音箱", "study", "书房", "speaker", {"canTogglePower": True, "volumeWritable": False, "muteWritable": False, "canPlayPause": False}),
         ])
-        snap["automationStatus"] = {"enabled": True, "ruleCount": 2, "enabledRuleCount": 1, "executedCount": 1, "skippedCount": 1, "ssid": "SecretWiFi", "windowTitle": "Payroll.xlsx", "recentRuns": [{"ruleId": "rule-1", "trigger": "meetingStarted", "result": "executed", "at": "2026-11-06T08:00:00Z", "calendarTitle": "Secret Board"}, {"ruleId": "rule-2", "trigger": "wifiConnected", "result": "skipped", "skipReason": "cooldown", "at": "2026-11-06T07:55:00Z", "ssid": "Home5G"}, {"ruleId": "bad id!", "trigger": "bad trig", "result": "executed", "at": "2026-11-06T07:50:00Z"}]}
+        snap["automationStatus"] = {
+            "enabled": True,
+            "ruleCount": 2,
+            "enabledRuleCount": 1,
+            "executedCount": 1,
+            "skippedCount": 1,
+            "ssid": "SecretWiFi",
+            "windowTitle": "Payroll.xlsx",
+            "recentRuns": [
+                {
+                    "ruleId": "550e8400-e29b-41d4-a716-446655440000",
+                    "trigger": "calendarMeetingStartingSoon",
+                    "result": "executed",
+                    "at": "2026-11-06T08:00:00Z",
+                    "calendarTitle": "Secret Board",
+                },
+                {
+                    "ruleId": "auto-rule-1793952000000-1",
+                    "trigger": "wifiNetworkJoined",
+                    "result": "skipped",
+                    "skipReason": "cooldown",
+                    "at": "2026-11-06T07:55:00.250+08:00",
+                    "ssid": "Home5G",
+                },
+                {
+                    "ruleId": "bad id!",
+                    "trigger": "bad trig",
+                    "result": "executed",
+                    "at": "2026-11-06T07:50:00Z",
+                },
+            ],
+        }
         self.path.write_text(json.dumps(snap), encoding="utf-8")
 
         sensors, _ = self.call_tool("get_sensor_summary", {"room": "书房"})
@@ -1274,12 +1307,157 @@ class MijiaMcpTests(unittest.TestCase):
         with contextlib.redirect_stdout(doc_out):
             self.assertEqual(mijia.main(["mcp", "--doctor", "--snapshot", str(self.path)], wall_now=lambda: 1793952060.0), 0)
         self.assertTrue("MCP 就绪" in doc_out.getvalue() and TOKEN not in doc_out.getvalue())
-        completed = subprocess.run([sys.executable, str(MCP_SCRIPT), "--doctor", "--json", "--snapshot", str(self.path)], capture_output=True, text=True, encoding="utf-8", check=False, timeout=10)
+        fresh_snap = dict(snap)
+        fresh_snap["updatedAt"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        fresh_path = Path(self.temp_dir.name) / "fresh-snapshot.json"
+        fresh_path.write_text(json.dumps(fresh_snap), encoding="utf-8")
+        completed = subprocess.run([sys.executable, str(MCP_SCRIPT), "--doctor", "--json", "--snapshot", str(fresh_path)], capture_output=True, text=True, encoding="utf-8", check=False, timeout=10)
         self.assertEqual(completed.returncode, 0, completed.stderr)
         doc_json = json.loads(completed.stdout)
-        self.assertTrue(doc_json["ok"] and doc_json["cliExecutable"] and doc_json["mcpExecutable"] and TOKEN not in completed.stdout)
+        self.assertTrue(doc_json["ok"] and doc_json["fresh"] and doc_json["cliExecutable"] and doc_json["mcpExecutable"] and doc_json["issue"] is None and TOKEN not in completed.stdout)
         with contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(mijia.main(["doctor", "--snapshot", str(self.path.with_name("missing.json"))]), mijia.EXIT_LOCAL_ERROR)
+
+    def test_automation_status_sanitizer_blocks_non_whitelist_enums_non_iso_timestamps_and_ssid_rule_ids(self) -> None:
+        valid_uuid = "11111111-2222-4333-8444-555555555555"
+        snap = make_snapshot()
+        snap["automationStatus"] = {
+            "enabled": True,
+            "ruleCount": 5,
+            "enabledRuleCount": 4,
+            "executedCount": 2,
+            "skippedCount": 3,
+            "recentRuns": [
+                # Non-whitelist trigger (including old fake enum / SSID token) must be dropped
+                {"ruleId": valid_uuid, "trigger": "meetingStarted", "result": "executed", "at": "2026-11-06T08:00:00Z"},
+                {"ruleId": valid_uuid, "trigger": "Corp_WiFi_5G", "result": "executed", "at": "2026-11-06T08:00:01Z"},
+                # Non-UUID/non-auto-rule ruleId (SSID-like token) must be dropped
+                {"ruleId": "Office-Guest_5G", "trigger": "wifiNetworkJoined", "result": "executed", "at": "2026-11-06T08:00:02Z"},
+                # Forged `at` carrying calendar title or trailing newline/text must be dropped
+                {"ruleId": valid_uuid, "trigger": "calendarMeetingStartingSoon", "result": "executed", "at": "2026-11-06T08:00:03Z Q4 Layoff Sync"},
+                {"ruleId": valid_uuid, "trigger": "calendarMeetingStartingSoon", "result": "executed", "at": "Board Meeting at 10am"},
+                {"ruleId": valid_uuid, "trigger": "calendarMeetingStartingSoon", "result": "executed", "at": "2026-02-31T08:00:00Z"},
+                {"ruleId": valid_uuid, "trigger": "calendarMeetingStartingSoon", "result": "executed", "at": "2026-11-06T08:00:04Z\nLeakedLine"},
+                # Valid run with non-whitelist skipReason: strip bad skipReason, never leak it
+                {"ruleId": valid_uuid, "trigger": "wifiNetworkJoined", "result": "skipped", "skipReason": "SecretSSID_5G", "at": "2026-11-06T08:00:05Z"},
+                # Valid Windows fallback ruleId + manual trigger + real skipReason
+                {"ruleId": "auto-rule-1793952000000-2", "trigger": "manual", "result": "skipped", "skipReason": "screenLocked", "at": "2026-11-06T08:00:06.5Z"},
+            ],
+        }
+        self.path.write_text(json.dumps(snap, ensure_ascii=False), encoding="utf-8")
+        auto, _ = self.call_tool("get_automation_status", {"limit": 20})
+        self.assertFalse(auto["isError"])
+        rendered = json.dumps(auto, ensure_ascii=False)
+        for leaked in ("meetingStarted", "Corp_WiFi_5G", "Office-Guest_5G", "Q4 Layoff Sync", "Board Meeting", "LeakedLine", "SecretSSID_5G"):
+            self.assertNotIn(leaked, rendered)
+        runs = auto["structuredContent"]["recentRuns"]
+        self.assertEqual(len(runs), 2)
+        self.assertEqual(runs[0], {"ruleId": valid_uuid, "trigger": "wifiNetworkJoined", "result": "skipped", "at": "2026-11-06T08:00:05Z"})
+        self.assertNotIn("skipReason", runs[0])
+        self.assertEqual(runs[1], {"ruleId": "auto-rule-1793952000000-2", "trigger": "manual", "result": "skipped", "skipReason": "screenLocked", "at": "2026-11-06T08:00:06.5Z"})
+
+    def test_doctor_freshness_consistency_and_shebang_interpreter_check(self) -> None:
+        base_time = 1793952060.0  # 60s after 2026-11-06T08:00:00Z
+
+        # 1) Missing updatedAt must NOT be fresh and must make ok=False with an issue
+        missing_ts = make_snapshot()
+        del missing_ts["updatedAt"]
+        self.path.write_text(json.dumps(missing_ts, ensure_ascii=False), encoding="utf-8")
+        rep_missing = mijia.build_doctor_report(self.path, wall_now=lambda: base_time)
+        self.assertFalse(rep_missing["fresh"])
+        self.assertFalse(rep_missing["ok"])
+        self.assertIsNone(rep_missing["ageSeconds"])
+        self.assertIsNotNone(rep_missing["issue"])
+        self.assertIn("时间缺失", mijia.format_doctor_line(rep_missing))
+
+        # 2) Unparseable updatedAt must NOT be fresh and must make ok=False
+        bad_ts = make_snapshot()
+        bad_ts["updatedAt"] = "not-a-timestamp"
+        self.path.write_text(json.dumps(bad_ts, ensure_ascii=False), encoding="utf-8")
+        rep_bad_ts = mijia.build_doctor_report(self.path, wall_now=lambda: base_time)
+        self.assertFalse(rep_bad_ts["fresh"])
+        self.assertFalse(rep_bad_ts["ok"])
+        self.assertIsNone(rep_bad_ts["ageSeconds"])
+        self.assertIsNotNone(rep_bad_ts["issue"])
+
+        # 3) Snapshot older than DOCTOR_STALE_SECONDS must make fresh=False, ok=False, issue non-empty
+        self.path.write_text(json.dumps(make_snapshot(), ensure_ascii=False), encoding="utf-8")
+        rep_old = mijia.build_doctor_report(self.path, wall_now=lambda: base_time + mijia.DOCTOR_STALE_SECONDS + 30)
+        self.assertFalse(rep_old["isStale"])
+        self.assertFalse(rep_old["fresh"])
+        self.assertFalse(rep_old["ok"])
+        self.assertIsNotNone(rep_old["issue"])
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(
+                mijia.main(["doctor", "--snapshot", str(self.path)], wall_now=lambda: base_time + mijia.DOCTOR_STALE_SECONDS + 30),
+                mijia.EXIT_LOCAL_ERROR,
+            )
+
+        # 4) Explicit isStale=True must make fresh=False, ok=False
+        stale_snap = make_snapshot()
+        stale_snap["isStale"] = True
+        self.path.write_text(json.dumps(stale_snap, ensure_ascii=False), encoding="utf-8")
+        rep_stale = mijia.build_doctor_report(self.path, wall_now=lambda: base_time)
+        self.assertTrue(rep_stale["isStale"])
+        self.assertFalse(rep_stale["fresh"])
+        self.assertFalse(rep_stale["ok"])
+        self.assertIsNotNone(rep_stale["issue"])
+
+        # 5) Script with +x bit but missing shebang interpreter must be reported not executable
+        missing_env_script = Path(self.temp_dir.name) / "bad-env-script"
+        missing_env_script.write_text("#!/usr/bin/env nonexistent_python_interp_xyz\nprint('hi')\n", encoding="utf-8")
+        os.chmod(missing_env_script, 0o755)
+        self.assertFalse(mijia._is_script_executable(missing_env_script))
+
+        missing_abs_script = Path(self.temp_dir.name) / "bad-abs-script"
+        missing_abs_script.write_text("#!/nonexistent/path/to/python3\nprint('hi')\n", encoding="utf-8")
+        os.chmod(missing_abs_script, 0o755)
+        self.assertFalse(mijia._is_script_executable(missing_abs_script))
+
+        # Windows compatibility: python3 shebang accepts `python` on PATH, rejects missing interpreter
+        self.assertTrue(mijia._is_script_executable(SCRIPT, platform="win32", which=lambda cmd: "C:\\Python\\python.exe" if cmd == "python" else None))
+        self.assertFalse(mijia._is_script_executable(missing_env_script, platform="win32", which=lambda _cmd: None))
+
+        # Doctor report fails when mcp script has a broken shebang interpreter
+        self.path.write_text(json.dumps(make_snapshot(), ensure_ascii=False), encoding="utf-8")
+        rep_bad_mcp = mijia.build_doctor_report(self.path, cli_path=SCRIPT, mcp_path=missing_env_script, wall_now=lambda: base_time)
+        self.assertTrue(rep_bad_mcp["cliExecutable"])
+        self.assertFalse(rep_bad_mcp["mcpExecutable"])
+        self.assertFalse(rep_bad_mcp["ok"])
+        self.assertIsNotNone(rep_bad_mcp["issue"])
+
+    def test_media_controls_reject_missing_capability_flags(self) -> None:
+        snap = make_snapshot()
+        snap["devices"].append(
+            {
+                "id": "dev_legacy_tv",
+                "name": "旧版电视",
+                "roomId": "living",
+                "roomName": "客厅",
+                "roomSortOrder": 0,
+                "category": "tv",
+                "categoryTitle": "电视",
+                "model": "xiaomi.tv.legacy",
+                "stateText": "已开",
+                "isOnline": True,
+                "isActiveOn": True,
+                "isPrimaryToggleable": True,
+                "isFavorite": False,
+                "pinyinInitials": "jbds",
+                "pinyinFull": "",
+                "roomPinyinInitials": "kt",
+                "capabilities": {"canTogglePower": True},
+            }
+        )
+        self.path.write_text(json.dumps(snap, ensure_ascii=False), encoding="utf-8")
+        for tool, args in (
+            ("set_media_volume", {"device": "旧版电视", "percent": 30}),
+            ("set_media_mute", {"device": "旧版电视", "muted": True}),
+            ("media_play_pause", {"device": "旧版电视"}),
+        ):
+            res, app = self.call_tool(tool, args)
+            self.assertTrue(res["isError"], f"{tool} must reject missing capability flag")
+            self.assertEqual(app.opened, [])
 
     def test_ensure_utf8_stdio_reconfigures_non_utf8_windows_pipe(self) -> None:
         raw_out = io.BytesIO()
