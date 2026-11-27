@@ -102,26 +102,31 @@ v1 只增加下表方法。v0 的只读方法保持原样，ADR-0024 的 `grantI
 
 | 动词 | 参数 | 宿主映射 | 适用轨道 |
 | --- | --- | --- | --- |
-| `power.set` | `{isOn}` | HA `media_player.turn_on/off`，MIoT 电视电源，Tizen/WoL 唤醒 | A、B1 |
+| `power.set` | `{isOn}` | HA `media_player.turn_on/off`，MIoT 电视电源，TV Bridge 开关机 | A、B1 |
+| `power.wake` | `{}` | Wake-on-LAN / 网络唤醒 | B1 |
+| `power.screenOff` | `{}` | 熄屏（保持音频或待机，如 LG webOS `turnOffScreen`） | B1 |
 | `display.brightness.set` | `{percent}` | DDC/CI `0x10` | A |
-| `volume.set` | `{level}` | `mediaSetVolume` 或 DDC/CI `0x62` | A、B1、B2 |
+| `volume.set` | `{level}` | `mediaSetVolume`（0–100）或 DDC/CI `0x62` | A、B1、B2 |
 | `mute.set` | `{isMuted}` | 媒体静音或 DDC/CI `0x8D` | A、B1、B2 |
 | `input.select` | `{source}` | `mediaSelectSource` 或 DDC/CI `0x60` | A、B1 |
 | `remote.key` | `{key}` | `pressButton`，按键名来自协议目录 | A、B1、B2 |
+| `media.playPause` | `{}` | HA `media_player.media_play_pause`，TV Bridge 播放/暂停切换 | B1、B2 |
 | `media.play` | `{}` | HA `media_player.media_play`，`pyatv` play | B1、B2 |
 | `media.pause` | `{}` | HA `media_player.media_pause`，`pyatv` pause | B1、B2 |
 | `media.stop` | `{}` | HA `media_player.media_stop`，`pyatv` stop | B1、B2 |
+| `media.next` | `{}` | HA `media_player.media_next_track`，TV Bridge 下一曲 | B1、B2 |
+| `media.previous` | `{}` | HA `media_player.media_previous_track`，TV Bridge 上一曲 | B1、B2 |
 | `media.seek` | `{positionSec}` | 仅在 `canSeek == true` 时允许 | B1、B2 |
 
-verbs 表同时写入 `Shared/tvProtocolCatalog.json` 的 `closedCommandVerbs`，由 `scripts/check_tv_catalog.py` 校验三处一致。
+verbs 表同时写入 `Shared/tvProtocolCatalog.json` 的 `closedCommandVerbs`，由 `scripts/check_tv_catalog.py` 静态校验目录、Go `adapter-manifest.json` / `driver.go`、Swift 与 TypeScript 端逐字一致且无漂移。
 
 ## 六、共享数据目录与校验
 
-`Shared/tvProtocolCatalog.json` 是 macOS、Windows、Go 插件共读的纯数据目录。它声明协议画像、传输端口、发现方式、按键码表、VCP 白名单、能力边界和限制说明。目录不含任何密钥、令牌、配对码值或硬编码凭据键名。
+`Shared/tvProtocolCatalog.json` 是 macOS、Windows、Go 插件共读的纯数据目录。它声明协议画像、成熟度分层（`tier`：`primary` 首发品牌 `lg_webos_ssap` / `xiaomi_mitv_6095` / `hisense_vidaa_mqtt`，其余为 `experimental`）、传输端口、发现方式、按键码表、VCP 白名单、能力边界和限制说明。目录不含任何密钥、令牌、配对码值或硬编码凭据键名。
 
 `Tests/Fixtures/tv-plugin/tv_catalog_golden.json` 固定协议 ID、必填字段、封闭动词表和关键协议事实。`Tests/Fixtures/tv-plugin/v1_control_rpc_pairs.json` 给出合法与非法 RPC 对，覆盖缺 `grantId`、`host.contextChanged`、`events.mediaPlaybackChanged`、`media.fetchArtwork` 路径穿越和配对流程。
 
-`scripts/check_tv_catalog.py` 使用 Python 标准库做静态校验，纳入 `scripts/check.sh` 的契约检查与脚本自检。校验项包括唯一 ID、必填字段、`0xD6` 禁用、秘密键名禁用、黄金语料一致性和 RPC 夹具预期结果。
+`scripts/check_tv_catalog.py` 使用 Python 标准库做静态校验，纳入 `scripts/check.sh` 的契约检查、增量检查（`--changed`）与脚本自检。校验项包括唯一 ID、必填字段、`tier` 分层、`0xD6` 禁用、秘密键名禁用、黄金语料一致性、RPC 夹具预期结果，以及 `mbh-tv-bridge` 清单/Go 驱动/Swift/TypeScript 协议 ID 与命令动词防漂移检查。
 
 ## 与既有 ADR 的关系
 

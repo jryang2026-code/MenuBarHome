@@ -9,7 +9,7 @@
   "capabilities": {
     "readOnly": false,
     "deviceKinds": ["tv", "speaker"],
-    "commands": ["tv.power", "tv.wake", "tv.screenOff", "media.setVolume", "media.stepVolume", "media.setMute", "media.selectSource", "media.launchApp", "media.playPause", "media.play", "media.pause", "media.stop", "media.next", "media.previous", "media.seek", "remote.key"],
+    "commands": ["power.set", "power.wake", "power.screenOff", "volume.set", "mute.set", "input.select", "remote.key", "media.playPause", "media.play", "media.pause", "media.stop", "media.next", "media.previous", "media.seek"],
     "readings": ["power", "volume", "mute", "source", "nowPlaying"],
     "pushEvents": false
   },

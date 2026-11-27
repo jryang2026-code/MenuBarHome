@@ -2,7 +2,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-ALL_KEYS=(code macos windows core raycast scripts website macos_build appintents windows_native nas go2rtc)
+ALL_KEYS=(code macos windows core raycast scripts website macos_build appintents windows_native nas go2rtc tv_bridge)
 failures=0
 
 expect_true_keys() {
@@ -70,6 +70,14 @@ expect_true_keys "release and finalize workflow edits run lint and script tests 
 expect_true_keys "Shared capability manifest runs lint, macOS, Windows, and Linux core" \
     "Shared/capability-manifest.json\n" \
     code macos windows core
+
+expect_true_keys "mbh-tv-bridge source sets code and tv_bridge only" \
+    "adapters/mbh-tv-bridge/internal/driver/driver.go\n" \
+    code tv_bridge
+
+expect_true_keys "Shared TV protocol catalog runs lint, macOS, Windows, Linux core, and tv_bridge" \
+    "Shared/tvProtocolCatalog.json\n" \
+    code macos windows core tv_bridge
 
 expect_true_keys "unknown path falls back to full CI" \
     "unknown.bin\n" \

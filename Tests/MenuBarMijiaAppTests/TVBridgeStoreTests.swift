@@ -85,9 +85,9 @@ struct TVBridgeStoreTests {
         let harness = Harness()
         let store = harness.makeStore()
         store.setEnabled(true)
-        #expect(store.addDevice(name: "Sony", roomName: "客厅", driver: .sony_bravia, host: "192.168.1.2",
+        #expect(store.addDevice(name: "Sony", roomName: "客厅", driver: .sony_bravia_psk, host: "192.168.1.2",
                                 port: 80, macAddress: nil, secret: "psk-sony-1234"))
-        #expect(store.addDevice(name: "LG", roomName: "书房", driver: .lg_webos, host: "192.168.1.3",
+        #expect(store.addDevice(name: "LG", roomName: "书房", driver: .lg_webos_ssap, host: "192.168.1.3",
                                 port: nil, macAddress: nil, secret: "lg-client-key"))
         let slots = store.config.devices.compactMap(\.credentialSlot)
         #expect(slots.count == 2)
@@ -106,6 +106,13 @@ struct TVBridgeStoreTests {
         store.removeDevice(nativeId: store.config.devices[0].nativeId)
         #expect(harness.secrets[slots[0]] == nil)
         #expect(harness.secrets[slots[1]] == "lg-client-key")
+    }
+
+    @Test("Default driver list shows only the three primary brands until experimental protocols are enabled")
+    func primaryBrandConvergence() {
+        #expect(TVBridgeStore.visibleDrivers(includeExperimental: false) == [.lg_webos_ssap, .xiaomi_mitv_6095, .hisense_vidaa_mqtt])
+        #expect(TVBridgeStore.visibleDrivers(includeExperimental: true).count == 9)
+        #expect(TVBridgeDeviceConfig.Driver.hisense_vidaa_mqtt.defaultPort == 36669)
     }
 
     @Test("A driver without a pairing step never stores a secret")

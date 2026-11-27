@@ -3,6 +3,7 @@ import type { DeviceCommand, SmartDevice } from "../core/models.js";
 import {
   defaultTVBridgeConfig,
   mapTVBridgeCommand,
+  normalizeTVBridgeDriver,
   normalizeTVBridgeMac,
   projectTVBridgeDevice,
   tvBridgeDescriptorMacs,
@@ -12,6 +13,7 @@ import {
   type TVBridgeDeviceConfig,
   type TVBridgeDeviceDescriptor,
   type TVBridgeDriver,
+  type TVBridgeDriverTier,
   type TVBridgeFrame,
   type TVBridgePollingContext,
 } from "../core/tvBridgePlugin.js";
@@ -35,16 +37,29 @@ export interface TVBridgeSecrets {
 }
 export type TVBridgeStatus = "disabled" | "missingBinary" | "idle" | "running" | "failed";
 
-export const TV_BRIDGE_DRIVERS: readonly { id: TVBridgeDriver; label: [string, string, string]; port: number; secret?: [string, string, string] }[] = [
-  { id: "xiaomi_6095", label: ["小米 / Redmi 电视", "小米 / Redmi 電視", "Xiaomi / Redmi TV"], port: 6095 },
-  { id: "tcl_tnscreen", label: ["雷鸟 / TCL", "雷鳥 / TCL", "FFalcon / TCL"], port: 6553 },
-  { id: "android_adb", label: ["海信 / 创维等安卓电视（ADB）", "海信 / 創維等安卓電視（ADB）", "Hisense / Skyworth Android TV (ADB)"], port: 5555 },
-  { id: "lg_webos", label: ["LG webOS", "LG webOS", "LG webOS"], port: 3001, secret: ["配对密钥（Client Key）", "配對金鑰（Client Key）", "Client key"] },
-  { id: "sony_bravia", label: ["索尼 Bravia", "索尼 Bravia", "Sony Bravia"], port: 80, secret: ["预共享密钥（PSK）", "預共享金鑰（PSK）", "Pre-shared key (PSK)"] },
-  { id: "samsung_tizen", label: ["三星 Tizen", "三星 Tizen", "Samsung Tizen"], port: 8002, secret: ["访问令牌（Token）", "存取權杖（Token）", "Access token"] },
-  { id: "dlna_dmr", label: ["DLNA", "DLNA", "DLNA"], port: 1900 },
-  { id: "kodi_jsonrpc", label: ["Kodi", "Kodi", "Kodi"], port: 8080 },
+export interface TVBridgeDriverOption {
+  readonly id: TVBridgeDriver;
+  readonly tier: TVBridgeDriverTier;
+  readonly label: [string, string, string];
+  readonly port: number;
+  readonly secret?: [string, string, string];
+}
+
+export const TV_BRIDGE_DRIVERS: readonly TVBridgeDriverOption[] = [
+  { id: "lg_webos_ssap", tier: "primary", label: ["LG webOS", "LG webOS", "LG webOS"], port: 3001, secret: ["配对密钥（Client Key）", "配對金鑰（Client Key）", "Client key"] },
+  { id: "xiaomi_mitv_6095", tier: "primary", label: ["小米 / Redmi 电视", "小米 / Redmi 電視", "Xiaomi / Redmi TV"], port: 6095 },
+  { id: "hisense_vidaa_mqtt", tier: "primary", label: ["海信电视（海外 VIDAA）", "海信電視（海外 VIDAA）", "Hisense TV (Overseas VIDAA)"], port: 36669, secret: ["配对码（PIN，可选）", "配對碼（PIN，選用）", "Pairing PIN (optional)"] },
+  { id: "samsung_tizen_ws", tier: "experimental", label: ["三星 Tizen（实验）", "三星 Tizen（實驗）", "Samsung Tizen (Experimental)"], port: 8002, secret: ["访问令牌（Token）", "存取權杖（Token）", "Access token"] },
+  { id: "sony_bravia_psk", tier: "experimental", label: ["索尼 Bravia（实验）", "索尼 Bravia（實驗）", "Sony Bravia (Experimental)"], port: 80, secret: ["预共享密钥（PSK）", "預共享金鑰（PSK）", "Pre-shared key (PSK)"] },
+  { id: "tcl_ffalcon_tnscreen", tier: "experimental", label: ["雷鸟 / TCL（实验）", "雷鳥 / TCL（實驗）", "FFalcon / TCL (Experimental)"], port: 6553 },
+  { id: "android_adb_lan", tier: "experimental", label: ["通用安卓电视 ADB（实验）", "通用安卓電視 ADB（實驗）", "Generic Android TV ADB (Experimental)"], port: 5555 },
+  { id: "dlna_dmr", tier: "experimental", label: ["DLNA（实验）", "DLNA（實驗）", "DLNA (Experimental)"], port: 1900 },
+  { id: "kodi_jsonrpc", tier: "experimental", label: ["Kodi（实验）", "Kodi（實驗）", "Kodi (Experimental)"], port: 8080 },
 ];
+
+export function visibleTVBridgeDrivers(includeExperimental: boolean): readonly TVBridgeDriverOption[] {
+  return includeExperimental ? TV_BRIDGE_DRIVERS : TV_BRIDGE_DRIVERS.filter((d) => d.tier === "primary");
+}
 
 const EMPTY: readonly SmartDevice[] = Object.freeze([]);
 
@@ -143,7 +158,14 @@ function loadConfig(storage: TVBridgeStorage | null): TVBridgeConfig {
     const raw = storage?.getItem(TV_BRIDGE_STORAGE_KEY);
     const parsed = raw ? (JSON.parse(raw) as Partial<TVBridgeConfig>) : null;
     if (!parsed || typeof parsed !== "object") return defaultTVBridgeConfig();
-    return { ...defaultTVBridgeConfig(), ...parsed, isEnabled: parsed.isEnabled === true, devices: Array.isArray(parsed.devices) ? parsed.devices : [] };
+    const devices = Array.isArray(parsed.devices)
+      ? parsed.devices.flatMap((entry) => {
+          if (!entry || typeof entry !== "object") return [];
+          const driver = normalizeTVBridgeDriver((entry as { driver?: unknown }).driver);
+          return driver ? [{ ...(entry as TVBridgeDeviceConfig), driver }] : [];
+        })
+      : [];
+    return { ...defaultTVBridgeConfig(), ...parsed, isEnabled: parsed.isEnabled === true, devices };
   } catch {
     return defaultTVBridgeConfig();
   }
@@ -176,6 +198,7 @@ export class TVBridgeController {
   config: TVBridgeConfig;
   status: TVBridgeStatus;
   error: string | null = null;
+  showExperimentalDrivers = false;
   panelDevices: readonly SmartDevice[] = EMPTY;
   private lifecycle: TVBridgeLifecycle | null = null;
   private refreshing: Promise<void> | null = null;
@@ -224,12 +247,19 @@ export class TVBridgeController {
     if (expectedBinarySHA256 !== this.config.expectedBinarySHA256) this.apply({ ...this.config, expectedBinarySHA256 });
   }
 
+  setShowExperimentalDrivers(show: boolean): void {
+    if (show === this.showExperimentalDrivers) return;
+    this.showExperimentalDrivers = show;
+    this.onChange();
+  }
+
   async addDevice(input: TVBridgeDeviceInput): Promise<boolean> {
     const name = input.name.trim();
     const host = input.host.trim();
-    if (!name || !host || (input.port !== undefined && !(Number.isInteger(input.port) && input.port >= 1 && input.port <= 65535))) return false;
+    const driver = normalizeTVBridgeDriver(input.driver);
+    if (!name || !host || !driver || (input.port !== undefined && !(Number.isInteger(input.port) && input.port >= 1 && input.port <= 65535))) return false;
     const nativeId = `tv-${crypto.randomUUID().slice(0, 8)}`;
-    const needsSecret = TV_BRIDGE_DRIVERS.some((d) => d.id === input.driver && d.secret);
+    const needsSecret = TV_BRIDGE_DRIVERS.some((d) => d.id === driver && d.secret);
     const secret = input.secret?.trim();
     let credentialSlot: string | undefined;
     if (needsSecret && secret) {
@@ -238,7 +268,7 @@ export class TVBridgeController {
     }
     const mac = input.macAddress?.trim();
     const device: TVBridgeDeviceConfig = {
-      nativeId, driver: input.driver, host, name, roomName: input.roomName.trim(),
+      nativeId, driver, host, name, roomName: input.roomName.trim(),
       ...(input.port === undefined ? {} : { port: input.port }),
       ...(mac ? { macAddress: mac } : {}),
       ...(credentialSlot ? { credentialSlot } : {}),
@@ -500,13 +530,32 @@ export function setTVBridgeControllerForTesting(controller: TVBridgeController |
 
 type Escape = (raw: string) => string;
 
+function renderDriverOptions(drivers: readonly TVBridgeDriverOption[], esc: Escape): string {
+  return drivers
+    .map((d) => `<option value="${d.id}" data-port="${d.port}" data-secret="${d.secret ? esc(tr3(...d.secret)) : ""}">${esc(tr3(...d.label))}</option>`)
+    .join("");
+}
+
+function syncDriverFormHints(select: HTMLSelectElement): void {
+  const option = select.selectedOptions[0];
+  const form = select.closest("form");
+  const port = form?.querySelector<HTMLInputElement>("[data-tvbridge-port]");
+  const secret = form?.querySelector<HTMLInputElement>("[data-tvbridge-secret]");
+  if (port) port.placeholder = tr3("端口，默认 {p}", "連接埠，預設 {p}", "Port, default {p}").replace("{p}", option?.dataset.port ?? "");
+  if (secret) {
+    secret.hidden = !option?.dataset.secret;
+    secret.placeholder = option?.dataset.secret ?? "";
+    if (secret.hidden) secret.value = "";
+  }
+}
+
 /** Settings → 常规 card, below the DDC/CI card. */
 export function renderTVBridgeSettingsSection(ctrl: TVBridgeController, esc: Escape): string {
   const title = tr3("多品牌电视桥接插件（可选）", "多品牌電視橋接外掛（選用）", "Multi-brand TV Bridge (Optional)");
   const hint = tr3(
-    "支持小米 / Redmi、雷鸟 / TCL、海信 / 创维等安卓电视（ADB）、LG webOS、索尼 Bravia、三星 Tizen、DLNA 与 Kodi。插件在独立进程中运行，未开启时零后台开销；已由 Home Assistant 或米家接入的同一台电视始终由内置来源控制。",
-    "支援小米 / Redmi、雷鳥 / TCL、海信 / 創維等安卓電視（ADB）、LG webOS、索尼 Bravia、三星 Tizen、DLNA 與 Kodi。外掛在獨立行程中執行，未開啟時零背景開銷；已由 Home Assistant 或米家接入的同一台電視始終由內建來源控制。",
-    "Supports Xiaomi / Redmi, FFalcon / TCL, Hisense / Skyworth Android TVs (ADB), LG webOS, Sony Bravia, Samsung Tizen, DLNA and Kodi. The plugin runs in its own process and nothing runs while this is off; a TV already connected through Home Assistant or Xiaomi Home stays on the built-in source.",
+    "首发支持 LG webOS、小米 / Redmi 与海信（海外 VIDAA）；其他品牌可展开实验性协议（未真机验证）。插件在独立进程中运行，未开启时零后台开销；已由 Home Assistant 或米家接入的同一台电视始终由内置来源控制。",
+    "首發支援 LG webOS、小米 / Redmi 與海信（海外 VIDAA）；其他品牌可展開實驗性協議（未實機驗證）。外掛在獨立行程中執行，未開啟時零背景開銷；已由 Home Assistant 或米家接入的同一台電視始終由內建來源控制。",
+    "Primary support for LG webOS, Xiaomi / Redmi, and Hisense (overseas VIDAA); other protocols are behind the experimental toggle. The plugin runs in its own process and nothing runs while this is off; a TV already connected through Home Assistant or Xiaomi Home stays on the built-in source.",
   );
   let body = "";
   if (ctrl.enabled) {
@@ -522,7 +571,11 @@ export function renderTVBridgeSettingsSection(ctrl: TVBridgeController, esc: Esc
       return `<li class="cc-field-row" data-tvbridge-device="${esc(d.nativeId)}"><span>${esc(d.name)} · ${esc(driver ? tr3(...driver.label) : d.driver)} · ${esc(d.host)}</span>
         <button type="button" class="cc-btn-secondary" data-tvbridge-remove="${esc(d.nativeId)}">${esc(tr3("移除", "移除", "Remove"))}</button></li>`;
     }).join("");
-    const options = TV_BRIDGE_DRIVERS.map((d) => `<option value="${d.id}" data-port="${d.port}" data-secret="${d.secret ? esc(tr3(...d.secret)) : ""}">${esc(tr3(...d.label))}</option>`).join("");
+    const visibleDrivers = visibleTVBridgeDrivers(ctrl.showExperimentalDrivers);
+    const firstDriver = visibleDrivers[0]!;
+    const options = renderDriverOptions(visibleDrivers, esc);
+    const experimentalLabel = tr3("显示实验性协议（未真机验证）", "顯示實驗性協議（未實機驗證）", "Show experimental protocols (unverified on hardware)");
+    const secretAttr = firstDriver.secret ? `placeholder="${esc(tr3(...firstDriver.secret))}"` : "hidden";
     body = `
         <div class="cc-field-row" style="margin-top: 6px;">
           <input type="text" data-tvbridge-binary placeholder="C:\\Tools\\mbh-tv-bridge.exe" value="${esc(ctrl.config.binaryPath ?? "")}" aria-label="${esc(tr3("mbh-tv-bridge.exe 路径", "mbh-tv-bridge.exe 路徑", "mbh-tv-bridge.exe path"))}" />
@@ -537,10 +590,14 @@ export function renderTVBridgeSettingsSection(ctrl: TVBridgeController, esc: Esc
           <input name="name" required placeholder="${esc(tr3("名称，如 客厅电视", "名稱，如 客廳電視", "Name, e.g. Living Room TV"))}" />
           <input name="room" placeholder="${esc(tr3("房间", "房間", "Room"))}" />
           <select name="driver" data-tvbridge-driver>${options}</select>
+          <label class="cc-field-hint" style="display: flex; align-items: center; gap: 6px; margin: 0;">
+            <input type="checkbox" data-tvbridge-experimental ${ctrl.showExperimentalDrivers ? "checked" : ""} />
+            <span>${esc(experimentalLabel)}</span>
+          </label>
           <input name="host" required placeholder="${esc(tr3("IP 地址", "IP 位址", "IP address"))}" />
-          <input name="port" inputmode="numeric" data-tvbridge-port placeholder="${esc(tr3("端口，默认 {p}", "連接埠，預設 {p}", "Port, default {p}").replace("{p}", String(TV_BRIDGE_DRIVERS[0]!.port)))}" />
+          <input name="port" inputmode="numeric" data-tvbridge-port placeholder="${esc(tr3("端口，默认 {p}", "連接埠，預設 {p}", "Port, default {p}").replace("{p}", String(firstDriver.port)))}" />
           <input name="mac" placeholder="${esc(tr3("MAC 地址（可选）", "MAC 位址（選用）", "MAC address (optional)"))}" />
-          <input name="secret" type="password" autocomplete="off" data-tvbridge-secret hidden />
+          <input name="secret" type="password" autocomplete="off" data-tvbridge-secret ${secretAttr} />
           <button type="submit" class="cc-btn-secondary">${esc(tr3("添加电视", "新增電視", "Add TV"))}</button>
         </form>`;
   }
@@ -576,17 +633,19 @@ export function bindTVBridgeEvents(root: HTMLElement, ctrl: TVBridgeController):
     if (input.matches("[data-tvbridge-toggle]")) ctrl.setEnabled((input as HTMLInputElement).checked);
     else if (input.matches("[data-tvbridge-binary]")) ctrl.setBinaryPath(input.value);
     else if (input.matches("[data-tvbridge-sha]")) ctrl.setExpectedSHA256(input.value);
-    else if (input.matches("[data-tvbridge-driver]")) {
-      const option = (input as HTMLSelectElement).selectedOptions[0];
-      const form = input.closest("form");
-      const port = form?.querySelector<HTMLInputElement>("[data-tvbridge-port]");
-      const secret = form?.querySelector<HTMLInputElement>("[data-tvbridge-secret]");
-      if (port) port.placeholder = tr3("端口，默认 {p}", "連接埠，預設 {p}", "Port, default {p}").replace("{p}", option?.dataset.port ?? "");
-      if (secret) {
-        secret.hidden = !option?.dataset.secret;
-        secret.placeholder = option?.dataset.secret ?? "";
-        if (secret.hidden) secret.value = "";
+    else if (input.matches("[data-tvbridge-experimental]")) {
+      const checked = (input as HTMLInputElement).checked;
+      ctrl.setShowExperimentalDrivers(checked);
+      const select = input.closest("form")?.querySelector<HTMLSelectElement>("[data-tvbridge-driver]");
+      if (select) {
+        const previous = select.value;
+        const escHtml = (raw: string) => raw.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;");
+        select.innerHTML = renderDriverOptions(visibleTVBridgeDrivers(checked), escHtml);
+        if ([...select.options].some((opt) => opt.value === previous)) select.value = previous;
+        syncDriverFormHints(select);
       }
+    } else if (input.matches("[data-tvbridge-driver]")) {
+      syncDriverFormHints(input as HTMLSelectElement);
     }
   });
   root.addEventListener("submit", (event) => {

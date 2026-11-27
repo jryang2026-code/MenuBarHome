@@ -94,9 +94,28 @@ func postJSON(c *http.Client, u string, v any, out any) error {
 	}
 	return nil
 }
+var ClosedCommandVerbs = []string{"power.set", "power.wake", "power.screenOff", "volume.set", "mute.set", "input.select", "remote.key", "media.playPause", "media.play", "media.pause", "media.stop", "media.next", "media.previous", "media.seek"}
+var RegisteredDrivers = []string{"lg_webos_ssap", "xiaomi_mitv_6095", "hisense_vidaa_mqtt", "samsung_tizen_ws", "sony_bravia_psk", "tcl_ffalcon_tnscreen", "android_adb_lan", "dlna_dmr", "kodi_jsonrpc"}
+
+func IsAllowedVerb(verb string) bool {
+	for _, v := range ClosedCommandVerbs {
+		if v == verb {
+			return true
+		}
+	}
+	return false
+}
+func argVal(a map[string]any, keys ...string) (any, bool) {
+	for _, k := range keys {
+		if v, ok := a[k]; ok {
+			return v, true
+		}
+	}
+	return nil, false
+}
+
 func commandAllowed(verb string, args map[string]any) error {
-	allowed := map[string]bool{"tv.power": true, "tv.wake": true, "tv.screenOff": true, "media.setVolume": true, "media.stepVolume": true, "media.setMute": true, "media.selectSource": true, "media.launchApp": true, "media.playPause": true, "media.play": true, "media.pause": true, "media.stop": true, "media.next": true, "media.previous": true, "media.seek": true, "remote.key": true}
-	if !allowed[verb] {
+	if !IsAllowedVerb(verb) {
 		return fmt.Errorf("unsupported verb %q", verb)
 	}
 	if verb == "remote.key" {
@@ -112,7 +131,7 @@ func commandAllowed(verb string, args map[string]any) error {
 type Xiaomi struct{ Base }
 
 func NewXiaomi(addr string) *Xiaomi {
-	return &Xiaomi{Base: Base{id: "xiaomi_6095", addr: ensureHTTPBase(addr), client: httpClient()}}
+	return &Xiaomi{Base: Base{id: "xiaomi_mitv_6095", addr: ensureHTTPBase(addr), client: httpClient()}}
 }
 func (d *Xiaomi) Probe() error {
 	var x any
@@ -129,7 +148,7 @@ func (d *Xiaomi) Execute(v string, a map[string]any) error {
 	if e := commandAllowed(v, a); e != nil {
 		return e
 	}
-	if v == "media.selectSource" {
+	if v == "input.select" {
 		s, _ := a["source"].(string)
 		if !strings.HasPrefix(s, "hdmi") {
 			return errors.New("invalid source")
@@ -168,7 +187,7 @@ type Sony struct {
 }
 
 func NewSony(addr, psk string) *Sony {
-	return &Sony{Base: Base{id: "sony_bravia", addr: ensureHTTPBase(addr), client: httpClient()}, PSK: psk}
+	return &Sony{Base: Base{id: "sony_bravia_psk", addr: ensureHTTPBase(addr), client: httpClient()}, PSK: psk}
 }
 func (d *Sony) do(req *http.Request) (*http.Response, error) {
 	if d.PSK != "" {
@@ -220,20 +239,26 @@ func (d *Sony) Execute(v string, a map[string]any) error {
 	path := "/sony/system"
 	params := []any{}
 	switch v {
-	case "tv.power":
+	case "power.set":
+		status := true
+		if b, ok := a["isOn"].(bool); ok {
+			status = b
+		}
 		method = "setPowerStatus"
-		params = []any{map[string]any{"status": true}}
-	case "tv.screenOff":
+		params = []any{map[string]any{"status": status}}
+	case "power.screenOff":
 		method = "setPowerStatus"
 		params = []any{map[string]any{"status": false}}
-	case "media.setVolume":
+	case "volume.set":
+		vol, _ := argVal(a, "level", "volume")
 		path = "/sony/audio"
 		method = "setAudioVolume"
-		params = []any{map[string]any{"volume": fmt.Sprint(a["volume"])}}
-	case "media.setMute":
+		params = []any{map[string]any{"volume": fmt.Sprint(vol)}}
+	case "mute.set":
+		muted, _ := argVal(a, "isMuted", "muted")
 		path = "/sony/audio"
 		method = "setAudioMute"
-		params = []any{map[string]any{"status": a["muted"]}}
+		params = []any{map[string]any{"status": muted}}
 	default:
 		return errors.New("unsupported Sony action")
 	}
@@ -274,7 +299,7 @@ func (d *Kodi) Execute(v string, a map[string]any) error {
 	if e := commandAllowed(v, a); e != nil {
 		return e
 	}
-	methods := map[string]string{"media.playPause": "Player.PlayPause", "media.play": "Player.PlayPause", "media.pause": "Player.PlayPause", "media.stop": "Player.Stop", "media.next": "Player.GoNext", "media.previous": "Player.GoPrevious", "media.seek": "Player.Seek", "media.setVolume": "Application.SetVolume", "remote.key": "Input.ExecuteAction"}
+	methods := map[string]string{"media.playPause": "Player.PlayPause", "media.play": "Player.PlayPause", "media.pause": "Player.PlayPause", "media.stop": "Player.Stop", "media.next": "Player.GoNext", "media.previous": "Player.GoPrevious", "media.seek": "Player.Seek", "volume.set": "Application.SetVolume", "remote.key": "Input.ExecuteAction"}
 	method, ok := methods[v]
 	if !ok {
 		return errors.New("unsupported Kodi action")
@@ -293,11 +318,13 @@ func (d *Kodi) Execute(v string, a map[string]any) error {
 		params["action"] = a["key"]
 	}
 	if v == "media.seek" {
+		pos, _ := argVal(a, "positionSec", "position")
 		params["playerid"] = 1
-		params["value"] = a["position"]
+		params["value"] = pos
 	}
-	if v == "media.setVolume" {
-		params["volume"] = a["volume"]
+	if v == "volume.set" {
+		vol, _ := argVal(a, "level", "volume")
+		params["volume"] = vol
 	}
 	var result struct {
 		Error *struct {
@@ -348,7 +375,8 @@ func (d *DLNA) Execute(v string, a map[string]any) error {
 	}
 	args := "<InstanceID>0</InstanceID>"
 	if action == "Seek" {
-		seconds, _ := strconv.ParseFloat(fmt.Sprint(a["position"]), 64)
+		pos, _ := argVal(a, "positionSec", "position")
+		seconds, _ := strconv.ParseFloat(fmt.Sprint(pos), 64)
 		total := int(seconds)
 		args += fmt.Sprintf("<Unit>REL_TIME</Unit><Target>%02d:%02d:%02d</Target>", total/3600, (total/60)%60, total%60)
 	}
@@ -396,7 +424,7 @@ func (d *TCL) Close() error {
 }
 
 func NewTCL(addr string) *TCL {
-	return &TCL{Base: Base{id: "tcl_tnscreen", addr: addr, client: httpClient(), sleeping: false}, key: []byte("tnscreentnscreen"), iv: []byte{0x12, 0x34, 0x56, 0x78, 0x90, 0xab, 0xcd, 0xef, 0x12, 0x34, 0x56, 0x78, 0x90, 0xab, 0xcd, 0xef}}
+	return &TCL{Base: Base{id: "tcl_ffalcon_tnscreen", addr: addr, client: httpClient(), sleeping: false}, key: []byte("tnscreentnscreen"), iv: []byte{0x12, 0x34, 0x56, 0x78, 0x90, 0xab, 0xcd, 0xef, 0x12, 0x34, 0x56, 0x78, 0x90, 0xab, 0xcd, 0xef}}
 }
 func pad(b []byte) []byte {
 	n := aes.BlockSize - len(b)%aes.BlockSize
@@ -469,7 +497,7 @@ func (d *TCL) Execute(v string, a map[string]any) error {
 	}
 	codes := map[string]string{"up": "11", "down": "12", "left": "13", "right": "14", "select": "15", "back": "16", "home": "19", "source": "29", "volumeUp": "31", "volumeDown": "32"}
 	k := fmt.Sprint(a["key"])
-	if v == "tv.power" {
+	if v == "power.set" {
 		k = "power"
 	}
 	if k == "power" {
@@ -523,7 +551,7 @@ func (d *AndroidADB) Close() error {
 }
 
 func NewAndroidADB(addr string) *AndroidADB {
-	return &AndroidADB{Base: Base{id: "android_adb", addr: addr, client: httpClient(), sleeping: false}}
+	return &AndroidADB{Base: Base{id: "android_adb_lan", addr: addr, client: httpClient(), sleeping: false}}
 }
 func (d *AndroidADB) Probe() error {
 	d.mu.Lock()
@@ -610,7 +638,7 @@ type LG struct {
 }
 
 func NewLG(addr string, tlsOn bool) *LG {
-	return &LG{Base: Base{id: "lg_webos", addr: addr, client: httpClient(), sleeping: false}, TLS: tlsOn}
+	return &LG{Base: Base{id: "lg_webos_ssap", addr: addr, client: httpClient(), sleeping: false}, TLS: tlsOn}
 }
 func (d *LG) Probe() error {
 	if !d.TLS {
@@ -640,27 +668,67 @@ func (d *LG) Execute(v string, a map[string]any) error {
 		return e
 	}
 	defer c.Close()
-	uri := map[string]string{"tv.power": "ssap://system/turnOff", "tv.screenOff": "ssap://com.webos.service.tv.display/turnOffScreen", "media.setVolume": "ssap://audio/setVolume", "media.setMute": "ssap://audio/setMute"}[v]
+	uri := map[string]string{"power.set": "ssap://system/turnOff", "power.screenOff": "ssap://com.webos.service.tv.display/turnOffScreen", "volume.set": "ssap://audio/setVolume", "mute.set": "ssap://audio/setMute"}[v]
 	if uri == "" {
 		return errors.New("unsupported LG action")
 	}
-	b, _ := json.Marshal(map[string]any{"id": "1", "type": "request", "uri": uri, "payload": a})
+	payload := a
+	switch v {
+	case "volume.set":
+		vol, _ := argVal(a, "level", "volume")
+		payload = map[string]any{"volume": vol}
+	case "mute.set":
+		muted, _ := argVal(a, "isMuted", "muted")
+		payload = map[string]any{"mute": muted}
+	}
+	b, _ := json.Marshal(map[string]any{"id": "1", "type": "request", "uri": uri, "payload": payload})
 	return c.WriteText(b)
+}
+
+type HisenseVIDAA struct {
+	Base
+	Credential string
+}
+
+func NewHisenseVIDAA(addr, credential string) *HisenseVIDAA {
+	return &HisenseVIDAA{Base: Base{id: "hisense_vidaa_mqtt", addr: addr, client: httpClient(), sleeping: false}, Credential: credential}
+}
+func (d *HisenseVIDAA) Probe() error {
+	target := d.addr
+	if _, _, err := net.SplitHostPort(target); err != nil {
+		target = net.JoinHostPort(target, "36669")
+	}
+	c, e := net.DialTimeout("tcp", target, 3*time.Second)
+	if e != nil {
+		return e
+	}
+	return c.Close()
+}
+func (d *HisenseVIDAA) Snapshot() (Snapshot, error) {
+	return Snapshot{ID: d.id, Name: "Hisense VIDAA"}, d.Probe()
+}
+func (d *HisenseVIDAA) Execute(v string, a map[string]any) error {
+	if e := commandAllowed(v, a); e != nil {
+		return e
+	}
+	return errors.New("unsupported Hisense VIDAA action")
 }
 
 func ForID(id, addr string) TVDriver {
 	switch id {
-	case "xiaomi_6095":
+	case "xiaomi_mitv_6095":
 		return NewXiaomi(addr)
-	case "tcl_tnscreen":
+	case "tcl_ffalcon_tnscreen":
 		return NewTCL(addr)
-	case "android_adb":
+	case "android_adb_lan":
 		return NewAndroidADB(addr)
-	case "lg_webos":
+	case "lg_webos_ssap":
 		return NewLG(addr, true)
-	case "sony_bravia":
+	case "hisense_vidaa_mqtt":
+		return NewHisenseVIDAA(addr, "")
+	case "sony_bravia_psk":
 		return NewSony(addr, "")
-	case "samsung_tizen":
+	case "samsung_tizen_ws":
 		return NewSamsung(addr)
 	case "dlna_dmr":
 		return NewDLNA(addr)
@@ -671,13 +739,15 @@ func ForID(id, addr string) TVDriver {
 }
 func ForConfig(id, addr, credential string) TVDriver {
 	switch id {
-	case "sony_bravia":
+	case "sony_bravia_psk":
 		return NewSony(addr, credential)
-	case "lg_webos":
+	case "lg_webos_ssap":
 		d := NewLG(addr, true)
 		d.ClientKey = credential
 		return d
-	case "samsung_tizen":
+	case "hisense_vidaa_mqtt":
+		return NewHisenseVIDAA(addr, credential)
+	case "samsung_tizen_ws":
 		d := NewSamsung(addr)
 		d.Token = credential
 		return d
@@ -692,7 +762,7 @@ type Samsung struct {
 }
 
 func NewSamsung(addr string) *Samsung {
-	return &Samsung{Base: Base{id: "samsung_tizen", addr: addr, client: httpClient(), sleeping: false}}
+	return &Samsung{Base: Base{id: "samsung_tizen_ws", addr: addr, client: httpClient(), sleeping: false}}
 }
 func (d *Samsung) Probe() error {
 	c, e := ws.Dial("wss://" + d.addr + "/")
@@ -715,7 +785,7 @@ func (d *Samsung) Execute(v string, a map[string]any) error {
 	defer c.Close()
 	keys := map[string]string{"up": "KEY_UP", "down": "KEY_DOWN", "left": "KEY_LEFT", "right": "KEY_RIGHT", "select": "KEY_ENTER", "back": "KEY_RETURN", "home": "KEY_HOME", "menu": "KEY_MENU", "volumeUp": "KEY_VOLUP", "volumeDown": "KEY_VOLDOWN", "mute": "KEY_MUTE", "source": "KEY_SOURCE", "power": "KEY_POWER"}
 	key := fmt.Sprint(a["key"])
-	if v == "tv.power" {
+	if v == "power.set" {
 		key = "power"
 	}
 	mapped, ok := keys[key]

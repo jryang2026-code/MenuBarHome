@@ -4,14 +4,19 @@
   "description": "Cross-brand TV and external display protocol profiles shared by macOS, Windows, and the out-of-process TV bridge. Data only, no runtime credentials.",
   "closedCommandVerbs": [
     "power.set",
+    "power.wake",
+    "power.screenOff",
     "display.brightness.set",
     "volume.set",
     "mute.set",
     "input.select",
     "remote.key",
+    "media.playPause",
     "media.play",
     "media.pause",
     "media.stop",
+    "media.next",
+    "media.previous",
     "media.seek"
   ],
   "profiles": [
@@ -22,6 +27,7 @@
         "en": "Redmi display over DDC/CI"
       },
       "kind": "display",
+      "tier": "experimental",
       "vendors": ["Redmi", "Xiaomi"],
       "models": ["Redmi G27U", "Redmi A27U", "Redmi G27"],
       "transport": {
@@ -76,6 +82,7 @@
         "en": "Xiaomi and Redmi TV over HTTP 6095"
       },
       "kind": "tv",
+      "tier": "primary",
       "vendors": ["Xiaomi", "Redmi"],
       "models": ["Xiaomi TV", "Redmi TV", "Redmi G Pro 27U"],
       "transport": {
@@ -119,6 +126,7 @@
         "en": "TCL and FFALCON TNScreen"
       },
       "kind": "tv",
+      "tier": "experimental",
       "vendors": ["TCL", "FFALCON"],
       "models": ["TCL Google TV", "FFALCON TNScreen"],
       "transport": {
@@ -161,6 +169,7 @@
         "en": "Generic Android TV over LAN ADB"
       },
       "kind": "tv",
+      "tier": "experimental",
       "vendors": ["Hisense", "Skyworth", "Dangbei", "JmGO", "Generic AOSP"],
       "models": ["Older Hisense Android TV", "Older Skyworth Android TV", "Dangbei box", "JmGO projector"],
       "transport": {
@@ -204,6 +213,7 @@
         "en": "LG webOS over SSAP"
       },
       "kind": "tv",
+      "tier": "primary",
       "vendors": ["LG"],
       "models": ["LG webOS TV"],
       "transport": {
@@ -231,7 +241,7 @@
         "supportsNowPlayingSeek": false,
         "wakeOnLan": true
       },
-      "commands": ["power.set", "volume.set", "mute.set", "input.select", "remote.key", "media.play", "media.pause", "media.stop"],
+      "commands": ["power.set", "power.wake", "power.screenOff", "volume.set", "mute.set", "input.select", "remote.key", "media.playPause", "media.play", "media.pause", "media.stop"],
       "limitations": ["webOS 不同版本的播放进度字段不一致，未同时回报 duration、position 与 canSeek 时不画进度条。"],
       "metadata": {
         "coldBootSupported": true,
@@ -245,6 +255,7 @@
         "en": "Android TV Remote v2"
       },
       "kind": "tv",
+      "tier": "experimental",
       "vendors": ["Google", "Sony", "TCL", "Philips", "Generic Android TV"],
       "models": ["Android TV", "Google TV"],
       "transport": {
@@ -286,6 +297,7 @@
         "en": "Samsung Tizen WebSocket"
       },
       "kind": "tv",
+      "tier": "experimental",
       "vendors": ["Samsung"],
       "models": ["Samsung Tizen TV"],
       "transport": {
@@ -327,6 +339,7 @@
         "en": "Sony BRAVIA with pre-shared phrase"
       },
       "kind": "tv",
+      "tier": "experimental",
       "vendors": ["Sony"],
       "models": ["Sony BRAVIA Android TV", "Sony BRAVIA Google TV"],
       "transport": {
@@ -368,6 +381,7 @@
         "en": "Overseas Hisense VIDAA over MQTT"
       },
       "kind": "tv",
+      "tier": "primary",
       "vendors": ["Hisense"],
       "models": ["Overseas Hisense VIDAA TV"],
       "transport": {
@@ -406,6 +420,7 @@
         "en": "DLNA Digital Media Renderer"
       },
       "kind": "media",
+      "tier": "experimental",
       "vendors": ["Generic DLNA"],
       "models": ["DLNA DMR compatible device"],
       "transport": {
@@ -444,6 +459,7 @@
         "en": "Chromecast receiver"
       },
       "kind": "media",
+      "tier": "experimental",
       "vendors": ["Google", "Generic Cast"],
       "models": ["Chromecast", "Cast receiver"],
       "transport": {
@@ -485,6 +501,7 @@
         "en": "Kodi JSON-RPC"
       },
       "kind": "media",
+      "tier": "experimental",
       "vendors": ["Kodi"],
       "models": ["Kodi media center"],
       "transport": {
@@ -509,7 +526,7 @@
         "supportsNowPlayingSeek": true,
         "wakeOnLan": false
       },
-      "commands": ["volume.set", "mute.set", "remote.key", "media.play", "media.pause", "media.stop", "media.seek"],
+      "commands": ["volume.set", "mute.set", "remote.key", "media.playPause", "media.play", "media.pause", "media.stop", "media.next", "media.previous", "media.seek"],
       "limitations": ["插件只映射 Player 与 Application 的只读状态和允许的控制方法。"],
       "metadata": {
         "coldBootSupported": false,
@@ -523,6 +540,7 @@
         "en": "Jellyfin API"
       },
       "kind": "media",
+      "tier": "experimental",
       "vendors": ["Jellyfin"],
       "models": ["Jellyfin server and client sessions"],
       "transport": {
