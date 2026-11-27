@@ -1,4 +1,4 @@
-English | [简体中文](README.zh-CN.md)
+English | [简体中文](README.zh-CN.md) | [Türkçe](README.tr.md)
 
 <p align="center">
   <a href="https://trendshift.io/repositories/309141?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-309141" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/309141/daily?language=Swift" alt="jryang2026-code%2FMenuBarHome | Trendshift" width="250" height="55"/></a>
@@ -381,7 +381,7 @@ MenuBarHome is an independent open-source project, not an official Xiaomi app. M
 | AI assistants | Per-provider API keys, plus non-secret imported-key labels, custom-endpoint bindings, and remembered cloud-consent endpoints | Per-provider API keys in macOS Keychain or Windows Credential Manager (`assistant_api_key_<preset>`); non-secret metadata in app preferences |
 | Read-only generic cameras | Per-camera RTSP / ONVIF / ISAPI / Dahua / Tapo credentials (handed to go2rtc in memory only, never written to `go2rtc.yaml`) | macOS Keychain or Windows Credential Manager (`generic-camera:<id>`) |
 | LG webOS TV (built-in) | The pairing client key issued by the TV | macOS Keychain |
-| Multi-brand TV bridge (`mbh-tv-bridge`) | Host-configured bridge credentials (injected into the plugin at runtime only); the plugin `pairing` flow for LG webOS TVs stores a host-level TLS certificate fingerprint pin (`.pin`) and pairing key (`.key`) | macOS Keychain (`tvBridge.cred.<nativeId>`) or Windows Credential Manager (`tv-bridge:<id>`); LG pairing files live in the host data directory `MBH_DATA_DIR/lg-pairing/` with `0600` permissions (Windows inherits the user directory ACL) |
+| Multi-brand TV bridge (`mbh-tv-bridge`) | Per-TV pairing client keys / bridge credentials (injected at runtime only) | macOS Keychain (`tvBridge.cred.<nativeId>`) or Windows Credential Manager (`tv-bridge:<id>`) |
 
 macOS encrypts these Keychain items at rest and protects them with the login Keychain; MenuBarHome writes them with `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`, so they are available after the first unlock but are never synced to iCloud or another Mac. Neither platform stores secrets in plain `UserDefaults`, WebView `localStorage`, or log files. macOS may ask for Keychain permission after an app update because the build signature changes; answering "Always Allow" covers later reads and writes.
 
