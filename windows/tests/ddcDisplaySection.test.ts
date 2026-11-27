@@ -10,6 +10,7 @@ import {
   bindDdcDisplayEvents,
   renderDdcPanelSection,
   renderDdcSettingsSection,
+  type DdcDisplayMetadata,
   type DdcStorage,
 } from "../src/ui/ddcDisplaySection.js";
 
@@ -26,7 +27,14 @@ function memoryStorage(initial: Record<string, string> = {}): DdcStorage & { dat
   };
 }
 
-function recordingInvoke(displays: string[] = ["65537"]) {
+const REDMI_DISPLAY: DdcDisplayMetadata = {
+  id: "65537", name: "Redmi G27U", manufacturer: "RED", model: "Redmi G27U", isRedmiOrXiaomi: true,
+  brightnessPercent: 72, brightnessMax: 100, volumePercent: 35, volumeMax: 100, isMuted: false,
+  inputSource: 0x11, supportedInputSources: [0x0f, 0x10, 0x11, 0x12, 0x1b],
+  supportsBrightness: true, supportsVolume: true, supportsMute: true, supportsInputSource: true,
+};
+
+function recordingInvoke(displays: readonly (DdcDisplayMetadata | string)[] = [REDMI_DISPLAY]) {
   const calls: { cmd: string; args?: Record<string, unknown> }[] = [];
   const invoke = async (cmd: string, args?: Record<string, unknown>) => {
     calls.push({ cmd, args });
@@ -66,7 +74,7 @@ describe("DDC/CI external display section", () => {
     assert.doesNotMatch(renderDdcSettingsSection(ctrl, esc), /data-ddc-scan/);
   });
 
-  it("lists displays on panel show once enabled and renders brightness and DP/HDMI inputs", async () => {
+  it("renders real monitor name, Xiaomi badge, readback slider values, and active input", async () => {
     const { calls, invoke } = recordingInvoke();
     const ctrl = new DdcDisplayController({
       invoke,
@@ -76,10 +84,36 @@ describe("DDC/CI external display section", () => {
     await ctrl.settle();
     assert.deepEqual(calls.map((c) => c.cmd), ["ddc_list_displays"]);
     const html = renderDdcPanelSection(ctrl, esc);
-    assert.match(html, /data-ddc-brightness="65537"/);
+    assert.ok(html.includes("Redmi G27U") && /data-ddc-xiaomi-badge/.test(html) && /外接显示器 · 当前 HDMI 1/.test(html));
+    assert.match(html, /data-ddc-brightness-value="65537">72%/);
+    assert.match(html, /data-ddc-volume-value="65537">35%/);
+    assert.match(html, /data-ddc-input="65537" data-ddc-source="17" aria-pressed="true"/);
     for (const label of ["DP 1", "DP 2", "HDMI 1", "HDMI 2", "USB-C"]) assert.ok(html.includes(label), label);
     assert.match(html, /data-ddc-mute="65537"/);
     assert.doesNotMatch(html, /0xD6|data-ddc-power/i);
+    const settingsHtml = renderDdcSettingsSection(ctrl, esc);
+    assert.ok(settingsHtml.includes("Redmi G27U") && /data-ddc-xiaomi-badge/.test(settingsHtml) && /亮度 72% · HDMI 1/.test(settingsHtml));
+  });
+
+  it("hides volume controls on speakerless monitors and only shows supported inputs", async () => {
+    const dell: DdcDisplayMetadata = {
+      id: "70001", name: "DELL U2723QE", manufacturer: "DEL", model: "U2723QE", isRedmiOrXiaomi: false,
+      brightnessPercent: 60, brightnessMax: 255, volumePercent: null, volumeMax: null, isMuted: null,
+      inputSource: 0x1b, supportedInputSources: [0x0f, 0x1b, 0x1c],
+      supportsBrightness: true, supportsVolume: false, supportsMute: false, supportsInputSource: true,
+    };
+    const { calls, invoke } = recordingInvoke([dell]);
+    const ctrl = new DdcDisplayController({ invoke, storage: memoryStorage({ [EXTERNAL_DISPLAY_DDC_STORAGE_KEY]: "true" }) });
+    await ctrl.refresh();
+    const html = renderDdcPanelSection(ctrl, esc);
+    assert.ok(html.includes("DELL U2723QE") && html.includes("DP 1") && html.includes("USB-C") && html.includes("0x1C") && !html.includes("HDMI 2"));
+    assert.doesNotMatch(html, /data-ddc-xiaomi-badge|data-ddc-volume=|data-ddc-mute=/);
+    assert.match(html, /data-ddc-brightness-value="70001">60%</);
+    const before = calls.length;
+    await ctrl.setVolume("70001", 40); await ctrl.setMute("70001", true); await ctrl.setInputSource("70001", 0x12);
+    assert.equal(calls.length, before);
+    await ctrl.setInputSource("70001", 0x1c);
+    assert.deepEqual(calls.slice(before), [{ cmd: "ddc_set_input_source", args: { displayId: "70001", source: 0x1c } }]);
   });
 
   it("dispatches ddc_set_* with the right arguments from the rendered card", async () => {
@@ -94,6 +128,7 @@ describe("DDC/CI external display section", () => {
     bindDdcDisplayEvents(root, ctrl);
 
     const brightness = root.querySelector<HTMLInputElement>('input[data-ddc-brightness="65537"]')!;
+    assert.equal(brightness.value, "72");
     brightness.value = "37";
     brightness.dispatchEvent(new win.Event("input", { bubbles: true }) as unknown as Event);
     assert.equal(calls.filter((c) => c.cmd === "ddc_set_brightness").length, 0, "dragging alone does not write");
@@ -103,6 +138,7 @@ describe("DDC/CI external display section", () => {
     root.querySelector<HTMLElement>('[data-ddc-input="65537"][data-ddc-source="15"]')!.click();
 
     const volume = root.querySelector<HTMLInputElement>('input[data-ddc-volume="65537"]')!;
+    assert.equal(volume.value, "35");
     volume.value = "22";
     volume.dispatchEvent(new win.Event("change", { bubbles: true }) as unknown as Event);
     root.querySelector<HTMLElement>('[data-ddc-mute="65537"]')!.click();
@@ -139,7 +175,7 @@ describe("DDC/CI external display section", () => {
   it("a failed write shows the DDC/CI hint", async () => {
     const ctrl = new DdcDisplayController({
       invoke: async (cmd) => {
-        if (cmd === "ddc_list_displays") return ["1"];
+        if (cmd === "ddc_list_displays") return [{ ...REDMI_DISPLAY, id: "1" }];
         throw new Error("SetVCPFeature failed");
       },
       storage: memoryStorage({ [EXTERNAL_DISPLAY_DDC_STORAGE_KEY]: "true" }),

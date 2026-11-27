@@ -364,8 +364,8 @@ final class TVBridgeStore {
         while let task = backgroundTasks.values.first ?? idleTask { await task.value }
     }
 
-    /// App quit: asks the bridge to shut down for at most `timeout`, then kills any process still
-    /// alive without waiting on the request lock, so quitting never leaves an orphan behind.
+    /// App quit: asks the bridge to shut down for at most `timeout`, then sends `SIGTERM` → short wait
+    /// → `SIGKILL` to any process still alive without waiting on the request lock.
     func shutdownNow(timeout: TimeInterval = 0.2) {
         generation += 1
         cancelIdleShutdown()
@@ -380,7 +380,7 @@ final class TVBridgeStore {
             }
             _ = done.wait(timeout: .now() + timeout)
         }
-        StdioTVBridgeTransport.terminateAllImmediately()
+        StdioTVBridgeTransport.terminateAllImmediately(gracePeriod: timeout)
     }
 
     private func scheduleIdleShutdown(_ manager: TVBridgePluginManager) {

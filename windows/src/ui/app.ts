@@ -253,8 +253,12 @@ export class MenuMijiaWindowsApp {
     readonly source: SmartDevice[];
     readonly bridged: readonly SmartDevice[];
     readonly camerasOn: boolean;
+    readonly builtInMacs: Readonly<Record<string, readonly string[]>>;
+    readonly dualIdentities: Readonly<Record<string, import("../core/dualSourceProvider.js").DeviceSourceIdentity>> | null;
     readonly devices: SmartDevice[];
   } | null = null;
+  /** Built-in device id → normalized hardware MACs from HA/MIoT snapshots for TV bridge dedup. */
+  public builtInDeviceMacs: Readonly<Record<string, readonly string[]>> = {};
   private devicesMutationScheduled = false;
   public energySession: HostEnergySession = createDefaultHostEnergySession();
   public autoSafetySession: HostAutoSafetySession = createDefaultHostAutoSafetySession();
@@ -286,15 +290,29 @@ export class MenuMijiaWindowsApp {
     // Optional TV bridge rows (ADR-0026) follow the built-in rows; empty while the plugin is off.
     const bridged = this.settings?.connectionMode === "demo" ? NO_BRIDGED_DEVICES : getTVBridgeController().panelDevices;
     if (camerasOn && bridged.length === 0) return this._devices;
+    const dualIdentities = this.dualSourceCoordinator?.getLastMerged?.()?.deviceIdentities ?? null;
     const cache = this.filteredDevicesCache;
-    if (cache?.source !== this._devices || cache.bridged !== bridged || cache.camerasOn !== camerasOn) {
+    if (
+      cache?.source !== this._devices ||
+      cache.bridged !== bridged ||
+      cache.camerasOn !== camerasOn ||
+      cache.builtInMacs !== this.builtInDeviceMacs ||
+      cache.dualIdentities !== dualIdentities
+    ) {
       const base = camerasOn ? this._devices : this._devices.filter((device) => device.kind.kind !== "camera");
       this.filteredDevicesCache = {
         source: this._devices,
         bridged,
         camerasOn,
+        builtInMacs: this.builtInDeviceMacs,
+        dualIdentities,
         devices: bridged.length === 0 ? base : [...base, ...nonHijackingTVBridgeRows(bridged, base, {
           macsFor: (row) => getTVBridgeController().macsFor(row.id),
+          builtInIdentifiers: (device) => [
+            device.id,
+            ...(this.builtInDeviceMacs[device.id] ?? []),
+            ...(dualIdentities?.[device.id]?.macAddresses ?? []),
+          ],
         })],
       };
     }

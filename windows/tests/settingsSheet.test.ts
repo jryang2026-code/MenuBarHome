@@ -614,6 +614,14 @@ describe("WP3d · Windows 常规与家居连接导航整理", () => {
     await setImmediate();
     assert.equal(panel("general").querySelector('[data-unhide-device="light.living_ceiling"]'), null);
 
+    // DDC/CI and TV Bridge cards sit in Settings -> General (macOS parity #571), not Safety.
+    const generalAfter = panel("general");
+    const safetyPanel = panel("safety");
+    assert.ok(generalAfter.querySelector('[data-settings-anchor="externalDisplayDdc"]'), "DDC card lives in General");
+    assert.ok(generalAfter.querySelector('[data-settings-anchor="tvBridge"]'), "TV Bridge card lives in General");
+    assert.equal(safetyPanel.querySelector('[data-settings-anchor="externalDisplayDdc"]'), null);
+    assert.equal(safetyPanel.querySelector('[data-settings-anchor="tvBridge"]'), null);
+
     // Search deep-link auto-opens the folded 高级显示 section and preserves open state across re-render.
     type("#settings-search-input", "不透明度");
     await click('[data-settings-search-hit="panelOpacity"]');

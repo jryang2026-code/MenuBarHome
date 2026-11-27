@@ -22,6 +22,14 @@ export interface DdcInputSourceOption {
   readonly label: string;
 }
 
+export interface DdcDisplayMetadata {
+  readonly id: string; readonly name: string; readonly manufacturer: string; readonly model: string; readonly isRedmiOrXiaomi: boolean;
+  readonly brightnessPercent: number | null; readonly brightnessMax: number | null;
+  readonly volumePercent: number | null; readonly volumeMax: number | null; readonly isMuted: boolean | null;
+  readonly inputSource: number | null; readonly supportedInputSources: readonly number[];
+  readonly supportsBrightness: boolean; readonly supportsVolume: boolean; readonly supportsMute: boolean; readonly supportsInputSource: boolean;
+}
+
 /** Matches `DDCCIInputSource` / `ddc_ci.rs::InputSource` raw values. */
 export const DDC_INPUT_SOURCES: readonly DdcInputSourceOption[] = [
   { raw: 0x0f, label: "DP 1" },
@@ -30,6 +38,10 @@ export const DDC_INPUT_SOURCES: readonly DdcInputSourceOption[] = [
   { raw: 0x12, label: "HDMI 2" },
   { raw: 0x1b, label: "USB-C" },
 ];
+
+export function ddcInputSourceLabel(raw: number): string {
+  return DDC_INPUT_SOURCES.find((o) => o.raw === raw)?.label ?? `0x${Math.max(0, Math.round(raw)).toString(16).toUpperCase().padStart(2, "0")}`;
+}
 
 interface DdcDisplayLocalState {
   brightness: number | null;
@@ -57,6 +69,35 @@ function defaultInvoke(): DdcInvoke | null {
   return tauri?.invoke ? (cmd, args) => tauri.invoke(cmd, args) : null;
 }
 
+function normalizeDisplayEntry(raw: unknown): DdcDisplayMetadata | null {
+  if (typeof raw === "string") {
+    return raw ? {
+      id: raw, name: "", manufacturer: "", model: "", isRedmiOrXiaomi: false,
+      brightnessPercent: null, brightnessMax: null, volumePercent: null, volumeMax: null, isMuted: null, inputSource: null,
+      supportedInputSources: DDC_INPUT_SOURCES.map((o) => o.raw), supportsBrightness: true, supportsVolume: true, supportsMute: true, supportsInputSource: true,
+    } : null;
+  }
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as Record<string, unknown>;
+  if (typeof r.id !== "string" || !r.id) return null;
+  const optPct = (v: unknown) => typeof v === "number" && Number.isFinite(v) ? clampPercent(v) : null;
+  const optPos = (v: unknown) => typeof v === "number" && Number.isFinite(v) && v > 0 ? Math.round(v) : null;
+  const isU16 = (v: unknown): v is number => typeof v === "number" && Number.isInteger(v) && v >= 0 && v <= 0xffff;
+  const supportedInputSources = Array.isArray(r.supportedInputSources) ? [...new Set(r.supportedInputSources.filter(isU16))] : [];
+  const brightnessPercent = optPct(r.brightnessPercent), volumePercent = optPct(r.volumePercent);
+  const isMuted = typeof r.isMuted === "boolean" ? r.isMuted : null;
+  const supportsVolume = typeof r.supportsVolume === "boolean" ? r.supportsVolume : volumePercent !== null;
+  return {
+    id: r.id, name: typeof r.name === "string" ? r.name.trim() : "", manufacturer: typeof r.manufacturer === "string" ? r.manufacturer.trim() : "",
+    model: typeof r.model === "string" ? r.model.trim() : "", isRedmiOrXiaomi: r.isRedmiOrXiaomi === true,
+    brightnessPercent, brightnessMax: optPos(r.brightnessMax), volumePercent, volumeMax: optPos(r.volumeMax),
+    isMuted, inputSource: isU16(r.inputSource) ? r.inputSource : null, supportedInputSources,
+    supportsBrightness: typeof r.supportsBrightness === "boolean" ? r.supportsBrightness : brightnessPercent !== null,
+    supportsVolume, supportsMute: typeof r.supportsMute === "boolean" ? r.supportsMute : supportsVolume || isMuted !== null,
+    supportsInputSource: typeof r.supportsInputSource === "boolean" ? r.supportsInputSource && supportedInputSources.length > 0 : supportedInputSources.length > 0,
+  };
+}
+
 export function friendlyDdcError(): string {
   return tr3(
     "显示器没有响应。请在显示器 OSD 菜单中开启 DDC/CI，或尝试 USB-C/DP 直连",
@@ -74,7 +115,7 @@ export class DdcDisplayController {
   private readonly pending = new Set<Promise<void>>();
 
   enabled: boolean;
-  displays: string[] = [];
+  displays: DdcDisplayMetadata[] = [];
   scanned = false;
   error: string | null = null;
   readonly local = new Map<string, DdcDisplayLocalState>();
@@ -137,19 +178,31 @@ export class DdcDisplayController {
     }
     const token = this.generation;
     const run = (async () => {
-      let ids: string[] = [];
+      let nextDisplays: DdcDisplayMetadata[] = [];
       let failed = false;
       try {
         const result = await invoke("ddc_list_displays");
-        ids = Array.isArray(result) ? result.filter((x): x is string => typeof x === "string") : [];
+        nextDisplays = Array.isArray(result)
+          ? result.map(normalizeDisplayEntry).filter((item): item is DdcDisplayMetadata => item !== null)
+          : [];
       } catch {
         failed = true;
       }
       if (token !== this.generation) return;
       this.refreshing = null;
       this.scanned = true;
-      this.displays = ids;
-      for (const id of [...this.local.keys()]) if (!ids.includes(id)) this.local.delete(id);
+      this.displays = nextDisplays;
+      const validIds = new Set(nextDisplays.map((d) => d.id));
+      for (const id of [...this.local.keys()]) if (!validIds.has(id)) this.local.delete(id);
+      for (const display of nextDisplays) {
+        const prev = this.local.get(display.id);
+        this.local.set(display.id, {
+          brightness: display.brightnessPercent ?? prev?.brightness ?? null,
+          volume: display.supportsVolume ? (display.volumePercent ?? prev?.volume ?? null) : null,
+          muted: display.supportsMute ? (display.isMuted ?? prev?.muted ?? null) : null,
+          input: display.inputSource ?? prev?.input ?? null,
+        });
+      }
       this.error = failed ? friendlyDdcError() : null;
       this.onChange();
     })();
@@ -158,32 +211,28 @@ export class DdcDisplayController {
     return run;
   }
 
+  displayById(id: string): DdcDisplayMetadata | undefined { return this.displays.find((d) => d.id === id); }
   stateFor(id: string): DdcDisplayLocalState {
     let state = this.local.get(id);
-    if (!state) {
-      state = { brightness: null, volume: null, muted: null, input: null };
-      this.local.set(id, state);
-    }
+    if (!state) { state = { brightness: null, volume: null, muted: null, input: null }; this.local.set(id, state); }
     return state;
   }
-
   setBrightness(id: string, percent: number): Promise<void> {
     const value = clampPercent(percent);
     return this.write(id, (s) => (s.brightness = value), "ddc_set_brightness", { displayId: id, percent: value });
   }
-
   setVolume(id: string, percent: number): Promise<void> {
+    if (!this.displayById(id)?.supportsVolume) return Promise.resolve();
     const value = clampPercent(percent);
     return this.write(id, (s) => (s.volume = value), "ddc_set_volume", { displayId: id, percent: value });
   }
-
   setInputSource(id: string, source: number): Promise<void> {
-    if (!DDC_INPUT_SOURCES.some((option) => option.raw === source)) return Promise.resolve();
+    const d = this.displayById(id);
+    if (!d || !(d.supportedInputSources.length > 0 ? d.supportedInputSources.includes(source) : DDC_INPUT_SOURCES.some((o) => o.raw === source))) return Promise.resolve();
     return this.write(id, (s) => (s.input = source), "ddc_set_input_source", { displayId: id, source });
   }
-
   setMute(id: string, muted: boolean): Promise<void> {
-    return this.write(id, (s) => (s.muted = muted), "ddc_set_mute", { displayId: id, muted });
+    return this.displayById(id)?.supportsMute ? this.write(id, (s) => (s.muted = muted), "ddc_set_mute", { displayId: id, muted }) : Promise.resolve();
   }
 
   /** Lets tests wait for every in-flight IPC without sleeping. */
@@ -200,7 +249,7 @@ export class DdcDisplayController {
     args: Record<string, unknown>,
   ): Promise<void> {
     const invoke = this.invokeFn;
-    if (!this.enabled || !invoke || !this.displays.includes(id)) return Promise.resolve();
+    if (!this.enabled || !invoke || !this.displayById(id)) return Promise.resolve();
     apply(this.stateFor(id));
     const token = this.generation;
     const task: Promise<void> = (async () => {
@@ -237,67 +286,60 @@ export function getDdcDisplayController(): DdcDisplayController {
 
 type Escape = (raw: string) => string;
 
-function displayLabel(index: number): string {
-  return tr3("外接显示器 {n}", "外接顯示器 {n}", "External Display {n}").replace("{n}", String(index + 1));
-}
+const displayTitle = (d: DdcDisplayMetadata, i: number) => d.name || tr3("外接显示器 {n}", "外接顯示器 {n}", "External Display {n}").replace("{n}", String(i + 1));
+const renderXiaomiBadge = (esc: Escape) => `<span class="cc-ddc-badge" data-ddc-xiaomi-badge aria-label="${esc(tr3("已识别为小米/Redmi 显示器", "已識別為小米/Redmi 顯示器", "Recognized as a Xiaomi/Redmi monitor"))}">${esc(tr3("小米显示器", "小米顯示器", "Xiaomi"))}</span>`;
 
 /** The panel card. Empty string while the feature is off or no display was found. */
 export function renderDdcPanelSection(ctrl: DdcDisplayController, esc: Escape): string {
   if (!ctrl.showsPanelCard) return "";
-  const cards = ctrl.displays.map((id, index) => renderDisplayCard(ctrl, id, index, esc)).join("");
+  const cards = ctrl.displays.map((display, index) => renderDisplayCard(ctrl, display, index, esc)).join("");
   const error = ctrl.error
     ? `<p class="cc-ddc-error" role="status">${SF_ICONS.exclamationTriangleFill}<span>${esc(ctrl.error)}</span></p>`
     : "";
   return `<section class="cc-ddc-section" data-ddc-section aria-label="${esc(tr3("外接显示器", "外接顯示器", "External Displays"))}">${cards}${error}</section>`;
 }
 
-function renderDisplayCard(ctrl: DdcDisplayController, id: string, index: number, esc: Escape): string {
-  const state = ctrl.local.get(id) ?? { brightness: null, volume: null, muted: null, input: null };
-  const safeId = esc(id);
-  const brightness = state.brightness ?? 50;
-  const volume = state.volume ?? 50;
-  const muted = state.muted === true;
+function renderDisplayCard(ctrl: DdcDisplayController, display: DdcDisplayMetadata, index: number, esc: Escape): string {
+  const state = ctrl.local.get(display.id) ?? { brightness: display.brightnessPercent, volume: display.volumePercent, muted: display.isMuted, input: display.inputSource };
+  const safeId = esc(display.id), brightness = state.brightness ?? 50, volume = state.volume ?? 50, muted = state.muted === true;
   const refresh = index === 0
     ? `<button type="button" class="cc-ddc-refresh${ctrl.isRefreshing ? " is-spinning" : ""}" data-ddc-refresh ${ctrl.isRefreshing ? "disabled" : ""}
         aria-label="${esc(tr3("刷新外接显示器", "重新整理外接顯示器", "Refresh external displays"))}" title="${esc(tr3("刷新外接显示器", "重新整理外接顯示器", "Refresh external displays"))}">${SF_ICONS.arrowClockwise}</button>`
     : "";
-  const inputs = DDC_INPUT_SOURCES.map((option) => {
-    const active = state.input === option.raw;
-    return `<button type="button" class="cc-seg-pill${active ? " is-active" : ""}" data-ddc-input="${safeId}" data-ddc-source="${option.raw}" aria-pressed="${active}">${esc(option.label)}</button>`;
-  }).join("");
+  const subtitle = state.input !== null
+    ? tr3("外接显示器 · 当前 {source}", "外接顯示器 · 目前 {source}", "External display · on {source}").replace("{source}", ddcInputSourceLabel(state.input))
+    : tr3("外接显示器 · DDC/CI", "外接顯示器 · DDC/CI", "External display · DDC/CI");
   const sliderGroup = (kind: "brightness" | "volume", value: number, label: string, icon: string) => `
       <div class="cc-slider-group">
         <div class="cc-slider-label"><span>${esc(label)}</span><strong data-ddc-${kind}-value="${safeId}">${state[kind] === null ? "—" : `${value}%`}</strong></div>
         ${renderLiquidGlassSlider({
-          variant: "drawer",
-          min: 0,
-          max: 100,
-          step: 1,
-          value,
-          formattedValue: `${value}%`,
-          leadingIconSvg: icon,
-          toneClass: "is-blue",
-          inputDataAttrs: `data-ddc-${kind}="${safeId}"`,
-          ariaAttrs: `aria-label="${esc(label)}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${value}" aria-valuetext="${value}%"`,
+          variant: "drawer", min: 0, max: 100, step: 1, value, formattedValue: `${value}%`, leadingIconSvg: icon, toneClass: "is-blue",
+          inputDataAttrs: `data-ddc-${kind}="${safeId}"`, ariaAttrs: `aria-label="${esc(label)}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${value}" aria-valuetext="${value}%"`,
         })}
       </div>`;
+  const brightnessBlock = display.supportsBrightness ? sliderGroup("brightness", brightness, tr3("亮度", "亮度", "Brightness"), SF_ICONS.sunMaxFill) : "";
+  const inputsBlock = display.supportsInputSource && display.supportedInputSources.length > 0
+    ? `<div class="cc-segmented-pills cc-ddc-inputs" role="group" aria-label="${esc(tr3("输入源", "輸入來源", "Input Source"))}">${
+        display.supportedInputSources.map((raw) => {
+          const active = state.input === raw;
+          return `<button type="button" class="cc-seg-pill${active ? " is-active" : ""}" data-ddc-input="${safeId}" data-ddc-source="${raw}" aria-pressed="${active}">${esc(ddcInputSourceLabel(raw))}</button>`;
+        }).join("")}</div>`
+    : "";
+  const muteButton = display.supportsMute
+    ? `<button type="button" class="cc-ddc-mute${muted ? " is-active" : ""}" data-ddc-mute="${safeId}" aria-pressed="${muted}" aria-label="${esc(muted ? tr3("取消静音", "取消靜音", "Unmute") : tr3("静音", "靜音", "Mute"))}">${muted ? SF_ICONS.speakerSlash : SF_ICONS.speakerFill}</button>`
+    : "";
+  const volumeBlock = display.supportsVolume ? `<div class="cc-ddc-volume-row">${sliderGroup("volume", volume, tr3("音量", "音量", "Volume"), muted ? SF_ICONS.speakerSlash : SF_ICONS.speakerWave)}${muteButton}</div>` : "";
   return `
     <article class="cc-ddc-card" data-ddc-display="${safeId}">
       <header class="cc-ddc-header">
         <span class="cc-ddc-icon" aria-hidden="true">${SF_ICONS.sliderHorizontal}</span>
         <div class="cc-ddc-title">
-          <strong>${esc(displayLabel(index))}</strong>
-          <span>DDC/CI</span>
+          <div class="cc-ddc-title-row"><strong>${esc(displayTitle(display, index))}</strong>${display.isRedmiOrXiaomi ? renderXiaomiBadge(esc) : ""}</div>
+          <span>${esc(subtitle)}</span>
         </div>
         ${refresh}
       </header>
-      ${sliderGroup("brightness", brightness, tr3("亮度", "亮度", "Brightness"), SF_ICONS.sunMaxFill)}
-      <div class="cc-segmented-pills cc-ddc-inputs" role="group" aria-label="${esc(tr3("输入源", "輸入來源", "Input Source"))}">${inputs}</div>
-      <div class="cc-ddc-volume-row">
-        ${sliderGroup("volume", volume, tr3("音量", "音量", "Volume"), muted ? SF_ICONS.speakerSlash : SF_ICONS.speakerWave)}
-        <button type="button" class="cc-ddc-mute${muted ? " is-active" : ""}" data-ddc-mute="${safeId}" aria-pressed="${muted}"
-          aria-label="${esc(muted ? tr3("取消静音", "取消靜音", "Unmute") : tr3("静音", "靜音", "Mute"))}">${muted ? SF_ICONS.speakerSlash : SF_ICONS.speakerFill}</button>
-      </div>
+      ${brightnessBlock}${inputsBlock}${volumeBlock}
     </article>`;
 }
 
@@ -320,7 +362,18 @@ export function renderDdcSettingsSection(ctrl: DdcDisplayController, esc: Escape
           : ctrl.displays.length === 0
             ? tr3("未检测到外接显示器", "未偵測到外接顯示器", "No external display detected")
             : tr3("已检测到 {n} 台显示器", "已偵測到 {n} 台顯示器", "{n} display(s) detected").replace("{n}", String(ctrl.displays.length));
+    const displayRows = ctrl.displays.length > 0
+      ? `<ul class="cc-ddc-settings-list" style="list-style: none; margin: 6px 0 0 0; padding: 0;">${
+          ctrl.displays.map((display, index) => {
+            const state = ctrl.local.get(display.id), parts: string[] = [];
+            const brightness = state?.brightness ?? display.brightnessPercent, input = state?.input ?? display.inputSource;
+            if (brightness !== null) parts.push(tr3("亮度 {v}%", "亮度 {v}%", "Brightness {v}%").replace("{v}", String(brightness)));
+            if (input !== null) parts.push(ddcInputSourceLabel(input));
+            return `<li class="cc-field-row" data-ddc-settings-row="${esc(display.id)}"><span class="cc-ddc-title-row"><span>${esc(displayTitle(display, index))}</span>${display.isRedmiOrXiaomi ? renderXiaomiBadge(esc) : ""}</span><span class="cc-field-hint" style="margin: 0;">${esc(parts.join(" · ") || tr3("已连接", "已連線", "Connected"))}</span></li>`;
+          }).join("")}</ul>`
+      : "";
     summary = `
+        ${displayRows}
         <div class="cc-field-row" style="margin-top: 6px;">
           <p class="cc-field-hint" data-ddc-settings-status style="margin: 0;">${esc(status)}</p>
           <button type="button" class="cc-btn-secondary" data-ddc-scan ${ctrl.isRefreshing ? "disabled" : ""}>${esc(tr3("扫描外接显示器", "掃描外接顯示器", "Scan External Displays"))}</button>

@@ -20,6 +20,8 @@ export type SettingsAnchor =
   | "globalHotkey"
   | "voiceControl"
   | "setupGuide"
+  | "externalDisplayDdc"
+  | "tvBridge"
   | "dataSource"
   | "demoMode"
   | "haServerAddress"
@@ -144,6 +146,8 @@ export function resolveSettingsAnchorTab(anchor: SettingsAnchor, hasAvailableUpd
     case "globalHotkey":
     case "voiceControl":
     case "setupGuide":
+    case "externalDisplayDdc":
+    case "tvBridge":
     case "dashboardTitle":
       return "general";
     case "dataSource":
@@ -310,6 +314,18 @@ const RAW_SPECS: readonly RawAnchorSpec[] = [
     section: SEC_GENERAL,
     title: ["重新查看新手引导", "重新查看新手引導", "Reopen Setup Guide"],
     synonyms: ["新手引导", "新手引導", "首次设置", "引导", "教程", "上手", "三步上手", "onboarding", "setup guide", "tutorial", "walkthrough", "welcome", "xinshou", "yindao"],
+  },
+  {
+    anchor: "externalDisplayDdc",
+    section: SEC_GENERAL,
+    title: ["外接显示器控制（DDC/CI）", "外接顯示器控制（DDC/CI）", "External Display Control (DDC/CI)"],
+    synonyms: ["外接显示器", "显示器", "顯示器", "亮度", "输入源", "ddc", "ddcci", "ddc/ci", "monitor", "display", "redmi", "g27u", "xianshiqi"],
+  },
+  {
+    anchor: "tvBridge",
+    section: SEC_GENERAL,
+    title: ["多品牌电视桥接插件（可选）", "多品牌電視橋接外掛（選用）", "Multi-brand TV Bridge (Optional)"],
+    synonyms: ["电视", "電視", "电视桥接", "桥接", "插件", "tv", "tv bridge", "bridge", "webos", "bravia", "tizen", "adb", "dlna", "kodi", "dianshi"],
   },
   {
     anchor: "dataSource",

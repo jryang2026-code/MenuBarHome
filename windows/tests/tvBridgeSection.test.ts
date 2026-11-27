@@ -10,6 +10,7 @@ import { MenuMijiaWindowsApp } from "../src/ui/app.js";
 import { STORAGE_KEY } from "../src/ui/appConstants.js";
 import { applyCommand } from "../src/ui/commandDispatch.js";
 import { DEVICE_CATEGORY_IDS } from "../src/core/capabilityManifest.js";
+import { DeviceDeduplicator, extractBuiltInDeviceMacs, makeDeviceSourceIdentity } from "../src/core/dualSourceProvider.js";
 import {
   TV_BRIDGE_STORAGE_KEY,
   TVBridgeController,
@@ -405,5 +406,75 @@ describe("TV bridge section", () => {
     assert.equal(methods.at(-1), "snapshot");
     assert.equal(ctrl.status, "running");
     assert.equal(ctrl.panelDevices.length, 1);
+  });
+
+  it("suppresses a bridged TV on Windows when built-in HA/MIoT dual-source identities share its MAC under a different name (#571)", async () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ connectionMode: "homeAssistant", hasCompletedOnboarding: true, autoCheckUpdates: false }));
+    const { ctrl } = await enabledController({ rows: [{ nativeId: "tv-a", name: "Sony KD-65X90L", online: true, identity: { macAddresses: ["AA:BB:CC:DD:EE:FF"] } }] });
+    setTVBridgeControllerForTesting(ctrl);
+    try {
+      const haTv = tv("ha_living_tv", "客厅大屏"), miTv = tv("987654321", "小米客厅电视");
+      const merged = DeviceDeduplicator.merge({
+        homeAssistant: { home: { devices: [haTv], rooms: [], environmentReadings: [], scenes: [] }, identities: { [haTv.id]: makeDeviceSourceIdentity({ macAddresses: ["aa-bb-cc-dd-ee-ff"], name: haTv.name, roomName: haTv.roomName, kindTag: "tv" }) } },
+        xiaomiCloud: { home: { devices: [miTv], rooms: [], environmentReadings: [], scenes: [] }, identities: { [miTv.id]: makeDeviceSourceIdentity({ dids: ["987654321"], macAddresses: ["AA:BB:CC:DD:EE:FF"], name: miTv.name, roomName: miTv.roomName, kindTag: "tv" }) } },
+      });
+      assert.deepEqual(merged.deviceIdentities[haTv.id]?.macAddresses, ["aabbccddeeff"]);
+      const app = new MenuMijiaWindowsApp(win.document.querySelector("#app") as unknown as HTMLElement);
+      app.settings.connectionMode = "homeAssistant";
+      app.devices = [...merged.home.devices];
+      assert.ok(app.devices.some((d) => d.id === ID));
+      app.builtInDeviceMacs = extractBuiltInDeviceMacs(merged.deviceIdentities);
+      assert.ok(!app.devices.some((d) => d.id === ID) && app.devices.some((d) => d.id === haTv.id));
+    } finally { setTVBridgeControllerForTesting(null); }
+  });
+
+  it("cancels a bridge write when homeRevision changes during the async workstation-lock probe (#571)", async () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ connectionMode: "demo", hasCompletedOnboarding: true, autoCheckUpdates: false, blockControlWhileLocked: true }));
+    const { ctrl, rec } = await enabledController();
+    setTVBridgeControllerForTesting(ctrl);
+    let releaseLockProbe!: () => void; let lockProbes = 0;
+    Object.defineProperty(win, "__TAURI_INTERNALS__", {
+      value: { invoke: async (cmd: string) => { if (cmd !== "is_workstation_locked") return null; if (++lockProbes === 2) await new Promise<void>((r) => { releaseLockProbe = r; }); return false; } },
+      configurable: true,
+    });
+    try {
+      const app = new MenuMijiaWindowsApp(win.document.querySelector("#app") as unknown as HTMLElement);
+      app.settings.connectionMode = "homeAssistant"; app.settings.blockControlWhileLocked = true;
+      const before = rec.calls.length;
+      const writing = applyCommand(app, { kind: "mediaPlayPause", entityId: ID });
+      while (lockProbes < 2) await new Promise((r) => setTimeout(r, 0));
+      app.sourceEpoch.advance("home");
+      releaseLockProbe();
+      assert.equal(await writing, false);
+      await ctrl.settle();
+      assert.equal(rec.calls.slice(before).filter((c) => c.frame?.method === "control.execute").length, 0);
+    } finally { setTVBridgeControllerForTesting(null); }
+  });
+
+  it("ignores a delayed failing contextChanged close from a stale process after restart (#571)", async () => {
+    const calls: { cmd: string; method?: string }[] = [];
+    let rejectStale!: (err: Error) => void; let contextCount = 0;
+    const invoke = async (cmd: string, args?: Record<string, unknown>) => {
+      const frame = args?.frame as TVBridgeFrame | undefined;
+      calls.push({ cmd, ...(frame?.method ? { method: frame.method } : {}) });
+      if (cmd !== "tv_bridge_request" || !frame) return null;
+      if (frame.method === "host.contextChanged" && ++contextCount === 1) return new Promise<TVBridgeFrame>((_, rej) => { rejectStale = rej; });
+      return { jsonrpc: "2.0", id: frame.id, result: frame.method === "snapshot" ? { capturedAt: "now", devices: DEFAULT_ROWS } : {} };
+    };
+    const ctrl = new TVBridgeController({ storage: memoryStorage(), secrets: memorySecrets(), invoke });
+    ctrl.onPanelShown(); ctrl.setEnabled(true); ctrl.setBinaryPath("C:\\Tools\\mbh-tv-bridge.exe");
+    await ctrl.addDevice({ name: "卧室电视", roomName: "卧室", driver: "kodi_jsonrpc", host: "192.168.1.9" });
+    await ctrl.settle();
+    ctrl.onPanelHidden();
+    while (contextCount < 1) await new Promise((r) => setTimeout(r, 0));
+    await ctrl.dispose(); ctrl.onPanelShown(); await ctrl.refresh();
+    const shutdownsBefore = calls.filter((c) => c.cmd === "tv_bridge_shutdown").length;
+    rejectStale(new Error("stale pipe closed"));
+    await ctrl.settle();
+    assert.equal(calls.filter((c) => c.cmd === "tv_bridge_shutdown").length, shutdownsBefore);
+    const startsBefore = calls.filter((c) => c.cmd === "tv_bridge_start").length;
+    await ctrl.execute({ kind: "mediaPlayPause", entityId: ID });
+    await ctrl.settle();
+    assert.equal(calls.filter((c) => c.cmd === "tv_bridge_start").length, startsBefore);
   });
 });

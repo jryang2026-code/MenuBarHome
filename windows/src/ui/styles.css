@@ -7183,6 +7183,8 @@ html.is-settings-window[data-native-backdrop="mica"] .cc-popover.scheme-light .c
   min-width: 0;
 }
 
+.cc-ddc-title-row { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+.cc-ddc-badge { display: inline-flex; align-items: center; flex: none; padding: 1px 6px; border-radius: 999px; font-size: 11px; line-height: 16px; font-weight: 600; color: #d97706; background: rgba(245, 158, 11, 0.14); }
 .cc-ddc-title strong {
   font-size: 14px;
   line-height: 20px;
@@ -7193,7 +7195,7 @@ html.is-settings-window[data-native-backdrop="mica"] .cc-popover.scheme-light .c
   white-space: nowrap;
 }
 
-.cc-ddc-title span {
+.cc-ddc-title > span {
   font-size: 12px;
   line-height: 16px;
   color: var(--text-secondary);
