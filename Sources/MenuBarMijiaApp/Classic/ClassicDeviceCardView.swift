@@ -1034,6 +1034,9 @@ public struct ClassicDeviceCardView: View {
 
     private func speakerDrawer(_ spec: SpeakerSpec) -> some View {
         VStack(alignment: .leading, spacing: 9) {
+            if let playback = spec.playback, playback.hasContent {
+                MediaNowPlayingView(device: device, mediaEntityId: spec.mediaEntityId, playback: playback, placeholderSymbol: "hifispeaker.fill", store: store, accent: accent, classic: true)
+            }
             HStack(spacing: 6) {
                 if spec.muteSwitchEntityId != nil {
                 Button {
@@ -1140,8 +1143,7 @@ public struct ClassicDeviceCardView: View {
 
     private func tvDrawer(_ spec: TVSpec) -> some View {
         let isLG = LGWebOSProtocol.isLGEntity(spec.mediaEntityId)
-        let isMiot = MiotAddress.parse(spec.mediaEntityId) != nil
-        let showMute = isLG || !isMiot || spec.muteSwitchEntityId != nil
+        let showMute = isLG || spec.muteSwitchEntityId != nil
         let showVolume = spec.volumeWritable && spec.volumePresent
         return VStack(alignment: .leading, spacing: 8) {
             if spec.isPairingPromptActive {

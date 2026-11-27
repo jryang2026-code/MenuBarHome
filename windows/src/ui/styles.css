@@ -7056,12 +7056,13 @@ html.is-settings-window[data-native-backdrop="mica"] .cc-popover.scheme-light .c
 .cc-tv-nowplaying { display: flex; flex-direction: column; gap: 8px; }
 .cc-tv-np-row { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .cc-tv-artwork {
-  flex: none; width: 46px; height: 46px; border-radius: 9px;
+  flex: none; width: 46px; height: 46px; border-radius: 9px; overflow: hidden;
   display: grid; place-items: center; color: var(--win-accent);
   background: linear-gradient(135deg, color-mix(in srgb, var(--win-accent) 32%, transparent), color-mix(in srgb, var(--win-accent) 12%, transparent));
   border: 1px solid var(--win-control-stroke);
 }
 .cc-tv-artwork svg { width: 20px; height: 20px; }
+.cc-tv-artwork-img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .cc-tv-np-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
 .cc-tv-np-title { font-size: 13px; font-weight: 600; color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .cc-tv-np-meta { display: flex; align-items: center; gap: 5px; min-width: 0; }

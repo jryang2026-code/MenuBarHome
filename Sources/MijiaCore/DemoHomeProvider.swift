@@ -331,6 +331,7 @@ public actor DemoHomeProvider: HomeProvider {
                     mediaEntityId: "media_player.demo_living_tv",
                     state: "on",
                     volumePercent: 22,
+                    muteSwitchEntityId: "media_player.demo_living_tv#mute",
                     currentSource: "HDMI 1",
                     availableSources: ["HDMI 1", "HDMI 2", "Netflix"]
                 ))
@@ -594,7 +595,8 @@ public actor DemoHomeProvider: HomeProvider {
                     spec.state = isOn ? "on" : "standby"
                     if isOn { spec.isScreenOff = false }
                 case .setSwitch(let entityId, let isOn)
-                    where isLG && entityId == LGWebOSProtocol.muteEntityId:
+                    where (isLG && entityId == LGWebOSProtocol.muteEntityId)
+                    || entityId == spec.muteSwitchEntityId:
                     spec.isMuted = isOn
                 case .setSwitch(let entityId, let isOn)
                     where isLG && entityId == LGWebOSProtocol.screenOffEntityId:

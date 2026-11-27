@@ -90,6 +90,12 @@ pub(crate) struct NativeHttpResponse {
     pub(crate) body: String,
 }
 
+pub(crate) struct NativeHttpBytesResponse {
+    pub(crate) status: u16,
+    pub(crate) headers: HashMap<String, String>,
+    pub(crate) body: Vec<u8>,
+}
+
 /// Formats a `reqwest::Error` with its full `std::error::Error::source()` chain and an explicit
 /// timeout marker (#256). `reqwest` 0.12 stopped inlining `source()` into `Display`, so a 15-second
 /// long-poll timeout formatted via `e.to_string()` alone becomes a bare
@@ -315,6 +321,14 @@ pub(crate) async fn native_http_with_scope(
     timeout_ms: Option<u64>,
     ha_scope: Option<String>,
 ) -> Result<NativeHttpResponse, String> {
+    let resp = native_http_bytes_with_scope(url, method, headers, body, follow_redirects, timeout_ms, ha_scope, MAX_HTTP_RESPONSE_BYTES).await?;
+    Ok(NativeHttpResponse { status: resp.status, headers: resp.headers, body: String::from_utf8_lossy(&resp.body).into_owned() })
+}
+
+pub(crate) async fn native_http_bytes_with_scope(
+    url: String, method: Option<String>, headers: Option<HashMap<String, String>>, body: Option<String>,
+    follow_redirects: Option<bool>, timeout_ms: Option<u64>, ha_scope: Option<String>, max_bytes: usize,
+) -> Result<NativeHttpBytesResponse, String> {
     let allowed_origins = allowed_origins_snapshot()?;
     let parsed_url = reqwest::Url::parse(&url).map_err(|e| format!("native_http 地址无效：{e}"))?;
     check_url_allowed(&parsed_url, &allowed_origins)?;
@@ -387,10 +401,10 @@ pub(crate) async fn native_http_with_scope(
     }
     if resp
         .content_length()
-        .is_some_and(|len| len > MAX_HTTP_RESPONSE_BYTES as u64)
+        .is_some_and(|len| len > max_bytes as u64)
     {
         return Err(format!(
-            "native_http 响应体超过 {MAX_HTTP_RESPONSE_BYTES} 字节上限"
+            "native_http 响应体超过 {max_bytes} 字节上限"
         ));
     }
 
@@ -410,13 +424,12 @@ pub(crate) async fn native_http_with_scope(
 
     let mut body_bytes = Vec::new();
     while let Some(chunk) = resp.chunk().await.map_err(|e| format_reqwest_error(&e))? {
-        append_bounded_response_chunk(&mut body_bytes, &chunk, MAX_HTTP_RESPONSE_BYTES)?;
+        append_bounded_response_chunk(&mut body_bytes, &chunk, max_bytes)?;
     }
-    let text = String::from_utf8_lossy(&body_bytes).into_owned();
-    Ok(NativeHttpResponse {
+    Ok(NativeHttpBytesResponse {
         status,
         headers: out_headers,
-        body: text,
+        body: body_bytes,
     })
 }
 

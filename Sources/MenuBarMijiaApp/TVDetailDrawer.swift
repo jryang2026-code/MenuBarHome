@@ -18,7 +18,7 @@ struct TVDetailDrawer: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             if let playback = spec.playback, playback.hasContent {
-                TVNowPlayingView(device: device, spec: spec, playback: playback, store: store, accent: accent, classic: classic)
+                MediaNowPlayingView(device: device, mediaEntityId: spec.mediaEntityId, playback: playback, placeholderSymbol: playback.title == nil ? "tv" : "play.rectangle.fill", store: store, accent: accent, classic: classic)
             }
             if spec.supportsRemotePad {
                 TVRemotePadView(device: device, spec: spec, store: store, accent: accent, classic: classic)
@@ -29,10 +29,11 @@ struct TVDetailDrawer: View {
 
 // MARK: - Now Playing
 
-private struct TVNowPlayingView: View {
+struct MediaNowPlayingView: View {
     let device: SmartDevice
-    let spec: TVSpec
+    let mediaEntityId: String
     let playback: MediaPlaybackState
+    let placeholderSymbol: String
     let store: HomeStore
     let accent: Color
     let classic: Bool
@@ -96,7 +97,7 @@ private struct TVNowPlayingView: View {
                     .aspectRatio(contentMode: .fill)
                     .transition(.opacity)
             } else {
-                Image(systemName: playback.title == nil ? "tv" : "play.rectangle.fill")
+                Image(systemName: placeholderSymbol)
                     .font(.system(size: 18, weight: .semibold))
                     .foregroundStyle(accent.opacity(0.9))
             }
@@ -113,7 +114,7 @@ private struct TVNowPlayingView: View {
     }
 
     private func loadArtwork() async {
-        guard let path = playback.artworkURL, spec.mediaEntityId.hasPrefix("media_player.") else {
+        guard let path = playback.artworkURL, mediaEntityId.hasPrefix("media_player.") else {
             artwork = nil
             return
         }
