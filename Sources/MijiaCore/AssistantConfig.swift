@@ -88,12 +88,12 @@ public enum AssistantProviderPreset: String, CaseIterable, Identifiable, Sendabl
         case .deepSeek: return "deepseek-chat"
         case .siliconFlow: return "deepseek-ai/DeepSeek-V3"
         case .dashScope: return "qwen-plus"
-        case .zhipuGLM: return "glm-4-flash"
+        case .zhipuGLM: return "glm-4.5-flash"
         case .moonshotKimi: return "kimi-k2-0711-preview"
-        case .openAI: return "gpt-4o-mini"
+        case .openAI: return "gpt-4.1-mini"
         case .gemini: return "gemini-2.5-flash"
         case .groq: return "llama-3.3-70b-versatile"
-        case .ollama: return "qwen2.5:7b"
+        case .ollama: return "qwen3:8b"
         case .custom: return ""
         }
     }
@@ -107,21 +107,21 @@ public enum AssistantProviderPreset: String, CaseIterable, Identifiable, Sendabl
         case .deepSeek:
             return ["deepseek-chat", "deepseek-reasoner"]
         case .siliconFlow:
-            return ["deepseek-ai/DeepSeek-V3", "Qwen/Qwen2.5-72B-Instruct"]
+            return ["deepseek-ai/DeepSeek-V3", "Qwen/Qwen3-32B", "Qwen/Qwen2.5-72B-Instruct"]
         case .dashScope:
             return ["qwen-plus", "qwen-turbo", "qwen-max"]
         case .zhipuGLM:
-            return ["glm-4-flash", "glm-4-plus"]
+            return ["glm-4.5-flash", "glm-4-flash", "glm-4-plus"]
         case .moonshotKimi:
             return ["kimi-k2-0711-preview", "moonshot-v1-8k"]
         case .openAI:
-            return ["gpt-4o-mini", "gpt-4.1-mini"]
+            return ["gpt-4.1-mini", "gpt-4o-mini"]
         case .gemini:
             return ["gemini-2.5-flash", "gemini-2.5-pro"]
         case .groq:
             return ["llama-3.3-70b-versatile", "deepseek-r1-distill-llama-70b"]
         case .ollama:
-            return ["qwen2.5:7b", "deepseek-r1:8b"]
+            return ["qwen3:8b", "qwen2.5:7b", "deepseek-r1:8b"]
         case .custom:
             return []
         }

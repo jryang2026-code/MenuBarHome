@@ -110,9 +110,9 @@ function confirmationHazardMatches(hazard: ConfirmationHazard, operation: Intent
       if (operation.kind === "hvacMode") return operation.mode !== "off";
       return true;
     case "anyPower":
-      return operation.kind === "power";
+      return operation.kind === "power" || operation.kind === "coverPosition";
     case "powerOn":
-      return operation.kind === "power" && operation.isOn;
+      return (operation.kind === "power" && operation.isOn) || (operation.kind === "coverPosition" && operation.percent > 0);
     case "powerOnOrHotter":
       if (operation.kind === "power") return operation.isOn;
       if (operation.kind === "hvacMode") return operation.mode !== "off";

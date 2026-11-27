@@ -358,6 +358,8 @@ const CATALOG: Readonly<Record<string, readonly [string, string]>> = {
   "设备列表已更新，请重新执行": ["设备列表已更新，请重新执行", "The device list changed; please run the command again"],
   "没有可撤销的操作（仅支持 10 分钟内的操作撤销）": ["没有可撤销的操作（仅支持 10 分钟内的操作撤销）", "Nothing to undo (undo covers the last 10 minutes)"],
   "无法找到指令对应的设备": ["无法找到指令对应的设备", "No matching device for that command"],
+  "该设备不支持此操作": ["该设备不支持此操作", "This device does not support that action"],
+  "未找到匹配的设备，请检查房间或设备名称": ["未找到匹配的设备，请检查房间或设备名称", "No matching device found; check the room or device name"],
   "没有发送。「打开书房灯」这类简单指令不用联网。": ["没有发送。「打开书房灯」这类简单指令不用联网。", "Not sent — simple commands like “turn on the study light” never need the network."],
   "未命中本地规则。请在设置中填写 AI 服务的 API Key（支持 OpenRouter Jev、原生 Jev、DeepSeek 等）。": ["未命中本地规则。请在设置中填写 AI 服务的 API Key（支持 OpenRouter Jev、原生 Jev、DeepSeek 等）。", "No local rule matched. Add an API key for the AI service in Settings (OpenRouter Jev, native Jev, DeepSeek, …)."],
   "这句话本机没听懂，要交给云端 AI（{endpoint}）处理吗？会发送：这句话、设备名称/房间/状态。只问这一次，可在设置里撤销。": ["这句话本机没听懂，要交给云端 AI（{endpoint}）处理吗？会发送：这句话、设备名称/房间/状态。只问这一次，可在设置里撤销。", "Couldn't parse that offline. Send it to the cloud AI ({endpoint})? It receives this sentence plus device names, rooms and states. Asked once; revocable in Settings."],

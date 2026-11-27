@@ -538,6 +538,8 @@ struct GoldenCorpusTests {
             return ExpectedIntent(targetId: intent.targetId, kind: "targetTemperature", value: .number(t))
         case .fanPercentage(let percent):
             return ExpectedIntent(targetId: intent.targetId, kind: "fanPercentage", value: .number(Double(percent)))
+        case .coverPosition(let percent):
+            return ExpectedIntent(targetId: intent.targetId, kind: "coverPosition", value: .number(Double(percent)))
         case .fanSpeed(let s):
             return ExpectedIntent(targetId: intent.targetId, kind: "fanSpeed", value: .string(s))
         case .oscillation(let on):
@@ -1397,6 +1399,7 @@ struct GoldenCorpusTests {
         case ("hvacMode", .string(let mode)): return DeviceIntent(targetId: target, operation: .hvacMode(mode))
         case ("targetTemperature", .number(let v)): return DeviceIntent(targetId: target, operation: .targetTemperature(v))
         case ("fanPercentage", .number(let v)): return DeviceIntent(targetId: target, operation: .fanPercentage(Int(v)))
+        case ("coverPosition", .number(let v)): return DeviceIntent(targetId: target, operation: .coverPosition(Int(v)))
         case ("fanSpeed", .string(let speed)): return DeviceIntent(targetId: target, operation: .fanSpeed(speed))
         case ("oscillation", .bool(let on)): return DeviceIntent(targetId: target, operation: .oscillation(on))
         case ("activateScene", _): return DeviceIntent(targetId: target, operation: .activateScene)
@@ -2056,6 +2059,7 @@ struct GoldenCorpusTests {
         case hvacMode(String)
         case targetTemperature(Double)
         case brightness(Int)
+        case coverPosition(Int)
         case fanSpeed(String)
 
         private enum CodingKeys: String, CodingKey {
@@ -2074,6 +2078,8 @@ struct GoldenCorpusTests {
                 self = .targetTemperature(try container.decode(Double.self, forKey: .celsius))
             case "brightness":
                 self = .brightness(try container.decode(Int.self, forKey: .percent))
+            case "coverPosition":
+                self = .coverPosition(try container.decode(Int.self, forKey: .percent))
             case "fanSpeed":
                 self = .fanSpeed(try container.decode(String.self, forKey: .speed))
             default:
@@ -2095,6 +2101,8 @@ struct GoldenCorpusTests {
                 return .targetTemperature(celsius)
             case .brightness(let percent):
                 return .brightness(percent)
+            case .coverPosition(let percent):
+                return .coverPosition(percent)
             case .fanSpeed(let speed):
                 return .fanSpeed(speed)
             }
@@ -2105,7 +2113,7 @@ struct GoldenCorpusTests {
     func confirmationGoldenCorpus() throws {
         let fixtureURL = try Self.locateGoldenFixture("Tests/Fixtures/confirmation_golden.json")
         let corpus = try JSONDecoder().decode(ConfirmationCorpus.self, from: Data(contentsOf: fixtureURL))
-        #expect(corpus.rows.count == 96)
+        #expect(corpus.rows.count == 103)
         #expect(corpus.decisionRows.count == 4)
         #expect(corpus.facetRows.count == 12)
         #expect(Set(corpus.decisionRows.map(\.id)).count == corpus.decisionRows.count)

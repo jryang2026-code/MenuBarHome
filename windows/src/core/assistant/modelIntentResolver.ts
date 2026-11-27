@@ -1,5 +1,5 @@
 import type { HttpTransport } from "../miCloudClient.js";
-import type { AssistantSuggestion, HomeScene, IntentOperation, IntentPlan, SmartDevice } from "../models.js";
+import { isDeviceActiveOn, type AssistantSuggestion, type HomeScene, type IntentOperation, type IntentPlan, type SmartDevice } from "../models.js";
 import {
   DEFAULT_CONFIRMATION_POLICY,
   ModelActionPolicy,
@@ -19,7 +19,9 @@ import {
 } from "./provider.js";
 import {
   buildIntentCatalog,
+  CHAT_CATALOG_TOKEN_BUDGET,
   formatTemperatureValue,
+  INTENT_PLAN_RESPONSE_FORMAT,
   type IntentCatalog,
   buildProactiveChatRequestBody,
   buildProactiveSystemOneRequestBody,
@@ -379,7 +381,12 @@ export class ModelIntentResolver {
     }
   }
 
-  static systemPrompt(catalog: IntentCatalog, context: AssistantContext = EMPTY_ASSISTANT_CONTEXT): string {
+  static systemPrompt(
+    catalog: IntentCatalog,
+    context: AssistantContext = EMPTY_ASSISTANT_CONTEXT,
+    mention = "",
+    maxCatalogTokens = CHAT_CATALOG_TOKEN_BUDGET,
+  ): string {
     const contextParts = [
       context.timeSummary,
       context.environmentSummary,
@@ -389,15 +396,20 @@ export class ModelIntentResolver {
       .map((field) => cleanPromptField(field))
       .filter((field) => field.length > 0);
     const contextBlock = contextParts.length > 0 ? `\n当前环境与习惯：${contextParts.join("；")}\n` : "";
+    const preferredIds = new Set<string>(
+      catalog.aliasDevices.filter(({ device }) => isDeviceActiveOn(device)).map(({ device }) => device.id),
+    );
+    const catalogText = catalog.textFitting(maxCatalogTokens, mention, preferredIds);
     return (
       `你是智能家居指令解析器。把用户的中文指令转换为 JSON，只输出 JSON，不要解释。${contextBlock}\n` +
-      `${catalog.text}\n` +
-      `schema: {"actions":[{"device":"id","op":"power|brightness|brightness_step|color_temp|effect|hvac_mode|temperature|temperature_step|fan_speed|oscillation|scene","value":...}],"reply":"一句话中文回执"}\n` +
+      `${catalogText}\n` +
+      `schema: {"actions":[{"device":"id","op":"power|brightness|brightness_step|color_temp|effect|hvac_mode|temperature|temperature_step|fan_speed|fan_percentage|cover_position|oscillation|scene","value":...}],"reply":"一句话中文回执"}\n` +
       `规则：power 的 value 为 true/false；brightness 为 1-100（调暗用 20，调亮用 100）；color_temp 为开尔文；` +
       `effect 取 Day（日光模式）或 Night（月光/夜灯模式），且必须是该灯具的可用模式；` +
       `hvac_mode 取 cool/heat/dry/fan_only/auto/off 且必须是该设备的可用模式；temperature 为摄氏度数字；` +
       `brightness_step / temperature_step 是相对调节（"再暗一点"=-20，"调高两度"=2），优先用于"再…一点"类说法；` +
-      `fan_speed 取 high/medium/low/auto 或该设备"可选风速"里的原名；oscillation 为 true/false（风扇摇头）；` +
+      `fan_speed 取 high/medium/low/auto 或该设备"可选风速"里的原名；fan_percentage 为 1-100 风速百分比；` +
+      `cover_position 为 0-100 窗帘/开合设备位置百分比（0=关，100=开）；oscillation 为 true/false（风扇摇头）；` +
       `scene 的 device 填场景 id，value 填 null。只能使用上面列出的 id。` +
       `无法执行时 actions 为空数组，并在 reply 中简短说明原因。`
     );
@@ -412,7 +424,7 @@ export class ModelIntentResolver {
   ): Promise<IntentPlan> {
     const url = this.endpointURL("/chat/completions");
     const catalog = buildIntentCatalog(devices, scenes);
-    const prompt = ModelIntentResolver.systemPrompt(catalog, context);
+    const prompt = ModelIntentResolver.systemPrompt(catalog, context, utterance);
 
     const resp = await this.sendChatCompletion(
       url,
@@ -427,6 +439,7 @@ export class ModelIntentResolver {
           { role: "user", content: utterance },
         ],
         temperature: 0,
+        response_format: INTENT_PLAN_RESPONSE_FORMAT,
       },
     );
 
@@ -531,6 +544,12 @@ export class ModelIntentResolver {
       case "fan_mode":
       case "preset":
         return typeof val === "string" ? { kind: "fanSpeed", speed: val } : null;
+      case "fan_percentage":
+      case "fan_percent":
+        return Number.isFinite(numVal) ? { kind: "fanPercentage", percent: Math.round(numVal) } : null;
+      case "cover_position":
+      case "position":
+        return Number.isFinite(numVal) ? { kind: "coverPosition", percent: Math.round(numVal) } : null;
       case "oscillation":
       case "swing":
         return boolVal === null ? null : { kind: "oscillation", enabled: boolVal };
@@ -541,25 +560,39 @@ export class ModelIntentResolver {
   }
 
   /**
-   * Sends an OpenAI-compatible chat request. Some models only accept their own fixed
-   * sampling temperature (e.g. Kimi Code rejects `temperature: 0`, #260), so a 400 whose
-   * body names `temperature` is retried once without that field. Mirrors macOS
-   * `sendChatCompletion`.
+   * Sends an OpenAI-compatible chat request, automatically retrying without unsupported
+   * `response_format` (third-party relays) or `temperature` (e.g. Kimi Code, #260).
    */
   private async sendChatCompletion(
     url: string,
     headers: Record<string, string>,
     body: Record<string, unknown>,
   ) {
-    const resp = await this.transport({ url, method: "POST", headers, body: JSON.stringify(body) });
-    if (resp.status === 200) return resp;
-    if (resp.status === 400 && "temperature" in body && /temperature/i.test(resp.body.slice(0, 4096))) {
-      const { temperature: _dropped, ...withoutTemperature } = body;
-      const retry = await this.transport({ url, method: "POST", headers, body: JSON.stringify(withoutTemperature) });
-      if (retry.status === 200) return retry;
-      throw new Error(this.friendlyHttpError(retry.status));
+    let current: Record<string, unknown> = body;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const resp = await this.transport({ url, method: "POST", headers, body: JSON.stringify(current) });
+      if (resp.status >= 200 && resp.status < 300) return resp;
+      if (resp.status !== 400 && resp.status !== 422) {
+        throw new Error(this.friendlyHttpError(resp.status));
+      }
+      const snippet = resp.body.slice(0, 4096);
+      const next = { ...current };
+      let changed = false;
+      if (
+        "response_format" in next &&
+        /(response[_ ]format|json_schema|structured|grammar|schema)/i.test(snippet)
+      ) {
+        delete next["response_format"];
+        changed = true;
+      }
+      if ("temperature" in next && /temperature/i.test(snippet)) {
+        delete next["temperature"];
+        changed = true;
+      }
+      if (!changed) throw new Error(this.friendlyHttpError(resp.status));
+      current = next;
     }
-    throw new Error(this.friendlyHttpError(resp.status));
+    throw new Error(this.friendlyHttpError(400));
   }
 
   private friendlyHttpError(status: number): string {

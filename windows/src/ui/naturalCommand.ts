@@ -233,8 +233,8 @@ export async function handleNaturalCommand(
 
     try {
       const aliasedDevices = withAliases(host.layout, host.devices);
-      const localPlan = LocalIntentParser.parse(trimmed, aliasedDevices, host.scenes, localParseOptions(host));
-      let plan: IntentPlan | null = localPlan;
+      const localOutcome = LocalIntentParser.parseWithDiagnostic(trimmed, aliasedDevices, host.scenes, localParseOptions(host));
+      let plan: IntentPlan | null = localOutcome.kind === "matched" ? localOutcome.plan : null;
       let sourceLabel = t("本地直达");
 
       if (
@@ -254,6 +254,21 @@ export async function handleNaturalCommand(
           host.render();
           return;
         }
+      }
+
+      if (!plan && localOutcome.kind === "missed" && localOutcome.reason !== "unrecognizedPhrasing") {
+        host.pendingSuggestions = [];
+        host.replyBanner = {
+          text:
+            localOutcome.reason === "unsupportedAction"
+              ? t("该设备不支持此操作")
+              : t("未找到匹配的设备，请检查房间或设备名称"),
+          source: t("本地直达"),
+          isError: true,
+        };
+        host.isResolvingIntent = false;
+        host.render();
+        return;
       }
 
       if (!plan) {

@@ -14,6 +14,7 @@ export interface AssistantContext {
   readonly environmentSummary: string;
   readonly activeDevicesSummary: string;
   readonly habitSummary: string;
+  readonly favoriteDeviceIds?: readonly string[];
 }
 
 export const EMPTY_ASSISTANT_CONTEXT: AssistantContext = {
