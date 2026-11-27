@@ -1487,6 +1487,11 @@ async function applyTVBridgeCommand(
       recordWorkstationLockBlock(host);
       return "";
     }
+    if (origin.sourceRevision !== host.sourceRevision || origin.homeRevision !== host.homeRevision) return "";
+    if (!allowWhileLocked) {
+      const reconfirmed = origin.revalidateBeforeSend?.() ?? null;
+      if (reconfirmed !== null) return reconfirmed;
+    }
     const dev = host.devices.find((d) => d.id === deviceId);
     if (!bridge.enabled || !dev || !dev.isOnline) {
       return controlFailureUserMessage(null, {

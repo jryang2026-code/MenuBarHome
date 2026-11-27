@@ -261,6 +261,7 @@ public enum DeviceDeduplicator {
         mergedDevices.reserveCapacity(cards.count)
         var routes: [String: DeviceMergeRoute] = [:]
         var deviceBackends: [String: HomeBackend] = [:]
+        var mergedIdentities: [String: DeviceSourceIdentity] = [:]
         var pairedDeviceIDs: Set<String> = []
         /// Canonical card id → the paired source id whose stored preferences lost the card (#24).
         var preferenceAdoptions: [String: String] = [:]
@@ -375,6 +376,16 @@ public enum DeviceDeduplicator {
                 sourceDevice: card.winner.device
             )
             deviceBackends[canonicalID] = card.winner.backend
+            let sourceIdentities = [card.winner.identity, card.other?.identity].compactMap { $0 }
+            if !sourceIdentities.isEmpty {
+                mergedIdentities[canonicalID] = DeviceSourceIdentity(
+                    dids: sourceIdentities.flatMap(\.dids), macAddresses: sourceIdentities.flatMap(\.macAddresses), uniqueIds: sourceIdentities.flatMap(\.uniqueIds),
+                    model: canonicalDevice.model.isEmpty ? (card.winner.identity?.model ?? card.other?.identity?.model ?? "") : canonicalDevice.model,
+                    name: canonicalDevice.name.isEmpty ? (card.winner.identity?.name ?? card.other?.identity?.name ?? "") : canonicalDevice.name,
+                    roomName: canonicalDevice.roomName.isEmpty ? (card.winner.identity?.roomName ?? card.other?.identity?.roomName ?? "") : canonicalDevice.roomName,
+                    kindTag: canonicalDevice.kind.tag
+                )
+            }
         }
 
         updatedCanonical.reconcile(presentIDs: usedCanonicalIDs, at: registryNow)
@@ -412,6 +423,7 @@ public enum DeviceDeduplicator {
         if xiaomiCloud != nil && miConnected { activeBackends.insert(.xiaomiCloud) }
         home.activeBackends = activeBackends
         home.deviceBackends = deviceBackends
+        home.deviceIdentities = mergedIdentities
         home.pairedDeviceIDs = pairedDeviceIDs
         home.preferenceAdoptions = preferenceAdoptions
         let mergedIDs = Set(mergedDevices.map(\.id))

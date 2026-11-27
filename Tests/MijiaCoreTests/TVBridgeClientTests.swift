@@ -1,3 +1,8 @@
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 import XCTest
 @testable import MijiaCore
 
@@ -99,5 +104,26 @@ extension TVBridgeClientTests {
         let running = await manager.isRunning
         XCTAssertEqual(closeCount, 1)
         XCTAssertFalse(running)
+    }
+
+    func testTerminateAllEscalatesFromSigtermToSigkillWhenChildIgnoresSigterm() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("tv-bridge-sigkill-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let script = dir.appendingPathComponent("stubborn-bridge.sh")
+        try Data("#!/bin/sh\ntrap '' TERM\necho $$ > \"$MBH_DATA_DIR/pid.tmp\"\nmv \"$MBH_DATA_DIR/pid.tmp\" \"$MBH_DATA_DIR/pid\"\nwhile true; do sleep 0.2; done\n".utf8).write(to: script)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
+        let transport = try StdioTVBridgeTransport.launch(binaryPath: script.path, dataDir: dir, manifestPath: dir.appendingPathComponent("adapter-manifest.json"))
+        let pidFile = dir.appendingPathComponent("pid")
+        let waitDeadline = Date().addingTimeInterval(2.0)
+        while !FileManager.default.fileExists(atPath: pidFile.path) && Date() < waitDeadline { Thread.sleep(forTimeInterval: 0.01) }
+        let pid = try XCTUnwrap(Int32(try String(contentsOf: pidFile, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)))
+        defer { if pid > 1 { _ = kill(pid, SIGKILL) } }
+        XCTAssertEqual(kill(pid, 0), 0)
+        StdioTVBridgeTransport.terminateAllImmediately(gracePeriod: 0.05)
+        let exitDeadline = Date().addingTimeInterval(2.0)
+        while kill(pid, 0) == 0 && Date() < exitDeadline { Thread.sleep(forTimeInterval: 0.01) }
+        XCTAssertNotEqual(kill(pid, 0), 0, "SIGTERM-ignoring child must be escalated to SIGKILL")
+        _ = transport
     }
 }
