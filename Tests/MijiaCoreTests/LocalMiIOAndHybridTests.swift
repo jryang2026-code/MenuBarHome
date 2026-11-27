@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import PreferencesTestSupport
 import Testing
 #if canImport(Darwin)
 import Darwin
@@ -4735,9 +4736,18 @@ struct HybridProviderAndDoorbellTests {
 
         // Broadcast discovery must reject legacy -32601 / -5001 command-error replies instead of wiping LAN health.
         let discoveryClient = LocalMiIOClient(transport: udpTransport, maxRetries: 0, now: { clock.now() })
+        let frozenNow = ContinuousClock.now
+        let frozenClock = LocalMiIOClient.DiscoveryClock(
+            now: { frozenNow },
+            sleep: { _ in
+                let (stream, continuation) = AsyncStream<Void>.makeStream()
+                defer { continuation.finish() }
+                for await _ in stream {}
+            }
+        )
         let discovered = try await discoveryClient.discoverEndpoints(
             for: [MiIODeviceCandidate(did: "357621783", token: tokenHex), MiIODeviceCandidate(did: "70849337", token: tokenHex)],
-            broadcastTimeout: .milliseconds(20)
+            discoveryClock: frozenClock
         )
         #expect(discovered.isEmpty)
         await discoveryClient.shutdown()
@@ -4761,9 +4771,7 @@ struct HybridProviderAndDoorbellTests {
             lanFailureThreshold: 1, lanCooldownDuration: 30, now: { clock.now() },
             pollInterval: .seconds(3600), closedPollInterval: .seconds(3600), selectedHomeLoader: { nil }
         )
-        let suiteName = "test.legacy.miot.fallback.\(UUID().uuidString)"
-        defer { UserDefaults.standard.removePersistentDomain(forName: suiteName) }
-        let store = await MainActor.run { HomeStore(provider: provider, defaultsSuiteName: suiteName) }
+        let store = await MainActor.run { HomeStore(provider: provider, defaults: InMemoryUserDefaults()) }
         try await store.waitForTestSnapshot()
 
         // Both legacy air purifiers report `.cloud` (not `.cooldown`) without triggering a broadcast sweep.
