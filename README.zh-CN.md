@@ -86,7 +86,7 @@ brew install --cask jryang2026-code/tap/menubarhome
 
 **macOS · 下载 DMG**
 
-从 [GitHub Releases](https://github.com/jryang2026-code/MenuBarHome/releases/latest) 下载 `MenuBarHome-<版本>.dmg`（例如 `MenuBarHome-1.4.0.dmg`），打开后将 `MenuBarHome.app` 拖进「应用程序」。
+从 [GitHub Releases](https://github.com/jryang2026-code/MenuBarHome/releases/latest) 下载 `MenuBarHome-<版本>.dmg`（例如 `MenuBarHome-1.5.0.dmg`），打开后将 `MenuBarHome.app` 拖进「应用程序」。
 
 > 本项目没有加入付费的 Apple 开发者计划，安装包未经 Apple 公证。首次打开如果被 macOS Gatekeeper 拦截，按以下步骤放行：
 > 1. 双击打开 `/Applications/MenuBarHome.app`，弹出「无法验证开发者」或拦截提示时先点 **「完成」**（或 **「好」**）关闭弹窗。
@@ -97,17 +97,17 @@ brew install --cask jryang2026-code/tap/menubarhome
 >    xattr -dr com.apple.quarantine /Applications/MenuBarHome.app
 >    ```
 
-校验 DMG 下载完整性（将输出哈希对照 Release 中的 `MenuBarHome-1.4.0.dmg.sha256`）：
+校验 DMG 下载完整性（将输出哈希对照 Release 中的 `MenuBarHome-1.5.0.dmg.sha256`）：
 
 ```bash
-shasum -a 256 MenuBarHome-1.4.0.dmg
+shasum -a 256 MenuBarHome-1.5.0.dmg
 # 若同时下载了同名 .sha256 文件到同一目录，也可直接校验：
-shasum -a 256 -c MenuBarHome-1.4.0.dmg.sha256
+shasum -a 256 -c MenuBarHome-1.5.0.dmg.sha256
 ```
 
 **Windows 11**
 
-从 [GitHub Releases](https://github.com/jryang2026-code/MenuBarHome/releases/latest) 下载 `MenuBarHome-<版本>-windows-x64-setup.exe`（例如 `MenuBarHome-1.4.0-windows-x64-setup.exe`）或 `MenuBarHome-<版本>-windows-x64.msi`（例如 `MenuBarHome-1.4.0-windows-x64.msi`）。
+从 [GitHub Releases](https://github.com/jryang2026-code/MenuBarHome/releases/latest) 下载 `MenuBarHome-<版本>-windows-x64-setup.exe`（例如 `MenuBarHome-1.5.0-windows-x64-setup.exe`）或 `MenuBarHome-<版本>-windows-x64.msi`（例如 `MenuBarHome-1.5.0-windows-x64.msi`）。
 
 > 安装包没有商业代码签名证书。如果触发 Windows SmartScreen 拦截，按以下步骤放行：
 > 1. 弹出蓝色 **「Windows 已保护你的电脑」** 提示框时，点击文字下方的 **「更多信息」**。
@@ -116,11 +116,11 @@ shasum -a 256 -c MenuBarHome-1.4.0.dmg.sha256
 校验 Windows 安装包完整性（在 PowerShell 中运行，并将输出哈希与 Release 中的 `.sha256` 文件对照）：
 
 ```powershell
-# 核对 EXE（对应 MenuBarHome-1.4.0-windows-x64-setup.exe.sha256）
-Get-FileHash -Algorithm SHA256 .\MenuBarHome-1.4.0-windows-x64-setup.exe
+# 核对 EXE（对应 MenuBarHome-1.5.0-windows-x64-setup.exe.sha256）
+Get-FileHash -Algorithm SHA256 .\MenuBarHome-1.5.0-windows-x64-setup.exe
 
-# 若下载的是 MSI（对应 MenuBarHome-1.4.0-windows-x64.msi.sha256）
-Get-FileHash -Algorithm SHA256 .\MenuBarHome-1.4.0-windows-x64.msi
+# 若下载的是 MSI（对应 MenuBarHome-1.5.0-windows-x64.msi.sha256）
+Get-FileHash -Algorithm SHA256 .\MenuBarHome-1.5.0-windows-x64.msi
 ```
 
 ### 2. 连接你的家
@@ -128,7 +128,7 @@ Get-FileHash -Algorithm SHA256 .\MenuBarHome-1.4.0-windows-x64.msi
 点菜单栏（或托盘）图标打开面板，进入设置 `⚙️`，三种方式任选：
 
 - **米家云端直连（推荐）：** 选「米家云端直连」，用手机米家 App 扫屏幕上的二维码，确认后全屋的家庭、房间和设备自动同步。支持中国大陆、新加坡、德国、美国、俄罗斯服务器；macOS 与 Windows 都可以继续「添加账号」，把多个小米账号的设备合到一个面板里。登录快过期时会提前 3 天提醒，在面板里重新扫一次码就能续上。
-- **Home Assistant：** 填上实例地址（如 `http://192.168.1.100:8123`，也支持反向代理子路径）和长期访问令牌即可；macOS 与 Windows 都能在局域网里自动发现 Home Assistant。令牌存进 macOS 钥匙串或 Windows 凭据管理器。<br>
+- **Home Assistant（聚合多生态）：** 填上实例地址（如 `http://192.168.1.100:8123`，也支持反向代理子路径）和长期访问令牌即可；macOS 与 Windows 都能在局域网里自动发现 Home Assistant。令牌存进 macOS 钥匙串或 Windows 凭据管理器。**生态边界**：MenuBarHome 内置直连米家与 Home Assistant（另提供可选本机只读通用网络摄像机、DDC/CI 外接显示器与局域网多品牌电视桥）；**Google Home、Apple HomeKit（HomeKit Device）、涂鸦、Aqara/Matter/Zigbee** 等生态均通过 Home Assistant 聚合接入。<br>
   macOS 如果提示「局域网连接被系统拦截」，到 **「系统设置 → 隐私与安全性 → 本地网络」** 里允许 MenuBarHome。
 - **演示模式：** 不登录任何账号，用一套虚拟设备先把界面玩一遍。
 
@@ -180,13 +180,15 @@ Get-FileHash -Algorithm SHA256 .\MenuBarHome-1.4.0-windows-x64.msi
 
 ## 还能做什么
 
-- **能认的设备很多。** 灯、空调、风扇、插座、电视（含 MIoT 电视与机顶盒）、窗帘、晾衣架、净化器、加湿器、冰箱、热水器、洗烘设备、浴霸、油烟机、扫地机、摄像机、门锁和各类传感器；没有专属卡片的米家设备，也会有一张通用卡。[查一查你家的设备。](docs/supported-devices.zh-CN.md)
+- **能认的设备很多。** 灯、空调、风扇、插座、电视（含 MIoT 电视与机顶盒）、窗帘、晾衣架、净化器、加湿器、冰箱、热水器、洗烘设备、浴霸、油烟机、扫地机、音箱（双端支持正在播放及小爱「播报 / 指令」文本控制）、摄像机、门锁和各类传感器；没有专属卡片的米家设备，也会有一张通用卡。[查一查你家的设备。](docs/supported-devices.zh-CN.md)
+- **电视与显示器控制、正在播放与可选多品牌电视桥。** HA 电视/音箱与米家电视双端支持**正在播放**（播放态、媒体元数据、同源鉴权 HA 封面与 SHA-256 LRU 缓存，协议同时上报 `canSeek` + `duration` + `position` 时提供带 2 秒防回跳的可拖拽进度条）以及可折叠方向键遥控板（HA 按生态自适应 Apple TV / Android TV / Sony Bravia / Roku / 通用遥控键，米家走经校验的 MIoT 遥控动作）。双端设置 → 常规另提供默认关闭的**外接显示器控制（DDC/CI）**（未开启零后台开销，支持亮度、DP/HDMI/USB-C 输入源切换与可回读时的音量/静音，刻意禁止 `0xD6` 电源关屏码保护显示器固件）以及可选进程外**多品牌电视桥接插件**（`mbh-tv-bridge`，纯局域网 Go 单二进制，面板收起后自动停止且绝不劫持 HA/米家已接入的同一台电视），默认聚焦 **LG webOS**（SSAP 握手 + WoL 开机）、**小米 / Redmi**（HTTP 6095）与**海信**（海外 VIDAA MQTT 3.1.1），其余品牌收进实验性开关。
+- **本机 AI 与桌面情境感知。** 常用口令（现已覆盖 `0–100%` 窗帘/开合设备与 `1–100%` 无级风扇风速）直接在本机完成拼音/同音字兜底解析与三路未命中诊断；macOS 连续 3 次一致命中后还支持 0ms 习惯短语直达。在开启 Apple Intelligence 的 **macOS 26+** 上，设置 → AI 显性展示 **Apple Foundation Models** 本机模型状态卡，支持一键设为默认、免 API Key 测试连接与本机主动建议。双端均通过受控布尔/枚举**桌面情境感知**（`inMeeting` / `externalDisplayConnected` / `focusActive` / `lateNightWork` / `mediaPlaying`，绝不上传窗口名、日历标题或 Wi-Fi SSID）优化 AI 提示与「猜你想控」排序；Windows 语音新增面板内 `Ctrl+M` 切换（`Esc` 取消）、家中词表同音热词后纠偏与语音变更预览。
 - **摄像机小窗、静态墙与画中画。** 点开卡片弹出置顶实时画面（Windows 另支持独立置顶画中画窗口，门铃自适应 3:4 竖屏，门铃/告警触发时可按倒计时自动弹出并固定最多 2 个联动开关，支持音轨的流可开启仅收听声音）。2×2 静态墙保留近照与 7 天摄像机事件历史；双摄机型可以切镜头，带云台的直接拖动画面转方向。非米家网络摄像机（RTSP、ONVIF、海康 ISAPI、大华、Tapo）可在设置的高级连接里添加为**只读通用摄像机**：只看实时画面和画中画（不支持云台、对讲和改摄像机设置）；默认只允许局域网或 `.local` 地址，公网地址需要你明确允许；密码只存在钥匙串 / Windows 凭据管理器，不写进配置文件。
 - **温湿度曲线和用电账本。** 传感器卡片悬停可直接看 24 小时迷你曲线，展开看完整 24 小时 / 7 天趋势；插座按天记用电量，填上电价还能估算电费。
-- **本地氛围、房间分组与猜你想控。** 可把当前房间的设备状态存成本地「氛围」（最多 32 个），一键或用全局快捷键恢复；同房间同品类达到 2 台及以上可控设备会自动聚合成房间分组胶囊。系统还会根据你平时什么时候开什么，把可能要做的操作提前摆出来；习惯只记在本机，随时可以查看和清空。
-- **多账号、双数据源与局域网优先。** 可以同时登录多个米家账号，也可以让米家和 Home Assistant 一起工作，同一台设备会自动合并。符合条件的 Wi-Fi 米家设备优先走局域网 miIO 直连并要求明确写回执；macOS 上云端离线的米家设备还会做只读局域网可达性探测提示。
+- **本地氛围、房间分组与猜你想控。** 可把当前房间的设备状态存成本地「氛围」（最多 32 个），一键或用全局快捷键恢复；同房间同品类达到 2 台及以上可控设备会自动聚合成房间分组胶囊。系统还会结合你的时段习惯与桌面情境，把可能要做的操作提前摆出来；习惯只记在本机，随时可以查看和清空。
+- **多账号、双数据源与局域网优先。** 可以同时登录多个米家账号，也可以让米家和 Home Assistant 一起工作，同一台设备会自动合并。符合条件的 Wi-Fi 米家设备优先走局域网 miIO 直连并要求明确写回执（旧款非 MIoT 局域网设备自动回退云端）；macOS 上云端离线的米家设备还会做只读局域网可达性探测提示。
 - **情境感知自动化、交互通知与家庭周报。** 自动化规则支持定时、持续状态与 macOS 前台应用触发（macOS 内置一键「开会」「观影」模板），双端均支持上下文结束自动恢复原有开关状态；安全与门铃通知支持直接点击「立即关闭」「查看画面」「立即补执行」（受锁屏保护）；每周还能生成一份家庭健康周报，看看哪些设备总掉线、哪些插座在偷偷耗电。
-- **接进你的工具。** 双端支持最多 8 组设备 / 场景 / 快捷动作 / 氛围自定义全局快捷键（macOS 带不抢焦点的 HUD 提示），并支持 Apple 快捷指令、`menumijia://` 链接、Raycast 扩展、命令行和 MCP 服务，Claude、Cursor 这类 AI 工具也能查询和控制家里的设备，全程拿不到你的账号凭据。
+- **接进你的工具。** 双端支持最多 8 组设备 / 场景 / 快捷动作 / 氛围自定义全局快捷键（macOS 带不抢焦点的 HUD 提示），并支持 Apple 快捷指令、`menumijia://` 链接、Raycast 扩展、随包自带的命令行（含 `mijia doctor` 一行自检）与 **MCP Server 2.0**（设置页「复制配置」零占位路径即粘即用），Claude、Cursor 这类 AI 工具也能查询和控制家里的设备，全程拿不到你的账号凭据。
 
 两端各支持哪些能力，见[双端能力对照](docs/platform-matrix.zh-CN.md)。
 
@@ -196,28 +198,29 @@ Get-FileHash -Algorithm SHA256 .\MenuBarHome-1.4.0-windows-x64.msi
 
 ### 键盘快捷操作
 
-macOS 默认按 `⌥M` 呼出面板，Windows 默认按 `Alt+M`；双端还支持为单个设备、场景、快捷动作或氛围绑定最多 8 组自定义全局快捷键。打字盲搜、`↑`/`↓` 选择、`Return`/`Space` 开关或展开、`→`/`←` 调节参数、`⌘K` / `Ctrl+K` 展开或收起快捷抽屉与 `Esc` 返回双端通用；`Tab` 轮转房间标签适用于 macOS。
+macOS 默认按 `⌥M` 呼出面板，Windows 默认按 `Alt+M`；双端还支持为单个设备、场景、快捷动作或氛围绑定最多 8 组自定义全局快捷键。打字盲搜、`↑`/`↓` 选择、`Return`/`Space` 开关或展开、`→`/`←` 调节参数、`Tab` 轮转房间标签、`⌘K` / `Ctrl+K` 展开或收起快捷抽屉与 `Esc` 返回双端通用；Windows 面板聚焦时按 `Ctrl+M` 切换免提语音听写。
 
 | 按键 | 功能 |
 | :--- | :--- |
 | `⌥M` / `Alt+M` | 全局呼出 / 收起控制面板（macOS / Windows） |
 | `⌘K` / `Ctrl+K` | 展开或收起「快捷」抽屉（快捷动作、场景与猜你想控） |
+| 按住 `⌥M` / `Ctrl+M` | macOS 按住说话；Windows 面板聚焦时切换免提语音听写（`Esc` 取消） |
 | 自定义全局快捷键（最多 8 组） | 全局触发已绑定的设备开关、场景、快捷动作或氛围（高风险目标仍需确认） |
 | 直接输入字母 | 搜索设备名称、房间或拼音首字母（如 `sftd` 匹配书房台灯） |
 | `↑` / `↓` | 在搜索结果或设备卡片列表中切换光标 |
 | `Return` / `Space` | 开关当前选中的设备；对不可直接开关的设备展开详情控制抽屉 |
 | `→` / `←` | 右方向键展开详情；展开后用左右方向键调节灯光亮度、空调温度、窗帘位置或音量（Windows 另可调风速） |
-| `Tab` | 在不同房间标签之间快速轮转切换（macOS） |
-| `Esc` | 退出搜索输入、收起控制抽屉，或关闭面板 |
+| `Tab` | 在不同房间标签之间快速轮转切换（macOS 与 Windows） |
+| `Esc` | 退出搜索输入、取消语音听写、收起控制抽屉，或关闭面板 |
 
 ### 本地支持的常用自然语言口令
 
-以下口令由本机规则引擎直接解析执行，**不需要配置云端 AI**，不消耗 API Token：
+以下口令由本机规则引擎直接解析执行，**不需要配置云端 AI**，不消耗 API Token（支持拼音 / 首字母 / 同音字兜底匹配）：
 
 - **开关设备：** 「关客厅灯」「打开书房空调」「turn off all lights」
 - **调节情景模式：** 「书房吸顶灯月光模式」「日光模式」「daylight mode」
 - **微调亮度与色温：** 「再暗一点」「主卧灯调到 40%」「brighter」
-- **温度与风速控制：** 「空调调到 26 度」「调高两度」「风扇开自然风」
+- **温度、风速与窗帘控制：** 「空调调到 26 度」「调高两度」「风扇开自然风」「客厅风扇调到 60%」「客厅窗帘开到 50%」（车库门、开窗器与晾衣架始终要求高风险确认）
 - **只读状态查询：** 「现在哪些灯开着」「书房台灯开着吗」「客厅室温是多少」（直接读取当前状态在本地回答）
 - **延时定时执行：** 「10 分钟后关灯」「半小时后关空调」「取消定时」
 - **撤销误操作：** 「撤销」「刚才那个撤销」（10 分钟内支持语音或快捷撤销）
@@ -233,11 +236,13 @@ macOS 版是 Swift 6 原生应用，Windows 11 版是另一套 Tauri v2 实现�
 | 维度 | macOS 14+ | Windows 11 |
 | :--- | :---: | :---: |
 | 米家扫码直连 | ✅ | ✅ |
-| Home Assistant | ✅ | ✅ |
+| Home Assistant（聚合 HomeKit / Google Home / 涂鸦 / Matter） | ✅ | ✅ |
 | 键盘搜索与全局热键 | ✅ `⌥M` | ✅ `Alt+M` |
-| 语音 | ✅ 按住说话或免提 | ⚠️ 仅免提 |
-| 本地口令与可选 AI | ✅ | ✅ |
+| 语音 | ✅ 按住说话或免提 | ⚠️ 仅免提（`Ctrl+M` + 热词纠偏） |
+| 本地口令与 AI 助手 | ✅ + Apple Foundation Models（macOS 26+） | ✅ 本地规则 + 云端 / Ollama |
 | 一键全关与撤销 | ✅ | ✅ |
+| 电视正在播放、进度、遥控板与可选电视桥 | ✅ | ✅ |
+| 外接显示器控制（DDC/CI） | ✅ | ✅ |
 | 摄像机实时画面 | ✅ | ✅ |
 | 只读通用网络摄像机（RTSP/ONVIF/ISAPI/大华/Tapo） | ✅ | ✅ |
 | 同时登录多个小米账号 | ✅ | ✅ |
@@ -252,14 +257,16 @@ macOS 版是 Swift 6 原生应用，Windows 11 版是另一套 Tauri v2 实现�
 
 ## Raycast 扩展、本地 CLI 与 MCP 服务
 
-在 macOS 打开 **设置 → 通用 → 自动化与外部控制 → Raycast 集成**（或在 Windows 打开 **设置 → 全关与更新 → Raycast 与本地 CLI / MCP 集成**）后，应用会把设备、场景、快捷动作、环境读数、上一条命令结果和一个本机随机令牌写到 `~/Library/Application Support/MenuBarMijia/raycast-snapshot.json`（macOS，权限 `0600`）或 `%LOCALAPPDATA%\MenuBarMijia\raycast-snapshot.json`（Windows）。带令牌的 `menumijia://` 链接不再弹外部链接确认；双端的高风险设备仍会先问，锁屏拦截照旧。关闭该开关会立即删除文件并作废令牌，伴生端拿不到任何米家或 Home Assistant 凭据；契约与取舍见 [ADR-0013](docs/adr/0013-raycast-companion-contract.md)。
+在 macOS 打开 **设置 → 通用 → 自动化与外部控制 → 高级 → Raycast / CLI / MCP 集成**（或在 Windows 打开 **设置 → 安全与提醒 → Raycast / CLI / MCP 集成**）后，应用会把设备、场景、快捷动作、环境读数、脱敏自动化摘要、上一条命令结果和一个本机随机令牌写到 `~/Library/Application Support/MenuBarMijia/raycast-snapshot.json`（macOS，权限 `0600`）或 `%LOCALAPPDATA%\MenuBarMijia\raycast-snapshot.json`（Windows）。带令牌的 `menumijia://` 链接不再弹外部链接确认；双端的高风险设备仍会先问，锁屏拦截照旧。关闭该开关会立即删除文件并作废令牌，伴生端拿不到任何米家或 Home Assistant 凭据；契约与取舍见 [ADR-0013](docs/adr/0013-raycast-companion-contract.md)。
+
+macOS 应用包（`MenuBarHome.app/Contents/Resources/cli/`）与 Windows 安装包（`cli/` 资源目录）均已随包内置 `scripts/mijia` 与 `scripts/mijia-mcp`。在设置页点击 **复制配置** 会自动填入本机真实安装路径，无需手动替换占位路径。
 
 **为什么还能看到旧名字。** 应用叫 MenuBarHome，但对外的集成接口保留了原来的名字，这样已有的 Raycast 命令、快捷指令、脚本和 MCP 配置都不会失效：
 
 | 你会看到 | 它是什么 | 该怎么用 |
 | :--- | :--- | :--- |
 | `menumijia://…` | 所有伴生工具发来的 URL scheme，是兼容契约（见 [ADR-0013](docs/adr/0013-raycast-companion-contract.md)），伴生工具会继续发它 | 继续用 `menumijia://`；`menubarhome://` 也被接受，两者完全等价 |
-| `scripts/mijia`、`scripts/mijia-mcp` | 命令行与 MCP 服务 | `scripts/menubarhome` 是同一个命令行的新名字，`mijia` 照常可用 |
+| `scripts/mijia`、`scripts/mijia-mcp` | 随包内置的命令行与 MCP 服务 | `scripts/menubarhome` 是同一个命令行的新名字，`mijia` 照常可用 |
 | `MenuBarMijia/` 数据目录、`MenuBarMijiaApp` 进程 | 应用的数据目录与进程名 | 无需操作；你的登录和设置都在里面 |
 | MCP 配置键 `menubarmijia` | MCP 客户端配置里的一个标签，也是服务端上报的名字 | 随便起名；下面的示例用 `menubarhome` |
 
@@ -268,10 +275,11 @@ macOS 版是 Swift 6 原生应用，Windows 11 版是另一套 Tauri v2 实现�
 
 ### 本地 CLI
 
-`scripts/mijia` 是只依赖 Python 3 标准库的脚本，使用时保持 MenuBarHome 运行即可。
+`scripts/mijia` 是只依赖 Python 3 标准库的脚本（已随应用安装包内置，也可在源码目录直接运行），使用时保持 MenuBarHome 运行即可。
 
 | 命令 | 作用 |
 | :--- | :--- |
+| `scripts/mijia doctor [--json]` | 一行健康自检：检查伴生集成状态、快照新鲜度与 CLI/MCP 可执行路径（等价于 `scripts/mijia mcp --doctor`） |
 | `scripts/mijia list [--room 书房] [--json]` | 按房间列出面板里可见的设备、在线状态与读数 |
 | `scripts/mijia list --format alfred [--room 书房]` | Alfred Script Filter JSON：每台设备一条，回车翻转主开关，⌘ 在面板里定位 |
 | `scripts/mijia list --format swiftbar [--room 书房]` | SwiftBar / xbar 插件文本：菜单栏标题 + 每台设备一行带状态的 `href=` 链接 |
@@ -282,10 +290,12 @@ macOS 版是 Swift 6 原生应用，Windows 11 版是另一套 Tauri v2 实现�
 | `scripts/mijia color-temp 书房台灯 4000` | 按开尔文调节灯光色温（`1000`–`20000` K） |
 | `scripts/mijia temperature 书房空调 25` | 设定目标温度（`-30`–`100` ℃） |
 | `scripts/mijia fan 客厅风扇 --percent 60` / `--preset 自然风` | 设定风速百分比（`1`–`100`%）或设备上报的档位 |
+| `scripts/mijia cover-position 客厅窗帘 50` | 设定窗帘/开合设备位置（`0`–`100`%；车库门与开窗器在应用内强制确认） |
+| `scripts/mijia volume 客厅电视 35` / `mute 客厅电视 on` / `media-play-pause 客厅电视` | 控制电视或音箱音量（`0`–`100`%）、静音与播放/暂停 |
 | `scripts/mijia focus 书房台灯` | 在面板中定位到设备所在房间并展开详情抽屉（不操作硬件） |
 | `scripts/mijia scene 观影模式` | 执行 Home Assistant 场景或内置快捷动作（全屋关灯、一键全关、撤销……） |
 | `scripts/mijia ask "把客厅灯调到 40%"` | 一句话指令，复用应用自己的解析与确认规则 |
-| `scripts/mijia mcp`（或 `scripts/mijia-mcp`） | 以 stdio 方式运行本地 MCP 服务 |
+| `scripts/mijia mcp`（或 `scripts/mijia-mcp`） | 以 stdio 方式运行本地 MCP Server 2.0 |
 
 `scripts/menubarhome` 运行的是同一个程序：`scripts/menubarhome list` 就是 `scripts/mijia list`。
 
@@ -300,11 +310,11 @@ SwiftBar：在插件目录放一个两行脚本（文件名里的 `1m` 表示每
 
 ```sh
 #!/bin/sh
-exec /ABSOLUTE/PATH/TO/MenuBarHome/scripts/mijia list --format swiftbar
+exec /Applications/MenuBarHome.app/Contents/Resources/cli/mijia list --format swiftbar
 ```
 
 Alfred：新建 **Script Filter**，关键字填 `mijia`，脚本命令写
-`/ABSOLUTE/PATH/TO/MenuBarHome/scripts/mijia list --format alfred`，再接一个 **Open URL** 动作打开选中的
+`/Applications/MenuBarHome.app/Contents/Resources/cli/mijia list --format alfred`，再接一个 **Open URL** 动作打开选中的
 `arg`；每条的 ⌘ 变体是「在面板中查看」，不会翻转设备。应用不在 `/Applications` 下时用
 `--icon` 指定图标位置；不给就用已安装应用的图标，再退回 Alfred 工作流图标。
 
@@ -312,21 +322,23 @@ Alfred：新建 **Script Filter**，关键字填 `mijia`，脚本命令写
 高风险设备仍会先问，锁屏时照样拒绝。
 
 
-### 本地 MCP 服务（Claude Desktop / Claude Code / Cursor）
+### 本地 MCP Server 2.0（Claude Desktop / Claude Code / Cursor）
 
-`scripts/mijia-mcp`（或 `scripts/mijia mcp`）仅用 Python 3 标准库实现 stdio JSON-RPC 2.0 MCP 服务，提供只读资源（`mijia://status`、`mijia://devices`、`mijia://scenes`）与结构化工具（`list_devices`、`get_home_status`、`toggle_device`、`set_device_power`、`set_light_brightness`、`set_light_color_temp`、`set_temperature`、`set_fan`、`run_scene`、`ask_home`、`focus_device`）。服务在进程内使用 `bridgeToken` 派发 `menumijia://` 链接，并从所有返回给模型的资源与工具结果中剥离 `bridgeToken`，不向模型暴露任何令牌或云端凭据。
+`scripts/mijia-mcp`（或 `scripts/mijia mcp`）仅用 Python 3 标准库实现 stdio JSON-RPC 2.0 MCP 服务，提供 **5 项只读资源**（`mijia://status`、`mijia://devices`、`mijia://scenes`、`mijia://sensors`、`mijia://automations`）与 **17 个结构化工具**——5 个只读工具（`list_devices`、`get_home_status`、`get_sensor_summary`、`get_automation_status`、`focus_device`）与 12 个控制工具（`toggle_device`、`set_device_power`、`set_light_brightness`、`set_light_color_temp`、`set_temperature`、`set_fan`、`set_cover_position`、`set_media_volume`、`set_media_mute`、`media_play_pause`、`run_scene`、`ask_home`）。服务在进程内使用 `bridgeToken` 派发 `menumijia://` 链接，并从所有返回给模型的资源与工具结果中剥离 `bridgeToken` 与系统自由文本（日历标题、窗口名、Wi-Fi SSID），不向模型暴露任何令牌或云端凭据。
+
+在设置页点击 **复制配置** 即可获得指向随包 `mijia-mcp` 的开箱即用片段（零占位路径）。以 macOS 安装在 `/Applications` 为例：
 
 ```json
 {
   "mcpServers": {
     "menubarhome": {
-      "command": "/ABSOLUTE/PATH/TO/MenuBarHome/scripts/mijia-mcp"
+      "command": "/Applications/MenuBarHome.app/Contents/Resources/cli/mijia-mcp"
     }
   }
 }
 ```
 
-所有控制类工具都标了 `destructiveHint: true`，遵守注解的 MCP 客户端会在执行前弹确认。只想让 AI 会话只读时，在同一份配置里加 `--read-only`（即 `"args": ["--read-only"]`，或直接跑 `scripts/mijia mcp --read-only`）：此时 `tools/list` 只暴露 `list_devices`、`get_home_status`、`focus_device`，任何控制调用都会直接返回错误并点名该参数，不会碰到设备。
+随时可运行 `mijia doctor`（或 `mijia-mcp --doctor`）一行排查接入状态。所有控制类工具都标了 `destructiveHint: true`（`ask_home` 额外标注 `openWorldHint: true`），遵守注解的 MCP 客户端会在执行前弹确认。只想让 AI 会话只读时，在同一份配置里加 `--read-only`（即 `"args": ["--read-only"]`，或直接跑 `scripts/mijia mcp --read-only`）：此时 `tools/list` 只暴露 5 个只读工具（`list_devices`、`get_home_status`、`get_sensor_summary`、`get_automation_status`、`focus_device`），任何控制调用都会直接返回错误并点名该参数，不会碰到设备。
 
 ### Raycast 扩展
 
@@ -340,17 +352,18 @@ Alfred：新建 **Script Filter**，关键字填 `mijia`，脚本命令写
 
 ### 连接之前请先知道
 
-- **米家云端直连用的是非官方接口。** 它不是小米官方集成，小米随时可能限制请求频率或对账号做风控，本项目无法保证不会发生。面板关闭、锁屏时应用会降低轮询频率来减少请求量，并会为手动控制写入预留限流配额、在触发限流时指数退避；符合条件的 Wi-Fi 设备也会优先走局域网 miIO 直连。如果你不想承担这个风险，请改用 Home Assistant，并接入小米官方的 [xiaomi_home](https://github.com/XiaoMi/ha_xiaomi_home) 集成。
+- **米家云端直连用的是非官方接口。** 它不是小米官方集成，小米随时可能限制请求频率或对账号做风控，本项目无法保证不会发生。面板关闭、锁屏时应用会降低轮询频率来减少请求量，并会为手动控制写入预留限流配额、在触发限流时指数退避；符合条件的 Wi-Fi 设备也会优先走局域网 miIO 直连（旧款非 MIoT 局域网设备自动回退云端）。如果你不想承担这个风险，请改用 Home Assistant，并接入小米官方的 [xiaomi_home](https://github.com/XiaoMi/ha_xiaomi_home) 集成。
 - **会过期，需要重新扫码。** 应用不保存长期凭证 `passToken`，也不做静默续期（见 [ADR-0004](docs/adr/0004-no-pass-token-storage.md)）。登录能撑多久由小米服务器决定，拿到到期时间时会显示在设置里；到期前 3 天面板会提醒你，重新扫码只要几秒。
+- **生态边界。** 内置直连来源为米家与 Home Assistant（另含可选本机只读通用网络摄像机、DDC/CI 外接显示器与局域网多品牌电视桥）；**Google Home、Apple HomeKit（HomeKit Device）、涂鸦、Aqara/Matter/Zigbee** 等平台统一通过 **Home Assistant** 聚合接入。
 - **安装包没有商业代码签名。** macOS 首次启动需要点「仍要打开」，Windows 会弹 SmartScreen 提示（见[安装](#1-安装)）。
-- **Windows 版功能还没追平。** 仅支持 Windows 11；语音只有免提模式（没有按住说话）；事件自动化已覆盖锁屏/电源/显示器/休眠/摄像头与麦克风/专注与全屏/Wi-Fi/定时/传感器规则与上下文恢复（暂不支持日历、合盖休眠与前台应用触发）；不支持 Apple 快捷指令。详见[平台对比](#双端能力对照)。
+- **Windows 平台差异。** 仅支持 Windows 11；语音采用免提听写（支持面板内 `Ctrl+M` 切换、热词纠偏与变更预览，不支持按住说话）；事件自动化已覆盖锁屏/电源/显示器/休眠/摄像头与麦克风/专注与全屏/Wi-Fi/定时/传感器规则与上下文恢复（暂不支持日历、合盖休眠与前台应用触发）；无 Apple Foundation Models 与 Apple 快捷指令。详见[平台对比](#双端能力对照)。
 
 ### 安全与隐私
 
 - 账号凭据只存在 macOS 钥匙串或 Windows 凭据管理器里，不写进明文配置，也不进日志。
 - 打开电暖器、切换插座、启动扫地机这类操作一定会先问你；把它们关掉则直接执行。
-- Mac 锁屏期间默认拒绝所有手动控制，离开座位也不怕被人乱点。
-- 常用指令在本机解析。只有你配置了 AI 服务、而且这句话本机听不懂时，才会把指令和相关设备信息发给你选的服务。
+- 电脑锁屏期间，macOS 与 Windows 均默认拒绝手动控制，离开座位也不怕被人乱点。
+- 常用指令在本机解析（开启 Apple Intelligence 的 macOS 26+ 还可通过 Apple Foundation Models 在本机解析复杂指令）。只有你配置了云端 AI 服务、而且这句话本机听不懂时，才会把指令、相关设备信息与纯布尔桌面情境标签发给你选的服务。
 - 应用内更新用 Ed25519 签名校验，签名私钥离线保存。
 
 <details>
@@ -365,7 +378,9 @@ MenuBarHome 是独立开源项目，并非小米官方客户端。米家云直�
 | 米家 / Xiaomi Home | 已登录账号的 `userId`、`cUserId`、`ssecurity`、`serviceToken`、云端地区与声明的到期时间（登录时即丢弃 `passToken`；macOS 与 Windows 均支持多账号） | macOS 钥匙串（一条通用密码项）或 Windows 凭据管理器（`mi_session` 与 `mi_session_<slotId>`） |
 | Home Assistant | 长期访问令牌（实例地址不属于机密） | macOS 钥匙串或 Windows 凭据管理器（`ha_token`） |
 | AI 助手 | 按服务商预设隔离保存的 API 密钥，以及非机密的导入来源标记、自定义端点绑定与已允许的云端授权地址 | 各服务商 API 密钥保存在 macOS 钥匙串或 Windows 凭据管理器（`assistant_api_key_<preset>`）；非机密元数据保存在应用偏好中 |
-| LG webOS 电视 | 电视签发的配对客户端密钥 | macOS 钥匙串 |
+| 只读通用摄像机 | 各 RTSP / ONVIF / ISAPI / 大华 / Tapo 摄像机凭据（仅在内存中传给 go2rtc，绝不写入 `go2rtc.yaml`） | macOS 钥匙串或 Windows 凭据管理器（`generic-camera:<id>`） |
+| LG webOS 电视（内置） | 电视签发的配对客户端密钥 | macOS 钥匙串 |
+| 多品牌电视桥（`mbh-tv-bridge`） | 各电视配对客户端密钥 / 桥接凭据（仅运行时注入） | macOS 钥匙串（`tvBridge.cred.<nativeId>`）或 Windows 凭据管理器（`tv-bridge:<id>`） |
 
 macOS 会将这些钥匙串项加密保存，并由登录钥匙串保护；MenuBarHome 写入时使用 `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`，首次解锁后可用，但不会同步到 iCloud 或另一台 Mac。双端都不会把这些机密写进明文 `UserDefaults`、WebView `localStorage` 或日志。macOS 更新后可能询问一次钥匙串授权（构建签名发生变化）；选择「始终允许」即可覆盖之后的读写。
 

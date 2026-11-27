@@ -240,6 +240,20 @@
       "windows": "supported"
     },
     {
+      "id": "tv-media-bridge",
+      "en": "TVs, Now Playing & TV Bridge",
+      "zh": "电视、正在播放与多品牌电视桥",
+      "macos": "supported",
+      "windows": "supported"
+    },
+    {
+      "id": "external-display-ddc",
+      "en": "External Display Control (DDC/CI)",
+      "zh": "外接显示器控制（DDC/CI）",
+      "macos": "supported",
+      "windows": "supported"
+    },
+    {
       "id": "layout-resize",
       "en": "Layout Editing Resize",
       "zh": "布局编辑调大小",

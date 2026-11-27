@@ -26,21 +26,21 @@
 
 ### 校验下载完整性（SHA-256）
 
-每个 GitHub Release（如 `v1.4.0`）都会为三份安装包附带对应的 `.sha256` 校验文件：
+每个 GitHub Release（如 `v1.5.0`）都会为三份安装包附带对应的 `.sha256` 校验文件：
 
-- **macOS（`MenuBarHome-1.4.0.dmg`）**：
+- **macOS（`MenuBarHome-1.5.0.dmg`）**：
   ```bash
-  # 打印 SHA-256 并与 Release 中的 MenuBarHome-1.4.0.dmg.sha256 对照
-  shasum -a 256 MenuBarHome-1.4.0.dmg
+  # 打印 SHA-256 并与 Release 中的 MenuBarHome-1.5.0.dmg.sha256 对照
+  shasum -a 256 MenuBarHome-1.5.0.dmg
   # 若 .sha256 文件在同一目录，可直接校验
-  shasum -a 256 -c MenuBarHome-1.4.0.dmg.sha256
+  shasum -a 256 -c MenuBarHome-1.5.0.dmg.sha256
   ```
 - **Windows（PowerShell）**：
   ```powershell
-  # 与 Release 中的 MenuBarHome-1.4.0-windows-x64-setup.exe.sha256 对照
-  Get-FileHash -Algorithm SHA256 .\MenuBarHome-1.4.0-windows-x64-setup.exe
-  # 若下载 MSI，则与 MenuBarHome-1.4.0-windows-x64.msi.sha256 对照
-  Get-FileHash -Algorithm SHA256 .\MenuBarHome-1.4.0-windows-x64.msi
+  # 与 Release 中的 MenuBarHome-1.5.0-windows-x64-setup.exe.sha256 对照
+  Get-FileHash -Algorithm SHA256 .\MenuBarHome-1.5.0-windows-x64-setup.exe
+  # 若下载 MSI，则与 MenuBarHome-1.5.0-windows-x64.msi.sha256 对照
+  Get-FileHash -Algorithm SHA256 .\MenuBarHome-1.5.0-windows-x64.msi
   ```
 
 如需进一步校验 GitHub Actions 构建溯源与 SBOM，见 [SECURITY.md](../SECURITY.md#verifying-release-artifacts)。

@@ -25,21 +25,21 @@ MenuBarHome is not enrolled in the paid Apple Developer Program and does not use
 
 ### Verifying download integrity (SHA-256)
 
-Every GitHub Release (such as `v1.4.0`) ships a matching `.sha256` file for each installer:
+Every GitHub Release (such as `v1.5.0`) ships a matching `.sha256` file for each installer:
 
-- **macOS (`MenuBarHome-1.4.0.dmg`):**
+- **macOS (`MenuBarHome-1.5.0.dmg`):**
   ```bash
-  # Print the SHA-256 digest and compare with MenuBarHome-1.4.0.dmg.sha256 from the release
-  shasum -a 256 MenuBarHome-1.4.0.dmg
+  # Print the SHA-256 digest and compare with MenuBarHome-1.5.0.dmg.sha256 from the release
+  shasum -a 256 MenuBarHome-1.5.0.dmg
   # Or verify automatically if the .sha256 file is in the same folder
-  shasum -a 256 -c MenuBarHome-1.4.0.dmg.sha256
+  shasum -a 256 -c MenuBarHome-1.5.0.dmg.sha256
   ```
 - **Windows (PowerShell):**
   ```powershell
-  # Compare with MenuBarHome-1.4.0-windows-x64-setup.exe.sha256
-  Get-FileHash -Algorithm SHA256 .\MenuBarHome-1.4.0-windows-x64-setup.exe
-  # For the MSI package, compare with MenuBarHome-1.4.0-windows-x64.msi.sha256
-  Get-FileHash -Algorithm SHA256 .\MenuBarHome-1.4.0-windows-x64.msi
+  # Compare with MenuBarHome-1.5.0-windows-x64-setup.exe.sha256
+  Get-FileHash -Algorithm SHA256 .\MenuBarHome-1.5.0-windows-x64-setup.exe
+  # For the MSI package, compare with MenuBarHome-1.5.0-windows-x64.msi.sha256
+  Get-FileHash -Algorithm SHA256 .\MenuBarHome-1.5.0-windows-x64.msi
   ```
 
 For build provenance attestations and SBOM verification, see [SECURITY.md](../SECURITY.md#verifying-release-artifacts).
