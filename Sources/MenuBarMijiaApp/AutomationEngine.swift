@@ -1021,11 +1021,15 @@ final class AutomationEngine {
                     live[intent.targetId] = AutomationContextValue(field: .power, boolValue: value)
                 }
             }
+            let unresolvedIDs = Set(executableIntents.map(\.targetId))
+                .subtracting(restoredIDs)
+                .subtracting(blockedIDs)
+            // A command that did not land leaves the rolled-back optimistic value in the store.
+            // Treat that value as unknown for the next (older) frame instead of a manual takeover,
+            // so the older baseline survives for a later retry (#582).
+            for id in unresolvedIDs { live.removeValue(forKey: id) }
             if outcome.failedCount > 0 || (outcome.succeededCount == 0 && outcome.attemptedCount > 0) {
-                let failedIDs = Set(executableIntents.map(\.targetId))
-                    .subtracting(restoredIDs)
-                    .subtracting(blockedIDs)
-                failedRestoreIDs.formUnion(failedIDs)
+                failedRestoreIDs.formUnion(unresolvedIDs)
             } else if outcome.attemptedCount == 0, outcome.skipReason == .writeGateDenied,
                       let message = outcome.errorMessage {
                 failedRestoreFallbackMessage = message

@@ -499,6 +499,75 @@ struct AutomationContextEngineTests {
         }
     }
 
+    @Test("Nested restore keeps the older baseline when the inner restore fails (#582)")
+    func nestedContextRestoreRetainsOuterBaselineAfterInnerFailure() async throws {
+        let defaults = InMemoryUserDefaults()
+        let outer = AutomationRule(
+            trigger: .focusModeEnabled,
+            action: .devices(ids: [Self.lightId], isOn: true),
+            restoreWhenContextEnds: true,
+            restoreTrigger: .focusModeDisabled
+        )
+        let inner = AutomationRule(
+            trigger: .focusModeEnabled,
+            action: .devices(ids: [Self.lightId], isOn: false),
+            restoreWhenContextEnds: true,
+            restoreTrigger: .focusModeDisabled
+        )
+        let entered = Date(timeIntervalSince1970: 1_800_000_000)
+        let seededStack = AutomationContextStack(defaults: defaults, now: entered)
+        seededStack.push(
+            ruleID: outer.id,
+            snapshots: [
+                AutomationContextSnapshot(
+                    deviceID: Self.lightId,
+                    baseline: AutomationContextValue(field: .power, boolValue: false),
+                    applied: AutomationContextValue(field: .power, boolValue: true)
+                )
+            ],
+            at: entered
+        )
+        seededStack.push(
+            ruleID: inner.id,
+            snapshots: [
+                AutomationContextSnapshot(
+                    deviceID: Self.lightId,
+                    baseline: AutomationContextValue(field: .power, boolValue: true),
+                    applied: AutomationContextValue(field: .power, boolValue: false)
+                )
+            ],
+            at: entered.addingTimeInterval(1)
+        )
+        #expect(seededStack.count == 2)
+
+        let (engine, store, mock, _) = try await makeEngine(
+            rules: [outer, inner],
+            defaults: defaults,
+            lightOn: false
+        )
+        defer { withExtendedLifetime(engine) { store.stop() } }
+
+        let exit = entered.addingTimeInterval(20)
+        await mock.setFailingTargets(["light.study"])
+        await engine.handle(trigger: .focusModeDisabled, at: exit)
+
+        let retained = AutomationContextStack(defaults: defaults, now: exit).allFrames
+        #expect(retained.count == 2)
+        #expect(Set(retained.map(\.ruleID)) == [outer.id, inner.id])
+        #expect(store.devices.first?.isActiveOn == false)
+        store.dismissToast()
+
+        let retry = exit.addingTimeInterval(70)
+        await mock.setFailingTargets([])
+        await engine.handle(trigger: .focusModeDisabled, at: retry)
+
+        #expect(AutomationContextStack(defaults: defaults, now: retry).isEmpty)
+        #expect(store.devices.first?.isActiveOn == false)
+        let commands = await mock.executedCommands
+        #expect(commands.contains(onCommand()))
+        #expect(commands.contains(offCommand()))
+    }
+
     @Test("Power, disconnect and battery-threshold rules each run")
     func powerAndBatteryRules() async throws {
         let defaults = InMemoryUserDefaults()
