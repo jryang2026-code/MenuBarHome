@@ -13,6 +13,7 @@ import type {
   FacetOption,
   FacetRange,
   FacetTarget,
+  MediaPlaybackState,
   SmartDevice,
   TvRemoteKey,
 } from "./models.js";
@@ -1366,12 +1367,28 @@ export function cachedFacetControl(value: unknown): FacetControl {
   };
 }
 
+function cachedPlayback(raw: unknown): MediaPlaybackState | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw !== "object" || Array.isArray(raw)) throw new Error("Invalid cached playback");
+  const p = raw as HARow;
+  if (p.state !== "playing" && p.state !== "paused" && p.state !== "buffering" && p.state !== "idle" && p.state !== "off") {
+    throw new Error("Invalid cached playback state");
+  }
+  return {
+    state: p.state, title: nullStr(p.title), subtitle: nullStr(p.subtitle), appName: nullStr(p.appName),
+    artworkURL: nullStr(p.artworkURL), durationSec: nullNum(p.durationSec), positionSec: nullNum(p.positionSec),
+    positionUpdatedAt: nullNum(p.positionUpdatedAt), playbackRate: reqNum(p.playbackRate),
+    canPlayPause: reqBool(p.canPlayPause), canSeek: reqBool(p.canSeek), canSkipTrack: reqBool(p.canSkipTrack),
+  };
+}
+
 export function cachedExtendedKind(k: HARow): DeviceKind {
   switch (k.kind) {
     case "speaker": {
       if (k.state !== "idle" && k.state !== "playing" && k.state !== "paused") {
         throw new Error("Invalid cached speaker state");
       }
+      const playback = cachedPlayback(k.playback);
       return {
         kind: "speaker",
         mediaEntityId: reqStr(k.mediaEntityId),
@@ -1383,9 +1400,11 @@ export function cachedExtendedKind(k: HARow): DeviceKind {
         isSleepMode: reqBool(k.isSleepMode),
         volumeWritable: reqBool(k.volumeWritable),
         ...(k.volumePresent !== undefined ? { volumePresent: reqBool(k.volumePresent) } : {}),
+        ...(playback ? { playback } : {}),
       };
     }
-    case "tv":
+    case "tv": {
+      const playback = cachedPlayback(k.playback);
       return {
         kind: "tv", mediaEntityId: reqStr(k.mediaEntityId), state: reqStr(k.state), volumePercent: reqNum(k.volumePercent),
         ...(k.isMuted !== undefined ? { isMuted: reqBool(k.isMuted) } : {}),
@@ -1398,6 +1417,7 @@ export function cachedExtendedKind(k: HARow): DeviceKind {
         ...(k.powerOffActionId !== undefined ? { powerOffActionId: nullStr(k.powerOffActionId) } : {}),
         ...(k.powerWritable !== undefined ? { powerWritable: reqBool(k.powerWritable) } : {}),
         volumeWritable: reqBool(k.volumeWritable), ...(k.volumePresent !== undefined ? { volumePresent: reqBool(k.volumePresent) } : {}),
+        ...(playback ? { playback } : {}),
         ...(typeof k.remoteEntityId === "string" ? { remoteEntityId: k.remoteEntityId } : {}),
         ...(isHaRemoteProfile(k.remoteProfile) ? { remoteProfile: k.remoteProfile } : {}),
         ...(k.supportsRemotePad === true ? { supportsRemotePad: true } : {}),
@@ -1410,6 +1430,7 @@ export function cachedExtendedKind(k: HARow): DeviceKind {
           }
           : {}),
       };
+    }
     case "humidifier":
       return {
         kind: "humidifier", entityId: reqStr(k.entityId), isOn: reqBool(k.isOn),
