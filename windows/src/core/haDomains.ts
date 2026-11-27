@@ -13,10 +13,11 @@ import type {
   FacetOption,
   FacetRange,
   FacetTarget,
+  MediaPlaybackState,
   SmartDevice,
   TvRemoteKey,
 } from "./models.js";
-import { isTvRemoteKey, playbackFromHomeAssistant } from "./mediaPlayback.js";
+import { inferHaRemoteProfile, isHaRemoteProfile, isTvRemoteKey, playbackFromHomeAssistant } from "./mediaPlayback.js";
 
 export type HARow = Record<string, unknown>;
 
@@ -519,6 +520,7 @@ export function buildMediaPlayerKind(
   states: ReadonlyMap<string, HAState>,
   claimed: Set<string>,
   model = "",
+  deviceMeta?: { readonly manufacturer?: string; readonly identifiers?: unknown; readonly name?: string },
 ): { kind: DeviceKind; online: boolean } | null {
   const entry = entities.find((item) => haText(item.entity_id).startsWith("media_player."));
   const mediaId = entry ? haText(entry.entity_id) : "";
@@ -534,6 +536,7 @@ export function buildMediaPlayerKind(
   const volumeWritable = online && (features !== null ? (features & 4) !== 0 : rawVol !== null);
   const supportsMute = features !== null ? (features & 8) !== 0 : typeof a.is_volume_muted === "boolean";
   const devClass = haText(a.device_class).trim().toLowerCase();
+  const playback = online ? playbackFromHomeAssistant(st.state, a) : null;
 
   if (devClass === "tv" || model.toLowerCase().includes("tv")) {
     const currentSource = typeof a.source === "string" && a.source.trim() !== "" ? a.source : null;
@@ -541,8 +544,11 @@ export function buildMediaPlayerKind(
     const turnOnButtonId = eids.find((eid) => eid.startsWith("button.") && eid.includes("turn_on")) ?? null;
     const muteSw = eids.find((eid) => eid.startsWith("switch.") && eid.includes("mute")) ?? null;
     const remoteId = eids.find((eid) => eid.startsWith("remote.") && isHAStateAvailable(states.get(eid))) ?? null;
+    const remoteEntry = remoteId ? entities.find((item) => haText(item.entity_id) === remoteId) : undefined;
+    const remoteProfile = remoteId
+      ? inferHaRemoteProfile({ platform: remoteEntry ? haText(remoteEntry.platform) : null, manufacturer: deviceMeta?.manufacturer ?? null, model, identifiers: deviceMeta?.identifiers, entityId: remoteId, friendlyName: haText(states.get(remoteId)?.attributes.friendly_name) || deviceMeta?.name || null })
+      : undefined;
     for (const id of [mediaId, turnOnButtonId, muteSw, remoteId]) if (id) claimed.add(id);
-    const playback = online ? playbackFromHomeAssistant(st.state, a) : null;
     const isMuted = muteSw ? states.get(muteSw)?.state === "on" : Boolean(a.is_volume_muted);
     const muteSwitchEntityId = muteSw ?? (supportsMute ? `${mediaId}#mute` : null);
     const rawState = st.state.trim().toLowerCase();
@@ -554,7 +560,7 @@ export function buildMediaPlayerKind(
         isMuted, muteSwitchEntityId, currentSource, availableSources, turnOnButtonId,
         powerWritable: online && supportsPowerToggle, volumeWritable, ...(rawVol === null ? { volumePresent: false } : {}),
         ...(playback ? { playback } : {}),
-        ...(remoteId ? { remoteEntityId: remoteId, supportsRemotePad: true } : {}),
+        ...(remoteId ? { remoteEntityId: remoteId, remoteProfile, supportsRemotePad: true } : {}),
       },
     };
   }
@@ -586,6 +592,7 @@ export function buildMediaPlayerKind(
       isSleepMode,
       volumeWritable,
       ...(rawVol === null ? { volumePresent: false } : {}),
+      ...(playback ? { playback } : {}),
     },
   };
 }
@@ -1360,12 +1367,28 @@ export function cachedFacetControl(value: unknown): FacetControl {
   };
 }
 
+function cachedPlayback(raw: unknown): MediaPlaybackState | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw !== "object" || Array.isArray(raw)) throw new Error("Invalid cached playback");
+  const p = raw as HARow;
+  if (p.state !== "playing" && p.state !== "paused" && p.state !== "buffering" && p.state !== "idle" && p.state !== "off") {
+    throw new Error("Invalid cached playback state");
+  }
+  return {
+    state: p.state, title: nullStr(p.title), subtitle: nullStr(p.subtitle), appName: nullStr(p.appName),
+    artworkURL: nullStr(p.artworkURL), durationSec: nullNum(p.durationSec), positionSec: nullNum(p.positionSec),
+    positionUpdatedAt: nullNum(p.positionUpdatedAt), playbackRate: reqNum(p.playbackRate),
+    canPlayPause: reqBool(p.canPlayPause), canSeek: reqBool(p.canSeek), canSkipTrack: reqBool(p.canSkipTrack),
+  };
+}
+
 export function cachedExtendedKind(k: HARow): DeviceKind {
   switch (k.kind) {
     case "speaker": {
       if (k.state !== "idle" && k.state !== "playing" && k.state !== "paused") {
         throw new Error("Invalid cached speaker state");
       }
+      const playback = cachedPlayback(k.playback);
       return {
         kind: "speaker",
         mediaEntityId: reqStr(k.mediaEntityId),
@@ -1377,9 +1400,11 @@ export function cachedExtendedKind(k: HARow): DeviceKind {
         isSleepMode: reqBool(k.isSleepMode),
         volumeWritable: reqBool(k.volumeWritable),
         ...(k.volumePresent !== undefined ? { volumePresent: reqBool(k.volumePresent) } : {}),
+        ...(playback ? { playback } : {}),
       };
     }
-    case "tv":
+    case "tv": {
+      const playback = cachedPlayback(k.playback);
       return {
         kind: "tv", mediaEntityId: reqStr(k.mediaEntityId), state: reqStr(k.state), volumePercent: reqNum(k.volumePercent),
         ...(k.isMuted !== undefined ? { isMuted: reqBool(k.isMuted) } : {}),
@@ -1392,7 +1417,9 @@ export function cachedExtendedKind(k: HARow): DeviceKind {
         ...(k.powerOffActionId !== undefined ? { powerOffActionId: nullStr(k.powerOffActionId) } : {}),
         ...(k.powerWritable !== undefined ? { powerWritable: reqBool(k.powerWritable) } : {}),
         volumeWritable: reqBool(k.volumeWritable), ...(k.volumePresent !== undefined ? { volumePresent: reqBool(k.volumePresent) } : {}),
+        ...(playback ? { playback } : {}),
         ...(typeof k.remoteEntityId === "string" ? { remoteEntityId: k.remoteEntityId } : {}),
+        ...(isHaRemoteProfile(k.remoteProfile) ? { remoteProfile: k.remoteProfile } : {}),
         ...(k.supportsRemotePad === true ? { supportsRemotePad: true } : {}),
         ...(k.miotRemoteActions && typeof k.miotRemoteActions === "object"
           ? {
@@ -1403,6 +1430,7 @@ export function cachedExtendedKind(k: HARow): DeviceKind {
           }
           : {}),
       };
+    }
     case "humidifier":
       return {
         kind: "humidifier", entityId: reqStr(k.entityId), isOn: reqBool(k.isOn),

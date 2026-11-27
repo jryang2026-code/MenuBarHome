@@ -192,6 +192,9 @@ export class TVBridgeController {
    * `tv_bridge_start` and can never kill the process that replaced it.
    */
   private nativeOps: Promise<void> = Promise.resolve();
+  /** Incremented on each native launch; stale `close` callbacks compare against it on `nativeOps`. */
+  private runEpoch = 0;
+  private readonly stoppingOnNativeChain = new WeakSet<TVBridgeLifecycle>();
   private hardwareIds = new Map<string, readonly string[]>();
 
   constructor(deps: TVBridgeControllerDeps = {}) {
@@ -400,7 +403,10 @@ export class TVBridgeController {
   }
 
   private contextChanged(context: TVBridgePollingContext): Promise<void> {
-    return this.lifecycle?.contextChanged(context).catch(() => { this.lifecycle = null; }) ?? Promise.resolve();
+    const lifecycle = this.lifecycle;
+    return lifecycle?.contextChanged(context).catch(() => {
+      if (this.lifecycle === lifecycle) this.lifecycle = null;
+    }) ?? Promise.resolve();
   }
 
   private ensureStarted(): Promise<TVBridgeLifecycle> {
@@ -425,22 +431,31 @@ export class TVBridgeController {
   }
 
   private stop(lifecycle: TVBridgeLifecycle): Promise<void> {
-    return this.native(() => lifecycle.shutdown()).catch(() => undefined);
+    return this.native(async () => {
+      this.stoppingOnNativeChain.add(lifecycle);
+      try {
+        await lifecycle.shutdown();
+      } finally {
+        this.stoppingOnNativeChain.delete(lifecycle);
+      }
+    }).catch(() => undefined);
   }
 
   /** Runs on the native chain (see `nativeOps`), so it never calls `native` or `stop` itself. */
-  private async start(epoch: number): Promise<TVBridgeLifecycle> {
-    const stale = () => epoch !== this.generation || !this.config.isEnabled;
+  private async start(genEpoch: number): Promise<TVBridgeLifecycle> {
+    const stale = () => genEpoch !== this.generation || !this.config.isEnabled;
     const invoke = this.invokeFn;
     if (!invoke) throw new Error("command tv_bridge_start not found");
     if (stale()) throw new Error("TV bridge switched off before starting");
+    await invoke("tv_bridge_start", { binaryPath: this.config.binaryPath, expectedSha256: this.config.expectedBinarySHA256 ?? null });
+    const epoch = ++this.runEpoch;
     const send = async (frame: TVBridgeFrame): Promise<TVBridgeFrame> => {
+      if (epoch !== this.runEpoch) throw new Error("TV bridge process replaced");
       const reply = await invoke("tv_bridge_request", { frame });
       const parsed = (typeof reply === "string" ? JSON.parse(reply) : reply) as TVBridgeFrame | null;
       if (!parsed || parsed.id !== frame.id) throw new Error("Invalid TV bridge frame");
       return parsed;
     };
-    await invoke("tv_bridge_start", { binaryPath: this.config.binaryPath, expectedSha256: this.config.expectedBinarySHA256 ?? null });
     try {
       if (stale()) throw new Error("TV bridge switched off while starting");
       const devices = await Promise.all(this.config.devices.map(async (d) => {
@@ -453,10 +468,20 @@ export class TVBridgeController {
       if (init.error) throw new Error(typeof init.error === "string" ? init.error : init.error.message);
       if (stale()) throw new Error("TV bridge switched off while starting");
     } catch (error) {
-      await invoke("tv_bridge_shutdown").catch(() => undefined);
+      if (epoch === this.runEpoch) await invoke("tv_bridge_shutdown").catch(() => undefined);
       throw error;
     }
-    const lifecycle = new TVBridgeLifecycle({ request: send, close: async () => { await invoke("tv_bridge_shutdown"); } }, this.config.idleShutdownSeconds);
+    let closed = false;
+    let lifecycle!: TVBridgeLifecycle;
+    const closeNative = async (): Promise<void> => {
+      if (closed || epoch !== this.runEpoch) return;
+      closed = true;
+      await invoke("tv_bridge_shutdown");
+    };
+    lifecycle = new TVBridgeLifecycle(
+      { request: send, close: () => (this.stoppingOnNativeChain.has(lifecycle) ? closeNative() : this.native(closeNative)) },
+      this.config.idleShutdownSeconds,
+    );
     lifecycle.markStarted();
     this.lifecycle = lifecycle;
     // The panel may have closed while the bridge was starting; `onPanelHidden` saw nothing running.

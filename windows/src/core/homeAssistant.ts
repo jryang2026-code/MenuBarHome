@@ -37,7 +37,7 @@ import type { CapabilityIndexedDevice, SafetySignalKind } from "./capabilityRefe
 import { t } from "./i18n.js";
 import { sha256 } from "./miCloudCrypto.js";
 import { normalizedKelvinBounds } from "./miCloud/synthesis.js";
-import { HA_REMOTE_COMMAND, isTvRemoteKey } from "./mediaPlayback.js";
+import { haRemoteCommand, inferHaRemoteProfile, isTvRemoteKey } from "./mediaPlayback.js";
 import {
   deviceEnvironmentReading,
   environmentReadingPriority,
@@ -399,6 +399,13 @@ export function homeAssistantCommand(
   if (command.kind === "setMiotProperty") {
     return mapHAFacetCommand(command, deviceFacets);
   }
+  if (command.kind === "remoteSendKey" && !command.profile) {
+    const tv = devices.find((entry) => entry.kind.kind === "tv" && entry.kind.remoteEntityId === command.entityId);
+    if (tv && tv.kind.kind === "tv" && tv.kind.remoteProfile) {
+      return { ...command, profile: tv.kind.remoteProfile };
+    }
+    return command;
+  }
   if (command.kind !== "setClimatePower" || !command.isOn) return command;
   const device = devices.find((entry) => entry.kind.kind === "climate" && entry.kind.entityId === command.entityId);
   if (!device || device.kind.kind !== "climate") throw new Error("Home Assistant climate not found");
@@ -429,6 +436,7 @@ function buildKind(
   deviceName: string,
   claimed: Set<string>,
   allowBinaryFallback = false,
+  deviceMeta?: { readonly manufacturer?: string; readonly identifiers?: unknown },
 ): { kind: DeviceKind; online: boolean } | null {
   const find = (
     domain: string,
@@ -763,7 +771,7 @@ function buildKind(
       isChildLocked: lock?.state === "on",
     };
   } else if (entities.some((entry) => text(entry.entity_id).startsWith("media_player."))) {
-    return buildMediaPlayerKind(entities, states, claimed, model);
+    return buildMediaPlayerKind(entities, states, claimed, model, { ...deviceMeta, name: deviceName });
   } else if (
     entities.length === 1 &&
     (state = find(
@@ -999,9 +1007,10 @@ export class HomeAssistantSynthesizer {
       model: string,
       entities: Row[],
       allowBinaryFallback: boolean,
+      deviceMeta?: { readonly manufacturer?: string; readonly identifiers?: unknown },
     ) => {
       const claimed = new Set<string>();
-      const built = buildKind(entities, states, model, cleanName, claimed, allowBinaryFallback);
+      const built = buildKind(entities, states, model, cleanName, claimed, allowBinaryFallback, deviceMeta);
       if (!built) return;
       pending.push({
         card: {
@@ -1026,6 +1035,7 @@ export class HomeAssistantSynthesizer {
       model: string,
       entities: Row[],
       allowBinaryFallback = false,
+      deviceMeta?: { readonly manufacturer?: string; readonly identifiers?: unknown },
     ) => {
       const { roomId, roomName } = resolveRoom(areaId);
       const cleanName = cleanHADeviceName(rawName, roomName);
@@ -1040,7 +1050,7 @@ export class HomeAssistantSynthesizer {
       });
       if (activeCovers.length > 1) {
         const probeClaimed = new Set<string>();
-        const probe = buildKind(entities, states, model, cleanName, probeClaimed, allowBinaryFallback);
+        const probe = buildKind(entities, states, model, cleanName, probeClaimed, allowBinaryFallback, deviceMeta);
         if (probe?.kind.kind === "cover") {
           const nonCoverEntities = entities.filter((e) => !text(e.entity_id).startsWith("cover."));
           for (const coverEnt of activeCovers) {
@@ -1069,12 +1079,13 @@ export class HomeAssistantSynthesizer {
               model,
               [coverEnt, ...trackAux],
               allowBinaryFallback,
+              deviceMeta,
             );
           }
           return;
         }
       }
-      appendSingle(id, cleanName, roomId, roomName, model, entities, allowBinaryFallback);
+      appendSingle(id, cleanName, roomId, roomName, model, entities, allowBinaryFallback, deviceMeta);
     };
 
     for (const device of snapshot.devices) {
@@ -1099,6 +1110,7 @@ export class HomeAssistantSynthesizer {
         model,
         entities,
         false,
+        { manufacturer: text(device.manufacturer), identifiers: device.identifiers },
       );
     }
 
@@ -1377,11 +1389,13 @@ export function haServiceCall(command: DeviceCommand): HaServiceCall {
       const pos = finiteCmdNumber(command.positionSec);
       return call("media_seek", { seek_position: Math.max(0, pos) });
     }
-    case "remoteSendKey":
+    case "remoteSendKey": {
       if (domain !== "remote" || !isTvRemoteKey(command.key)) {
         throw new Error("Remote keys go to a Home Assistant remote entity");
       }
-      return call("send_command", { command: HA_REMOTE_COMMAND[command.key] });
+      const profile = command.profile ?? inferHaRemoteProfile({ entityId: entity_id });
+      return call("send_command", { command: haRemoteCommand(command.key, profile) });
+    }
   }
 }
 

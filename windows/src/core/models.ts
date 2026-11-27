@@ -158,7 +158,7 @@ export interface CoverSpec {
   motion: "stopped" | "opening" | "closing";
 }
 
-/** Media card for a MIoT `speaker` service, with optional TTS / directive action slots. */
+/** Media card for a MIoT `speaker` service or HA `media_player.*`, with optional Now Playing (#564). */
 export interface SpeakerSpec {
   readonly kind: "speaker";
   readonly mediaEntityId: string;
@@ -172,7 +172,11 @@ export interface SpeakerSpec {
   volumePresent?: boolean;
   readonly ttsActionId?: string | null;
   readonly directiveActionId?: string | null;
+  readonly playback?: MediaPlaybackState | null;
 }
+
+export const HA_REMOTE_PROFILES = ["appleTV", "androidTV", "sonyBravia", "roku", "generic"] as const;
+export type HaRemoteProfile = (typeof HA_REMOTE_PROFILES)[number];
 
 export interface TvSpec {
   readonly kind: "tv";
@@ -195,6 +199,7 @@ export interface TvSpec {
   readonly playback?: MediaPlaybackState | null;
   /** Home Assistant `remote.*` on the same device, the target of `remoteSendKey`. */
   readonly remoteEntityId?: string | null;
+  readonly remoteProfile?: HaRemoteProfile;
   readonly supportsRemotePad?: boolean;
   /** `TvRemoteKey` → MIoT action address on a Xiaomi TV. */
   readonly miotRemoteActions?: Readonly<Partial<Record<TvRemoteKey, string>>>;
@@ -478,7 +483,7 @@ export type DeviceCommand =
   | { readonly kind: "mediaPreviousTrack"; readonly entityId: string }
   | { readonly kind: "mediaSeek"; readonly entityId: string; readonly positionSec: number }
   /** HA `remote.send_command`, or a MIoT action address from `miotRemoteActions`. */
-  | { readonly kind: "remoteSendKey"; readonly entityId: string; readonly key: TvRemoteKey };
+  | { readonly kind: "remoteSendKey"; readonly entityId: string; readonly key: TvRemoteKey; readonly profile?: HaRemoteProfile };
 
 export type IntentOperation =
   | { readonly kind: "power"; readonly isOn: boolean }
@@ -678,7 +683,8 @@ export function deviceAcceptsControlWrites(device: SmartDevice): boolean {
         kind.muteSwitchEntityId !== null ||
         kind.sleepModeEntityId !== null ||
         Boolean(kind.ttsActionId) ||
-        Boolean(kind.directiveActionId)
+        Boolean(kind.directiveActionId) ||
+        Boolean(kind.playback && (kind.playback.canPlayPause || kind.playback.canSeek || kind.playback.canSkipTrack))
       );
     case "tv":
       return (
@@ -768,7 +774,8 @@ export function hasDetailDrawer(device: SmartDevice, facets: readonly FacetContr
         kind.muteSwitchEntityId !== null ||
         kind.sleepModeEntityId !== null ||
         Boolean(kind.ttsActionId) ||
-        Boolean(kind.directiveActionId)
+        Boolean(kind.directiveActionId) ||
+        Boolean(kind.playback)
       );
     case "tv":
       return (

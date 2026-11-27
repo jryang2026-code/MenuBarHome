@@ -1,3 +1,4 @@
+import { acquireHaTransportLease, invokeHaWithLease, normalizeHomeAssistantScopeUrl } from "../core/haTransportGate.js";
 import { t } from "../core/i18n.js";
 import {
   extrapolatedPosition,
@@ -7,7 +8,8 @@ import {
   playbackHasContent,
   progressStyle,
 } from "../core/mediaPlayback.js";
-import type { DeviceCommand, MediaPlaybackState, SmartDevice, TvRemoteKey, TvSpec } from "../core/models.js";
+import { sha256 } from "../core/miCloudCrypto.js";
+import type { DeviceCommand, MediaPlaybackState, SmartDevice, SpeakerSpec, TvRemoteKey, TvSpec } from "../core/models.js";
 import type { MenuMijiaWindowsApp } from "./app.js";
 import { SF_ICONS } from "./appConstants.js";
 
@@ -25,6 +27,28 @@ const ICON = {
 
 const seekGuards = new Map<string, MediaSeekGuard>();
 const expandedPads = new Set<string>();
+const ARTWORK_CACHE_CAPACITY = 24;
+const SAFE_ARTWORK_MIMES = new Set(["image/jpeg", "image/png", "image/webp", "image/gif", "image/avif"]);
+const artworkCache = new Map<string, string | null>();
+const artworkInFlight = new Set<string>();
+const deviceArtworkById = new Map<string, { readonly pathDigest: string; readonly dataUrl: string }>();
+const sha256Hex = (raw: string): string => Array.from(sha256(new TextEncoder().encode(raw)), (b) => b.toString(16).padStart(2, "0")).join("");
+const placeholderIconFor = (kind: "tv" | "speaker"): string => (kind === "speaker" ? SF_ICONS.speakerFill : ICON.tv);
+
+/** SHA-256 of HA scope + artwork path, so `?token=` never enters cache keys or DOM attributes. */
+export function mediaArtworkCacheKey(baseUrl: string, artworkPath: string): string {
+  return sha256Hex(`${normalizeHomeAssistantScopeUrl(baseUrl) ?? baseUrl.trim().replace(/\/+$/, "")}|${artworkPath.trim()}`);
+}
+export function clearMediaArtworkCache(): void { artworkCache.clear(); artworkInFlight.clear(); deviceArtworkById.clear(); }
+
+function putArtworkCache(key: string, dataUrl: string | null): void {
+  artworkCache.delete(key);
+  artworkCache.set(key, dataUrl);
+  while (artworkCache.size > ARTWORK_CACHE_CAPACITY) {
+    const oldest = artworkCache.keys().next().value;
+    if (oldest !== undefined) artworkCache.delete(oldest);
+  }
+}
 
 function guardFor(deviceId: string): MediaSeekGuard {
   let guard = seekGuards.get(deviceId);
@@ -39,6 +63,10 @@ export function tvDrawerHasMedia(k: TvSpec): boolean {
   return (k.playback ? playbackHasContent(k.playback) : false) || k.supportsRemotePad === true;
 }
 
+export function speakerDrawerHasMedia(k: SpeakerSpec): boolean {
+  return k.playback ? playbackHasContent(k.playback) : false;
+}
+
 function remoteKeyAvailable(k: TvSpec, key: TvRemoteKey): boolean {
   return Boolean(k.remoteEntityId) || Boolean(k.miotRemoteActions?.[key]);
 }
@@ -50,6 +78,13 @@ function renderNowPlaying(dev: SmartDevice, p: MediaPlaybackState, escapeHtml: (
   const style = progressStyle(p);
   const duration = p.durationSec ?? 0;
   const position = guardFor(dev.id).displayedPosition(extrapolatedPosition(p, Date.now()), Date.now()) ?? 0;
+  const mediaKind: "tv" | "speaker" = dev.kind.kind === "speaker" ? "speaker" : "tv";
+  const digest = p.artworkURL ? sha256Hex(p.artworkURL.trim()) : "";
+  const cached = digest ? deviceArtworkById.get(dev.id) : undefined;
+  const dataUrl = cached && cached.pathDigest === digest ? cached.dataUrl : null;
+  const artworkBody = dataUrl
+    ? `<img class="cc-tv-artwork-img" src="${escapeHtml(dataUrl)}" alt="" />`
+    : placeholderIconFor(mediaKind);
   const transport = [
     p.canSkipTrack ? `<button class="cc-tv-transport" data-tvmedia="${id}|previous" aria-label="${t("上一个")}" title="${t("上一个")}">${ICON.previous}</button>` : "",
     p.canPlayPause ? `<button class="cc-tv-transport is-primary" data-tvmedia="${id}|playPause" aria-label="${playing ? t("暂停") : t("播放")}" title="${playing ? t("暂停") : t("播放")}">${playing ? ICON.pause : ICON.play}</button>` : "",
@@ -68,7 +103,7 @@ function renderNowPlaying(dev: SmartDevice, p: MediaPlaybackState, escapeHtml: (
       </div>`;
   return `<div class="cc-tv-nowplaying">
       <div class="cc-tv-np-row">
-        <div class="cc-tv-artwork" aria-hidden="true">${ICON.tv}</div>
+        <div class="cc-tv-artwork" data-media-artwork="${id}" data-media-artwork-digest="${digest}" aria-hidden="true">${artworkBody}</div>
         <div class="cc-tv-np-text">
           <span class="cc-tv-np-title" title="${escapeHtml(title)}">${escapeHtml(title)}</span>
           <span class="cc-tv-np-meta">${subtitle}${app}</span>
@@ -118,10 +153,71 @@ export function renderTvMediaSection(dev: SmartDevice, k: TvSpec, escapeHtml: (v
   return parts.join("");
 }
 
+/** Empty when the speaker reports no Now Playing metadata, leaving existing speaker drawers unchanged (#564). */
+export function renderSpeakerMediaSection(dev: SmartDevice, k: SpeakerSpec, escapeHtml: (value: string) => string): string {
+  return k.playback && playbackHasContent(k.playback) ? renderNowPlaying(dev, k.playback, escapeHtml) : "";
+}
+
 function liveTv(host: MenuMijiaWindowsApp, deviceId: string): { dev: SmartDevice; k: TvSpec } | null {
   const dev = host.devices.find((d) => d.id === deviceId);
   if (!dev || !dev.isOnline || dev.kind.kind !== "tv") return null;
   return { dev, k: dev.kind };
+}
+
+function liveMedia(host: MenuMijiaWindowsApp, deviceId: string): { dev: SmartDevice; kind: "tv" | "speaker"; mediaEntityId: string; playback: MediaPlaybackState | null } | null {
+  const dev = host.devices.find((d) => d.id === deviceId);
+  if (!dev || !dev.isOnline || (dev.kind.kind !== "tv" && dev.kind.kind !== "speaker")) return null;
+  return { dev, kind: dev.kind.kind, mediaEntityId: dev.kind.mediaEntityId, playback: dev.kind.playback ?? null };
+}
+
+function applyArtworkElement(el: HTMLElement, dataUrl: string | null, kind: "tv" | "speaker"): void {
+  if (!dataUrl) { el.innerHTML = placeholderIconFor(kind); return; }
+  if (el.querySelector<HTMLImageElement>("img.cc-tv-artwork-img")?.src === dataUrl) return;
+  const img = document.createElement("img");
+  img.className = "cc-tv-artwork-img";
+  img.alt = "";
+  img.src = dataUrl;
+  img.addEventListener("error", () => { el.innerHTML = placeholderIconFor(kind); }, { once: true });
+  el.replaceChildren(img);
+}
+
+function hydrateMediaArtwork(host: MenuMijiaWindowsApp, el: HTMLElement): void {
+  const deviceId = el.dataset.mediaArtwork ?? "";
+  const live = deviceId ? liveMedia(host, deviceId) : null;
+  const artworkPath = live?.playback?.artworkURL?.trim() ?? "";
+  const baseUrl = host.settings?.haBaseURL?.trim() ?? "";
+  const invoke = typeof window !== "undefined" ? window.__TAURI_INTERNALS__?.invoke : undefined;
+  if (!live || !artworkPath || !live.mediaEntityId.startsWith("media_player.") || !baseUrl || !invoke) return;
+  const key = mediaArtworkCacheKey(baseUrl, artworkPath);
+  const digest = sha256Hex(artworkPath);
+  if (artworkCache.has(key)) {
+    const cached = artworkCache.get(key) ?? null;
+    putArtworkCache(key, cached);
+    if (cached) deviceArtworkById.set(deviceId, { pathDigest: digest, dataUrl: cached });
+    applyArtworkElement(el, cached, live.kind);
+    return;
+  }
+  if (artworkInFlight.has(key)) return;
+  const token = host.settings?.haToken?.trim() ?? "";
+  const lease = acquireHaTransportLease(baseUrl, { token });
+  if (!lease) return;
+  artworkInFlight.add(key);
+  const hasEntityToken = /[?&]token=[^&]+/.test(artworkPath);
+  void (async () => {
+    try {
+      const res = await invokeHaWithLease<{ mimeType?: unknown; dataBase64?: unknown }>(lease, invoke, "ha_media_artwork", { baseUrl, token: hasEntityToken ? null : (token || null), artworkPath });
+      const mime = typeof res?.mimeType === "string" ? res.mimeType.trim().toLowerCase() : "";
+      const b64 = typeof res?.dataBase64 === "string" ? res.dataBase64.trim() : "";
+      const dataUrl = SAFE_ARTWORK_MIMES.has(mime) && b64.length > 0 ? `data:${mime};base64,${b64}` : null;
+      putArtworkCache(key, dataUrl);
+      if (dataUrl) deviceArtworkById.set(deviceId, { pathDigest: digest, dataUrl });
+      if (host.root.isConnected) {
+        host.root.querySelectorAll<HTMLElement>("[data-media-artwork]").forEach((node) => {
+          if (node.dataset.mediaArtwork === deviceId && node.dataset.mediaArtworkDigest === digest) applyArtworkElement(node, dataUrl, live.kind);
+        });
+      }
+    } catch { putArtworkCache(key, null); } finally { artworkInFlight.delete(key); lease.release(); }
+  })();
 }
 
 function splitPair(raw: string | undefined): [string, string] | null {
@@ -131,8 +227,8 @@ function splitPair(raw: string | undefined): [string, string] | null {
 }
 
 function updateProgressElement(host: MenuMijiaWindowsApp, el: HTMLElement, now: number): boolean {
-  const live = el.dataset.tvProgress ? liveTv(host, el.dataset.tvProgress) : null;
-  const p = live?.k.playback;
+  const live = el.dataset.tvProgress ? liveMedia(host, el.dataset.tvProgress) : null;
+  const p = live?.playback;
   if (!live || !p || !p.durationSec) return false;
   const guard = guardFor(live.dev.id);
   const position = guard.displayedPosition(extrapolatedPosition(p, now), now) ?? 0;
@@ -216,14 +312,16 @@ function send(host: MenuMijiaWindowsApp, dev: SmartDevice, command: DeviceComman
 }
 
 export function bindTvMediaEvents(host: MenuMijiaWindowsApp): void {
+  host.root.querySelectorAll<HTMLElement>("[data-media-artwork]").forEach((el) => hydrateMediaArtwork(host, el));
+
   host.root.querySelectorAll<HTMLButtonElement>("[data-tvmedia]").forEach((btn) => {
     btn.addEventListener("click", (e) => {
       e.stopPropagation();
       const pair = splitPair(btn.dataset.tvmedia);
-      const live = pair ? liveTv(host, pair[0]) : null;
-      const p = live?.k.playback;
+      const live = pair ? liveMedia(host, pair[0]) : null;
+      const p = live?.playback;
       if (!pair || !live || !p) return;
-      const entityId = live.k.mediaEntityId;
+      const entityId = live.mediaEntityId;
       if (pair[1] === "playPause" && p.canPlayPause) {
         send(host, live.dev, { kind: "mediaPlayPause", entityId }, t("已切换{name}播放状态", { name: live.dev.name }));
       } else if (pair[1] === "next" && p.canSkipTrack) {
@@ -261,11 +359,11 @@ export function bindTvMediaEvents(host: MenuMijiaWindowsApp): void {
     slider.addEventListener("change", () => {
       host.pointerIsDown = false;
       const target = guard.endDrag(Date.now());
-      const live = liveTv(host, deviceId);
-      const p = live?.k.playback;
+      const live = liveMedia(host, deviceId);
+      const p = live?.playback;
       if (target === null || !live || !p || !p.canSeek || !p.durationSec) return;
       const positionSec = Math.min(Math.max(target, 0), p.durationSec);
-      send(host, live.dev, { kind: "mediaSeek", entityId: live.k.mediaEntityId, positionSec },
+      send(host, live.dev, { kind: "mediaSeek", entityId: live.mediaEntityId, positionSec },
         t("已将{name}跳转到 {time}", { name: live.dev.name, time: formatMediaTime(positionSec) }));
       ensureProgressTicker(host);
     });
@@ -290,7 +388,7 @@ export function bindTvMediaEvents(host: MenuMijiaWindowsApp): void {
       const key = pair[1];
       const entityId = live.k.miotRemoteActions?.[key] ?? live.k.remoteEntityId ?? null;
       if (!entityId) return;
-      send(host, live.dev, { kind: "remoteSendKey", entityId, key }, t("已向{name}发送遥控按键", { name: live.dev.name }));
+      send(host, live.dev, { kind: "remoteSendKey", entityId, key, ...(live.k.remoteProfile ? { profile: live.k.remoteProfile } : {}) }, t("已向{name}发送遥控按键", { name: live.dev.name }));
     });
   });
 

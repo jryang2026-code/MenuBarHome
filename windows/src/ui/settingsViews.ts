@@ -422,6 +422,8 @@ const inactiveTabHtmlCache = new Map<SettingsTab, { key: string; html: string }>
 export function buildInactiveTabCacheKey(ctx: SettingsViewContext, tabId: SettingsTab): string | null {
   if (tabId === "general") {
     const layout = ctx.layout ?? ctx.settings.layout;
+    const ddc = getDdcDisplayController();
+    const tvBridge = getTVBridgeController();
     return JSON.stringify([
       t("外观模式"), ctx.availableUpdate, ctx.isCheckingUpdate, ctx.isInstallingUpdate, ctx.updateStatusMessage,
       ctx.updateProgress ?? getUpdateProgressForSettings(ctx.settings), ctx.settings.autoCheckUpdates,
@@ -437,6 +439,8 @@ export function buildInactiveTabCacheKey(ctx: SettingsViewContext, tabId: Settin
       readCustomHomeTitle(ctx.settings), ctx.connDiagHost?.connDiagSession?.titleDraft,
       ctx.connDiagHost?.homeTitle, ctx.settings.selectedHomeId, ctx.connDiagHost?.homes.map((h) => [h.id, h.name]),
       hiddenDeviceIds(layout), layout?.aliases, layout?.roomAliases, ctx.devices.map((d) => [d.id, d.name, d.roomId, d.roomName]),
+      ddc.enabled, ddc.isRefreshing, ddc.scanned, ddc.error, ddc.displays,
+      tvBridge.enabled, tvBridge.status, tvBridge.isRefreshing, tvBridge.error, tvBridge.config,
     ]);
   }
   if (tabId === "assistant") {
@@ -819,6 +823,9 @@ function renderGeneralPanel(ctx: SettingsViewContext): string {
         )}</button>
       </div>
     </div>
+
+    ${renderDdcSettingsSection(getDdcDisplayController(), (raw) => ctx.escapeHtml(raw))}
+    ${renderTVBridgeSettingsSection(getTVBridgeController(), (raw) => ctx.escapeHtml(raw))}
   `;
 }
 
@@ -1325,8 +1332,6 @@ function renderSafetyPanel(ctx: SettingsViewContext): string {
     </div>
 
     ${renderEnergySettingsSection(ctx)}
-    ${renderDdcSettingsSection(getDdcDisplayController(), (raw) => ctx.escapeHtml(raw))}
-    ${renderTVBridgeSettingsSection(getTVBridgeController(), (raw) => ctx.escapeHtml(raw))}
     ${renderAutomationAndSafetySettingsSections(ctx)}
 
     <div class="cc-settings-group-card">

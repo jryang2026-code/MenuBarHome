@@ -17,6 +17,8 @@ import { appDiagnosticsLog } from "../core/diagnosticsAndScanner.js";
 import {
   DUAL_SOURCE_ENABLED_STORAGE_KEY,
   DualSourceCoordinator,
+  extractBuiltInDeviceMacs,
+  extractHADeviceIdentities,
   extractMiDeviceIdentities,
   fetchHASnapshotWithIdentities,
   type DeviceMergeResult,
@@ -788,6 +790,7 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false, 
       );
       host.devices = applyOrder(host.devices.map((device) => device.id), merged.devices);
       host.deviceFacets = merged.deviceFacets;
+      host.builtInDeviceMacs = extractBuiltInDeviceMacs(extractMiDeviceIdentities(prunePlan.visibleRecords, home));
       if (
         host.cameraLive.activeLiveCameraId !== null &&
         !host.devices.some((device) => device.id === host.cameraLive.activeLiveCameraId)
@@ -951,6 +954,7 @@ export async function refreshHADevices(host: MenuMijiaWindowsApp, silent = false
       );
       host.devices = applyOrder(host.devices.map((device) => device.id), merged.devices);
       host.deviceFacets = merged.deviceFacets;
+      host.builtInDeviceMacs = extractBuiltInDeviceMacs(extractHADeviceIdentities(haClient.lastRawSnapshot, home));
       applyMiotTypePruneSnapshot(host, null);
       // A closed type contributes nothing to the panel, search, the AI directory, the companion
       // export or a control entry; only its enabled alerts still read it (architecture.md §D).
@@ -1651,12 +1655,25 @@ async function refreshMultiAccountXiaomiDevices(
       host.homes = applyOrder(host.homes.map((h) => h.id), merged.homes);
     }
 
+    const allRawMiRecords: MiDeviceRecord[] = [];
+    const seenMiDids = new Set<string>();
+    for (const acc of enabledAccounts) {
+      for (const rec of merged.rawDevicesByAccount[acc.id] ?? []) {
+        if (!seenMiDids.has(rec.did)) {
+          seenMiDids.add(rec.did);
+          allRawMiRecords.push(rec);
+        }
+      }
+    }
+    const multiMiMacs = extractBuiltInDeviceMacs(extractMiDeviceIdentities(allRawMiRecords, merged.home));
+
     const allExpired = enabledAccounts.every((acc) => merged.accountTokenStatuses[acc.id]?.kind === "expired");
     host.miSessionExpired = allExpired;
     if (merged.aggregateStatus.kind === "disconnected") {
       host.lastMiCloudSyncFailed = true;
       host.markCloudValuesStale();
       if (merged.home.devices.length > 0) {
+        host.builtInDeviceMacs = multiMiMacs;
         applySynthesizedSnapshotToHost(host, merged.home, merged.lightGroupOwners, pollCapturedEpoch);
         presentationChanged = cloudPresentationFingerprint(host) !== previousPresentation;
       }
@@ -1664,6 +1681,7 @@ async function refreshMultiAccountXiaomiDevices(
     } else {
       host.lastMiCloudSyncFailed = false;
       host.markCloudValuesFresh();
+      host.builtInDeviceMacs = multiMiMacs;
       applySynthesizedSnapshotToHost(host, merged.home, merged.lightGroupOwners, pollCapturedEpoch);
       presentationChanged = cloudPresentationFingerprint(host) !== previousPresentation;
       markTimerSnapshotReady(host);
@@ -1817,6 +1835,7 @@ function applyDualSourceMergeToHost(host: MenuMijiaWindowsApp, merged: DeviceMer
   if (merged.homes.length > 0 || host.homes.length === 0) {
     host.homes = applyOrder(host.homes.map((h) => h.id), merged.homes);
   }
+  host.builtInDeviceMacs = extractBuiltInDeviceMacs(merged.deviceIdentities);
   const groupOwners = new Map<string, string>(merged.lightGroupOwners);
   applySynthesizedSnapshotToHost(host, merged.home, groupOwners, merged.pollCapturedEpochs);
   host.scenes = [...merged.home.scenes];

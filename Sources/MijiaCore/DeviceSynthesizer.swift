@@ -346,6 +346,8 @@ public enum DeviceSynthesizer {
                 roomId: roomId,
                 roomName: roomName,
                 model: model,
+                manufacturer: dev.manufacturer,
+                identifiers: dev.identifiers,
                 entities: devEntities,
                 states: states,
                 claimed: &claimed
@@ -901,6 +903,8 @@ public enum DeviceSynthesizer {
         roomId: String,
         roomName: String,
         model: String,
+        manufacturer: String? = nil,
+        identifiers: [[String]]? = nil,
         entities: [HAEntityEntry],
         states: [String: HAEntityState],
         claimed: inout Set<String>
@@ -1576,19 +1580,27 @@ public enum DeviceSynthesizer {
             let features = st.attributes["supported_features"]?.intValue
             let volumeWritable = st.isAvailable && (features.map { ($0 & 4) != 0 } ?? (rawVol != nil))
             let volumePresent = rawVol != nil
+            let supportsMute = features.map { ($0 & 8) != 0 } ?? (st.attributes["is_volume_muted"]?.boolValue != nil)
             let devClass = st.attributes["device_class"]?.stringValue ?? ""
+            let muteSw = eids.first(where: { $0.hasPrefix("switch.") && $0.contains("mute") })
+            let isMuted = muteSw.flatMap { states[$0]?.state == "on" } ?? st.attributes["is_volume_muted"]?.boolValue ?? false
+            let muteSwitchEntityId = muteSw ?? (supportsMute ? "\(mediaId)#mute" : nil)
+            let playback = st.isAvailable ? MediaPlaybackState.fromHomeAssistant(state: st.state, attributes: st.attributes, parseDate: HAHomeSnapshot.parseLastChanged) : nil
 
-            if devClass == "tv" || model.contains("tv") {
+            if devClass == "tv" || model.lowercased().contains("tv") {
                 let src = st.attributes["source"]?.stringValue
                 let srcs = st.attributes["source_list"]?.stringArrayValue ?? []
                 let turnOnBtn = eids.first(where: { $0.hasPrefix("button.") && $0.contains("turn_on") })
                 let remoteId = eids.first(where: { $0.hasPrefix("remote.") && states[$0]?.isAvailable == true })
-                for id in [mediaId, turnOnBtn, remoteId].compactMap({ $0 }) { claimed.insert(id) }
-                let playback = st.isAvailable
-                    ? MediaPlaybackState.fromHomeAssistant(
-                        state: st.state, attributes: st.attributes, parseDate: HAHomeSnapshot.parseLastChanged
+                let remoteProfile = remoteId.map { id in
+                    HARemoteProfile.infer(
+                        platform: entities.first(where: { $0.entity_id == id })?.platform, manufacturer: manufacturer, model: model,
+                        identifiers: identifiers, entityId: id, friendlyName: states[id]?.attributes["friendly_name"]?.stringValue ?? name
                     )
-                    : nil
+                } ?? .generic
+                let rawState = st.state.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                let supportsPowerToggle = turnOnBtn != nil || features == nil || ((features ?? 0) & (128 | 256)) != 0 || rawState == "off" || rawState == "standby"
+                for id in [mediaId, turnOnBtn, muteSw, remoteId].compactMap({ $0 }) { claimed.insert(id) }
                 return SmartDevice(
                     id: deviceId,
                     name: name,
@@ -1601,28 +1613,27 @@ public enum DeviceSynthesizer {
                             mediaEntityId: mediaId,
                             state: st.state,
                             volumePercent: volPct,
+                            isMuted: isMuted,
+                            muteSwitchEntityId: muteSwitchEntityId,
                             currentSource: src,
                             availableSources: srcs,
                             turnOnButtonId: turnOnBtn,
+                            powerWritable: st.isAvailable && supportsPowerToggle,
                             volumeWritable: volumeWritable,
                             volumePresent: volumePresent,
                             playback: playback,
                             remoteEntityId: remoteId,
+                            remoteProfile: remoteProfile,
                             supportsRemotePad: remoteId != nil
                         )
                     )
                 )
             } else {
-                let muteSw = eids.first(where: { $0.hasPrefix("switch.") && $0.contains("mute") })
                 let sleepSw = eids.first(where: { $0.hasPrefix("switch.") && $0.contains("sleep_mode") })
                 let ttsNotify = eids.first(where: { $0.hasPrefix("notify.") && $0.contains("play_text") })
                 let dirNotify = eids.first(where: { $0.hasPrefix("notify.") && $0.contains("execute_text_directive") })
                 let playMusicBtn = eids.first(where: { $0.hasPrefix("button.") && $0.contains("play_music") })
                 let stopAlarmBtn = eids.first(where: { $0.hasPrefix("button.") && $0.contains("stop_alarm") })
-
-                let isMuted = muteSw.flatMap { states[$0]?.state == "on" }
-                    ?? st.attributes["is_volume_muted"]?.boolValue
-                    ?? false
                 let isSleep = sleepSw.flatMap { states[$0]?.state == "on" } ?? false
 
                 for id in [mediaId, muteSw, sleepSw, ttsNotify, dirNotify, playMusicBtn, stopAlarmBtn].compactMap({ $0 }) {
@@ -1642,7 +1653,7 @@ public enum DeviceSynthesizer {
                             state: st.state,
                             volumePercent: volPct,
                             isMuted: isMuted,
-                            muteSwitchEntityId: muteSw,
+                            muteSwitchEntityId: muteSwitchEntityId,
                             sleepModeEntityId: sleepSw,
                             isSleepMode: isSleep,
                             ttsNotifyEntityId: ttsNotify,
@@ -1650,7 +1661,8 @@ public enum DeviceSynthesizer {
                             playMusicButtonId: playMusicBtn,
                             stopAlarmButtonId: stopAlarmBtn,
                             volumeWritable: volumeWritable,
-                            volumePresent: volumePresent
+                            volumePresent: volumePresent,
+                            playback: playback
                         )
                     )
                 )

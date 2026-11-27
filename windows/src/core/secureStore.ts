@@ -160,8 +160,12 @@ export function sanitizeSettingsForStorage<T extends object>(settings: T): Recor
           devices: home.devices.map((device: unknown) => {
             if (!device || typeof device !== "object" || !("kind" in device)) return device;
             const kind = device.kind;
-            if (!kind || typeof kind !== "object" || !("kind" in kind) || kind.kind !== "camera") return device;
-            return { ...device, kind: { ...kind, snapshotPath: null } };
+            if (!kind || typeof kind !== "object" || !("kind" in kind)) return device;
+            if (kind.kind === "camera") return { ...device, kind: { ...kind, snapshotPath: null } };
+            if ((kind.kind === "tv" || kind.kind === "speaker") && "playback" in kind && kind.playback && typeof kind.playback === "object") {
+              return { ...device, kind: { ...kind, playback: { ...kind.playback, artworkURL: null } } };
+            }
+            return device;
           }),
         },
       };

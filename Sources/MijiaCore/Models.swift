@@ -304,6 +304,8 @@ public struct SpeakerSpec: Equatable, Sendable {
     public var stopAlarmButtonId: String?
     public var volumeWritable: Bool
     public var volumePresent: Bool
+    /// What the speaker is playing; nil keeps existing speaker drawers unchanged (#564).
+    public var playback: MediaPlaybackState?
 
     public init(
         mediaEntityId: String,
@@ -318,7 +320,8 @@ public struct SpeakerSpec: Equatable, Sendable {
         playMusicButtonId: String? = nil,
         stopAlarmButtonId: String? = nil,
         volumeWritable: Bool = true,
-        volumePresent: Bool = true
+        volumePresent: Bool = true,
+        playback: MediaPlaybackState? = nil
     ) {
         self.mediaEntityId = mediaEntityId
         self.state = state
@@ -333,6 +336,7 @@ public struct SpeakerSpec: Equatable, Sendable {
         self.stopAlarmButtonId = stopAlarmButtonId
         self.volumeWritable = volumeWritable
         self.volumePresent = volumePresent
+        self.playback = playback
     }
 }
 
@@ -356,6 +360,7 @@ public struct TVSpec: Equatable, Sendable {
     public var playback: MediaPlaybackState?
     /// Home Assistant `remote.*` on the same device, the target of `remoteSendKey`.
     public var remoteEntityId: String?
+    public var remoteProfile: HARemoteProfile
     public var supportsRemotePad: Bool
     /// `TVRemoteKey.rawValue` → MIoT action address (`did/siid#aiid`) on a Xiaomi TV.
     public var miotRemoteActions: [String: String]
@@ -378,11 +383,13 @@ public struct TVSpec: Equatable, Sendable {
         volumePresent: Bool = true,
         playback: MediaPlaybackState? = nil,
         remoteEntityId: String? = nil,
+        remoteProfile: HARemoteProfile = .generic,
         supportsRemotePad: Bool = false,
         miotRemoteActions: [String: String] = [:]
     ) {
         self.playback = playback
         self.remoteEntityId = remoteEntityId
+        self.remoteProfile = remoteProfile
         self.supportsRemotePad = supportsRemotePad
         self.miotRemoteActions = miotRemoteActions
         self.mediaEntityId = mediaEntityId
