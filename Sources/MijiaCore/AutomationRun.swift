@@ -83,5 +83,6 @@ extension HomeStore {
         if let data = try? JSONEncoder().encode(automationRunHistory) {
             userDefaults.set(data, forKey: Self.automationRunHistoryKey)
         }
+        scheduleRaycastSnapshotExport()
     }
 }

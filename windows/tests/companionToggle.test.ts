@@ -63,6 +63,7 @@ function installTauriStub(): void {
           snapshotExists: true,
           snapshotModifiedMs: Date.now(),
           forwardingReady: true,
+          mcpScriptPath: "C:\\Program Files\\MenuBarHome\\cli\\mijia-mcp",
         };
       }
       return null;
@@ -189,9 +190,11 @@ describe("P6a-W · companion switch-off and revocation", () => {
     await flushAsync();
     assert.ok(clipboardText);
     assert.equal(clipboardText.includes(token), false, "the bridge token never reaches the clipboard");
-    const config = JSON.parse(clipboardText) as { mcpServers: { menubarhome: { env: Record<string, string> } } };
+    const config = JSON.parse(clipboardText) as { mcpServers: { menubarhome: { command: string; args?: string[]; env: Record<string, string> } } };
+    assert.equal(config.mcpServers.menubarhome.command, "python");
+    assert.deepEqual(config.mcpServers.menubarhome.args, ["C:\\Program Files\\MenuBarHome\\cli\\mijia-mcp"]);
     assert.equal(config.mcpServers.menubarhome.env.MENUBARMIJIA_SNAPSHOT_PATH, SNAPSHOT_PATH);
-    assert.match(element("#settings-companion-notice").textContent ?? "", /已复制 MCP 配置/);
+    assert.match(element("#settings-companion-notice").textContent ?? "", /已复制开箱即用的 MCP 配置/);
 
     element("#btn-companion-detect").click();
     await flushAsync();
@@ -209,12 +212,20 @@ describe("P6a-W · companion switch-off and revocation", () => {
     assert.equal(document.querySelector("#btn-companion-disconnect"), null, "nothing left to disconnect");
   });
 
-  it("speaks all three languages and leaves the path out when it is unknown", () => {
-    assert.equal(buildCompanionConfigText(null).includes("MENUBARMIJIA_SNAPSHOT_PATH"), false);
-    setLanguage("zh-Hant");
-    assert.match(buildCompanionConfigText(null), /原始碼目錄/);
-    setLanguage("en");
-    assert.match(buildCompanionConfigText(SNAPSHOT_PATH), /source folder/);
+  it("emits ready-to-use MCP config without placeholder paths", () => {
+    const fallback = JSON.parse(buildCompanionConfigText(null, null)) as { mcpServers: { menubarhome: { command: string; args?: string[]; env: Record<string, string> } } };
+    assert.equal(fallback.mcpServers.menubarhome.command, "mijia-mcp");
+    assert.equal(fallback.mcpServers.menubarhome.args, undefined);
+    assert.equal("MENUBARMIJIA_SNAPSHOT_PATH" in fallback.mcpServers.menubarhome.env, false);
+
+    const bundled = JSON.parse(buildCompanionConfigText(SNAPSHOT_PATH, "C:\\App\\cli\\mijia-mcp")) as { mcpServers: { menubarhome: { command: string; args?: string[]; env: Record<string, string> } } };
+    assert.equal(bundled.mcpServers.menubarhome.command, "python");
+    assert.deepEqual(bundled.mcpServers.menubarhome.args, ["C:\\App\\cli\\mijia-mcp"]);
+    assert.equal(bundled.mcpServers.menubarhome.env.MENUBARMIJIA_SNAPSHOT_PATH, SNAPSHOT_PATH);
+
+    const cmdExe = JSON.parse(buildCompanionConfigText(SNAPSHOT_PATH, "C:\\Tools\\mijia-mcp.cmd")) as { mcpServers: { menubarhome: { command: string; args?: string[] } } };
+    assert.equal(cmdExe.mcpServers.menubarhome.command, "C:\\Tools\\mijia-mcp.cmd");
+    assert.equal(cmdExe.mcpServers.menubarhome.args, undefined);
   });
 
   it("keeps standalone Settings disconnected and offers a retry when the native snapshot deletion fails", async () => {

@@ -1393,6 +1393,8 @@ describe("A15 Companion URL high-risk confirm, Zero-AI presets, group folding & 
         assert.equal(parsed.command.percent, item.expected.percent ?? null);
         assert.equal(parsed.command.preset, item.expected.preset ?? null);
       }
+      if (parsed.command.kind === "coverPosition" || parsed.command.kind === "volume") assert.equal(parsed.command.percent, item.expected.percent);
+      if (parsed.command.kind === "mute") assert.equal(parsed.command.isMuted, item.expected.isMuted);
     }
     for (const item of urlGolden.builtInSceneCases) assert.equal(BuiltInURLScene.resolve(item.raw), item.expected);
     for (const item of urlGolden.bridgeTokenCases) {

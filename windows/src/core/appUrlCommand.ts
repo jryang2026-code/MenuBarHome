@@ -31,6 +31,10 @@ export type AppURLCommand =
   | { readonly kind: "colorTemp"; readonly deviceId: string; readonly kelvin: number }
   | { readonly kind: "temperature"; readonly deviceId: string; readonly celsius: number }
   | { readonly kind: "fan"; readonly deviceId: string; readonly percent: number | null; readonly preset: string | null }
+  | { readonly kind: "coverPosition"; readonly deviceId: string; readonly percent: number }
+  | { readonly kind: "volume"; readonly deviceId: string; readonly percent: number }
+  | { readonly kind: "mute"; readonly deviceId: string; readonly isMuted: boolean }
+  | { readonly kind: "mediaPlayPause"; readonly deviceId: string }
   | { readonly kind: "focus"; readonly deviceId: string };
 
 export function appURLCommandControlsDevice(command: AppURLCommand): boolean {
@@ -279,6 +283,22 @@ export const AppURLParser = {
         command = { kind: "fan", deviceId, percent, preset };
         break;
       }
+      case "coverposition":
+      case "volume": {
+        const deviceId = query.device; const percent = parseStrictInt(query.percent ?? query.value, 0, 100);
+        if (!deviceId || deviceId.length > this.maximumNameLength || percent === null) return null;
+        command = route === "volume" ? { kind: "volume", deviceId, percent } : { kind: "coverPosition", deviceId, percent }; break;
+      }
+      case "mute": {
+        const deviceId = query.device; const isMuted = parseBooleanWord(query.muted ?? query.on ?? query.state);
+        if (!deviceId || deviceId.length > this.maximumNameLength || isMuted === null) return null;
+        command = { kind: "mute", deviceId, isMuted }; break;
+      }
+      case "mediaplaypause": {
+        const deviceId = query.device;
+        if (!deviceId || deviceId.length > this.maximumNameLength) return null;
+        command = { kind: "mediaPlayPause", deviceId }; break;
+      }
       case "focus": {
         const deviceId = query.device;
         if (!deviceId || deviceId.length > this.maximumNameLength) return null;
@@ -346,6 +366,10 @@ export function formatAppURLCommandLabel(command: AppURLCommand): string {
       return command.percent !== null
         ? `fan:${command.deviceId}:${command.percent}`
         : `fan:${command.deviceId}:${command.preset ?? ""}`;
+    case "coverPosition": return `cover-position:${command.deviceId}:${command.percent}`;
+    case "volume": return `volume:${command.deviceId}:${command.percent}`;
+    case "mute": return `mute:${command.deviceId}:${command.isMuted ? "on" : "off"}`;
+    case "mediaPlayPause": return `media-play-pause:${command.deviceId}`;
     case "focus":
       return `focus:${command.deviceId}`;
   }
@@ -366,6 +390,10 @@ type ResolvedURLTarget =
       readonly percent: number | null;
       readonly preset: string | null;
     }
+  | { readonly kind: "coverPosition"; readonly device: SmartDevice; readonly percent: number }
+  | { readonly kind: "volume"; readonly device: SmartDevice; readonly percent: number }
+  | { readonly kind: "mute"; readonly device: SmartDevice; readonly isMuted: boolean }
+  | { readonly kind: "mediaPlayPause"; readonly device: SmartDevice }
   | { readonly kind: "focus"; readonly device: SmartDevice };
 
 export interface AppURLCommandHost {
@@ -572,6 +600,10 @@ function resolveTarget(command: AppURLCommand, host: AppURLCommandHost): Resolve
         ? { kind: "fan", device: dev, percent: command.percent, preset: command.preset }
         : null;
     }
+    case "coverPosition": { const d = host.devices.find((x) => x.id === command.deviceId); return d ? { kind: "coverPosition", device: d, percent: command.percent } : null; }
+    case "volume": { const d = host.devices.find((x) => x.id === command.deviceId); return d ? { kind: "volume", device: d, percent: command.percent } : null; }
+    case "mute": { const d = host.devices.find((x) => x.id === command.deviceId); return d ? { kind: "mute", device: d, isMuted: command.isMuted } : null; }
+    case "mediaPlayPause": { const d = host.devices.find((x) => x.id === command.deviceId); return d ? { kind: "mediaPlayPause", device: d } : null; }
     case "focus": {
       const dev = host.devices.find((d) => d.id === command.deviceId);
       return dev ? { kind: "focus", device: dev } : null;
@@ -637,6 +669,13 @@ function describeResolvedTarget(resolved: ResolvedURLTarget, host: AppURLCommand
       }
       return trText( "把{name}风速切换到「{preset}」", 'Set {name} fan mode to "{preset}"', { name, preset: resolved.preset ?? "" });
     }
+    case "coverPosition": return trText("把{name}位置调到 {percent}%", "Set {name} position to {percent}%", { name: displayNameFor(resolved.device, host), percent: resolved.percent });
+    case "volume": return trText("把{name}音量调到 {percent}%", "Set {name} volume to {percent}%", { name: displayNameFor(resolved.device, host), percent: resolved.percent });
+    case "mute": {
+      const name = displayNameFor(resolved.device, host);
+      return resolved.isMuted ? trText("将「{name}」静音", 'Mute "{name}"', { name }) : trText("取消「{name}」静音", 'Unmute "{name}"', { name });
+    }
+    case "mediaPlayPause": return trText("切换「{name}」播放/暂停", 'Toggle play/pause on "{name}"', { name: displayNameFor(resolved.device, host) });
     case "focus": {
       const name = displayNameFor(resolved.device, host);
       return trText("打开「{name}」详情", 'Open "{name}" details', { name });
@@ -790,6 +829,27 @@ async function runIntentOnDevice(
     mergeInverses: mergeInverseCommands,
     failureFallbackText: () =>
       trText("{name} 响应失败", "{name} failed to respond", { name: displayNameFor(dev, host) }),
+  });
+}
+
+async function runCoverPosition(
+  host: AppURLCommandHost, dev: SmartDevice, rawPercent: number,
+  options: { readonly bridgeContext?: URLBridgeContext; readonly alwaysConfirmHazardous?: boolean } = {},
+): Promise<{ readonly message: string; readonly isError: boolean }> {
+  const name = displayNameFor(dev, host);
+  if (dev.kind.kind !== "cover") return { message: trText("{name} 不是窗帘或门窗设备", "{name} is not a cover device", { name }), isError: true };
+  const spec = dev.kind; const clamped = Math.max(0, Math.min(100, Math.round(rawPercent)));
+  const edgeOpt = clamped === 100 ? spec.openDescription : clamped === 0 ? spec.closeDescription : null;
+  const cmd: DeviceCommand | null = spec.positionWritable
+    ? { kind: "setNumberValue", entityId: spec.entityId, value: clamped }
+    : edgeOpt ? { kind: "setSelectOption", entityId: spec.entityId, option: edgeOpt } : null;
+  if (!cmd) return { message: trText("{name} 不支持该位置调节", "{name} does not support that position", { name }), isError: true };
+  const summary = clamped === 100 ? trText("已打开{name}", "Opened {name}", { name }) : clamped === 0 ? trText("已关闭{name}", "Closed {name}", { name }) : trText("已将{name}开到 {percent}%", "Set {name} to {percent}%", { name, percent: clamped });
+  const actionLabel = clamped === 100 ? trText("打开 {name}", "Open {name}", { name }) : clamped === 0 ? trText("关闭 {name}", "Close {name}", { name }) : summary;
+  const riskIsOn = (options.alwaysConfirmHazardous && (spec.subtype === "garage-door" || spec.subtype === "window-opener")) ? true : clamped > 0;
+  return runIntentOnDevice(host, dev.id, { targetId: dev.id, operation: { kind: "power", isOn: clamped > 0 } }, summary, actionLabel, {
+    commands: [cmd], riskIntent: { targetId: dev.id, operation: { kind: "power", isOn: riskIsOn } },
+    ...(options.bridgeContext ? { bridgeContext: options.bridgeContext } : {}),
   });
 }
 
@@ -962,45 +1022,7 @@ export async function executeDirectAskPreset(
 
   const runDirectCover = async (dev: SmartDevice, rawPercent: number): Promise<DirectAskPresetResult> => {
     if (dev.kind.kind !== "cover") return { handled: false, message: "", isError: false };
-    const name = displayNameFor(dev, host);
-    if (!dev.isOnline) { return { handled: true, message: trText("{name} 当前离线", "{name} is offline", { name }), isError: true}; }
-    const spec = dev.kind;
-    const clamped = Math.max(0, Math.min(100, Math.round(rawPercent)));
-    let cmd: DeviceCommand | null = null;
-    if (clamped === 100) {
-      if (!spec.positionWritable && spec.openDescription) {
-        cmd = { kind: "setSelectOption", entityId: spec.entityId, option: spec.openDescription };
-      } else if (spec.positionWritable) {
-        cmd = { kind: "setNumberValue", entityId: spec.entityId, value: 100 };
-      } else if (spec.openDescription) {
-        cmd = { kind: "setSelectOption", entityId: spec.entityId, option: spec.openDescription };
-      }
-    } else if (clamped === 0) {
-      if (!spec.positionWritable && spec.closeDescription) {
-        cmd = { kind: "setSelectOption", entityId: spec.entityId, option: spec.closeDescription };
-      } else if (spec.positionWritable) {
-        cmd = { kind: "setNumberValue", entityId: spec.entityId, value: 0 };
-      } else if (spec.closeDescription) {
-        cmd = { kind: "setSelectOption", entityId: spec.entityId, option: spec.closeDescription };
-      }
-    } else if (spec.positionWritable) {
-      cmd = { kind: "setNumberValue", entityId: spec.entityId, value: clamped };
-    }
-    if (!cmd) { return { handled: true, message: trText("{name} 不支持该位置调节", "{name} does not support that position", { name }), isError: true}; }
-    const summary =
-      clamped === 100
-        ? trText("已打开{name}", "Opened {name}", { name })
-        : clamped === 0
-          ? trText("已关闭{name}", "Closed {name}", { name })
-          : trText("已将{name}开到 {percent}%", "Set {name} to {percent}%", { name, percent: clamped });
-    const actionLabel =
-      clamped === 100
-        ? trText("打开 {name}", "Open {name}", { name })
-        : clamped === 0
-          ? trText("关闭 {name}", "Close {name}", { name })
-          : summary;
-    const isOn = clamped > 0;
-    const outcome = await runIntentOnDevice( host, dev.id, { targetId: dev.id, operation: { kind: "power", isOn } }, summary, actionLabel, { commands: [cmd], riskIntent: { targetId: dev.id, operation: { kind: "power", isOn } }, ...(bridgeContext ? { bridgeContext } : {})});
+    const outcome = await runCoverPosition(host, dev, rawPercent, { ...(bridgeContext ? { bridgeContext } : {}) });
     return { handled: true, message: outcome.message, isError: outcome.isError };
   };
 
@@ -1537,6 +1559,33 @@ export async function onOpenURL(rawUrl: string, host: AppURLCommandHost): Promis
       const outcome = await runIntentOnDevice( host, dev.id, { targetId: dev.id, operation: { kind: "fanSpeed", speed: matched } }, summary, summary, { commands: [cmd], riskIntent: { targetId: dev.id, operation: { kind: "power", isOn: true } }, bridgeContext});
       finish(outcome.message, outcome.isError);
       return;
+    }
+    case "coverPosition": { const o = await runCoverPosition(host, resolved.device, resolved.percent, { bridgeContext, alwaysConfirmHazardous: true }); finish(o.message, o.isError); return; }
+    case "volume":
+    case "mute":
+    case "mediaPlayPause": {
+      const dev = resolved.device; const name = displayNameFor(dev, host);
+      if (!dev.isOnline) { finish(trText("{name} 当前离线", "{name} is offline", { name }), true); return; }
+      if (dev.kind.kind !== "speaker" && dev.kind.kind !== "tv") { finish(trText("{name} 不是电视或音箱", "{name} is not a TV or speaker", { name }), true); return; }
+      let cmd: DeviceCommand; let summary: string;
+      if (resolved.kind === "volume") {
+        if (!dev.kind.volumeWritable) { finish(trText("{name} 不支持调节音量", "{name} does not support volume control", { name }), true); return; }
+        const clamped = Math.max(0, Math.min(100, Math.round(resolved.percent)));
+        cmd = { kind: "mediaSetVolume", entityId: dev.kind.mediaEntityId, level: clamped / 100 };
+        summary = trText("已将{name}音量调到 {percent}%", "Set {name} volume to {percent}%", { name, percent: clamped });
+      } else if (resolved.kind === "mute") {
+        if (!dev.kind.muteSwitchEntityId) { finish(trText("{name} 不支持静音控制", "{name} does not support mute", { name }), true); return; }
+        if (Boolean(dev.kind.isMuted) === resolved.isMuted) { finish(resolved.isMuted ? trText("{name} 已经是静音状态", "{name} is already muted", { name }) : trText("{name} 已经取消静音", "{name} is already unmuted", { name }), false); return; }
+        cmd = { kind: "setSwitch", entityId: dev.kind.muteSwitchEntityId, isOn: resolved.isMuted };
+        summary = resolved.isMuted ? trText("已将 {name} 静音", "Muted {name}", { name }) : trText("已取消 {name} 静音", "Unmuted {name}", { name });
+      } else {
+        if (!dev.kind.playback?.canPlayPause) { finish(trText("{name} 不支持播放/暂停控制", "{name} does not support play/pause", { name }), true); return; }
+        cmd = { kind: "mediaPlayPause", entityId: dev.kind.mediaEntityId };
+        summary = trText("已切换 {name} 播放状态", "Toggled playback on {name}", { name });
+      }
+      const preSnapshot = structuredClone(dev);
+      const outcome = await runTrackedDevicePresetCommands({ host, device: dev, commands: [cmd], intent: undefined, summary, preSnapshot, computeInverses: (c) => inverseCommands(preSnapshot, c), mergeInverses: mergeInverseCommands, failureFallbackText: () => trText("{name} 响应失败", "{name} failed to respond", { name }) });
+      finish(outcome.message, outcome.isError); return;
     }
     case "scene": {
       const ok = await host.applyCommand({

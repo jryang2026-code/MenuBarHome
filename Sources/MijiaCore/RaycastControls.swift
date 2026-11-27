@@ -215,9 +215,9 @@ extension HomeStore {
     /// A failure or mid-flight source change rolls the row back through the control-write module.
     private func raycastWrite(
         from device: SmartDevice,
-        to updated: SmartDevice,
+        to updated: SmartDevice?,
         commands: [DeviceCommand],
-        lock: Duration,
+        lock: Duration?,
         modalContext: ModalDeviceContext? = nil,
         habitIntents: [DeviceIntent] = [],
         success: String
@@ -345,12 +345,19 @@ extension HomeStore {
     /// Drives a cover to `percent` with the command its spec supports: a position write when it has
     /// one, otherwise the open/close action word. An explicit power link therefore reaches the
     /// motor as open/close even while it is travelling; `raycastConfirm` keeps the hazard gate.
-    private func executeCoverPosition(_ device: SmartDevice, percent: Int) async -> RaycastDirectResult {
+    private func executeCoverPosition(
+        _ device: SmartDevice,
+        percent: Int,
+        alwaysConfirmWindowOpener: Bool = false
+    ) async -> RaycastDirectResult {
         guard case .cover(let initialSpec) = device.kind else {
             return (false, "", false)
         }
         let clamped = max(0, min(100, percent))
-        let confirmed = raycastConfirm(clamped > 0 ? .power(true) : .power(false), for: device)
+        let confirmOp: IntentOperation = (alwaysConfirmWindowOpener && initialSpec.subtype == .windowOpener)
+            ? .power(true)
+            : (clamped > 0 ? .power(true) : .power(false))
+        let confirmed = raycastConfirm(confirmOp, for: device)
         if let refusal = confirmed.refusal { return refusal }
         guard let current = confirmed.device,
               case .cover(var spec) = current.kind,
@@ -750,6 +757,47 @@ extension HomeStore {
             habitIntents: [.init(targetId: device.id, operation: .fanSpeed(matched))],
             success: L10n.tr("已将\(device.name)设为\(matched)档", "Set \(device.name) to \(matched)")
         )
+    }
+
+    /// `menumijia://cover-position?device=<id>&percent=0…100` (garage door / window opener always confirm).
+    public func executeRaycastCoverPosition(deviceId: String, percent: Int) async -> RaycastDirectResult {
+        let check = raycastControllable(deviceId: deviceId); guard let device = check.device else { return check.refusal ?? (false, "", false) }
+        guard case .cover = device.kind else { return (true, L10n.format("%@ 不是窗帘或门窗设备", "%@ is not a cover device", device.name), true) }
+        return await executeCoverPosition(device, percent: percent, alwaysConfirmWindowOpener: true)
+    }
+
+    /// `menumijia://volume?device=<id>&percent=0…100`.
+    public func executeRaycastVolume(deviceId: String, percent: Int) async -> RaycastDirectResult {
+        let check = raycastControllable(deviceId: deviceId); guard let device = check.device else { return check.refusal ?? (false, "", false) }
+        let clamped = max(0, min(100, percent)); var updated = device; let mediaEid: String
+        switch device.kind {
+        case .speaker(var s): guard s.volumeWritable else { return (true, L10n.format("%@ 不支持调节音量", "%@ does not support volume control", device.name), true) }; s.volumePercent = clamped; s.volumePresent = true; updated.kind = .speaker(s); mediaEid = s.mediaEntityId
+        case .tv(var s): guard s.volumeWritable else { return (true, L10n.format("%@ 不支持调节音量", "%@ does not support volume control", device.name), true) }; s.volumePercent = clamped; s.volumePresent = true; updated.kind = .tv(s); mediaEid = s.mediaEntityId
+        default: return (true, L10n.format("%@ 不是电视或音箱", "%@ is not a TV or speaker", device.name), true)
+        }
+        return await raycastWrite(from: device, to: updated, commands: [.mediaSetVolume(entityId: mediaEid, volumeLevel: Double(clamped) / 100.0)], lock: .seconds(2.5), success: L10n.tr("已将\(device.name)音量调到 \(clamped)%", "Set \(device.name) volume to \(clamped)%"))
+    }
+
+    /// `menumijia://mute?device=<id>&muted=true|false`.
+    public func executeRaycastMute(deviceId: String, isMuted: Bool) async -> RaycastDirectResult {
+        let check = raycastControllable(deviceId: deviceId); guard let device = check.device else { return check.refusal ?? (false, "", false) }
+        var updated = device; let entityId: String; let wasMuted: Bool
+        switch device.kind {
+        case .speaker(var s): guard let eid = s.muteSwitchEntityId else { return (true, L10n.format("%@ 不支持静音控制", "%@ does not support mute", device.name), true) }; wasMuted = s.isMuted; s.isMuted = isMuted; updated.kind = .speaker(s); entityId = eid
+        case .tv(var s): guard let eid = LGWebOSProtocol.isLGEntity(s.mediaEntityId) ? LGWebOSProtocol.muteEntityId : s.muteSwitchEntityId else { return (true, L10n.format("%@ 不支持静音控制", "%@ does not support mute", device.name), true) }; wasMuted = s.isMuted; s.isMuted = isMuted; updated.kind = .tv(s); entityId = eid
+        default: return (true, L10n.format("%@ 不是电视或音箱", "%@ is not a TV or speaker", device.name), true)
+        }
+        if wasMuted == isMuted { return (true, isMuted ? L10n.format("%@ 已经是静音状态", "%@ is already muted", device.name) : L10n.format("%@ 已经取消静音", "%@ is already unmuted", device.name), false) }
+        return await raycastWrite(from: device, to: updated, commands: [.setSwitch(entityId: entityId, isOn: isMuted)], lock: .seconds(2.0), success: isMuted ? L10n.format("已将 %@ 静音", "Muted %@", device.name) : L10n.format("已取消 %@ 静音", "Unmuted %@", device.name))
+    }
+
+    /// `menumijia://media-play-pause?device=<id>`.
+    public func executeRaycastMediaPlayPause(deviceId: String) async -> RaycastDirectResult {
+        let check = raycastControllable(deviceId: deviceId); guard let device = check.device else { return check.refusal ?? (false, "", false) }
+        let target: (String, Bool)? = switch device.kind { case .speaker(let s): (s.mediaEntityId, s.playback?.canPlayPause == true); case .tv(let s): (s.mediaEntityId, s.playback?.canPlayPause == true); default: nil }
+        guard let (eid, ok) = target else { return (true, L10n.format("%@ 不是电视或音箱", "%@ is not a TV or speaker", device.name), true) }
+        guard ok else { return (true, L10n.format("%@ 不支持播放/暂停控制", "%@ does not support play/pause", device.name), true) }
+        return await raycastWrite(from: device, to: nil, commands: [.mediaPlayPause(entityId: eid)], lock: nil, success: L10n.format("已切换 %@ 播放状态", "Toggled playback on %@", device.name))
     }
 
     /// `menumijia://focus?device=<id>`: shows that device's drawer. Navigation only, so it runs

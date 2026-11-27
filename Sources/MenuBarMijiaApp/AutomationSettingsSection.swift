@@ -14,8 +14,8 @@ enum CompanionSettingsCopy {
     static var disconnectHelp: String { L10n.tr("立即关闭伴生集成、作废旧令牌并删除本地快照", "Turn off companion integration, revoke old tokens, and delete the local snapshot") }
     static var copiedToast: String {
         L10n.tr(
-            "已复制配置。请将 command 中的占位路径换成本机 scripts/mijia-mcp 的绝对路径。",
-            "Config copied. Replace the placeholder in command with the absolute path to scripts/mijia-mcp on this Mac."
+            "已复制开箱即用的 MCP 配置（不含令牌），可直接粘贴到 Claude Desktop、Cursor 等客户端。",
+            "Copied ready-to-use MCP config (no token). Paste it directly into Claude Desktop, Cursor, or another MCP client."
         )
     }
     static func snapshotPathLine(_ path: String) -> String { L10n.format("快照路径：%@", "Snapshot path: %@", path) }

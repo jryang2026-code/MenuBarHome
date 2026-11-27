@@ -204,12 +204,42 @@ pub(crate) struct CompanionStatus {
     /// This instance published `ipc-endpoint.json` and it still points here, so second launches
     /// and `menumijia://` links forward to it.
     pub(crate) forwarding_ready: bool,
+    /// Resolved absolute path to the bundled or dev `mijia-mcp` entrypoint, if present on disk.
+    pub(crate) mcp_script_path: Option<String>,
+}
+
+fn clean_windows_path(path: &Path) -> String {
+    let raw = path.to_string_lossy();
+    raw.strip_prefix(r"\\?\").unwrap_or(&raw).to_string()
+}
+
+fn has_bundled_mijia_pair(mcp_path: &Path) -> bool {
+    mcp_path.is_file() && mcp_path.with_file_name("mijia").is_file()
+}
+
+pub(crate) fn resolve_mcp_script_path(
+    resource_dir: Option<&Path>, exe_path: Option<&Path>, cwd: Option<&Path>, path_env: Option<&std::ffi::OsStr>,
+) -> Option<String> {
+    let exe_dir = exe_path.and_then(|p| p.parent());
+    for candidate in resource_dir.map(|d| d.join("cli").join("mijia-mcp")).into_iter()
+        .chain(exe_dir.into_iter().flat_map(|d| [d.join("cli").join("mijia-mcp"), d.join("resources").join("cli").join("mijia-mcp")]))
+    {
+        if has_bundled_mijia_pair(&candidate) { return Some(clean_windows_path(&candidate)); }
+    }
+    for seed in [exe_dir, cwd].into_iter().flatten() {
+        if let Some(dev) = seed.ancestors().take(7).map(|a| a.join("scripts").join("mijia-mcp")).find(|p| has_bundled_mijia_pair(p)) {
+            return Some(clean_windows_path(&dev));
+        }
+    }
+    path_env.and_then(|raw| {
+        std::env::split_paths(raw)
+            .flat_map(|dir| ["mijia-mcp", "mijia-mcp.cmd", "mijia-mcp.exe"].into_iter().map(move |n| dir.join(n)))
+            .find(|p| p.is_file()).map(|p| clean_windows_path(&p))
+    })
 }
 
 pub(crate) fn companion_status_in_dir(
-    registration: &CompanionRegistration,
-    dir: Option<&Path>,
-    owned_endpoint: Option<&(u16, String)>,
+    registration: &CompanionRegistration, dir: Option<&Path>, owned_endpoint: Option<&(u16, String)>,
 ) -> CompanionStatus {
     let snapshot = dir.map(|dir| dir.join(SNAPSHOT_FILE_NAME));
     let metadata = snapshot.as_ref().and_then(|path| std::fs::metadata(path).ok());
@@ -228,17 +258,20 @@ pub(crate) fn companion_status_in_dir(
             .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
             .map(|elapsed| elapsed.as_millis() as u64),
         forwarding_ready,
+        mcp_script_path: None,
     }
 }
 
 #[tauri::command]
-pub(crate) fn companion_status() -> Result<CompanionStatus, String> {
-    let registration = *SNAPSHOT_IO_LOCK
-        .lock()
-        .map_err(|_| "快照写入锁不可用".to_string())?;
+pub(crate) fn companion_status(app: AppHandle) -> Result<CompanionStatus, String> {
+    let registration = *SNAPSHOT_IO_LOCK.lock().map_err(|_| "快照写入锁不可用".to_string())?;
     let owned = ACTIVE_IPC_OWNERSHIP.lock().ok().and_then(|guard| (*guard).clone());
-    let dir = companion_local_dir();
-    Ok(companion_status_in_dir(&registration, dir.as_deref(), owned.as_ref()))
+    let mut status = companion_status_in_dir(&registration, companion_local_dir().as_deref(), owned.as_ref());
+    status.mcp_script_path = resolve_mcp_script_path(
+        app.path().resource_dir().ok().as_deref(), std::env::current_exe().ok().as_deref(),
+        std::env::current_dir().ok().as_deref(), std::env::var_os("PATH").as_deref(),
+    );
+    Ok(status)
 }
 
 /// The schemes this app answers to: the original, and the product's current name (#166). Both run
@@ -1409,5 +1442,20 @@ mod tests {
         // Any valid non-zero primary PID gets AllowSetForegroundWindow on every forward path.
         assert!(!should_allow_set_foreground(0));
         assert!(should_allow_set_foreground(4242));
+    }
+
+    #[test]
+    fn resolve_mcp_script_path_prefers_bundled_then_dev_then_path() {
+        let root = std::env::temp_dir().join(format!("mbh-mcp-path-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (res_cli, dev_scripts, dev_cwd, path_bin) = (root.join("res/cli"), root.join("repo/scripts"), root.join("repo/windows"), root.join("bin"));
+        for d in [&res_cli, &dev_scripts, &dev_cwd, &path_bin] { std::fs::create_dir_all(d).unwrap(); }
+        for f in [res_cli.join("mijia-mcp"), dev_scripts.join("mijia-mcp"), dev_scripts.join("mijia"), path_bin.join("mijia-mcp.cmd")] { std::fs::write(f, "x").unwrap(); }
+        assert_eq!(resolve_mcp_script_path(Some(&root.join("res")), None, Some(&dev_cwd), Some(path_bin.as_os_str())), Some(clean_windows_path(&dev_scripts.join("mijia-mcp"))));
+        std::fs::write(res_cli.join("mijia"), "x").unwrap();
+        assert_eq!(resolve_mcp_script_path(Some(&root.join("res")), None, Some(&dev_cwd), Some(path_bin.as_os_str())), Some(clean_windows_path(&res_cli.join("mijia-mcp"))));
+        assert_eq!(resolve_mcp_script_path(None, None, Some(&root.join("res")), Some(path_bin.as_os_str())), Some(clean_windows_path(&path_bin.join("mijia-mcp.cmd"))));
+        assert_eq!(clean_windows_path(Path::new(r"\\?\C:\App\cli\mijia-mcp")), r"C:\App\cli\mijia-mcp");
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

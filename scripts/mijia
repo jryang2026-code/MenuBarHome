@@ -27,9 +27,11 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 import json
 import math
 import os
+import re
 import subprocess
 import sys
 import time
@@ -958,6 +960,127 @@ def validate_fan(
     return [("device", str(device["id"])), ("preset", matched)]
 
 
+def validate_cover_position(device: dict, raw_percent: object) -> int:
+    percent = _require_int(raw_percent, "窗帘位置百分比", 0, 100)
+    if _fold(device.get("category")) != "cover": raise CliError(f"{_device_label(device)} 不是窗帘或门窗设备")
+    caps = device.get("capabilities") or {}
+    if 0 < percent < 100 and not caps.get("positionWritable"):
+        raise CliError(f"{_device_label(device)} 不支持任意位置百分比调节，仅支持 0 或 100")
+    if percent in (0, 100) and not (caps.get("positionWritable") or caps.get("canMoveCover") or device.get("isPrimaryToggleable")):
+        raise CliError(f"{_device_label(device)} 不支持开合位置控制")
+    return percent
+
+
+def _require_media_caps(device: dict) -> dict:
+    if _fold(device.get("category")) not in ("tv", "speaker"): raise CliError(f"{_device_label(device)} 不是电视或音箱")
+    return device.get("capabilities") or {}
+
+
+def validate_media_volume(device: dict, raw_percent: object) -> int:
+    percent = _require_int(raw_percent, "音量百分比", 0, 100)
+    if _require_media_caps(device).get("volumeWritable") is False: raise CliError(f"{_device_label(device)} 不支持调节音量")
+    return percent
+
+
+def validate_media_mute(device: dict, raw_muted: object) -> bool:
+    if isinstance(raw_muted, bool): muted = raw_muted
+    elif isinstance(raw_muted, str) and raw_muted.strip().lower() in ("1", "true", "on", "yes", "0", "false", "off", "no"):
+        muted = raw_muted.strip().lower() in ("1", "true", "on", "yes")
+    else: raise CliError("静音状态（muted）必须是布尔值 true 或 false")
+    if _require_media_caps(device).get("muteWritable") is False: raise CliError(f"{_device_label(device)} 不支持静音控制")
+    return muted
+
+
+def validate_media_play_pause(device: dict) -> None:
+    if _require_media_caps(device).get("canPlayPause") is False: raise CliError(f"{_device_label(device)} 不支持播放/暂停控制")
+
+
+_SAFE_ENUM_TOKEN = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
+_SAFE_READING_KEYS = ("id", "label", "roomName", "temperature", "humidity", "battery", "updatedAt")
+_SAFE_SENSOR_KEYS = ("id", "name", "roomId", "roomName", "stateText", "isOnline", "model")
+DOCTOR_STALE_SECONDS = 600.0
+
+
+def build_sensor_summary_payload(snapshot: dict, *, room: str | None = None) -> dict:
+    clean = public_snapshot(snapshot)
+    room_name = resolve_room(clean, room)[1] if room else None
+    readings = [{k: r[k] for k in _SAFE_READING_KEYS if k in r} for r in (clean.get("environmentReadings") or []) if isinstance(r, dict) and (not room_name or _fold(r.get("roomName")) == _fold(room_name))]
+    sensors = [{k: d[k] for k in _SAFE_SENSOR_KEYS if k in d} for d in filter_devices(clean, room=room, category="sensor")]
+    vals = lambda key: [float(r[key]) for r in readings if isinstance(r.get(key), (int, float)) and not isinstance(r.get(key), bool)]
+    temps, hums, bats = vals("temperature"), vals("humidity"), vals("battery")
+    return {"updatedAt": clean.get("updatedAt"), "isStale": bool(clean.get("isStale")), "readingCount": len(readings), "sensorDeviceCount": len(sensors), "onlineSensorCount": sum(1 for s in sensors if s.get("isOnline")), "avgTemperature": round(sum(temps) / len(temps), 1) if temps else None, "avgHumidity": round(sum(hums) / len(hums), 1) if hums else None, "lowBatteryCount": sum(1 for b in bats if b <= 20), "readings": readings, "sensors": sensors}
+
+
+def format_sensor_summary_text(payload: dict) -> str:
+    lines = [f"传感器汇总（更新于 {payload.get('updatedAt') or '?'}）：环境读数 {payload['readingCount']} 条，传感器设备 {payload['onlineSensorCount']}/{payload['sensorDeviceCount']} 在线"]
+    meta = [p for p in (f"平均温度 {payload['avgTemperature']}°C" if payload["avgTemperature"] is not None else "", f"平均湿度 {payload['avgHumidity']}%" if payload["avgHumidity"] is not None else "", f"低电量 {payload['lowBatteryCount']} 个" if payload["lowBatteryCount"] else "") if p]
+    if meta: lines.append(" · ".join(meta))
+    lines.extend(f"  {str(r.get('roomName') or '').strip()} {str(r.get('label') or '?')}: {_reading_text(r)}".strip() for r in payload["readings"])
+    lines.extend(f"  {str(s.get('roomName') or '').strip()} {str(s.get('name') or '?')}: {str(s.get('stateText') or '') if s.get('isOnline') else '离线'}".strip() for s in payload["sensors"])
+    return "\n".join(lines)
+
+
+def _safe_token(value: object) -> str | None:
+    return value.strip() if isinstance(value, str) and _SAFE_ENUM_TOKEN.match(value.strip()) else None
+
+
+def build_automation_status_payload(snapshot: dict, *, limit: int = 15) -> dict:
+    clean = public_snapshot(snapshot); raw = clean.get("automationStatus")
+    if not isinstance(raw, dict):
+        return {"available": False, "updatedAt": clean.get("updatedAt"), "enabled": False, "ruleCount": 0, "enabledRuleCount": 0, "executedCount": 0, "skippedCount": 0, "recentRuns": []}
+    runs = []
+    for entry in (raw.get("recentRuns") or [])[:limit]:
+        if not isinstance(entry, dict): continue
+        res, trig, rid, at = entry.get("result"), _safe_token(entry.get("trigger")), _safe_token(entry.get("ruleId")), entry.get("at")
+        if res not in ("executed", "skipped") or not trig or not rid or not isinstance(at, str): continue
+        row: dict = {"ruleId": rid, "trigger": trig, "result": res, "at": at}
+        if res == "skipped" and (reason := _safe_token(entry.get("skipReason"))): row["skipReason"] = reason
+        runs.append(row)
+    nonneg = lambda v: v if isinstance(v, int) and not isinstance(v, bool) and v >= 0 else 0
+    return {"available": True, "updatedAt": clean.get("updatedAt"), "enabled": bool(raw.get("enabled")), "ruleCount": nonneg(raw.get("ruleCount")), "enabledRuleCount": nonneg(raw.get("enabledRuleCount")), "executedCount": nonneg(raw.get("executedCount")), "skippedCount": nonneg(raw.get("skippedCount")), "recentRuns": runs}
+
+
+def format_automation_status_text(payload: dict) -> str:
+    if not payload.get("available"): return "当前快照未包含自动化运行摘要（请升级 MenuBarHome 后重试）。"
+    lines = [f"自动化状态：{'已开启' if payload['enabled'] else '已关闭'}（启用 {payload['enabledRuleCount']}/{payload['ruleCount']} 条规则；执行 {payload['executedCount']} 次，跳过 {payload['skippedCount']} 次）"]
+    lines.extend(f"  {r['at']} · {r['trigger']} → {r['result']}" + (f"（原因：{r['skipReason']}）" if r.get("skipReason") else "") for r in payload["recentRuns"])
+    return "\n".join(lines)
+
+
+def _is_script_executable(path: Path) -> bool:
+    return path.is_file() and (sys.platform == "win32" or os.access(path, os.X_OK))
+
+
+def build_doctor_report(path: Path, *, cli_path: Path | None = None, mcp_path: Path | None = None, wall_now: Callable[[], float] = time.time) -> dict:
+    r_cli = cli_path or Path(__file__).resolve(); r_mcp = mcp_path or r_cli.with_name("mijia-mcp")
+    cli_ok, mcp_ok = _is_script_executable(r_cli), _is_script_executable(r_mcp)
+    comp_ok = has_tok = fresh = False; is_stale, age_s, devs, scenes, issue = True, None, 0, 0, None
+    try:
+        snap = load_snapshot(path)
+        comp_ok, has_tok, is_stale = True, bool(str(snap.get("bridgeToken") or "").strip()), bool(snap.get("isStale"))
+        devs, scenes = sum(1 for d in (snap.get("devices") or []) if isinstance(d, dict)), sum(1 for s in (snap.get("scenes") or []) if isinstance(s, dict))
+        if isinstance(snap.get("updatedAt"), str) and snap["updatedAt"].strip():
+            try:
+                dt = datetime.fromisoformat(snap["updatedAt"].strip().replace("Z", "+00:00"))
+                age_s = round(max(0.0, wall_now() - (dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)).timestamp()), 1)
+            except ValueError: pass
+        fresh = (not is_stale) and (age_s is None or age_s <= DOCTOR_STALE_SECONDS)
+        issue = "快照缺少本机令牌" if not has_tok else ("快照已标记过期" if is_stale else None)
+    except CliError as error: issue = _scrub_token(str(error))
+    return {"ok": comp_ok and has_tok and not is_stale and cli_ok and mcp_ok, "companionEnabled": comp_ok, "hasBridgeToken": has_tok, "snapshotPath": str(path), "isStale": is_stale, "fresh": fresh, "ageSeconds": age_s, "deviceCount": devs, "sceneCount": scenes, "cliPath": str(r_cli), "cliExecutable": cli_ok, "mcpPath": str(r_mcp), "mcpExecutable": mcp_ok, "issue": issue}
+
+def format_doctor_line(r: dict) -> str:
+    comp = f"已开启（{r['deviceCount']} 设备/{r['sceneCount']} 场景）" if (r["companionEnabled"] and r["hasBridgeToken"]) else ("缺少令牌" if r["companionEnabled"] else "未开启")
+    age = f"（{int(r['ageSeconds'])}s 前）" if r["ageSeconds"] is not None else ""
+    fresh = "缺失" if not r["companionEnabled"] else (f"已过期{age}" if r["isStale"] else f"{'新鲜' if r['fresh'] else '偏旧'}{age}")
+    return f"{'✅ MCP 就绪' if r['ok'] else '❌ MCP 异常'} | 伴生：{comp} | 快照：{fresh} | CLI/MCP：{'可执行' if (r['cliExecutable'] and r['mcpExecutable']) else '不可执行/缺失'}（{r['mcpPath']}）"
+
+def command_doctor(path: Path, *, as_json: bool = False, wall_now: Callable[[], float] = time.time) -> int:
+    report = build_doctor_report(path, wall_now=wall_now)
+    print(json.dumps(report, ensure_ascii=False, indent=2) if as_json else format_doctor_line(report))
+    return EXIT_OK if report["ok"] else EXIT_LOCAL_ERROR
+
+
 # MARK: - Model Context Protocol (MCP) Server (#19, GH#177, ADR-0013)
 
 
@@ -1034,6 +1157,8 @@ MCP_RESOURCES: tuple[McpResourceSpec, ...] = (
         mime_type="application/json",
         reader=_read_scenes_resource,
     ),
+    McpResourceSpec(uri="mijia://sensors", name="传感器读数汇总", description="各房间温湿度、电量与传感器设备读数汇总（不含令牌或凭据）。", mime_type="application/json", reader=build_sensor_summary_payload),
+    McpResourceSpec(uri="mijia://automations", name="自动化运行与跳过摘要", description="仅脱敏后的自动化统计、触发类型与执行/跳过原因枚举，不含日历标题、窗口名、SSID 或凭据。", mime_type="application/json", reader=build_automation_status_payload),
 )
 
 MCP_RESOURCES_BY_URI: dict[str, McpResourceSpec] = {spec.uri: spec for spec in MCP_RESOURCES}
@@ -1207,6 +1332,41 @@ def _mcp_focus_device(ctx: McpContext, arguments: dict) -> dict:
     return _dispatch_tool_link(ctx, snapshot, "focus", [("device", str(device["id"]))])
 
 
+def _mcp_get_sensor_summary(ctx: McpContext, arguments: dict) -> dict:
+    room = arguments.get("room")
+    if room is not None and not isinstance(room, str): raise CliError("room 必须是字符串")
+    payload = build_sensor_summary_payload(load_snapshot(ctx.path), room=room.strip() if isinstance(room, str) and room.strip() else None)
+    return _tool_result(format_sensor_summary_text(payload), payload)
+
+
+def _mcp_get_automation_status(ctx: McpContext, arguments: dict) -> dict:
+    raw = arguments.get("limit")
+    payload = build_automation_status_payload(load_snapshot(ctx.path), limit=15 if raw is None else _require_int(raw, "返回条数上限", 1, 50))
+    return _tool_result(format_automation_status_text(payload), payload)
+
+
+def _mcp_set_cover_position(ctx: McpContext, arguments: dict) -> dict:
+    snap = load_snapshot(ctx.path); dev = match_device(snap, _require_string_arg(arguments, "device", "设备名或 ID"))
+    return _dispatch_tool_link(ctx, snap, "cover-position", [("device", str(dev["id"])), ("percent", str(validate_cover_position(dev, arguments.get("percent"))))])
+
+
+def _mcp_set_media_volume(ctx: McpContext, arguments: dict) -> dict:
+    snap = load_snapshot(ctx.path); dev = match_device(snap, _require_string_arg(arguments, "device", "设备名或 ID"))
+    return _dispatch_tool_link(ctx, snap, "volume", [("device", str(dev["id"])), ("percent", str(validate_media_volume(dev, arguments.get("percent"))))])
+
+
+def _mcp_set_media_mute(ctx: McpContext, arguments: dict) -> dict:
+    snap = load_snapshot(ctx.path); dev = match_device(snap, _require_string_arg(arguments, "device", "设备名或 ID"))
+    if not isinstance(arguments.get("muted"), bool): raise CliError("静音状态（muted）必须是布尔值 true 或 false")
+    return _dispatch_tool_link(ctx, snap, "mute", [("device", str(dev["id"])), ("muted", "true" if validate_media_mute(dev, arguments.get("muted")) else "false")])
+
+
+def _mcp_media_play_pause(ctx: McpContext, arguments: dict) -> dict:
+    snap = load_snapshot(ctx.path); dev = match_device(snap, _require_string_arg(arguments, "device", "设备名或 ID"))
+    validate_media_play_pause(dev)
+    return _dispatch_tool_link(ctx, snap, "media-play-pause", [("device", str(dev["id"]))])
+
+
 # MCP 规范把 destructiveHint 定义为「可能改变环境状态」，规范默认值就是 True。写工具若标成 False，
 # 客户端会把它当成纯增量操作而跳过确认；凡是真正改动设备状态的工具一律标 True，只读工具保持 False。
 READ_ONLY_ANNOTATIONS = {
@@ -1227,6 +1387,7 @@ CONTROL_NON_IDEMPOTENT_ANNOTATIONS = {
     "idempotentHint": False,
     "openWorldHint": False,
 }
+CONTROL_OPEN_WORLD_ANNOTATIONS = {**CONTROL_NON_IDEMPOTENT_ANNOTATIONS, "openWorldHint": True}
 
 MCP_TOOLS: tuple[McpToolSpec, ...] = (
     McpToolSpec(
@@ -1379,7 +1540,7 @@ MCP_TOOLS: tuple[McpToolSpec, ...] = (
     ),
     McpToolSpec(
         name="ask_home",
-        description="向 MenuBarHome 发送一句自然语言指令（如「把书房灯设为柔和月光模式」「10分钟后关书房灯」），复用应用内本地规则与确认策略。",
+        description="向 MenuBarHome 发送一句自然语言指令（如「把书房灯设为柔和月光模式」「10分钟后关书房灯」），可能回退至已配置的云端模型，复用应用内确认策略。",
         input_schema={
             "type": "object",
             "properties": {
@@ -1388,9 +1549,15 @@ MCP_TOOLS: tuple[McpToolSpec, ...] = (
             "required": ["text"],
             "additionalProperties": False,
         },
-        annotations=CONTROL_NON_IDEMPOTENT_ANNOTATIONS,
+        annotations=CONTROL_OPEN_WORLD_ANNOTATIONS,
         handler=_mcp_ask_home,
     ),
+    McpToolSpec("get_sensor_summary", "汇总各房间环境传感器读数（温度、湿度、电量）与传感器设备状态，可按房间筛选（不含令牌或凭据）。", {"type": "object", "properties": {"room": {"type": "string", "description": "可选：按房间名或 ID 筛选"}}, "additionalProperties": False}, READ_ONLY_ANNOTATIONS, _mcp_get_sensor_summary),
+    McpToolSpec("get_automation_status", "读取自动化启用统计与近期执行/跳过原因摘要（仅脱敏状态枚举，不含日历标题、窗口名、Wi-Fi SSID 或凭据）。", {"type": "object", "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": 50, "description": "可选：返回条数（默认 15）"}}, "additionalProperties": False}, READ_ONLY_ANNOTATIONS, _mcp_get_automation_status),
+    McpToolSpec("set_cover_position", "设置窗帘或门窗开合位置百分比（0–100）；车库门与开窗器在应用内强制二次确认，绝不静默执行。", {"type": "object", "properties": {"device": {"type": "string"}, "percent": {"type": "integer", "minimum": 0, "maximum": 100}}, "required": ["device", "percent"], "additionalProperties": False}, CONTROL_IDEMPOTENT_ANNOTATIONS, _mcp_set_cover_position),
+    McpToolSpec("set_media_volume", "设置电视或音箱音量百分比（0–100）。", {"type": "object", "properties": {"device": {"type": "string"}, "percent": {"type": "integer", "minimum": 0, "maximum": 100}}, "required": ["device", "percent"], "additionalProperties": False}, CONTROL_IDEMPOTENT_ANNOTATIONS, _mcp_set_media_volume),
+    McpToolSpec("set_media_mute", "设置电视或音箱静音状态（muted=true 静音，false 取消静音）。", {"type": "object", "properties": {"device": {"type": "string"}, "muted": {"type": "boolean"}}, "required": ["device", "muted"], "additionalProperties": False}, CONTROL_IDEMPOTENT_ANNOTATIONS, _mcp_set_media_mute),
+    McpToolSpec("media_play_pause", "切换电视或音箱播放/暂停状态。", {"type": "object", "properties": {"device": {"type": "string"}}, "required": ["device"], "additionalProperties": False}, CONTROL_NON_IDEMPOTENT_ANNOTATIONS, _mcp_media_play_pause),
     McpToolSpec(
         name="focus_device",
         description="在 MenuBarHome 面板中定位并展开指定设备的详情抽屉（只做界面跳转，不改变设备状态）。",
@@ -1736,6 +1903,17 @@ def build_parser() -> argparse.ArgumentParser:
     fan.add_argument("--percent", help="风速百分比（1–100）")
     fan.add_argument("--preset", help="预设档位名称")
 
+    for cmd_name, arg_name, help_text in (
+        ("cover-position", "percent", "设置窗帘或门窗开合位置（0–100）"),
+        ("volume", "percent", "设置电视或音箱音量（0–100）"),
+        ("mute", "state", "设置电视或音箱静音状态（on/off）"),
+    ):
+        sub = common(subparsers.add_parser(cmd_name, help=help_text))
+        sub.add_argument("device", help="设备名、ID 或拼音首字母")
+        sub.add_argument(arg_name, help=help_text)
+    common(subparsers.add_parser("media-play-pause", help="切换电视或音箱播放/暂停")).add_argument("device", help="电视或音箱名称、ID 或拼音首字母")
+    common(subparsers.add_parser("doctor", help="一行诊断伴生状态、快照新鲜度与 CLI/MCP 路径"))
+
     scene = common(subparsers.add_parser("scene", help="执行场景或内置快捷动作"))
     scene.add_argument("name", help="场景名、快捷动作名或它们对应的 ID")
 
@@ -1753,6 +1931,8 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="只读模式：tools/list 只暴露只读工具，写工具调用直接拒绝",
     )
+    mcp.add_argument("--doctor", action="store_true", help="一行诊断伴生是否开启、快照新鲜度与 CLI/MCP 路径")
+    mcp.add_argument("--json", action="store_true", help="配合 --doctor 输出 JSON")
     return parser
 
 
@@ -1783,13 +1963,18 @@ def main(
     env: dict | None = None,
     stdin=None,
     stdout=None,
+    wall_now=time.time,
 ) -> int:
     _ensure_utf8_stdio(stdout)
     args = build_parser().parse_args(argv)
     try:
         path = snapshot_path(args.snapshot, env)
+        if args.command == "doctor":
+            return command_doctor(path, as_json=args.json, wall_now=wall_now)
         timeout = validate_timeout(args.timeout)
         if args.command == "mcp":
+            if args.doctor:
+                return command_doctor(path, as_json=args.json, wall_now=wall_now)
             ctx = McpContext(
                 path=path,
                 opener=opener,
@@ -1850,6 +2035,18 @@ def main(
         if args.command == "fan":
             device = match_device(snapshot, args.device)
             return dispatch("fan", validate_fan(device, args.percent, args.preset))
+        if args.command == "cover-position":
+            dev = match_device(snapshot, args.device)
+            return dispatch("cover-position", [("device", dev["id"]), ("percent", str(validate_cover_position(dev, args.percent)))])
+        if args.command == "volume":
+            dev = match_device(snapshot, args.device)
+            return dispatch("volume", [("device", dev["id"]), ("percent", str(validate_media_volume(dev, args.percent)))])
+        if args.command == "mute":
+            dev = match_device(snapshot, args.device)
+            return dispatch("mute", [("device", dev["id"]), ("muted", "true" if validate_media_mute(dev, args.state) else "false")])
+        if args.command == "media-play-pause":
+            dev = match_device(snapshot, args.device); validate_media_play_pause(dev)
+            return dispatch("media-play-pause", [("device", dev["id"])])
         if args.command == "focus":
             device = match_device(snapshot, args.device)
             return dispatch("focus", [("device", device["id"])])
