@@ -20,6 +20,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -142,6 +145,31 @@ func TestHisenseVIDAAMQTTCommands(t *testing.T) {
 		t.Fatalf("snapshot failed: %+v %v", snap, err)
 	}
 	for _, tc := range []struct {
+		verb      string
+		args      map[string]any
+		fail      bool
+		wantMuted bool
+	}{
+		{"mute.set", map[string]any{"isMuted": true}, true, false},
+		{"mute.set", map[string]any{"isMuted": true}, false, true},
+		{"mute.set", map[string]any{"isMuted": true}, false, true},
+		{"mute.set", map[string]any{"isMuted": false}, true, true},
+		{"mute.set", map[string]any{"isMuted": false}, false, false},
+		{"mute.set", map[string]any{"isMuted": false}, false, false},
+		{"remote.key", map[string]any{"key": "mute"}, false, true},
+		{"remote.key", map[string]any{"key": "mute"}, true, true},
+		{"remote.key", map[string]any{"key": "mute"}, false, false},
+	} {
+		reject.Store(tc.fail)
+		if err := d.Execute(tc.verb, tc.args); (err != nil) != tc.fail {
+			t.Fatalf("%s %v, expected failure=%t: %v", tc.verb, tc.args, tc.fail, err)
+		}
+		reject.Store(false)
+		if snap, err := d.Snapshot(); err != nil || snap.Muted != tc.wantMuted {
+			t.Fatalf("snapshot after %s %v, rejected=%t: muted=%t, want %t, error=%v", tc.verb, tc.args, tc.fail, snap.Muted, tc.wantMuted, err)
+		}
+	}
+	for _, tc := range []struct {
 		verb string
 		args map[string]any
 		fail bool
@@ -149,11 +177,6 @@ func TestHisenseVIDAAMQTTCommands(t *testing.T) {
 		{"power.set", map[string]any{"isOn": true}, false},
 		{"power.set", map[string]any{"isOn": false}, false},
 		{"volume.set", map[string]any{"level": 42}, false},
-		{"mute.set", map[string]any{"isMuted": true}, true},
-		{"mute.set", map[string]any{"isMuted": true}, false},
-		{"mute.set", map[string]any{"isMuted": true}, false},
-		{"mute.set", map[string]any{"isMuted": false}, false},
-		{"mute.set", map[string]any{"isMuted": false}, false},
 		{"input.select", map[string]any{"source": "HDMI1"}, false},
 		{"remote.key", map[string]any{"key": "home"}, false},
 		{"media.playPause", nil, true},
@@ -183,7 +206,7 @@ func TestHisenseVIDAAMQTTCommands(t *testing.T) {
 	for _, msg := range published {
 		payloads = append(payloads, msg[1])
 	}
-	want := []string{"KEY_POWER", "42", "KEY_MUTE", "KEY_MUTE", `{"sourceid":"HDMI1","sourcename":"HDMI1"}`, "KEY_HOME", "KEY_PLAY", "KEY_PAUSE", "KEY_PLAY", "KEY_PAUSE", "KEY_STOP"}
+	want := []string{"KEY_MUTE", "KEY_MUTE", "KEY_MUTE", "KEY_MUTE", "KEY_POWER", "42", `{"sourceid":"HDMI1","sourcename":"HDMI1"}`, "KEY_HOME", "KEY_PLAY", "KEY_PAUSE", "KEY_PLAY", "KEY_PAUSE", "KEY_STOP"}
 	if !slices.Equal(payloads, want) {
 		t.Fatalf("MQTT payloads = %q, want %q", payloads, want)
 	}
@@ -297,6 +320,71 @@ func TestLGWebOSHandshakeControlSnapshotAndWOL(t *testing.T) {
 		t.Fatalf("LG playPause commands = %q", got)
 	}
 }
+func TestLGConfigurePairingRejectsMissingStorageOrHost(t *testing.T) {
+	dataDir := t.TempDir()
+	for _, tc := range []struct {
+		name, addr, dataDir string
+	}{
+		{"empty_directory", "127.0.0.1:3001", ""},
+		{"blank_directory", "127.0.0.1:3001", " \t"},
+		{"empty_host", "", dataDir},
+		{"blank_host", " \t", dataDir},
+		{"port_only", ":3001", dataDir},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Chdir(t.TempDir())
+			d := NewLG(tc.addr, true)
+			if err := d.ConfigurePairing(tc.dataDir); err == nil {
+				t.Error("ConfigurePairing accepted missing storage or host")
+			}
+			if err := d.verifyFingerprint(strings.Repeat("a", 64)); err != nil {
+				t.Fatalf("verifyFingerprint: %v", err)
+			}
+			for _, dir := range []string{".", dataDir} {
+				entries, err := os.ReadDir(dir)
+				if err != nil || len(entries) != 0 {
+					t.Errorf("pairing storage %q must stay empty: %v, %v", dir, entries, err)
+				}
+			}
+		})
+	}
+}
+
+func TestReadLGPrivateFileRejectsUnsafeFiles(t *testing.T) {
+	t.Run("permissions", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("Windows does not expose Unix file permissions")
+		}
+		path := filepath.Join(t.TempDir(), "device.key")
+		if err := os.WriteFile(path, []byte("test-key"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(path, 0644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := readLGPrivateFile(path); err == nil {
+			t.Error("readLGPrivateFile accepted a non-0600 file")
+		}
+	})
+	t.Run("symlink", func(t *testing.T) {
+		dir := t.TempDir()
+		target := filepath.Join(dir, "target")
+		if err := os.WriteFile(target, []byte("test-key"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(dir, "device.key")
+		if err := os.Symlink(target, path); err != nil {
+			if runtime.GOOS == "windows" {
+				t.Skipf("cannot create a Windows symlink: %v", err)
+			}
+			t.Fatal(err)
+		}
+		if _, err := readLGPrivateFile(path); err == nil {
+			t.Error("readLGPrivateFile accepted a symbolic link")
+		}
+	})
+}
+
 func TestXiaomi6095SnapshotAndCommands(t *testing.T) {
 	var mu sync.Mutex; alive, volStep := true, 3; var actions []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -336,6 +424,28 @@ func TestHisenseVIDAACredentialRedactionAndTLS(t *testing.T) {
 	dTLS := NewHisenseVIDAA(tlsLn.Addr().String(), ""); dTLS.Timeout = time.Second
 	if snap, err := dTLS.Snapshot(); err != nil || snap.Power != "on" { t.Fatalf("TLS Hisense: %+v %v", snap, err) }
 	_ = tlsLn.Close(); wg.Wait()
+}
+
+func TestHisenseMQTTCredentials(t *testing.T) {
+	for _, tc := range []struct {
+		name, credential, wantUser, wantPassword string
+	}{
+		{"empty", "", "hisenseservice", "multimqttservice"},
+		{"blank", " \t", "hisenseservice", "multimqttservice"},
+		{"PIN", "1234", "hisenseservice", "1234"},
+		{"explicit", "user:pass", "user", "pass"},
+		{"no_username", ":pass", "hisenseservice", "pass"},
+		{"separator_only", ":", "hisenseservice", "multimqttservice"},
+		{"no_password", "user:", "user", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := NewHisenseVIDAA("127.0.0.1", tc.credential)
+			user, password := d.mqttCreds()
+			if user != tc.wantUser || password != tc.wantPassword {
+				t.Errorf("mqttCreds() = (%q, %q), want (%q, %q)", user, password, tc.wantUser, tc.wantPassword)
+			}
+		})
+	}
 }
 
 func TestHisenseTransportFallback(t *testing.T) {

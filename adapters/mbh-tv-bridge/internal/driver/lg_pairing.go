@@ -13,7 +13,15 @@ import (
 
 // ConfigurePairing restores host-bound trust and credentials before the driver is used.
 func (d *LG) ConfigurePairing(dataDir string) error {
-	host := strings.ToLower(strings.TrimSuffix(lgExtractHost(strings.TrimSpace(d.addr)), "."))
+	dataDir = strings.TrimSpace(dataDir)
+	if dataDir == "" {
+		return errors.New("LG pairing data directory is required")
+	}
+	host := strings.TrimSpace(lgExtractHost(strings.TrimSpace(d.addr)))
+	host = strings.ToLower(strings.TrimSuffix(host, "."))
+	if host == "" {
+		return errors.New("LG pairing host is required")
+	}
 	path := filepath.Join(dataDir, "lg-pairing", fmt.Sprintf("%x", sha256.Sum256([]byte(host))))
 	pin, err := readLGPrivateFile(path + ".pin")
 	if err != nil && !errors.Is(err, os.ErrNotExist) {

@@ -142,6 +142,8 @@ func (s *Server) Handle(r Request) Response {
 		devices := make(map[string]driver.TVDriver)
 		meta := make(map[string]deviceMeta)
 		for _, d := range p.Config.Devices {
+			d.NativeID = strings.TrimSpace(d.NativeID)
+			d.Host = strings.TrimSpace(d.Host)
 			if d.NativeID == "" || d.Host == "" {
 				continue
 			}

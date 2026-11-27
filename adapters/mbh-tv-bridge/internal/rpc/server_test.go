@@ -9,11 +9,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -46,8 +48,10 @@ func TestInitializeAcceptsCanonicalAndLegacyDriverAliases(t *testing.T) {
 		"capabilityGeneration":      1,
 		"config": map[string]any{
 			"devices": []map[string]any{
-				{"nativeId": "lg1", "driver": "lg_webos", "host": "127.0.0.1", "port": 3001},
+				{"nativeId": " lg1 ", "driver": "lg_webos", "host": " 127.0.0.1 ", "port": 3001},
 				{"nativeId": "hs1", "driver": "hisense_vidaa_mqtt", "host": "127.0.0.1", "port": 36669},
+				{"nativeId": " ", "driver": "lg_webos_ssap", "host": "127.0.0.1"},
+				{"nativeId": "no-host", "driver": "lg_webos_ssap", "host": " \t", "port": 3001},
 			},
 		},
 	}))
@@ -59,6 +63,9 @@ func TestInitializeAcceptsCanonicalAndLegacyDriverAliases(t *testing.T) {
 	}
 	if s.devices["hs1"] == nil || s.devices["hs1"].ID() != "hisense_vidaa_mqtt" {
 		t.Fatalf("hisense_vidaa_mqtt did not register")
+	}
+	if len(s.devices) != 2 || len(s.meta) != 2 || s.meta["lg1"].name != "lg1" {
+		t.Fatalf("initialize failed to normalize or skip devices: %v", s.meta)
 	}
 }
 func TestArtworkTraversal(t *testing.T) {
@@ -142,13 +149,21 @@ func TestPairingLifecycleAndReload(t *testing.T) {
 	defer tv.Close()
 
 	dataDir := t.TempDir()
+	host, port, err := net.SplitHostPort(strings.TrimPrefix(tv.URL, "https://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	portNumber, err := strconv.Atoi(port)
+	if err != nil {
+		t.Fatal(err)
+	}
 	initialize := func() *Server {
 		t.Helper()
 		s := New(&bytes.Buffer{}, dataDir)
 		r := s.Handle(req(1, "initialize", map[string]any{
 			"supportedProtocolVersions": []string{"1.0"}, "capabilityGeneration": 4,
 			"config": map[string]any{"devices": []map[string]any{
-				{"nativeId": "lg1", "driver": "lg_webos_ssap", "host": strings.TrimPrefix(tv.URL, "https://")},
+				{"nativeId": "lg1", "driver": "lg_webos_ssap", "host": " " + host + " ", "port": portNumber},
 			}},
 		}))
 		if r.Error != nil {

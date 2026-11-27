@@ -772,10 +772,17 @@ func mqttPacket(hdr byte, body []byte) []byte {
 }
 func (d *HisenseVIDAA) mqttCreds() (string, string) {
 	const defaultUser = "hisenseservice"
-	if d.Credential == "" {
-		return defaultUser, "multimqttservice"
+	const defaultPassword = "multimqttservice"
+	if strings.TrimSpace(d.Credential) == "" {
+		return defaultUser, defaultPassword
 	}
 	if u, p, ok := strings.Cut(d.Credential, ":"); ok {
+		if u == "" {
+			u = defaultUser
+			if p == "" {
+				p = defaultPassword
+			}
+		}
 		return u, p
 	}
 	return defaultUser, d.Credential
@@ -829,7 +836,10 @@ func (d *HisenseVIDAA) Probe() error {
 }
 func (d *HisenseVIDAA) Snapshot() (Snapshot, error) {
 	if err := d.Probe(); err != nil { return Snapshot{}, err }
-	return Snapshot{ID: d.id, Name: "Hisense VIDAA", Power: "on"}, nil
+	d.mu.Lock()
+	muted := d.muted
+	d.mu.Unlock()
+	return Snapshot{ID: d.id, Name: "Hisense VIDAA", Power: "on", Muted: muted}, nil
 }
 func (d *HisenseVIDAA) Execute(v string, a map[string]any) error {
 	if e := commandAllowed(v, a); e != nil {
