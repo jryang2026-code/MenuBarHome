@@ -47,6 +47,7 @@ enum SettingsAnchor: String, CaseIterable, Hashable, Sendable {
     // AI 助手
     case askWhenUnsure
     case assistantEnable
+    case assistantLocalModel
     case assistantProvider
     case assistantRemoveProvider
     case assistantServiceAddress
@@ -101,7 +102,7 @@ enum SettingsAnchor: String, CaseIterable, Hashable, Sendable {
         case .demoMode, .localNetwork, .haServerAddress, .haToken, .haDiscovery, .miAccount, .miCloudRegion, .lgTV,
              .miMultiAccounts:
             return .connection
-        case .askWhenUnsure, .assistantEnable, .assistantProvider, .assistantRemoveProvider,
+        case .askWhenUnsure, .assistantEnable, .assistantLocalModel, .assistantProvider, .assistantRemoveProvider,
              .assistantServiceAddress, .assistantModel, .assistantKeyImport, .onDeviceSpeech,
              .assistantAPIKey, .assistantTest, .proactiveSuggestions, .habitMemory:
             return .assistant
@@ -380,6 +381,10 @@ enum SettingsSearch {
                   enTitle: "Enable AI Assistant",
                   synonyms: ["开关", "启用", "关闭", "AI", "启用 AI 一句话控制", "一句话控制",
                              "enable", "disable", "toggle", "assistant", "ai command control"]),
+            entry(.assistantLocalModel, section: assistantSection, zhTitle: "Apple Intelligence 本机免配端侧模型",
+                  enTitle: "Apple Intelligence On-Device Model",
+                  synonyms: ["apple intelligence", "端侧模型", "本机模型", "免配", "foundation models",
+                             "on-device", "local model", "offline ai"]),
             entry(.assistantProvider, section: assistantSection, zhTitle: "服务商",
                   enTitle: "AI Provider",
                   synonyms: ["AI 服务商", "AI 服务商与模型", "服务商", "提供商", "provider", "openrouter",

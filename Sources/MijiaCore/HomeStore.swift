@@ -646,6 +646,11 @@ public final class HomeStore {
         didSet { userDefaults.set(askWhenUnsureBeforeAIActions, forKey: Self.askWhenUnsureKey) }
     }
 
+    /// Explicit opt-in to prefer Apple's on-device Foundation Model even when a cloud key is also stored.
+    public var prefersLocalFoundationModel: Bool = false {
+        didSet { userDefaults.set(prefersLocalFoundationModel, forKey: Self.preferLocalFoundationKey) }
+    }
+
     /// Transient flag allowing the user to reopen the onboarding guide from Settings at any time.
     public var isShowingOnboarding: Bool = false
 
@@ -1490,6 +1495,7 @@ public final class HomeStore {
                 .compactMap(OnboardingMilestone.init(rawValue:))
         )
         self.askWhenUnsureBeforeAIActions = boolOrDefaultTrue(Self.askWhenUnsureKey)
+        self.prefersLocalFoundationModel = ud.bool(forKey: Self.preferLocalFoundationKey)
         self.hideOfflineDevices = HomePreferences.hideOfflineDevices.load(from: ud)
         self.hideGroupedLights = HomePreferences.hideGroupedLights.load(from: ud)
         self.allowAdvancedFacetWrites = HomePreferences.allowAdvancedFacetWrites.load(from: ud)
@@ -1849,6 +1855,8 @@ public final class HomeStore {
     var localAssistantResolverOverride: (any AssistantCommandResolving)?
     /// Test seam overriding whether Apple's on-device model is usable on this machine.
     var localAssistantAvailabilityOverride: AssistantLocalModelAvailability?
+    /// Latest controlled desktop ambient snapshot (booleans only; never carries window/calendar/Wi-Fi strings).
+    public internal(set) var desktopContext: DesktopAmbientContext = .empty
     /// Commands waiting on a spoken delay ("10 分钟后关灯"), soonest first. Persisted across launches.
     /// Holds timers whose captured sources still match the connected ones (ADR-0019).
     public internal(set) var scheduledCommands: [ScheduledCommand] = []

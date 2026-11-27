@@ -20,6 +20,26 @@ enum AssistantAutoResetTiming: Sendable {
 }
 
 extension HomeStore {
+    static let preferLocalFoundationKey = "assistant_prefer_local_foundation_v1"
+    public var localModelAvailability: AssistantLocalModelAvailability { localAssistantAvailabilityOverride ?? .current }
+    public var activeAssistantModelRoute: AssistantModelRoute {
+        AssistantModelSelection.route(for: assistantConfig, localAvailability: localModelAvailability, preferLocalFoundation: prefersLocalFoundationModel)
+    }
+
+    @discardableResult
+    public func useLocalFoundationModelAsDefault() -> Bool {
+        guard localModelAvailability == .available else { return false }
+        if !aiAssistantEnabled, !setAIAssistantEnabled(true) { return false }
+        prefersLocalFoundationModel = true
+        advanceAssistantEpoch(); proactiveRefreshTask?.cancel(); resetAISuggestionCache()
+        return true
+    }
+
+    public func updateDesktopContext(_ next: DesktopAmbientContext) {
+        guard next != desktopContext else { return }
+        desktopContext = next; refreshProactiveSuggestionCacheIfStale()
+    }
+
     public var assistantConfig: AssistantConfig {
         get { AssistantConfig.load(from: userDefaults, vault: credentialVault) }
         set {
@@ -164,6 +184,7 @@ extension HomeStore {
         // A provider switch or key change supersedes results still in flight (P5a-M).
         let after = assistantConfig
         if previous.baseURL != after.baseURL || previous.model != after.model || previous.apiKey != after.apiKey {
+            if after.hasConfiguredProvider { prefersLocalFoundationModel = false }
             advanceAssistantEpoch()
         }
         return true
@@ -234,7 +255,8 @@ extension HomeStore {
             devices: categoryVisibleDevices,
             scenes: scenes,
             favoriteIds: favoriteOrder,
-            environmentReadings: environmentReadings
+            environmentReadings: environmentReadings,
+            desktopContext: desktopContext
         )
     }
 
@@ -249,7 +271,9 @@ extension HomeStore {
             let humidity = reading.humidity.map { String((($0 / 5.0).rounded() * 5)) } ?? "-"
             return "\(temperature)/\(humidity)"
         }
-        return "\(bucket.rawValue)|\(readings.joined(separator: ","))"
+        let base = "\(bucket.rawValue)|\(readings.joined(separator: ","))"
+        let desktopToken = desktopContext.signatureToken
+        return desktopToken.isEmpty ? base : "\(base)|\(desktopToken)"
     }
 
     /// Fires the silent background AI refresh when the ambient context changed since the
@@ -266,8 +290,10 @@ extension HomeStore {
         guard homeBackend != .demo,
               !assistantState.isUserActive else { return nil }
         let config = assistantConfig
-        guard !shouldRejectMissingAPIKey(for: config),
-              cloudConsentNeeded(for: config, utterance: nil) == nil else { return nil }
+        if localCommandResolver(for: config) == nil {
+            guard !shouldRejectMissingAPIKey(for: config),
+                  cloudConsentNeeded(for: config, utterance: nil) == nil else { return nil }
+        }
         let task = Task { await self.refreshProactiveSuggestionsCache(signature: signature) }
         proactiveRefreshTask = task
         return task
@@ -278,16 +304,20 @@ extension HomeStore {
     public func refreshProactiveSuggestionsCache(signature: String? = nil) async {
         guard !isProactiveRecommending, homeBackend != .demo, !assistantState.isUserActive else { return }
         let config = assistantConfig
-        guard proactiveSuggestionsEnabled, aiAssistantEnabled,
-              !shouldRejectMissingAPIKey(for: config),
-              cloudConsentNeeded(for: config, utterance: nil) == nil else { return }
+        guard proactiveSuggestionsEnabled, aiAssistantEnabled else { return }
+        let localResolver = localCommandResolver(for: config)
+        if localResolver == nil {
+            guard !shouldRejectMissingAPIKey(for: config),
+                  cloudConsentNeeded(for: config, utterance: nil) == nil else { return }
+        }
         let epoch = assistantEpoch
         let suggestionEpoch = proactiveEpoch
         let attemptedSignature = signature ?? proactiveRefreshSignature()
         let context = controlContextID
         isProactiveRecommending = true
         defer { isProactiveRecommending = false }
-        let resolver = makeAssistantResolver(config: config, epoch: epoch, proactiveEpoch: suggestionEpoch)
+        let resolver: any AssistantCommandResolving = localResolver
+            ?? makeAssistantResolver(config: config, epoch: epoch, proactiveEpoch: suggestionEpoch)
         let assistantContext = buildAssistantContext(mention: .none)
         do {
             let inferred = try await resolver.recommendProactiveSuggestions(
@@ -343,7 +373,7 @@ extension HomeStore {
         }
     }
 
-    public func buildAssistantContext(now: Date = Date(), mention: CommandMention) -> AssistantContext {
+    public func buildAssistantContext(now: Date = Date(), mention: CommandMention, desktopContext: DesktopAmbientContext? = nil) -> AssistantContext {
         let bucket = UserHabitMemory.TimeBucket.from(date: now)
         let formatter = DateFormatter()
         formatter.dateFormat = "HH:mm"
@@ -355,7 +385,8 @@ extension HomeStore {
             if let h = reading.humidity.flatMap(DeviceSynthesizer.roundedInt) { text += " \(h)%" }
             return text
         }
-        let environmentSummary = envParts.joined(separator: "，")
+        let desktop = desktopContext ?? self.desktopContext
+        let environmentSummary = DesktopAmbientContext.mergeIntoEnvironment(envParts.joined(separator: "，"), desktop: desktop)
 
         let visible = categoryVisibleDevices
         let activeParts = visible.filter(\.isActiveDevice).map { dev in
@@ -380,7 +411,8 @@ extension HomeStore {
             environmentSummary: PromptText.cleanField(environmentSummary, limit: PromptText.contextLimit),
             activeDevicesSummary: PromptText.cleanField(activeSummary, limit: PromptText.contextLimit),
             habitSummary: PromptText.cleanField(habitSummary, limit: PromptText.contextLimit),
-            favoriteDeviceIds: favoriteOrder
+            favoriteDeviceIds: favoriteOrder,
+            desktopContext: desktop
         )
     }
 
@@ -403,13 +435,10 @@ extension HomeStore {
             )))
             return
         }
-        if shouldRejectMissingAPIKey(for: config) {
-            setAssistantState(.failed(AssistantError.userMessage(for: AssistantError.missingAPIKey)))
-            return
-        }
-        if let consent = cloudConsentNeeded(for: config, utterance: nil) {
-            pendingCloudConsent = consent
-            return
+        let localResolver = localCommandResolver(for: config)
+        if localResolver == nil {
+            if shouldRejectMissingAPIKey(for: config) { setAssistantState(.failed(AssistantError.userMessage(for: AssistantError.missingAPIKey))); return }
+            if let consent = cloudConsentNeeded(for: config, utterance: nil) { pendingCloudConsent = consent; return }
         }
         let epoch = assistantEpoch
         let suggestionEpoch = proactiveEpoch
@@ -419,7 +448,8 @@ extension HomeStore {
         let controlContext = controlContextID
         let snapshotDevices = categoryVisibleDevices
         let snapshotScenes = scenes
-        let resolver = makeAssistantResolver(config: config, epoch: epoch, proactiveEpoch: suggestionEpoch)
+        let resolver: any AssistantCommandResolving = localResolver
+            ?? makeAssistantResolver(config: config, epoch: epoch, proactiveEpoch: suggestionEpoch)
         let context = buildAssistantContext(mention: .none)
         do {
             let inferred = try await resolver.recommendProactiveSuggestions(
@@ -431,10 +461,10 @@ extension HomeStore {
                   suggestionEpoch == proactiveEpoch else { return }
             if !inferred.isEmpty {
                 assistantSuggestions = inferred
-                let label = ModelIntentResolver.isSystemOneModel(config.model) ? "Jev" : "AI"
+                let label = localResolver != nil ? L10n.tr("本机 AI", "On-device AI") : (ModelIntentResolver.isSystemOneModel(config.model) ? "Jev" : "AI")
                 setAssistantState(.done(L10n.tr("\(label) 已结合室温与习惯生成建议", "\(label) generated suggestions from room climate & habits")))
             } else {
-                let fallback = userHabitMemory.topSuggestions(devices: categoryVisibleDevices, scenes: scenes, limit: 3)
+                let fallback = userHabitMemory.topSuggestions(devices: categoryVisibleDevices, scenes: scenes, limit: 3, desktopContext: desktopContext)
                 assistantSuggestions = fallback
                 setAssistantState(.done(L10n.tr("当前居家状态已处于理想区间", "Home environment is already in an ideal range")))
             }
@@ -456,6 +486,8 @@ extension HomeStore {
                 L10n.tr("AI 一句话控制已关闭，测试连接不可用", "AI command control is off; the connection check is unavailable")
             )
         }
+        let previous = assistantConfig, wasPreferringLocal = prefersLocalFoundationModel
+        let changed = previous.baseURL != draftConfig.baseURL || previous.model != draftConfig.model || previous.apiKey != draftConfig.apiKey
         guard saveAssistantConfig(draftConfig) else {
             return (
                 false,
@@ -469,6 +501,12 @@ extension HomeStore {
             return (false, L10n.tr("演示模式不联网，请切换数据源后测试连接", "Demo mode is offline; switch the data source to test this connection"))
         }
         let resolved = assistantConfig
+        if assistantResolverOverride == nil {
+            let availability = localModelAvailability
+            let route = AssistantModelSelection.route(for: resolved, localAvailability: availability, preferLocalFoundation: wasPreferringLocal && !changed)
+            if route == .localFoundation { return (true, L10n.tr("Apple Intelligence 本机模型已就绪（无需 API Key，不联网）", "Apple Intelligence on-device model is ready (no API key needed, runs locally)")) }
+            if !resolved.hasConfiguredProvider, case .unavailable(let reason) = availability { return (false, L10n.tr("本机模型不可用（\(reason)）。请开启 Apple Intelligence 或在下方配置云端 API Key", "On-device model unavailable (\(reason)). Enable Apple Intelligence or configure a cloud API key below.")) }
+        }
         if shouldRejectMissingAPIKey(for: resolved) {
             return (false, AssistantError.userMessage(for: AssistantError.missingAPIKey))
         }
@@ -668,8 +706,7 @@ extension HomeStore {
     /// `assistantResolverOverride` keeps its old meaning: a forced cloud resolver in tests.
     func localCommandResolver(for config: AssistantConfig) -> (any AssistantCommandResolving)? {
         guard assistantResolverOverride == nil else { return nil }
-        let availability = localAssistantAvailabilityOverride ?? .current
-        guard AssistantModelSelection.route(for: config, localAvailability: availability) == .localFoundation else {
+        guard AssistantModelSelection.route(for: config, localAvailability: localModelAvailability, preferLocalFoundation: prefersLocalFoundationModel) == .localFoundation else {
             return nil
         }
         if let override = localAssistantResolverOverride { return override }

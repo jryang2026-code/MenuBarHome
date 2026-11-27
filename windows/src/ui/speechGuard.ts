@@ -7,6 +7,7 @@ import {
   type UrlDeviceFocusResult,
 } from "../core/appUrlCommand.js";
 import { allOffResultText, speechLocale, t } from "../core/i18n.js";
+import { correctSpeechTranscript } from "../core/assistant.js";
 import { miSessionExpiryState } from "../core/miCloud/session.js";
 import { hasDetailDrawer, type SmartDevice } from "../core/models.js";
 import { planQuickAction, quickActionTitle, type QuickActionId } from "../core/quickActions.js";
@@ -294,6 +295,9 @@ export function toggleVoiceInput(host: MenuMijiaWindowsApp): void {
   let submittedFinal = false;
   let hadError = false;
 
+  const normalizeSpokenCommand = (raw: string): string =>
+    correctSpeechTranscript(raw, { devices: host.devices, scenes: host.scenes, aliases: host.layout.aliases });
+
   recognition.onresult = (event) => {
     if (!isVoiceInputEnabled(host.settings)) return;
     if (state.speechRecognition !== recognition || host.sourceRevision !== startedRevision) return;
@@ -315,7 +319,8 @@ export function toggleVoiceInput(host: MenuMijiaWindowsApp): void {
       submittedFinal = true;
       latestInterim = "";
       if (inputEl) inputEl.value = "";
-      void host.handleNaturalCommand(finalTranscript.trim());
+      const corrected = normalizeSpokenCommand(finalTranscript);
+      if (corrected) void host.handleNaturalCommand(corrected, false, true);
       return;
     }
     if (interimTranscript) {
@@ -345,7 +350,7 @@ export function toggleVoiceInput(host: MenuMijiaWindowsApp): void {
     if (state.speechRecognition !== recognition) return;
     const pending =
       !submittedFinal && !hadError && isVoiceInputEnabled(host.settings) && host.sourceRevision === startedRevision
-        ? latestInterim.trim()
+        ? normalizeSpokenCommand(latestInterim)
         : "";
     latestInterim = "";
     const inputEl = host.root.querySelector<HTMLInputElement>("#command-input");
@@ -353,7 +358,7 @@ export function toggleVoiceInput(host: MenuMijiaWindowsApp): void {
     finishRecognition();
     if (pending) {
       submittedFinal = true;
-      void host.handleNaturalCommand(pending);
+      void host.handleNaturalCommand(pending, false, true);
     }
   };
 

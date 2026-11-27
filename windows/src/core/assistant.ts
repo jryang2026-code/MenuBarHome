@@ -1,5 +1,6 @@
 export * from "./assistant/actionPolicy.js";
 export * from "./assistant/context.js";
+export * from "./assistant/desktopContext.js";
 export { isSwitchedLightDevice } from "./assistant/deviceCategory.js";
 export * from "./assistant/habits.js";
 export * from "./assistant/intent.js";
@@ -7,3 +8,4 @@ export * from "./assistant/lifecycle.js";
 export * from "./assistant/modelIntentResolver.js";
 export * from "./assistant/promptContext.js";
 export * from "./assistant/provider.js";
+export * from "./assistant/speechPostCorrection.js";
