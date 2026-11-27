@@ -146,9 +146,39 @@ public enum ManualControlPolicy {
     ) -> ManualControlConfirmation? {
         guard let device = devices.first(where: { $0.id == intent.targetId }),
               requiresConfirmation(intent.operation, for: device, markedLightIds: markedLightIds) else { return nil }
+        return buildConfirmation(
+            intent.operation,
+            for: device,
+            markedLightIds: markedLightIds,
+            offersMarkAsLight: offersMarkAsLight
+        )
+    }
+
+    /// Builds the confirmation prompt for an operation even when the default hazard table would
+    /// treat it as direct (e.g. external `cover-position` 0% on a window opener).
+    static func forcedConfirmation(
+        _ operation: IntentOperation,
+        for device: SmartDevice,
+        markedLightIds: Set<String>? = nil,
+        offersMarkAsLight: Bool = false
+    ) -> ManualControlConfirmation {
+        buildConfirmation(
+            operation,
+            for: device,
+            markedLightIds: markedLightIds,
+            offersMarkAsLight: offersMarkAsLight
+        )
+    }
+
+    private static func buildConfirmation(
+        _ operation: IntentOperation,
+        for device: SmartDevice,
+        markedLightIds: Set<String>?,
+        offersMarkAsLight: Bool
+    ) -> ManualControlConfirmation {
         let marks = markedLightIds ?? SwitchLightMarks.load()
         let isPrimaryPower: Bool
-        if case .power = intent.operation { isPrimaryPower = true } else { isPrimaryPower = false }
+        if case .power = operation { isPrimaryPower = true } else { isPrimaryPower = false }
         let markOption = (offersMarkAsLight && isPrimaryPower)
             ? switchLightMarkOption(for: device, marks: marks)
             : nil
@@ -161,7 +191,7 @@ public enum ManualControlPolicy {
                 "「%@」属于高风险设备，执行「%@」需要再次确认。",
                 "\"%@\" is a high-risk device. Confirm \"%@\".",
                 device.name,
-                actionLabel(intent.operation)
+                actionLabel(operation)
             ),
             confirmTitle: L10n.tr("确认执行", "Confirm"),
             cancelTitle: L10n.tr("取消", "Cancel"),

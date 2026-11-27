@@ -129,10 +129,11 @@ extension HomeStore {
         on current: SmartDevice,
         captured: ModalDeviceContext,
         didPresentModal: Bool,
-        ignoresSwitchLightMark: Bool = false
+        ignoresSwitchLightMark: Bool = false,
+        forceConfirmation: Bool = false
     ) -> Bool {
         let marks: Set<String> = ignoresSwitchLightMark ? [] : SwitchLightMarks.load(defaults: userDefaults)
-        let stillNeedsConfirmation = ManualControlPolicy.requiresConfirmation(
+        let stillNeedsConfirmation = forceConfirmation || ManualControlPolicy.requiresConfirmation(
             operation,
             for: current,
             markedLightIds: marks
@@ -149,14 +150,16 @@ extension HomeStore {
         on current: SmartDevice,
         captured: ModalDeviceContext,
         didPresentModal: Bool,
-        ignoresSwitchLightMark: Bool = false
+        ignoresSwitchLightMark: Bool = false,
+        forceConfirmation: Bool = false
     ) -> Bool {
         guard !postModalAllowsOperation(
             operation,
             on: current,
             captured: captured,
             didPresentModal: didPresentModal,
-            ignoresSwitchLightMark: ignoresSwitchLightMark
+            ignoresSwitchLightMark: ignoresSwitchLightMark,
+            forceConfirmation: forceConfirmation
         ) else {
             return false
         }
@@ -178,14 +181,15 @@ extension HomeStore {
         ignoresSwitchLightMark: Bool = false,
         requireOnline: Bool = false,
         showOfflineToast: Bool = false,
-        panelConfirmed: Bool = false
+        panelConfirmed: Bool = false,
+        forceConfirmation: Bool = false
     ) -> (device: SmartDevice, didPresentModal: Bool, context: ModalDeviceContext)? {
         if rejectDeviceWriteIfCapabilityDisabled(deviceId: initial.id) != nil {
             return nil
         }
         let modalContext = captureModalDeviceContext(for: initial)
         let marks: Set<String> = ignoresSwitchLightMark ? [] : SwitchLightMarks.load(defaults: userDefaults)
-        let didPresentModal = ManualControlPolicy.requiresConfirmation(
+        let didPresentModal = forceConfirmation || ManualControlPolicy.requiresConfirmation(
             operation,
             for: initial,
             markedLightIds: marks
@@ -194,7 +198,8 @@ extension HomeStore {
             operation,
             for: initial,
             offersMarkAsLight: offersMarkAsLight,
-            ignoresSwitchLightMark: ignoresSwitchLightMark
+            ignoresSwitchLightMark: ignoresSwitchLightMark,
+            forceConfirmation: forceConfirmation
         ) else {
             return nil
         }
@@ -210,7 +215,8 @@ extension HomeStore {
             on: current,
             captured: modalContext,
             didPresentModal: didPresentModal,
-            ignoresSwitchLightMark: ignoresSwitchLightMark
+            ignoresSwitchLightMark: ignoresSwitchLightMark,
+            forceConfirmation: forceConfirmation
         ) else {
             return nil
         }
@@ -276,15 +282,29 @@ extension HomeStore {
         _ operation: IntentOperation,
         for device: SmartDevice,
         offersMarkAsLight: Bool = false,
-        ignoresSwitchLightMark: Bool = false
+        ignoresSwitchLightMark: Bool = false,
+        forceConfirmation: Bool = false
     ) -> Bool {
         let marks: Set<String> = ignoresSwitchLightMark ? [] : SwitchLightMarks.load(defaults: userDefaults)
-        guard let prompt = ManualControlPolicy.confirmation(
-            DeviceIntent(targetId: device.id, operation: operation),
-            devices: devices,
-            markedLightIds: marks,
-            offersMarkAsLight: offersMarkAsLight && !ignoresSwitchLightMark
-        ) else { return true }
+        let offerMark = offersMarkAsLight && !ignoresSwitchLightMark
+        let prompt: ManualControlConfirmation?
+        if forceConfirmation {
+            guard let liveDevice = devices.first(where: { $0.id == device.id }) else { return false }
+            prompt = ManualControlPolicy.forcedConfirmation(
+                operation,
+                for: liveDevice,
+                markedLightIds: marks,
+                offersMarkAsLight: offerMark
+            )
+        } else {
+            prompt = ManualControlPolicy.confirmation(
+                DeviceIntent(targetId: device.id, operation: operation),
+                devices: devices,
+                markedLightIds: marks,
+                offersMarkAsLight: offerMark
+            )
+        }
+        guard let prompt else { return true }
         return presentManualControlConfirmation(prompt, for: device)
     }
 

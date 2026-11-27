@@ -848,14 +848,56 @@ struct AppURLCommandTests {
 
         #expect(!(await store.executeRaycastCoverPosition(deviceId: "curtain", percent: 45)).isError)
         #expect((await provider.executedCommands).last == .setNumberValue(entityId: "cover.curtain", value: 45))
-        var confirmCalls = 0
-        store.manualControlConfirmationHandler = { _ in confirmCalls += 1; return false }
-        for (id, pct) in [("garage", 0), ("garage", 50), ("window", 0), ("window", 50)] {
-            #expect((await store.executeRaycastCoverPosition(deviceId: id, percent: pct)).isError)
+        let commandsBeforeConfirm = (await provider.executedCommands).count
+        var capturedPrompts: [ManualControlConfirmation] = []
+        store.manualControlConfirmationHandler = { prompt in
+            capturedPrompts.append(prompt)
+            return false
         }
-        #expect(confirmCalls == 4)
-        store.manualControlConfirmationHandler = { _ in true }
+        for (id, pct, expectedZh) in [
+            ("garage", 0, "关闭"),
+            ("garage", 50, "开至 50%"),
+            ("window", 0, "关闭"),
+            ("window", 50, "开至 50%"),
+            ("window", 100, "打开"),
+        ] {
+            let result = await store.executeRaycastCoverPosition(deviceId: id, percent: pct)
+            #expect(result.isError)
+            let lastPrompt = try #require(capturedPrompts.last)
+            #expect(lastPrompt.message.contains("执行「\(expectedZh)」"), "unexpected prompt for \(id) \(pct)%: \(lastPrompt.message)")
+            if pct == 0 {
+                #expect(!lastPrompt.message.contains("打开"), "0% prompt must never claim 打开: \(lastPrompt.message)")
+            }
+        }
+        #expect(capturedPrompts.count == 5)
+        #expect((await provider.executedCommands).count == commandsBeforeConfirm, "declined confirmations must not write")
+
+        // Verify English confirmation copy matches close / set position / open for window opener
+        var englishPrompts: [String] = []
+        store.manualControlConfirmationHandler = { prompt in
+            englishPrompts.append(prompt.message)
+            return false
+        }
+        for (pct, expectedEn) in [(0, "close"), (50, "set position to 50%"), (100, "open")] {
+            let result = await L10n.$overrideLanguage.withValue(.en) {
+                await store.executeRaycastCoverPosition(deviceId: "window", percent: pct)
+            }
+            #expect(result.isError)
+            let msg = try #require(englishPrompts.last)
+            #expect(msg.contains("\"\(expectedEn)\""), "unexpected EN prompt for window \(pct)%: \(msg)")
+            if pct == 0 {
+                #expect(!msg.contains("turn on") && !msg.contains("\"open\""))
+            }
+        }
+        #expect((await provider.executedCommands).count == commandsBeforeConfirm)
+
+        var approvedPrompt: ManualControlConfirmation?
+        store.manualControlConfirmationHandler = { prompt in
+            approvedPrompt = prompt
+            return true
+        }
         #expect(!(await store.executeRaycastCoverPosition(deviceId: "window", percent: 0)).isError)
+        #expect(approvedPrompt?.message.contains("执行「关闭」") == true)
         #expect((await provider.executedCommands).last == .setNumberValue(entityId: "cover.window", value: 0))
 
         #expect(!(await store.executeRaycastVolume(deviceId: "dev_tv", percent: 35)).isError)
