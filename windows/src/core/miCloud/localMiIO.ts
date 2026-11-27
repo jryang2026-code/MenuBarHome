@@ -4,7 +4,14 @@ import { MiCloudError, type MiSession } from "./session.js";
 
 type Invoke = NonNullable<Window["__TAURI_INTERNALS__"]>["invoke"];
 type Endpoint = { did: string; ip: string; token: string };
-type Health = { epoch: number; ip: string; token: string; failures: number; retryAt: number };
+type Health = {
+  epoch: number;
+  ip: string;
+  token: string;
+  failures: number;
+  retryAt: number;
+  unsupportedLocalMiot?: boolean;
+};
 
 // Device records also feed diagnostics and snapshots. Keep credentials outside that data.
 const recordTokens = new WeakMap<MiDeviceRecord, string>();
@@ -81,15 +88,27 @@ export class LocalMiIO {
     const endpoint = this.#endpoints.get(did);
     if (!endpoint) return undefined;
     const health = this.#health.get(did);
-    if (
-      health &&
-      (health.epoch !== localMiIONetworkEpoch || health.ip !== endpoint.ip || health.token !== endpoint.token)
-    ) {
+    if (health && (health.ip !== endpoint.ip || health.token !== endpoint.token)) {
+      this.#health.delete(did);
+    } else if (health?.unsupportedLocalMiot) {
+      return undefined;
+    } else if (health && health.epoch !== localMiIONetworkEpoch) {
       this.#health.delete(did);
     } else if (health && Date.now() < health.retryAt) {
       return undefined;
     }
     return endpoint;
+  }
+
+  private recordUnsupportedLocalMiot(endpoint: Endpoint): void {
+    this.#health.set(endpoint.did, {
+      epoch: localMiIONetworkEpoch,
+      ip: endpoint.ip,
+      token: endpoint.token,
+      failures: 0,
+      retryAt: 0,
+      unsupportedLocalMiot: true,
+    });
   }
 
   private recordFailure(endpoint: Endpoint): void {
@@ -117,8 +136,13 @@ export class LocalMiIO {
       if (!Array.isArray(reply.values)) return [];
       this.#health.delete(did);
       return reply.values;
-    } catch {
-      this.recordFailure(endpoint);
+    } catch (error) {
+      const code = error && typeof error === "object" && "code" in error ? error.code : null;
+      if (code === "unsupported_local_miot") {
+        this.recordUnsupportedLocalMiot(endpoint);
+      } else {
+        this.recordFailure(endpoint);
+      }
       return [];
     }
   }
@@ -144,6 +168,10 @@ export class LocalMiIO {
     } catch (error) {
       // Rust is the only layer that knows whether the write reached the UDP send boundary.
       const code = error && typeof error === "object" && "code" in error ? error.code : null;
+      if (code === "unsupported_local_miot") {
+        this.recordUnsupportedLocalMiot(endpoint);
+        return { sent: false };
+      }
       if (code === "device_error") {
         const deviceCode = (error as { deviceCode?: unknown }).deviceCode;
         throw new MiCloudError("api", t("设备未响应或离线"),

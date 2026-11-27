@@ -756,8 +756,8 @@ struct AutomationSettingsSection: View {
                 .font(.system(size: DesignTokens.TypeSize.caption))
                 .foregroundStyle(DesignTokens.secondaryText)
                 Text(L10n.tr(
-                    "还原时会跳过需要重新开启的高风险设备。",
-                    "Restore skips high-risk devices that would need to be turned back on."
+                    "还原时会跳过需要确认的高风险设备。",
+                    "Restore skips high-risk devices that require confirmation."
                 ))
                 .font(.system(size: DesignTokens.TypeSize.caption))
                 .foregroundStyle(DesignTokens.secondaryText)
