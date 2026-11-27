@@ -504,37 +504,61 @@ public struct UserHabitMemory: Codable, Equatable, Sendable {
         return receipt
     }
 
+    /// Minimum consistent hits before a learned phrase short-circuits locally at 0ms.
+    public static let learnedShortcutMinCount = 3
+
     private static func shortcutKey(_ raw: String) -> String {
         raw.components(separatedBy: .whitespacesAndNewlines).joined().lowercased()
     }
 
-    /// 0ms local lookup for a learned spoken phrase; re-validates targets against live devices/scenes.
-    public func learnedShortcutPlan(for utterance: String, devices: [SmartDevice], scenes: [HomeScene]) -> IntentPlan? {
+    /// 0ms local lookup for a learned spoken phrase; requires repeated consistent hits and re-validates targets against live devices/scenes.
+    public func learnedShortcutPlan(
+        for utterance: String,
+        devices: [SmartDevice],
+        scenes: [HomeScene],
+        minCount: Int = UserHabitMemory.learnedShortcutMinCount
+    ) -> IntentPlan? {
         let key = Self.shortcutKey(utterance)
-        guard key.count >= 2, let matched = phrases.first(where: { Self.shortcutKey($0.phrase) == key }) else { return nil }
+        guard key.count >= 2,
+              let matched = phrases.first(where: { Self.shortcutKey($0.phrase) == key && $0.count >= minCount }) else {
+            return nil
+        }
         let raw = matched.targets.compactMap { t in Self.decodeOperation(t.operationKey).map { DeviceIntent(targetId: t.targetId, operation: $0) } }
         let intents = IntentValidator.sanitize(raw, devices: devices, scenes: scenes)
         guard !intents.isEmpty else { return nil }
         return IntentPlan(intents: intents, reply: IntentReply.describe(intents, devices: devices, scenes: scenes), source: .local)
     }
 
-    /// Saves a short model-resolved phrase for 0ms local replay on future turns (Windows parity).
+    /// Saves a short model-resolved phrase for 0ms local replay once repeated consistently (Windows parity).
     @discardableResult
-    public mutating func learnPhraseShortcut(phrase: String, intents: [DeviceIntent], devices: [SmartDevice], scenes: [HomeScene], now: Date = Date()) -> Bool {
+    public mutating func learnPhraseShortcut(
+        phrase: String,
+        intents: [DeviceIntent],
+        devices: [SmartDevice],
+        scenes: [HomeScene],
+        now: Date = Date()
+    ) -> RecordingReceipt? {
         let clean = phrase.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard clean.count >= 2, clean.count <= 18, !intents.isEmpty else { return false }
+        guard clean.count >= 2, clean.count <= 18, !intents.isEmpty else { return nil }
         let targets = intents.compactMap { i in Self.encodeOperation(i.operation).map { PhraseTarget(targetId: i.targetId, operationKey: $0) } }
         let summary = Self.describe(intents: intents, devices: devices, scenes: scenes)
-        guard !targets.isEmpty, !summary.isEmpty else { return false }
+        guard targets.count == intents.count, !summary.isEmpty else { return nil }
         let bucket = TimeBucket.from(date: now), key = Self.shortcutKey(clean)
+        var receipt = RecordingReceipt()
+        receipt.preserveLastAction = true
         if let idx = phrases.firstIndex(where: { Self.shortcutKey($0.phrase) == key }) {
-            phrases[idx].count += 1; phrases[idx].bucket = bucket; phrases[idx].summary = summary
+            let previous = phrases[idx]
+            receipt.phrase = RecordingReceipt.PhraseChange(phrase: previous.phrase, previous: previous)
+            phrases[idx].count = previous.targets == targets ? previous.count + 1 : 1
+            phrases[idx].bucket = bucket; phrases[idx].summary = summary
             phrases[idx].targets = targets; phrases[idx].lastRecordedAt = now
         } else {
+            receipt.phrase = RecordingReceipt.PhraseChange(phrase: clean, previous: nil)
             phrases.insert(PhraseMemory(phrase: clean, bucket: bucket, summary: summary, count: 1, targets: targets, lastRecordedAt: now), at: 0)
-            if phrases.count > Self.maxPhrases { phrases = Array(phrases.prefix(Self.maxPhrases)) }
         }
-        return true
+        phrases.sort { Self.ranksBefore(countA: $0.count, lastA: $0.lastRecordedAt, countB: $1.count, lastB: $1.lastRecordedAt, now: now) }
+        if phrases.count > Self.maxPhrases { phrases = Array(phrases.prefix(Self.maxPhrases)) }
+        return receipt
     }
 
     /// Undoes the exact changes from one `record` call, leaving earlier habits untouched (#34).

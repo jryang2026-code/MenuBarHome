@@ -65,9 +65,18 @@ struct AICoreCoverageTests {
         store.assistantAutoResetTiming = .never
         try await store.waitForTestSnapshot()
         var mem = store.userHabitMemory
-        let learnedGarage = mem.learnPhraseShortcut(phrase: "开个门", intents: [DeviceIntent(targetId: "c2", operation: .coverPosition(50))], devices: store.devices, scenes: [])
-        let learnedLamp = mem.learnPhraseShortcut(phrase: "我要看书", intents: [DeviceIntent(targetId: "dev_lamp", operation: .power(true))], devices: store.devices, scenes: [])
-        #expect(learnedGarage && learnedLamp)
+        let firstLamp = mem.learnPhraseShortcut(phrase: "我要看书", intents: [DeviceIntent(targetId: "dev_lamp", operation: .power(true))], devices: store.devices, scenes: [])
+        let secondLamp = mem.learnPhraseShortcut(phrase: "我要看书", intents: [DeviceIntent(targetId: "dev_lamp", operation: .power(true))], devices: store.devices, scenes: [])
+        let prematureShortcut = mem.learnedShortcutPlan(for: "我要看书", devices: store.devices, scenes: [])
+        #expect(firstLamp != nil && secondLamp != nil && prematureShortcut == nil)
+        let thirdLamp = mem.learnPhraseShortcut(phrase: "我要看书", intents: [DeviceIntent(targetId: "dev_lamp", operation: .power(true))], devices: store.devices, scenes: [])
+        var learnedGarage = true
+        for _ in 0..<UserHabitMemory.learnedShortcutMinCount {
+            if mem.learnPhraseShortcut(phrase: "开个门", intents: [DeviceIntent(targetId: "c2", operation: .coverPosition(50))], devices: store.devices, scenes: []) == nil {
+                learnedGarage = false
+            }
+        }
+        #expect(thirdLamp != nil && learnedGarage)
         store.userHabitMemory = mem
 
         var prompted = false

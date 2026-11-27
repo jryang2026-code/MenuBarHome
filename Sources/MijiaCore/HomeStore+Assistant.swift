@@ -2046,16 +2046,17 @@ extension HomeStore {
                 scenes: scenes
             )
             userHabitMemory = memory
-        } else if plan.source == .model, isHabitLearningEnabled,
-                  failedNames.isEmpty, offlineNames.isEmpty,
+        } else if origin == .aiAutomatic, plan.source == .model, isHabitLearningEnabled,
+                  failedNames.isEmpty, offlineNames.isEmpty, cancelledCount == 0, plan.suggestions.isEmpty,
                   let utteranceForShortcut = recordedUtterance, !succeededIntents.isEmpty {
             var memory = userHabitMemory
-            if memory.learnPhraseShortcut(
+            if let receipt = memory.learnPhraseShortcut(
                 phrase: utteranceForShortcut,
                 intents: succeededIntents,
                 devices: devices,
                 scenes: scenes
             ) {
+                habitReceipt = receipt
                 userHabitMemory = memory
             }
         }
