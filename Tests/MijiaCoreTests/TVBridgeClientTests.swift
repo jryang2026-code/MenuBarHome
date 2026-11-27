@@ -106,6 +106,40 @@ extension TVBridgeClientTests {
         XCTAssertFalse(running)
     }
 
+    func testLegacyDriverAliasesDecodeToCanonicalCatalogIDs() throws {
+        let json = Data("""
+        {"isEnabled":true,"idleShutdownSeconds":900,"devices":[
+          {"nativeId":"a","driver":"lg_webos","host":"192.168.1.2","name":"LG","roomName":""},
+          {"nativeId":"b","driver":"xiaomi_6095","host":"192.168.1.3","name":"Mi","roomName":""},
+          {"nativeId":"c","driver":"hisense_vidaa_mqtt","host":"192.168.1.4","name":"Hisense","roomName":""}
+        ]}
+        """.utf8)
+        let decoded = try JSONDecoder().decode(TVBridgeConfig.self, from: json)
+        XCTAssertEqual(decoded.devices.map(\.driver), [.lg_webos_ssap, .xiaomi_mitv_6095, .hisense_vidaa_mqtt])
+        XCTAssertEqual(TVBridgeDeviceConfig.Driver.primaryCases, [.lg_webos_ssap, .xiaomi_mitv_6095, .hisense_vidaa_mqtt])
+    }
+
+    func testExecuteEmitsCanonicalADR0026VerbsAndArgs() async throws {
+        let transport = MockTVBridgeTransport { frame in
+            TVBridgeFrame(id: frame.id, result: Data("{}".utf8))
+        }
+        let manager = TVBridgePluginManager(config: TVBridgeConfig(isEnabled: true), transport: transport)
+        try await manager.execute(deviceId: "adapter:com.menubarhome.tv-bridge:tv-1", command: .power(false), capabilityGeneration: 2)
+        try await manager.execute(deviceId: "adapter:com.menubarhome.tv-bridge:tv-1", command: .setVolume(0.35), capabilityGeneration: 2)
+        try await manager.execute(deviceId: "adapter:com.menubarhome.tv-bridge:tv-1", command: .setMute(true), capabilityGeneration: 2)
+        try await manager.execute(deviceId: "adapter:com.menubarhome.tv-bridge:tv-1", command: .selectSource("HDMI1"), capabilityGeneration: 2)
+        try await manager.execute(deviceId: "adapter:com.menubarhome.tv-bridge:tv-1", command: .seek(42), capabilityGeneration: 2)
+        let requests = await transport.requests.filter { $0.method == "control.execute" }
+        let pairs = try requests.map { frame -> (String, [String: Any]) in
+            let obj = try XCTUnwrap(try JSONSerialization.jsonObject(with: frame.params!) as? [String: Any])
+            return (try XCTUnwrap(obj["verb"] as? String), try XCTUnwrap(obj["args"] as? [String: Any]))
+        }
+        XCTAssertEqual(pairs.map(\.0), ["power.set", "volume.set", "mute.set", "input.select", "media.seek"])
+        XCTAssertEqual(pairs[1].1["level"] as? Int, 35)
+        XCTAssertEqual(pairs[2].1["isMuted"] as? Bool, true)
+        XCTAssertEqual(pairs[4].1["positionSec"] as? Double, 42)
+    }
+
     func testTerminateAllEscalatesFromSigtermToSigkillWhenChildIgnoresSigterm() throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("tv-bridge-sigkill-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)

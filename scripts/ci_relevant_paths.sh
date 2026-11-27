@@ -13,6 +13,7 @@ appintents=false
 windows_native=false
 nas=false
 go2rtc=false
+tv_bridge=false
 saw=0
 
 mark_all() {
@@ -28,6 +29,7 @@ mark_all() {
     windows_native=true
     nas=true
     go2rtc=true
+    tv_bridge=true
 }
 
 while IFS= read -r path || [ -n "$path" ]; do
@@ -138,11 +140,22 @@ while IFS= read -r path || [ -n "$path" ]; do
             code=true
             macos=true
             ;;
+        Shared/tvProtocolCatalog.json|Tests/Fixtures/tv-plugin/*)
+            code=true
+            macos=true
+            windows=true
+            core=true
+            tv_bridge=true
+            ;;
         Shared/*|Tests/Fixtures/*)
             code=true
             macos=true
             windows=true
             core=true
+            ;;
+        adapters/mbh-tv-bridge/*)
+            code=true
+            tv_bridge=true
             ;;
         Tests/MijiaCoreTests/*|Tests/PreferencesTestSupport/*|Tests/StateTestSupport/*|Tests/KeychainTestSupport/*)
             code=true
@@ -196,5 +209,5 @@ if [ "$saw" -eq 0 ]; then
     mark_all
 fi
 
-printf 'code=%s\nmacos=%s\nwindows=%s\ncore=%s\nraycast=%s\nscripts=%s\nwebsite=%s\nmacos_build=%s\nappintents=%s\nwindows_native=%s\nnas=%s\ngo2rtc=%s\n' \
-    "$code" "$macos" "$windows" "$core" "$raycast" "$scripts" "$website" "$macos_build" "$appintents" "$windows_native" "$nas" "$go2rtc"
+printf 'code=%s\nmacos=%s\nwindows=%s\ncore=%s\nraycast=%s\nscripts=%s\nwebsite=%s\nmacos_build=%s\nappintents=%s\nwindows_native=%s\nnas=%s\ngo2rtc=%s\ntv_bridge=%s\n' \
+    "$code" "$macos" "$windows" "$core" "$raycast" "$scripts" "$website" "$macos_build" "$appintents" "$windows_native" "$nas" "$go2rtc" "$tv_bridge"

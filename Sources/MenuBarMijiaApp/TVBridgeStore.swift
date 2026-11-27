@@ -5,26 +5,28 @@ import MijiaCore
 extension TVBridgeDeviceConfig.Driver {
     var displayTitle: String {
         switch self {
-        case .xiaomi_6095: L10n.tr("小米 / Redmi 电视", "Xiaomi / Redmi TV")
-        case .tcl_tnscreen: L10n.tr("雷鸟 / TCL", "FFalcon / TCL")
-        case .android_adb: L10n.tr("海信 / 创维等安卓电视（ADB）", "Hisense / Skyworth Android TV (ADB)")
-        case .lg_webos: "LG webOS"
-        case .sony_bravia: L10n.tr("索尼 Bravia", "Sony Bravia")
-        case .samsung_tizen: L10n.tr("三星 Tizen", "Samsung Tizen")
-        case .dlna_dmr: "DLNA"
-        case .kodi_jsonrpc: "Kodi"
+        case .xiaomi_mitv_6095: L10n.tr("小米 / Redmi 电视", "Xiaomi / Redmi TV")
+        case .tcl_ffalcon_tnscreen: L10n.tr("雷鸟 / TCL（实验）", "FFalcon / TCL (Experimental)")
+        case .android_adb_lan: L10n.tr("通用安卓电视 ADB（实验）", "Generic Android TV ADB (Experimental)")
+        case .lg_webos_ssap: "LG webOS"
+        case .hisense_vidaa_mqtt: L10n.tr("海信电视（海外 VIDAA）", "Hisense TV (Overseas VIDAA)")
+        case .sony_bravia_psk: L10n.tr("索尼 Bravia（实验）", "Sony Bravia (Experimental)")
+        case .samsung_tizen_ws: L10n.tr("三星 Tizen（实验）", "Samsung Tizen (Experimental)")
+        case .dlna_dmr: L10n.tr("DLNA（实验）", "DLNA (Experimental)")
+        case .kodi_jsonrpc: L10n.tr("Kodi（实验）", "Kodi (Experimental)")
         }
     }
 
     /// From `Shared/tvProtocolCatalog.json`.
     var defaultPort: Int {
         switch self {
-        case .xiaomi_6095: 6095
-        case .tcl_tnscreen: 6553
-        case .android_adb: 5555
-        case .lg_webos: 3001
-        case .sony_bravia: 80
-        case .samsung_tizen: 8002
+        case .xiaomi_mitv_6095: 6095
+        case .tcl_ffalcon_tnscreen: 6553
+        case .android_adb_lan: 5555
+        case .lg_webos_ssap: 3001
+        case .hisense_vidaa_mqtt: 36669
+        case .sony_bravia_psk: 80
+        case .samsung_tizen_ws: 8002
         case .dlna_dmr: 1900
         case .kodi_jsonrpc: 8080
         }
@@ -33,9 +35,10 @@ extension TVBridgeDeviceConfig.Driver {
     /// Drivers that need a pairing secret, and what the TV calls it.
     var credentialTitle: String? {
         switch self {
-        case .sony_bravia: L10n.tr("预共享密钥（PSK）", "Pre-shared key (PSK)")
-        case .lg_webos: L10n.tr("配对密钥（Client Key）", "Client key")
-        case .samsung_tizen: L10n.tr("访问令牌（Token）", "Access token")
+        case .sony_bravia_psk: L10n.tr("预共享密钥（PSK）", "Pre-shared key (PSK)")
+        case .lg_webos_ssap: L10n.tr("配对密钥（Client Key）", "Client key")
+        case .hisense_vidaa_mqtt: L10n.tr("配对码（PIN，可选）", "Pairing PIN (optional)")
+        case .samsung_tizen_ws: L10n.tr("访问令牌（Token）", "Access token")
         default: nil
         }
     }
@@ -53,6 +56,10 @@ extension TVBridgeDeviceConfig.Driver {
 final class TVBridgeStore {
     static let shared = TVBridgeStore()
     nonisolated static let binaryName = "mbh-tv-bridge"
+
+    nonisolated static func visibleDrivers(includeExperimental: Bool) -> [TVBridgeDeviceConfig.Driver] {
+        includeExperimental ? TVBridgeDeviceConfig.Driver.allCases : TVBridgeDeviceConfig.Driver.primaryCases
+    }
 
     enum Status: Equatable {
         case disabled

@@ -19,8 +19,8 @@ struct TVBridgeSettingsSection: View {
             .accessibilityIdentifier("settings-tv-bridge")
 
             caption(L10n.tr(
-                "支持小米 / Redmi、雷鸟 / TCL、海信 / 创维等安卓电视（ADB）、LG webOS、索尼 Bravia、三星 Tizen、DLNA 与 Kodi。插件在独立进程中运行，未开启时零后台开销；已由 Home Assistant 或米家接入的同一台电视始终由内置来源控制。",
-                "Supports Xiaomi / Redmi, FFalcon / TCL, Hisense / Skyworth Android TVs (ADB), LG webOS, Sony Bravia, Samsung Tizen, DLNA and Kodi. The plugin runs in its own process and nothing runs while this is off; a TV already connected through Home Assistant or Xiaomi Home stays on the built-in source."
+                "首发支持 LG webOS、小米 / Redmi 与海信（海外 VIDAA）；其他品牌可在添加电视时展开实验性协议（未真机验证）。插件在独立进程中运行，未开启时零后台开销；已由 Home Assistant 或米家接入的同一台电视始终由内置来源控制。",
+                "Primary support for LG webOS, Xiaomi / Redmi, and Hisense (overseas VIDAA); other protocols are behind the experimental toggle when adding a TV. The plugin runs in its own process and nothing runs while this is off; a TV already connected through Home Assistant or Xiaomi Home stays on the built-in source."
             ))
 
             if bridge.isEnabled {
@@ -138,12 +138,17 @@ private struct TVBridgeDeviceEditor: View {
     @Environment(\.dismiss) private var dismiss
     @State private var name = ""
     @State private var roomName = ""
-    @State private var driver: TVBridgeDeviceConfig.Driver = .xiaomi_6095
+    @State private var driver: TVBridgeDeviceConfig.Driver = .lg_webos_ssap
+    @State private var showExperimental = false
     @State private var host = ""
     @State private var port = ""
     @State private var macAddress = ""
     @State private var secret = ""
     @State private var failed = false
+
+    private var visibleDrivers: [TVBridgeDeviceConfig.Driver] {
+        TVBridgeStore.visibleDrivers(includeExperimental: showExperimental)
+    }
 
     private var parsedPort: Int?? {
         let trimmed = port.trimmingCharacters(in: .whitespaces)
@@ -163,7 +168,16 @@ private struct TVBridgeDeviceEditor: View {
                 TextField(L10n.tr("名称", "Name"), text: $name, prompt: Text(L10n.tr("客厅电视", "Living Room TV")))
                 TextField(L10n.tr("房间", "Room"), text: $roomName)
                 Picker(L10n.tr("协议驱动", "Driver"), selection: $driver) {
-                    ForEach(TVBridgeDeviceConfig.Driver.allCases, id: \.self) { Text($0.displayTitle).tag($0) }
+                    ForEach(visibleDrivers, id: \.self) { Text($0.displayTitle).tag($0) }
+                }
+                Toggle(
+                    L10n.tr("显示实验性协议（未真机验证）", "Show experimental protocols (unverified on hardware)"),
+                    isOn: $showExperimental
+                )
+                .onChange(of: showExperimental) { _, shown in
+                    if !shown && !driver.isPrimary {
+                        driver = .lg_webos_ssap
+                    }
                 }
                 TextField(L10n.tr("IP 地址", "IP address"), text: $host, prompt: Text("192.168.1.20"))
                 TextField(L10n.tr("端口", "Port"), text: $port, prompt: Text(L10n.format("默认 %@", "Default %@", "\(driver.defaultPort)")))

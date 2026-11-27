@@ -17,6 +17,14 @@ CATALOG_PATH = ROOT / "Shared" / "tvProtocolCatalog.json"
 FIXTURES_DIR = ROOT / "Tests" / "Fixtures" / "tv-plugin"
 GOLDEN_PATH = FIXTURES_DIR / "tv_catalog_golden.json"
 RPC_PATH = FIXTURES_DIR / "v1_control_rpc_pairs.json"
+BRIDGE_DIR = ROOT / "adapters" / "mbh-tv-bridge"
+BRIDGE_MANIFEST_PATH = BRIDGE_DIR / "adapter-manifest.json"
+GO_DRIVER_PATH = BRIDGE_DIR / "internal" / "driver" / "driver.go"
+GO_SERVER_PATH = BRIDGE_DIR / "internal" / "rpc" / "server.go"
+SWIFT_CONFIG_PATH = ROOT / "Sources" / "MijiaCore" / "TVBridge" / "TVBridgeConfig.swift"
+SWIFT_CLIENT_PATH = ROOT / "Sources" / "MijiaCore" / "TVBridge" / "TVBridgeClient.swift"
+TS_PLUGIN_PATH = ROOT / "windows" / "src" / "core" / "tvBridgePlugin.ts"
+TS_SECTION_PATH = ROOT / "windows" / "src" / "ui" / "tvBridgeSection.ts"
 
 EXPECTED_CATALOG_ID = "menubarhome.tv-protocol-catalog"
 EXPECTED_SCHEMA_VERSION = 1
@@ -27,6 +35,7 @@ REQUIRED_PROFILE_FIELDS = (
     "id",
     "displayNames",
     "kind",
+    "tier",
     "vendors",
     "models",
     "transport",
@@ -48,16 +57,23 @@ REQUIRED_CAPABILITY_FIELDS = (
     "wakeOnLan",
 )
 ALLOWED_KINDS = frozenset({"display", "tv", "media"})
+ALLOWED_TIERS = frozenset({"primary", "experimental"})
+PRIMARY_PROFILE_IDS = frozenset({"lg_webos_ssap", "xiaomi_mitv_6095", "hisense_vidaa_mqtt"})
 CLOSED_COMMAND_VERBS = (
     "power.set",
+    "power.wake",
+    "power.screenOff",
     "display.brightness.set",
     "volume.set",
     "mute.set",
     "input.select",
     "remote.key",
+    "media.playPause",
     "media.play",
     "media.pause",
     "media.stop",
+    "media.next",
+    "media.previous",
     "media.seek",
 )
 SEEKABLE_IDS = frozenset({"dlna_dmr", "chromecast", "kodi_jsonrpc", "jellyfin_api"})
@@ -211,6 +227,10 @@ def validate_golden(golden: Any) -> list[str]:
 
     if set(golden.get("allowedKinds", [])) != set(ALLOWED_KINDS):
         errs.append("黄金语料 allowedKinds 与校验脚本常量不一致")
+    if set(golden.get("allowedTiers", [])) != set(ALLOWED_TIERS):
+        errs.append("黄金语料 allowedTiers 与校验脚本常量不一致")
+    if set(golden.get("expectedPrimaryProfileIds", [])) != PRIMARY_PROFILE_IDS:
+        errs.append("黄金语料 expectedPrimaryProfileIds 与校验脚本常量不一致")
     if golden.get("catalogId") != EXPECTED_CATALOG_ID:
         errs.append("黄金语料 catalogId 不匹配")
     if golden.get("schemaVersion") != EXPECTED_SCHEMA_VERSION:
@@ -271,6 +291,8 @@ def validate_profile(profile: Any, path: str, golden: dict[str, Any], closed_ver
 
     if profile.get("kind") not in ALLOWED_KINDS:
         errs.append(f"{path}.kind: 非法值 {profile.get('kind')!r}")
+    if profile.get("tier") not in ALLOWED_TIERS:
+        errs.append(f"{path}.tier: 非法值 {profile.get('tier')!r}")
 
     for field in ("vendors", "models"):
         value = profile.get(field)
@@ -397,6 +419,10 @@ def validate_catalog(catalog: Any, golden: dict[str, Any]) -> list[str]:
     actual_kinds = {profile_id: profile.get("kind") for profile_id, profile in by_id.items()}
     if actual_kinds != golden.get("expectedKinds"):
         errs.append("协议 kind 与黄金语料不一致")
+
+    actual_primary = {profile_id for profile_id, profile in by_id.items() if profile.get("tier") == "primary"}
+    if actual_primary != PRIMARY_PROFILE_IDS:
+        errs.append(f"首发 primary 协议集合不一致，实际为 {sorted(actual_primary)!r}")
 
     actual_seekable = {
         profile_id for profile_id, profile in by_id.items()
@@ -693,9 +719,120 @@ def validate_rpc_fixtures(data: Any) -> list[str]:
     return errs
 
 
+def _quoted_strings(block: str) -> list[str]:
+    return re.findall(r'"([^"]+)"', block)
+
+
+def _match_quoted(pattern: str, text: str) -> list[str] | None:
+    match = re.search(pattern, text, re.S)
+    return _quoted_strings(match.group(1)) if match else None
+
+
+def validate_bridge_implementations(catalog: dict[str, Any], manifest: Any, sources: dict[str, str]) -> list[str]:
+    errs: list[str] = []
+    catalog_verbs = set(catalog.get("closedCommandVerbs", []))
+    catalog_profiles = {p["id"]: p for p in catalog.get("profiles", []) if isinstance(p, dict) and isinstance(p.get("id"), str)}
+    catalog_primary = {pid for pid, p in catalog_profiles.items() if p.get("tier") == "primary"}
+
+    manifest_verbs: list[str] = []
+    if not isinstance(manifest, dict):
+        errs.append("adapter-manifest.json 根节点必须是对象")
+    else:
+        if manifest.get("adapterId") != EXPECTED_ADAPTER_ID:
+            errs.append(f"adapter-manifest.json adapterId 应为 {EXPECTED_ADAPTER_ID!r}")
+        if manifest.get("permissions", {}).get("network", {}).get("internet") != []:
+            errs.append("adapter-manifest.json permissions.network.internet 必须为空数组 []")
+        cmds = manifest.get("capabilities", {}).get("commands")
+        if not isinstance(cmds, list) or not cmds or not all(is_nonempty_str(v) for v in cmds):
+            errs.append("adapter-manifest.json capabilities.commands 必须是非空字符串数组")
+        else:
+            manifest_verbs = cmds
+            if len(cmds) != len(set(cmds)):
+                errs.append("adapter-manifest.json capabilities.commands 存在重复动词")
+            extra_manifest = sorted(set(cmds) - catalog_verbs)
+            if extra_manifest:
+                errs.append(f"adapter-manifest.json 含目录 closedCommandVerbs 之外的动词: {extra_manifest!r}")
+            if "display.brightness.set" in cmds:
+                errs.append("adapter-manifest.json (Track B1) 不得声明 Track A 专属动词 display.brightness.set")
+    manifest_verb_set = set(manifest_verbs)
+
+    driver_src, server_src = sources["driver"], sources["server"]
+    go_verbs = _match_quoted(r"var\s+ClosedCommandVerbs\s*=\s*\[\]string\s*\{([^}]*)\}", driver_src)
+    if go_verbs is None or len(go_verbs) != len(set(go_verbs)) or set(go_verbs) != manifest_verb_set:
+        errs.append(f"driver.go ClosedCommandVerbs 与 adapter-manifest.json 不一致: {go_verbs!r}")
+    if "driver.ClosedCommandVerbs" not in server_src or "driver.IsAllowedVerb" not in server_src:
+        errs.append("server.go 必须复用 driver.ClosedCommandVerbs 与 driver.IsAllowedVerb")
+
+    go_drivers = _match_quoted(r"var\s+RegisteredDrivers\s*=\s*\[\]string\s*\{([^}]*)\}", driver_src)
+    go_driver_set: set[str] = set()
+    if not go_drivers or len(go_drivers) != len(set(go_drivers)):
+        errs.append("driver.go RegisteredDrivers 必须为非空唯一列表")
+    else:
+        go_driver_set = set(go_drivers)
+        if unknown_go := sorted(go_driver_set - set(catalog_profiles)):
+            errs.append(f"driver.go RegisteredDrivers 含目录之外的协议 ID: {unknown_go!r}")
+        if missing_primary := sorted(catalog_primary - go_driver_set):
+            errs.append(f"driver.go RegisteredDrivers 缺少首发协议 ID: {missing_primary!r}")
+
+    m_for_id = re.search(r"func\s+ForID\([^)]*\)\s+TVDriver\s*\{(.*?)\n\}", driver_src, re.S)
+    if not m_for_id or set(re.findall(r'case\s+"([^"]+)"', m_for_id.group(1))) != go_driver_set:
+        errs.append("driver.go ForID 注册 ID 与 RegisteredDrivers 不一致")
+    if set(re.findall(r'Base\{[^}]*\bid:\s*"([^"]+)"', driver_src)) != go_driver_set:
+        errs.append("driver.go 驱动构造器 Base.id 与 RegisteredDrivers 不一致")
+
+    swift_cfg, swift_client = sources["swift_config"], sources["swift_client"]
+    m_swift_enum = re.search(r"public\s+enum\s+Driver\s*:[^{]+\{(.*?)public\s+static\s+let\s+primaryCases", swift_cfg, re.S)
+    swift_drivers = [
+        p.strip()
+        for ln in (m_swift_enum.group(1).splitlines() if m_swift_enum else ())
+        if ln.strip().startswith("case ")
+        for p in ln.strip()[5:].split(",") if p.strip()
+    ]
+    if not m_swift_enum or set(swift_drivers) != go_driver_set:
+        errs.append(f"TVBridgeConfig.swift Driver 枚举与 driver.go 不一致: {sorted(swift_drivers)!r}")
+    m_swift_primary = re.search(r"public\s+static\s+let\s+primaryCases\s*:\s*\[Driver\]\s*=\s*\[([^\]]+)\]", swift_cfg)
+    if not m_swift_primary or set(re.findall(r"\.([a-z0-9_]+)", m_swift_primary.group(1))) != catalog_primary:
+        errs.append("TVBridgeConfig.swift primaryCases 必须与目录 tier=primary 集合一致")
+
+    m_swift_map = re.search(r"private\s+func\s+map\([^)]*TVBridgeCommand.*?(?=\n\s*private\s+func\s+|\Z)", swift_client, re.S)
+    swift_verbs = set(re.findall(r'return\s*\(\s*"([^"]+)"', m_swift_map.group(0))) if m_swift_map else set()
+    if not swift_verbs or not swift_verbs <= manifest_verb_set:
+        errs.append(f"TVBridgeClient.swift 动词映射漂移: {sorted(swift_verbs - manifest_verb_set)!r}")
+
+    ts_plugin, ts_section = sources["ts_plugin"], sources["ts_section"]
+    ts_primary = _match_quoted(r"TV_BRIDGE_PRIMARY_DRIVERS\s*=\s*\[([^\]]+)\]", ts_plugin)
+    ts_exp = _match_quoted(r"TV_BRIDGE_EXPERIMENTAL_DRIVERS\s*=\s*\[([^\]]+)\]", ts_plugin)
+    if ts_primary is None or ts_exp is None or set(ts_primary) != catalog_primary or (set(ts_primary) | set(ts_exp)) != go_driver_set:
+        errs.append("tvBridgePlugin.ts 驱动集合或首发集合与目录/driver.go 不一致")
+    m_ts_verbs = re.search(r"TV_BRIDGE_COMMAND_VERBS[^=]*=\s*\{([^}]*)\}", ts_plugin, re.S)
+    ts_verbs = set(re.findall(r':\s*"([^"]+)"', m_ts_verbs.group(1))) if m_ts_verbs else set()
+    if not ts_verbs or not ts_verbs <= manifest_verb_set:
+        errs.append(f"tvBridgePlugin.ts 动词映射漂移: {sorted(ts_verbs - manifest_verb_set)!r}")
+
+    m_ts_sec = re.search(r"export\s+const\s+TV_BRIDGE_DRIVERS[^=]*=\s*\[(.*?)\];", ts_section, re.S)
+    sec_entries = re.findall(r'id:\s*"([^"]+)"\s*,\s*tier:\s*"([^"]+)"', m_ts_sec.group(1)) if m_ts_sec else []
+    if {d for d, _ in sec_entries} != go_driver_set or {d for d, t in sec_entries if t == "primary"} != catalog_primary:
+        errs.append("tvBridgeSection.ts TV_BRIDGE_DRIVERS ID 或首发 tier=primary 集合与目录/driver.go 不一致")
+    return errs
+
+
+BRIDGE_SOURCE_PATHS = {
+    "driver": GO_DRIVER_PATH,
+    "server": GO_SERVER_PATH,
+    "swift_config": SWIFT_CONFIG_PATH,
+    "swift_client": SWIFT_CLIENT_PATH,
+    "ts_plugin": TS_PLUGIN_PATH,
+    "ts_section": TS_SECTION_PATH,
+}
+
+
+def _read_bridge_sources() -> dict[str, str]:
+    return {k: p.read_text(encoding="utf-8") for k, p in BRIDGE_SOURCE_PATHS.items()}
+
+
 def run_check() -> list[str]:
     errs: list[str] = []
-    for path in (CATALOG_PATH, GOLDEN_PATH, RPC_PATH):
+    for path in (CATALOG_PATH, GOLDEN_PATH, RPC_PATH, BRIDGE_MANIFEST_PATH, *BRIDGE_SOURCE_PATHS.values()):
         if not path.is_file():
             errs.append(f"缺少文件: {path.relative_to(ROOT)}")
     if errs:
@@ -705,12 +842,14 @@ def run_check() -> list[str]:
         catalog = load_strict_json(CATALOG_PATH.read_text(encoding="utf-8"))
         golden = load_strict_json(GOLDEN_PATH.read_text(encoding="utf-8"))
         rpc = load_strict_json(RPC_PATH.read_text(encoding="utf-8"))
+        manifest = load_strict_json(BRIDGE_MANIFEST_PATH.read_text(encoding="utf-8"))
     except Exception as exc:
         return [f"JSON 解析失败: {exc}"]
 
     errs.extend(validate_golden(golden))
     errs.extend(validate_catalog(catalog, golden))
     errs.extend(validate_rpc_fixtures(rpc))
+    errs.extend(validate_bridge_implementations(catalog, manifest, _read_bridge_sources()))
     return errs
 
 
@@ -720,6 +859,8 @@ def run_self_test() -> None:
     catalog = load_strict_json(CATALOG_PATH.read_text(encoding="utf-8"))
     rpc = load_strict_json(RPC_PATH.read_text(encoding="utf-8"))
     golden = load_strict_json(GOLDEN_PATH.read_text(encoding="utf-8"))
+    manifest = load_strict_json(BRIDGE_MANIFEST_PATH.read_text(encoding="utf-8"))
+    sources = _read_bridge_sources()
 
     duplicate = copy.deepcopy(catalog)
     duplicate["profiles"].append(copy.deepcopy(duplicate["profiles"][0]))
@@ -728,6 +869,10 @@ def run_self_test() -> None:
     missing_field = copy.deepcopy(catalog)
     del missing_field["profiles"][0]["limitations"]
     assert any("缺少必填字段" in err for err in validate_catalog(missing_field, golden)), "missing required field must fail"
+
+    bad_tier = copy.deepcopy(catalog)
+    bad_tier["profiles"][0]["tier"] = "beta"
+    assert any("tier" in err for err in validate_catalog(bad_tier, golden)), "invalid tier must fail"
 
     bad_vcp = copy.deepcopy(catalog)
     bad_vcp["profiles"][0]["metadata"]["vcpCodes"].append({"code": "0xD6", "name": "power"})
@@ -748,6 +893,18 @@ def run_self_test() -> None:
     traversal = copy.deepcopy(rpc)
     traversal["cases"][6]["request"]["params"]["path"] = "../../etc/passwd"
     assert any("artwork" in err or "path" in err for err in validate_rpc_fixtures(traversal)), "accepted traversal path must fail"
+
+    bad_manifest = copy.deepcopy(manifest)
+    bad_manifest["capabilities"]["commands"].append("tv.power")
+    assert any("closedCommandVerbs" in err for err in validate_bridge_implementations(catalog, bad_manifest, sources))
+    for key, old, new, needle in (
+        ("driver", '"lg_webos_ssap"', '"lg_webos"', "RegisteredDrivers"),
+        ("swift_client", '"power.set"', '"tv.power"', "TVBridgeClient.swift"),
+        ("ts_plugin", '"volume.set"', '"media.setVolume"', "tvBridgePlugin.ts"),
+        ("ts_section", 'id: "kodi_jsonrpc", tier: "experimental"', 'id: "kodi_jsonrpc", tier: "primary"', "tvBridgeSection.ts"),
+    ):
+        mutated = {**sources, key: sources[key].replace(old, new, 1)}
+        assert any(needle in err for err in validate_bridge_implementations(catalog, manifest, mutated)), f"{key} drift must fail"
 
     try:
         load_strict_json('{"a": 1, "a": 2}')
