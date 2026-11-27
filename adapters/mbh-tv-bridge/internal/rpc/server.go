@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"os"
 	"path/filepath"
@@ -58,11 +59,12 @@ type Server struct {
 	grantOrder     []string
 	readOnly       bool
 	meta           map[string]deviceMeta
+	pairings       map[string]pairingSession
 }
 type deviceMeta struct{ name, roomName, mac, kind string }
 
 func New(out io.Writer, dataDir string) *Server {
-	return &Server{out: out, dataDir: dataDir, generation: 1, manifestDigest: manifestDigest(), devices: make(map[string]driver.TVDriver), usedGrants: make(map[string]struct{}), meta: make(map[string]deviceMeta)}
+	return &Server{out: out, dataDir: dataDir, generation: 1, manifestDigest: manifestDigest(), devices: make(map[string]driver.TVDriver), usedGrants: make(map[string]struct{}), meta: make(map[string]deviceMeta), pairings: make(map[string]pairingSession)}
 }
 func manifestDigest() string {
 	paths := []string{}
@@ -98,6 +100,7 @@ func (s *Server) Write(v any) error {
 	_, e = fmt.Fprintf(s.out, "%s\n", b)
 	return e
 }
+
 var legacyDriverAliases = map[string]string{"xiaomi_6095": "xiaomi_mitv_6095", "tcl_tnscreen": "tcl_ffalcon_tnscreen", "android_adb": "android_adb_lan", "lg_webos": "lg_webos_ssap", "sony_bravia": "sony_bravia_psk", "samsung_tizen": "samsung_tizen_ws"}
 
 func canonicalDriverID(raw string) string {
@@ -121,26 +124,26 @@ func (s *Server) Handle(r Request) Response {
 			Supported            []string `json:"supportedProtocolVersions"`
 			Config               struct {
 				Devices []struct {
-					NativeID   string `json:"nativeId"`
-					Driver     string `json:"driver"`
-					Host       string `json:"host"`
-					Port       int    `json:"port"`
-					Name       string `json:"name"`
-					MAC        string `json:"mac"`
-					RoomName   string `json:"roomName"`
-					Credential string `json:"credential"`
+					NativeID      string `json:"nativeId"`
+					Driver        string `json:"driver"`
+					Host          string `json:"host"`
+					Port          int    `json:"port"`
+					Name          string `json:"name"`
+					MAC           string `json:"mac"`
+					RoomName      string `json:"roomName"`
+					Credential    string `json:"credential"`
+					MQTTPlaintext bool   `json:"mqttPlaintext"`
 				} `json:"devices"`
 			} `json:"config"`
 		}
 		if err := json.Unmarshal(r.Params, &p); err != nil {
 			return errResp(r.ID, -32602, "invalid params")
 		}
-		s.mu.Lock()
-		if p.CapabilityGeneration > s.generation {
-			s.generation = p.CapabilityGeneration
-		}
-		s.initialized = true
+		devices := make(map[string]driver.TVDriver)
+		meta := make(map[string]deviceMeta)
 		for _, d := range p.Config.Devices {
+			d.NativeID = strings.TrimSpace(d.NativeID)
+			d.Host = strings.TrimSpace(d.Host)
 			if d.NativeID == "" || d.Host == "" {
 				continue
 			}
@@ -149,20 +152,27 @@ func (s *Server) Handle(r Request) Response {
 				addr = net.JoinHostPort(d.Host, fmt.Sprint(d.Port))
 			}
 			if drv := driver.ForConfig(canonicalDriverID(d.Driver), addr, d.Credential); drv != nil {
+				switch tv := drv.(type) {
+				case *driver.LG:
+					if err := tv.ConfigurePairing(s.dataDir); err != nil {
+						return errResp(r.ID, -32002, "LG pairing storage unavailable")
+					}
+				case *driver.HisenseVIDAA:
+					tv.Plaintext = d.MQTTPlaintext
+				}
 				if d.MAC != "" {
 					if setter, ok := drv.(driver.MACSetter); ok {
 						setter.SetMAC(d.MAC)
 					}
 				}
-				s.devices[d.NativeID] = drv
+				devices[d.NativeID] = drv
 				name := d.Name
 				if name == "" {
 					name = d.NativeID
 				}
-				s.meta[d.NativeID] = deviceMeta{name: name, roomName: d.RoomName, mac: d.MAC, kind: "tv"}
+				meta[d.NativeID] = deviceMeta{name: name, roomName: d.RoomName, mac: d.MAC, kind: "tv"}
 			}
 		}
-		s.mu.Unlock()
 		version, readOnly := "1.0", false
 		for _, supported := range p.Supported {
 			if supported == "0.1" {
@@ -171,7 +181,16 @@ func (s *Server) Handle(r Request) Response {
 			}
 		}
 		commands := append([]string(nil), driver.ClosedCommandVerbs...)
+		s.mu.Lock()
+		if p.CapabilityGeneration > s.generation {
+			s.generation = p.CapabilityGeneration
+		}
+		s.initialized = true
+		maps.Copy(s.devices, devices)
+		maps.Copy(s.meta, meta)
+		clear(s.pairings)
 		s.readOnly = readOnly
+		s.mu.Unlock()
 		if readOnly {
 			commands = []string{}
 		}
@@ -325,19 +344,8 @@ func (s *Server) Handle(r Request) Response {
 			return errResp(r.ID, -32001, "artwork exceeds 256 KiB")
 		}
 		return Response{JSONRPC: "2.0", ID: r.ID, Result: map[string]any{"path": realFull}}
-	case "pairing.begin":
-		var p struct{ NativeID, Method string }
-		if (len(r.Params) > 0 && json.Unmarshal(r.Params, &p) != nil) || p.NativeID == "" { return errResp(r.ID, -32602, "invalid params") }
-		s.mu.Lock(); drv, ok := s.devices[p.NativeID]; s.mu.Unlock()
-		if !ok { return errResp(r.ID, -32005, "device unavailable") }
-		res := map[string]any{"ok": true, "pairingId": "pair-" + p.NativeID, "instructions": []string{"Confirm pairing on TV"}}
-		if pairer, ok := drv.(driver.Pairer); ok {
-			key, err := pairer.Pair(); if err != nil { return errResp(r.ID, -32002, err.Error()) }
-			res["paired"], res["clientKey"] = true, key
-		}
-		return Response{JSONRPC: "2.0", ID: r.ID, Result: res}
-	case "pairing.submit", "pairing.cancel":
-		return Response{JSONRPC: "2.0", ID: r.ID, Result: map[string]any{"ok": true, "paired": r.Method == "pairing.submit", "cancelled": r.Method == "pairing.cancel"}}
+	case "pairing.begin", "pairing.submit", "pairing.cancel":
+		return s.handlePairing(r)
 	default:
 		return errResp(r.ID, -32601, "method not found")
 	}
