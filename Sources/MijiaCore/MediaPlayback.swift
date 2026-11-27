@@ -123,44 +123,76 @@ public struct MediaPlaybackState: Equatable, Codable, Sendable {
     }
 }
 
+/// Home Assistant `remote.send_command` key-naming dialect per TV ecosystem.
+public enum HARemoteProfile: String, CaseIterable, Codable, Sendable {
+    case appleTV, androidTV, sonyBravia, roku, generic
+
+    /// Deterministically picks an ecosystem dialect from HA registry metadata and entity clues.
+    public static func infer(
+        platform: String? = nil, manufacturer: String? = nil, model: String? = nil,
+        identifiers: [[String]]? = nil, entityId: String? = nil, friendlyName: String? = nil
+    ) -> HARemoteProfile {
+        func domainProfile(_ raw: String?) -> HARemoteProfile? {
+            switch raw?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+            case "apple_tv", "appletv": return .appleTV
+            case "androidtv_remote", "androidtv", "android_tv", "android_tv_remote", "google_tv": return .androidTV
+            case "braviatv", "bravia_tv", "sony_bravia", "sony_bravia_psk": return .sonyBravia
+            case "roku": return .roku
+            default: return nil
+            }
+        }
+        if let hit = domainProfile(platform) { return hit }
+        for pair in identifiers ?? [] { if let hit = domainProfile(pair.first) { return hit } }
+        let mfg = manufacturer?.lowercased() ?? ""
+        let text = [mfg, model?.lowercased() ?? "", entityId?.lowercased() ?? "", friendlyName?.lowercased() ?? ""].joined(separator: " ")
+        if text.contains("apple_tv") || text.contains("appletv") || text.contains("apple tv") || (mfg.contains("apple") && text.contains("tv")) {
+            return .appleTV
+        }
+        if ["androidtv", "android_tv", "android tv", "google_tv", "google tv", "shield", "chromecast"].contains(where: text.contains) {
+            return .androidTV
+        }
+        if text.contains("bravia") || text.contains("sony") { return .sonyBravia }
+        if text.contains("roku") { return .roku }
+        return .generic
+    }
+}
+
 /// The keys the TV remote pad can send. Closed so no free-form command reaches a TV.
 public enum TVRemoteKey: String, CaseIterable, Codable, Sendable {
     case up, down, left, right, select, back, home, menu
     case volumeUp, volumeDown, mute, source
 
-    /// The Home Assistant `remote.send_command` name most TV integrations accept.
-    public var homeAssistantCommand: String {
-        switch self {
-        case .up: "UP"
-        case .down: "DOWN"
-        case .left: "LEFT"
-        case .right: "RIGHT"
-        case .select: "ENTER"
-        case .back: "BACK"
-        case .home: "HOME"
-        case .menu: "MENU"
-        case .volumeUp: "VOLUME_UP"
-        case .volumeDown: "VOLUME_DOWN"
-        case .mute: "MUTE"
-        case .source: "INPUT"
-        }
+    private static let haCommandTable: [HARemoteProfile: [TVRemoteKey: String]] = [
+        .appleTV: [.up: "up", .down: "down", .left: "left", .right: "right", .select: "select", .back: "menu", .home: "home", .menu: "menu", .volumeUp: "volume_up", .volumeDown: "volume_down", .mute: "mute", .source: "top_menu"],
+        .androidTV: [.up: "DPAD_UP", .down: "DPAD_DOWN", .left: "DPAD_LEFT", .right: "DPAD_RIGHT", .select: "DPAD_CENTER", .back: "BACK", .home: "HOME", .menu: "MENU", .volumeUp: "VOLUME_UP", .volumeDown: "VOLUME_DOWN", .mute: "MUTE", .source: "TV_INPUT"],
+        .sonyBravia: [.up: "Up", .down: "Down", .left: "Left", .right: "Right", .select: "Confirm", .back: "Return", .home: "Home", .menu: "Options", .volumeUp: "VolumeUp", .volumeDown: "VolumeDown", .mute: "Mute", .source: "Input"],
+        .roku: [.up: "Up", .down: "Down", .left: "Left", .right: "Right", .select: "Select", .back: "Back", .home: "Home", .menu: "Info", .volumeUp: "VolumeUp", .volumeDown: "VolumeDown", .mute: "VolumeMute", .source: "Input"],
+        .generic: [.up: "UP", .down: "DOWN", .left: "LEFT", .right: "RIGHT", .select: "ENTER", .back: "BACK", .home: "HOME", .menu: "MENU", .volumeUp: "VOLUME_UP", .volumeDown: "VOLUME_DOWN", .mute: "MUTE", .source: "INPUT"],
+    ]
+
+    /// Default generic Home Assistant `remote.send_command` name.
+    public var homeAssistantCommand: String { homeAssistantCommand(for: .generic) }
+
+    /// Ecosystem-adapted Home Assistant `remote.send_command` key name.
+    public func homeAssistantCommand(for profile: HARemoteProfile) -> String {
+        Self.haCommandTable[profile]?[self] ?? Self.haCommandTable[.generic]![self]!
     }
 
-    /// MIoT action short names a Xiaomi TV spec may publish for this key.
+    /// MIoT action short names a Xiaomi TV spec may publish for this key (priority order; verified against `miot-spec.org`).
     public var miotActionNames: [String] {
         switch self {
-        case .up: ["up", "press-up", "key-up"]
-        case .down: ["down", "press-down", "key-down"]
-        case .left: ["left", "press-left", "key-left"]
-        case .right: ["right", "press-right", "key-right"]
-        case .select: ["ok", "confirm", "select", "enter", "press-ok"]
-        case .back: ["back", "return", "press-back"]
-        case .home: ["home", "press-home", "go-home"]
-        case .menu: ["menu", "press-menu"]
-        case .volumeUp: ["volume-up"]
-        case .volumeDown: ["volume-down"]
-        case .mute: ["mute-on", "mute"]
-        case .source: ["input", "source", "switch-input"]
+        case .up: ["press-up", "up", "key-up"]
+        case .down: ["press-down", "down", "key-down"]
+        case .left: ["press-left", "left", "key-left"]
+        case .right: ["press-right", "right", "key-right"]
+        case .select: ["press-ok", "ok", "confirm", "press-confirm", "select", "enter"]
+        case .back: ["press-back", "back", "return", "press-return"]
+        case .home: ["press-home", "home", "go-home"]
+        case .menu: ["press-menu", "menu", "press-settings"]
+        case .volumeUp: ["press-volume-up", "volume-up", "key-volume-up"]
+        case .volumeDown: ["press-volume-down", "volume-down", "key-volume-down"]
+        case .mute: ["press-mute", "mute", "mute-on", "toggle-mute"]
+        case .source: ["press-source", "press-input", "input", "source", "switch-input"]
         }
     }
 }

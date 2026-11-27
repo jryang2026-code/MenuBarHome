@@ -538,6 +538,13 @@ impl MiIOClient {
         let Ok(raw) = String::from_utf8(pt) else { return false; };
         let Ok(decoded) = serde_json::from_str::<Value>(&clean_malformed_firmware_json(&raw)) else { return false; };
         if decoded.get("id").and_then(Value::as_u64) != Some(p.req_id) { return false; }
+        if let Some(err_obj) = decoded.get("error").and_then(Value::as_object) {
+            let code = err_obj.get("code").and_then(Value::as_i64).unwrap_or(-1);
+            let message = err_obj.get("message").and_then(Value::as_str).unwrap_or("");
+            if is_unsupported_local_miot_rpc_error(code, message) {
+                return false;
+            }
+        }
         let mut g = self.lock_inner();
         g.last_rtt_ms.insert(p.did.clone(), rtt_ms);
         g.known_hardware_ids.insert(p.did.clone(), HardwareDeviceId { unknown: p.resolved_unknown, device_id: p.device_id });
@@ -648,10 +655,34 @@ impl MiIOClient {
         }
         if let Some(err_obj) = json.get("error").and_then(Value::as_object) {
             let code = err_obj.get("code").and_then(Value::as_i64).unwrap_or(-1);
+            let message = err_obj.get("message").and_then(Value::as_str).unwrap_or("device error");
+            if is_unsupported_local_miot_rpc_error(code, message) {
+                return Err(MiIOError::UnsupportedLocalMiot { code, message: message.to_string() });
+            }
             return Err(device_rejected(code));
         }
         Ok(json.get("result").cloned().unwrap_or(Value::Null))
     }
+}
+
+/// True when a top-level JSON-RPC `error` proves the firmware does not implement local MIoT RPC
+/// (`get_properties` / `set_properties` / `action`) and rejected the method before execution.
+fn is_unsupported_local_miot_rpc_error(code: i64, message: &str) -> bool {
+    if code == -32601 {
+        return true;
+    }
+    if code != -5001 && code != -10000 {
+        return false;
+    }
+    let lower = message.trim().to_ascii_lowercase();
+    lower.is_empty()
+        || lower.contains("command error")
+        || lower.contains("method")
+        || lower.contains("unknown")
+        || lower.contains("not found")
+        || lower.contains("not support")
+        || lower.contains("unsupported")
+        || lower.contains("cmd_not_found")
 }
 
 fn parse_prop_values(result: &Value, default_did: &str) -> Vec<MiIOPropValueOutput> {
@@ -1063,6 +1094,86 @@ mod tests {
 
             client.get_props(&key, &ep).await.unwrap();
             assert_eq!(hellos.load(Ordering::SeqCst), 2);
+        });
+    }
+
+    #[test]
+    fn legacy_non_miot_rpc_errors_map_to_unsupported_local_miot_and_skip_discovery() {
+        let tok_hex = "0123456789abcdef0123456789abcdef";
+        let tok = validate_token(tok_hex).unwrap();
+        let sends = Arc::new(AtomicU64::new(0));
+        let sends_c = sends.clone();
+        let client = MiIOClient::new(Arc::new(MockTransport {
+            send_fn: Box::new(move |pkt, host, _, _| {
+                sends_c.fetch_add(1, Ordering::SeqCst);
+                Box::pin(async move {
+                    if pkt == HELLO_PACKET {
+                        let id = match host.as_str() {
+                            "192.168.1.70" => 357_621_783,
+                            "192.168.1.71" => 70_849_337,
+                            "192.168.1.72" => 101,
+                            _ => 102,
+                        };
+                        return Ok(hello_reply(id, 50, &tok));
+                    }
+                    let (hdr, pt) = decode_packet(&pkt, &tok).unwrap();
+                    let req: Value = serde_json::from_slice(&pt).unwrap();
+                    let err_json = match host.as_str() {
+                        "192.168.1.70" => json!({ "id": req["id"], "error": { "code": -32601, "message": "Method not found" } }),
+                        "192.168.1.71" => json!({ "id": req["id"], "error": { "code": -5001, "message": "command error" } }),
+                        "192.168.1.72" => json!({ "id": req["id"], "error": { "code": -4004, "message": "prop unsupported" } }),
+                        _ => json!({ "id": req["id"], "error": { "code": -9999, "message": "user ack timeout" } }),
+                    };
+                    let resp = serde_json::to_vec(&err_json).unwrap();
+                    Ok(encode_packet(hdr.device_id, hdr.stamp + 1, &tok, &resp, 0).unwrap())
+                })
+            }),
+            bcast_fn: Box::new(move |_, _, _| {
+                let r1 = MiIOBroadcastReply { source_ip: "192.168.1.70".into(), packet: hello_reply(357_621_783, 10, &tok) };
+                let r2 = MiIOBroadcastReply { source_ip: "192.168.1.71".into(), packet: hello_reply(70_849_337, 10, &tok) };
+                let r3 = MiIOBroadcastReply { source_ip: "192.168.1.72".into(), packet: hello_reply(101, 10, &tok) };
+                Box::pin(async move { Ok(vec![r1, r2, r3]) })
+            }),
+        }));
+
+        let ep_ma2 = MiIOEndpointInput { did: "357621783".into(), ip: "192.168.1.70".into(), token: tok_hex.into() };
+        let ep_v6 = MiIOEndpointInput { did: "70849337".into(), ip: "192.168.1.71".into(), token: tok_hex.into() };
+        let ep_timeout = MiIOEndpointInput { did: "102".into(), ip: "192.168.1.73".into(), token: tok_hex.into() };
+
+        tauri::async_runtime::block_on(async {
+            let write_err = client.set_props(&[MiIOPropWriteInput { did: "357621783".into(), siid: 2, piid: 1, value: json!(false) }], &ep_ma2).await.unwrap_err();
+            assert_eq!(write_err.to_command_error().code, "unsupported_local_miot");
+            assert_eq!(write_err.to_command_error().device_code, Some(-32601));
+            assert!(write_err.proves_packet_crossed_permission_boundary());
+            assert!(!write_err.is_retryable());
+            assert_eq!(sends.load(Ordering::SeqCst), 2); // 1 HELLO + 1 RPC, no retry
+
+            let read_err = client.get_props(&[MiIOPropKeyInput { did: "70849337".into(), siid: 2, piid: 1 }], &ep_v6).await.unwrap_err();
+            assert_eq!(read_err.to_command_error().code, "unsupported_local_miot");
+            assert_eq!(read_err.to_command_error().device_code, Some(-5001));
+
+            let action_err = client.call_action(&MiIOActionCallInput { did: "70849337".into(), siid: 2, aiid: 1, inputs: vec![] }, &ep_v6).await.unwrap_err();
+            assert_eq!(action_err.to_command_error().code, "unsupported_local_miot");
+
+            // -9999 user ack timeout is NOT classified as unsupported_local_miot (unsafe to replay).
+            let ack_err = client.set_props(&[MiIOPropWriteInput { did: "102".into(), siid: 2, piid: 1, value: json!(false) }], &ep_timeout).await.unwrap_err();
+            assert_eq!(ack_err.to_command_error().code, "device_error");
+            assert_eq!(ack_err.to_command_error().device_code, Some(-9999));
+
+            // Broadcast discovery ignores legacy -32601 / -5001 replies, while keeping MIoT -4004 replies.
+            let discovered = client.discover_endpoints(
+                &[
+                    MiIODiscoveryCandidateInput { did: "357621783".into(), token: tok_hex.into() },
+                    MiIODiscoveryCandidateInput { did: "70849337".into(), token: tok_hex.into() },
+                    MiIODiscoveryCandidateInput { did: "101".into(), token: tok_hex.into() },
+                ],
+                Some(Duration::from_millis(50)),
+                &HashSet::new(),
+                &HashSet::new(),
+            ).await.unwrap();
+            assert!(!discovered.contains_key("357621783"));
+            assert!(!discovered.contains_key("70849337"));
+            assert_eq!(discovered.get("101").map(String::as_str), Some("192.168.1.72"));
         });
     }
 }

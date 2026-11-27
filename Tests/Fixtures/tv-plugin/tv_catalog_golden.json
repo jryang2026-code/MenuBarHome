@@ -6,6 +6,7 @@
     "id",
     "displayNames",
     "kind",
+    "tier",
     "vendors",
     "models",
     "transport",
@@ -27,16 +28,27 @@
     "wakeOnLan"
   ],
   "allowedKinds": ["display", "tv", "media"],
+  "allowedTiers": ["primary", "experimental"],
+  "expectedPrimaryProfileIds": [
+    "lg_webos_ssap",
+    "xiaomi_mitv_6095",
+    "hisense_vidaa_mqtt"
+  ],
   "expectedClosedCommandVerbs": [
     "power.set",
+    "power.wake",
+    "power.screenOff",
     "display.brightness.set",
     "volume.set",
     "mute.set",
     "input.select",
     "remote.key",
+    "media.playPause",
     "media.play",
     "media.pause",
     "media.stop",
+    "media.next",
+    "media.previous",
     "media.seek"
   ],
   "expectedProfileIds": [

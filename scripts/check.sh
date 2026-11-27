@@ -457,8 +457,11 @@ if [ "$CHANGED_ONLY" = "1" ]; then
                 "$PYTHON_BIN" scripts/check_capability_matrix.py
                 "$PYTHON_BIN" scripts/check_capability_manifest.py
                 "$PYTHON_BIN" scripts/check_adapter_protocol.py
+                "$PYTHON_BIN" scripts/check_tv_catalog.py
                 "$PYTHON_BIN" scripts/check_device_rules.py
                 "$PYTHON_BIN" scripts/check_supported_devices.py
+            elif printf '%s\n' "$changed_list" | grep -Eq '(^adapters/mbh-tv-bridge/|TVBridge|tvBridge)'; then
+                "$PYTHON_BIN" scripts/check_tv_catalog.py
             fi
             if [ "$SCOPE_WINDOWS" = "true" ]; then
                 "$PYTHON_BIN" scripts/check_windows_geometry.py

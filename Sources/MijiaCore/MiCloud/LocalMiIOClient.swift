@@ -666,6 +666,13 @@ public actor LocalMiIOClient {
         let cleaned = cleanMalformedFirmwareJSON(rawText)
         guard !cleaned.isEmpty, let decoded = try? JSONDecoder().decode(JSONValue.self, from: Data(cleaned.utf8)),
               decoded["id"]?.intValue == probe.reqId else { return false }
+        if let errObj = decoded["error"], case .object = errObj {
+            let code = errObj["code"]?.intValue ?? -1
+            let message = errObj["message"]?.stringValue ?? ""
+            if Self.isUnsupportedLocalMiotRPCError(code: code, message: message) {
+                return false
+            }
+        }
         lastRTTMsByDid[probe.did] = rttMs
         knownHardwareIdsByDid[probe.did] = HardwareDeviceID(unknown: probe.resolvedUnknown, deviceId: probe.header.deviceId)
         sessions[probe.did] = DeviceSession(ip: probe.sourceIP, tokenData: probe.tokenData, unknown: probe.resolvedUnknown, deviceId32: probe.header.deviceId, baseStamp: respHeader.stamp, handshakeAt: now(), lastSentStamp: probe.probeStamp)
@@ -1047,9 +1054,32 @@ public actor LocalMiIOClient {
         if let errObj = json["error"], case .object = errObj {
             let code = errObj["code"]?.intValue ?? -1
             let message = errObj["message"]?.stringValue ?? "device error"
+            if Self.isUnsupportedLocalMiotRPCError(code: code, message: message) {
+                throw MiIOError.unsupportedLocalMiot(code: code, message: message)
+            }
             throw MiCloudError.deviceError(code: code, message: message)
         }
         return json["result"] ?? .null
+    }
+
+    /// True when a top-level JSON-RPC `error` proves the firmware does not implement local MIoT RPC
+    /// (`get_properties` / `set_properties` / `action`) and rejected the method before execution.
+    /// Legacy pre-MIoT Wi-Fi devices (e.g. `zhimi.airpurifier.v6` / `ma2`) return `-32601` or
+    /// `-5001` (`command error` / `method not found`) on UDP 54321 and rely on Xiaomi Cloud's
+    /// MIoT-to-miIO translation instead. Per-property MIoT rejections arrive inside `result` and
+    /// never hit this check.
+    static func isUnsupportedLocalMiotRPCError(code: Int, message: String) -> Bool {
+        if code == -32601 { return true }
+        guard code == -5001 || code == -10000 else { return false }
+        let lower = message.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return lower.isEmpty
+            || lower.contains("command error")
+            || lower.contains("method")
+            || lower.contains("unknown")
+            || lower.contains("not found")
+            || lower.contains("not support")
+            || lower.contains("unsupported")
+            || lower.contains("cmd_not_found")
     }
 
     private static func matchesRPCReply(_ packet: Data, token: Data, requestID: Int) -> Bool {
@@ -1095,7 +1125,7 @@ public actor LocalMiIOClient {
             case .invalidToken, .invalidAddress, .payloadTooLarge, .checksumMismatch,
                  .unsupportedNonNumericDeviceId, .shutDown, .encryptionFailed,
                  .decryptionFailed, .transportUnavailable, .localNetworkDenied,
-                 .sendFailed, .ambiguousActionOutcome, .deviceError:
+                 .sendFailed, .ambiguousActionOutcome, .deviceError, .unsupportedLocalMiot:
                 return false
             }
         }

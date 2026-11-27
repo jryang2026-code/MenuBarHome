@@ -1103,7 +1103,8 @@ public actor HAWebSocketProvider: HomeProvider {
         }
         let requestBaseURL = baseURLString
         let requestToken = token
-        let (domain, service, payload) = Self.mapCommandToService(command)
+        let remoteProfile: HARemoteProfile? = if case .remoteSendKey(let eid, _) = command { snapshot.remoteProfile(for: eid) } else { nil }
+        let (domain, service, payload) = Self.mapCommandToService(command, remoteProfile: remoteProfile)
         func requireEnabledCategory() throws {
             if let entityId = payload["entity_id"] as? String,
                let category = snapshot.closedCategory(for: entityId, policy: typePrunePolicyLoader()) {
@@ -1235,7 +1236,7 @@ public actor HAWebSocketProvider: HomeProvider {
         return resolved
     }
 
-    public static func mapCommandToService(_ command: DeviceCommand) -> (domain: String, service: String, payload: [String: Any]) {
+    public static func mapCommandToService(_ command: DeviceCommand, remoteProfile: HARemoteProfile? = nil) -> (domain: String, service: String, payload: [String: Any]) {
         switch command {
         case .setLightPower(let eid, let isOn):
             return ("light", isOn ? "turn_on" : "turn_off", ["entity_id": eid])
@@ -1329,6 +1330,9 @@ public actor HAWebSocketProvider: HomeProvider {
                 return ("camera", isOn ? "turn_on" : "turn_off", ["entity_id": primaryEid])
             }
             if primaryEid.hasPrefix("media_player.") {
+                if primaryEid.hasSuffix("#mute") {
+                    return ("media_player", "volume_mute", ["entity_id": String(primaryEid.dropLast(5)), "is_volume_muted": isOn])
+                }
                 return ("media_player", isOn ? "turn_on" : "turn_off", ["entity_id": primaryEid])
             }
             if primaryEid.hasPrefix("button.") {
@@ -1430,9 +1434,10 @@ public actor HAWebSocketProvider: HomeProvider {
             ])
 
         case .remoteSendKey(let eid, let key):
+            let resolvedProfile = remoteProfile ?? HARemoteProfile.infer(entityId: eid)
             return ("remote", "send_command", [
                 "entity_id": eid,
-                "command": key.homeAssistantCommand
+                "command": key.homeAssistantCommand(for: resolvedProfile)
             ])
 
         case .pressButton(let eid):

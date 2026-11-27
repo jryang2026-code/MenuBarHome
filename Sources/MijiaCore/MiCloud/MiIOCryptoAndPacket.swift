@@ -23,6 +23,9 @@ public enum MiIOError: Error, Equatable, Sendable {
     case sendFailed
     case ambiguousActionOutcome
     case deviceError(code: Int, message: String)
+    /// Device answered over LAN UDP, proving it does not implement local MIoT RPC
+    /// (`get_properties` / `set_properties` / `action`) and executed nothing.
+    case unsupportedLocalMiot(code: Int, message: String)
 
     /// Returns `true` only when `error` proves a packet crossed the macOS Local Network permission
     /// boundary (outbound UDP send completed past TCC or a response packet arrived from the peer).
@@ -40,7 +43,8 @@ public enum MiIOError: Error, Equatable, Sendable {
              .checksumMismatch,
              .decryptionFailed,
              .unsupportedNonNumericDeviceId,
-             .deviceError:
+             .deviceError,
+             .unsupportedLocalMiot:
             return true
         case .invalidToken,
              .invalidAddress,
@@ -91,6 +95,8 @@ extension MiIOError: LocalizedError {
             return L10n.tr("局域网动作结果未确认，请检查设备状态后再试", "Local action outcome could not be confirmed; check device state before retrying")
         case .deviceError(let code, let message):
             return L10n.tr("设备局域网返回错误 (\(code))：\(message)", "Local device error (\(code)): \(message)")
+        case .unsupportedLocalMiot(let code, let message):
+            return L10n.tr("设备局域网不支持本地 MIoT 协议 (\(code))：\(message)", "Device does not support local MIoT RPC (\(code)): \(message)")
         }
     }
 }

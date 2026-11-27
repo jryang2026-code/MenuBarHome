@@ -1,0 +1,88 @@
+{
+  "inferenceCases": [
+    {
+      "name": "apple_tv platform wins",
+      "platform": "apple_tv",
+      "manufacturer": "Apple",
+      "model": "Apple TV 4K",
+      "entityId": "remote.living_room",
+      "expectedProfile": "appleTV"
+    },
+    {
+      "name": "apple_tv via entityId fallback",
+      "entityId": "remote.living_apple_tv",
+      "expectedProfile": "appleTV"
+    },
+    {
+      "name": "androidtv_remote platform",
+      "platform": "androidtv_remote",
+      "manufacturer": "Google",
+      "model": "Chromecast with Google TV",
+      "entityId": "remote.bedroom",
+      "expectedProfile": "androidTV"
+    },
+    {
+      "name": "androidtv via identifiers",
+      "identifiers": [["androidtv_remote", "aa:bb:cc:dd:ee:ff"]],
+      "entityId": "remote.tv_box",
+      "expectedProfile": "androidTV"
+    },
+    {
+      "name": "sony braviatv platform",
+      "platform": "braviatv",
+      "manufacturer": "Sony",
+      "model": "KD-65X90K",
+      "entityId": "remote.living_tv",
+      "expectedProfile": "sonyBravia"
+    },
+    {
+      "name": "sony via model clue",
+      "model": "sony.tv.x90",
+      "entityId": "remote.living_tv",
+      "expectedProfile": "sonyBravia"
+    },
+    {
+      "name": "roku platform",
+      "platform": "roku",
+      "manufacturer": "Roku",
+      "model": "Roku Ultra",
+      "entityId": "remote.den",
+      "expectedProfile": "roku"
+    },
+    {
+      "name": "unknown generic fallback",
+      "platform": "custom_tv",
+      "manufacturer": "Acme",
+      "model": "Screen 55",
+      "entityId": "remote.tv",
+      "expectedProfile": "generic"
+    }
+  ],
+  "commandTable": {
+    "appleTV": {
+      "up": "up", "down": "down", "left": "left", "right": "right",
+      "select": "select", "back": "menu", "home": "home", "menu": "menu",
+      "volumeUp": "volume_up", "volumeDown": "volume_down", "mute": "mute", "source": "top_menu"
+    },
+    "androidTV": {
+      "up": "DPAD_UP", "down": "DPAD_DOWN", "left": "DPAD_LEFT", "right": "DPAD_RIGHT",
+      "select": "DPAD_CENTER", "back": "BACK", "home": "HOME", "menu": "MENU",
+      "volumeUp": "VOLUME_UP", "volumeDown": "VOLUME_DOWN", "mute": "MUTE", "source": "TV_INPUT"
+    },
+    "sonyBravia": {
+      "up": "Up", "down": "Down", "left": "Left", "right": "Right",
+      "select": "Confirm", "back": "Return", "home": "Home", "menu": "Options",
+      "volumeUp": "VolumeUp", "volumeDown": "VolumeDown", "mute": "Mute", "source": "Input"
+    },
+    "roku": {
+      "up": "Up", "down": "Down", "left": "Left", "right": "Right",
+      "select": "Select", "back": "Back", "home": "Home", "menu": "Info",
+      "volumeUp": "VolumeUp", "volumeDown": "VolumeDown", "mute": "VolumeMute", "source": "Input"
+    },
+    "generic": {
+      "up": "UP", "down": "DOWN", "left": "LEFT", "right": "RIGHT",
+      "select": "ENTER", "back": "BACK", "home": "HOME", "menu": "MENU",
+      "volumeUp": "VOLUME_UP", "volumeDown": "VOLUME_DOWN", "mute": "MUTE", "source": "INPUT"
+    }
+  }
+}

@@ -424,6 +424,81 @@ struct AutomationContextEngineTests {
         #expect(await mock.executedCommands == expected)
     }
 
+    @Test("Context exit blocks high-risk garage door close while restoring safe light (#558)")
+    func contextRestoreBlocksGarageDoorCloseAndUsesNeutralCopy() async throws {
+        try await L10n.$overrideLanguage.withValue(.zhHans) {
+            let defaults = InMemoryUserDefaults()
+            let now = Date(), entered = now.addingTimeInterval(-20)
+            let garage = SmartDevice(
+                id: "garage", name: "车库门", roomId: "garage", roomName: "车库",
+                model: "test.cover.garage", isOnline: true,
+                kind: .cover(CoverSpec(entityId: "cover.garage", subtype: .garageDoor, positionPercent: 100, openDescription: "Open", closeDescription: "Close"))
+            )
+            let rule = AutomationRule(
+                trigger: .focusModeEnabled, action: .devices(ids: ["garage", Self.lightId], isOn: true),
+                highRiskApproved: true, restoreWhenContextEnds: true, restoreTrigger: .focusModeDisabled
+            )
+            AutomationContextStack(defaults: defaults, now: entered).push(
+                ruleID: rule.id,
+                snapshots: [
+                    AutomationContextSnapshot(deviceID: garage.id, baseline: AutomationContextValue(field: .power, boolValue: false), applied: AutomationContextValue(field: .power, boolValue: true)),
+                    AutomationContextSnapshot(deviceID: Self.lightId, baseline: AutomationContextValue(field: .power, boolValue: true), applied: AutomationContextValue(field: .power, boolValue: false)),
+                ],
+                at: entered
+            )
+            let (engine, store, mock, provider) = try await makeEngine(
+                rules: [rule], defaults: defaults, devices: [garage, Self.studyLight(isOn: false)]
+            )
+            defer { withExtendedLifetime(engine) { store.stop() } }
+
+            await provider.emit(MacContextSnapshot(isFocusActive: true), at: now.addingTimeInterval(-10))
+            await provider.emit(MacContextSnapshot(isFocusActive: false), at: now)
+
+            #expect(await mock.executedCommands == [onCommand()])
+            #expect(AutomationContextStack(defaults: defaults, now: now).isEmpty)
+            let toast = try #require(store.toastNotice)
+            #expect(toast.isError == true && toast.message.contains("1 台需要确认的高风险设备") && !toast.message.contains("重新开启"))
+
+            await engine.handle(trigger: .focusModeDisabled, at: now.addingTimeInterval(70))
+            #expect(await mock.executedCommands == [onCommand()])
+        }
+    }
+
+    @Test("Context exit merges skipped high-risk notice and safe-device failure notice (#558)")
+    func contextRestoreMergesHighRiskSkipAndSafeFailureNotices() async throws {
+        try await L10n.$overrideLanguage.withValue(.zhHans) {
+            let defaults = InMemoryUserDefaults()
+            let heater = SmartDevice(
+                id: "heater", name: "卧室取暖器插座", roomId: "bedroom", roomName: "卧室",
+                model: "chuangmi.plug.212a01", isOnline: true,
+                kind: .plug(PlugSpec(switchEntityId: "switch.heater", isOn: true))
+            )
+            let rule = AutomationRule(
+                trigger: .focusModeEnabled, action: .devices(ids: ["heater", Self.lightId], isOn: false),
+                highRiskApproved: true, restoreWhenContextEnds: true, restoreTrigger: .focusModeDisabled
+            )
+            let (engine, store, mock, provider) = try await makeEngine(
+                rules: [rule], defaults: defaults, devices: [heater, Self.studyLight(isOn: true)]
+            )
+            defer { withExtendedLifetime(engine) { store.stop() } }
+            let start = Date()
+
+            await provider.emit(MacContextSnapshot(isFocusActive: false), at: start)
+            await provider.emit(MacContextSnapshot(isFocusActive: true), at: start.addingTimeInterval(10))
+            store.dismissToast()
+            await mock.setFailingTargets(["light.study"])
+
+            let exit = start.addingTimeInterval(20)
+            await provider.emit(MacContextSnapshot(isFocusActive: false), at: exit)
+
+            let toast = try #require(store.toastNotice)
+            #expect(toast.isError == true && toast.message.contains("1 台需要确认的高风险设备") && toast.message.contains("1 台设备还原失败"))
+
+            let remaining = AutomationContextStack(defaults: defaults, now: exit).allFrames
+            #expect(remaining.count == 1 && remaining.first?.snapshots.map(\.deviceID) == [Self.lightId])
+        }
+    }
+
     @Test("Power, disconnect and battery-threshold rules each run")
     func powerAndBatteryRules() async throws {
         let defaults = InMemoryUserDefaults()

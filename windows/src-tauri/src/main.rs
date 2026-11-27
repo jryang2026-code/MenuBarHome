@@ -34,7 +34,7 @@ use companion::*;
 use credentials::*;
 use desktop_shell::*;
 use ha_discovery::{cancel_ha_discovery, discover_home_assistant, HaDiscoveryState};
-use home_assistant::{ha_execute, ha_http, ha_set_connection, ha_snapshot, HaConnections};
+use home_assistant::{ha_execute, ha_http, ha_media_artwork, ha_set_connection, ha_snapshot, HaConnections};
 use miio::{
     miio_call_action, miio_discover, miio_get_props, miio_handshake, miio_set_props,
     miio_shutdown, MiIOState,
@@ -364,6 +364,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             ha_set_connection,
             ha_http,
+            ha_media_artwork,
             ha_snapshot,
             ha_execute,
             discover_home_assistant,

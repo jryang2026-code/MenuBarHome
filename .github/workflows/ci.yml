@@ -31,6 +31,7 @@ jobs:
       windows_native: ${{ steps.filter.outputs.windows_native }}
       nas: ${{ steps.filter.outputs.nas }}
       go2rtc: ${{ steps.filter.outputs.go2rtc }}
+      tv_bridge: ${{ steps.filter.outputs.tv_bridge }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -46,7 +47,7 @@ jobs:
         run: |
           set -euo pipefail
           full_ci() {
-            printf 'code=true\nmacos=true\nwindows=true\ncore=true\nraycast=true\nscripts=true\nwebsite=true\nmacos_build=true\nappintents=true\nwindows_native=true\nnas=true\ngo2rtc=true\n' >> "$GITHUB_OUTPUT"
+            printf 'code=true\nmacos=true\nwindows=true\ncore=true\nraycast=true\nscripts=true\nwebsite=true\nmacos_build=true\nappintents=true\nwindows_native=true\nnas=true\ngo2rtc=true\ntv_bridge=true\n' >> "$GITHUB_OUTPUT"
           }
           if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
             if [ "$REF_NAME" = "refs/heads/main" ]; then
@@ -86,7 +87,7 @@ jobs:
           fi
           git diff --name-only --no-renames "$base" "$head" > "$RUNNER_TEMP/changed.txt"
           scope="$(bash scripts/ci_relevant_paths.sh < "$RUNNER_TEMP/changed.txt")"
-          for key in code macos windows core raycast scripts website macos_build appintents windows_native nas go2rtc; do
+          for key in code macos windows core raycast scripts website macos_build appintents windows_native nas go2rtc tv_bridge; do
             if ! printf '%s\n' "$scope" | grep -Eq "^${key}=(true|false)$"; then
               full_ci
               echo "unexpected scope output; running full CI"
@@ -121,6 +122,8 @@ jobs:
             python3 scripts/check_doc_links.py
             python3 scripts/check_capability_matrix.py
             python3 scripts/check_capability_manifest.py
+            python3 scripts/check_adapter_protocol.py
+            python3 scripts/check_tv_catalog.py
             python3 scripts/check_supported_devices.py
           fi
       - name: Test NAS deployment safety
@@ -215,6 +218,26 @@ jobs:
         run: |
           bash scripts/go2rtc-ptz/build.sh --go-only
           bash scripts/go2rtc-ptz/verify.sh
+
+  tv-bridge-test:
+    needs: changes
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.tv_bridge == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Cache Go 1.26.10 toolchain
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/menubarmijia/go1.26.10
+          key: go2rtc-go-1.26.10-${{ runner.os }}-${{ runner.arch }}
+      - name: Test and cross-check mbh-tv-bridge Go adapter
+        run: |
+          bash scripts/go2rtc-ptz/build.sh --go-only
+          GO_BIN="$(bash scripts/go2rtc-ptz/go_ready.sh)"
+          cd adapters/mbh-tv-bridge
+          "$GO_BIN" test -race ./...
+          sh ./build.sh --check
 
   windows-core:
     needs: changes
@@ -526,7 +549,7 @@ jobs:
           key: ${{ steps.swift-release-cache.outputs.cache-primary-key }}
 
   ci:
-    needs: [changes, nas-safety, linux-core, raycast, website, go2rtc-test, windows-core, windows-camera-bin, windows-rust-test, windows-installer, macos-test, macos-release, macos-appintents]
+    needs: [changes, nas-safety, linux-core, raycast, website, go2rtc-test, tv-bridge-test, windows-core, windows-camera-bin, windows-rust-test, windows-installer, macos-test, macos-release, macos-appintents]
     if: always() && !cancelled()
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -541,11 +564,13 @@ jobs:
           RAYCAST: ${{ needs.changes.outputs.raycast }}
           WEBSITE: ${{ needs.changes.outputs.website }}
           GO2RTC: ${{ needs.changes.outputs.go2rtc }}
+          TV_BRIDGE: ${{ needs.changes.outputs.tv_bridge }}
           NAS: ${{ needs.nas-safety.result }}
           LINUX: ${{ needs.linux-core.result }}
           RAYCAST_RES: ${{ needs.raycast.result }}
           WEBSITE_RES: ${{ needs.website.result }}
           GO2RTC_TEST: ${{ needs.go2rtc-test.result }}
+          TV_BRIDGE_TEST: ${{ needs.tv-bridge-test.result }}
           WINDOWS_CORE: ${{ needs.windows-core.result }}
           WINDOWS_CAMERA: ${{ needs.windows-camera-bin.result }}
           WINDOWS_RUST_TEST: ${{ needs.windows-rust-test.result }}
@@ -588,6 +613,7 @@ jobs:
           check_job "raycast" "$RAYCAST_RES" "$RAYCAST"
           check_job "website" "$WEBSITE_RES" "$WEBSITE"
           check_job "go2rtc-test" "$GO2RTC_TEST" "$GO2RTC"
+          check_job "tv-bridge-test" "$TV_BRIDGE_TEST" "$TV_BRIDGE"
           check_job "windows-core" "$WINDOWS_CORE" "$WINDOWS"
           check_job "windows-camera-bin" "$WINDOWS_CAMERA" "$WINDOWS_NATIVE_ACTIVE"
           check_job "windows-rust-test" "$WINDOWS_RUST_TEST" "$WINDOWS_NATIVE_ACTIVE"

@@ -106,24 +106,104 @@ extension TVBridgeClientTests {
         XCTAssertFalse(running)
     }
 
+    func testLegacyDriverAliasesDecodeToCanonicalCatalogIDs() throws {
+        let json = Data("""
+        {"isEnabled":true,"idleShutdownSeconds":900,"devices":[
+          {"nativeId":"a","driver":"lg_webos","host":"192.168.1.2","name":"LG","roomName":""},
+          {"nativeId":"b","driver":"xiaomi_6095","host":"192.168.1.3","name":"Mi","roomName":""},
+          {"nativeId":"c","driver":"hisense_vidaa_mqtt","host":"192.168.1.4","name":"Hisense","roomName":""}
+        ]}
+        """.utf8)
+        let decoded = try JSONDecoder().decode(TVBridgeConfig.self, from: json)
+        XCTAssertEqual(decoded.devices.map(\.driver), [.lg_webos_ssap, .xiaomi_mitv_6095, .hisense_vidaa_mqtt])
+        XCTAssertEqual(TVBridgeDeviceConfig.Driver.primaryCases, [.lg_webos_ssap, .xiaomi_mitv_6095, .hisense_vidaa_mqtt])
+    }
+
+    func testExecuteEmitsCanonicalADR0026VerbsAndArgs() async throws {
+        let transport = MockTVBridgeTransport { frame in
+            TVBridgeFrame(id: frame.id, result: Data("{}".utf8))
+        }
+        let manager = TVBridgePluginManager(config: TVBridgeConfig(isEnabled: true), transport: transport)
+        try await manager.execute(deviceId: "adapter:com.menubarhome.tv-bridge:tv-1", command: .power(false), capabilityGeneration: 2)
+        try await manager.execute(deviceId: "adapter:com.menubarhome.tv-bridge:tv-1", command: .setVolume(0.35), capabilityGeneration: 2)
+        try await manager.execute(deviceId: "adapter:com.menubarhome.tv-bridge:tv-1", command: .setMute(true), capabilityGeneration: 2)
+        try await manager.execute(deviceId: "adapter:com.menubarhome.tv-bridge:tv-1", command: .selectSource("HDMI1"), capabilityGeneration: 2)
+        try await manager.execute(deviceId: "adapter:com.menubarhome.tv-bridge:tv-1", command: .seek(42), capabilityGeneration: 2)
+        let requests = await transport.requests.filter { $0.method == "control.execute" }
+        let pairs = try requests.map { frame -> (String, [String: Any]) in
+            let obj = try XCTUnwrap(try JSONSerialization.jsonObject(with: frame.params!) as? [String: Any])
+            return (try XCTUnwrap(obj["verb"] as? String), try XCTUnwrap(obj["args"] as? [String: Any]))
+        }
+        XCTAssertEqual(pairs.map(\.0), ["power.set", "volume.set", "mute.set", "input.select", "media.seek"])
+        XCTAssertEqual(pairs[1].1["level"] as? Int, 35)
+        XCTAssertEqual(pairs[2].1["isMuted"] as? Bool, true)
+        XCTAssertEqual(pairs[4].1["positionSec"] as? Double, 42)
+    }
+
     func testTerminateAllEscalatesFromSigtermToSigkillWhenChildIgnoresSigterm() throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("tv-bridge-sigkill-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: dir) }
         let script = dir.appendingPathComponent("stubborn-bridge.sh")
-        try Data("#!/bin/sh\ntrap '' TERM\necho $$ > \"$MBH_DATA_DIR/pid.tmp\"\nmv \"$MBH_DATA_DIR/pid.tmp\" \"$MBH_DATA_DIR/pid\"\nwhile true; do sleep 0.2; done\n".utf8).write(to: script)
+        try Data("#!/bin/sh\ntrap '' TERM\nprintf '%s\\n' \"$$\" > \"$MBH_DATA_DIR/pid.tmp\"\nmv \"$MBH_DATA_DIR/pid.tmp\" \"$MBH_DATA_DIR/pid\"\nwhile true; do sleep 0.2; done\n".utf8).write(to: script)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
         let transport = try StdioTVBridgeTransport.launch(binaryPath: script.path, dataDir: dir, manifestPath: dir.appendingPathComponent("adapter-manifest.json"))
+        defer {
+            let childPID = transport.childProcess.processIdentifier
+            if childPID > 1, transport.childProcess.isRunning {
+                _ = kill(childPID, SIGKILL)
+                transport.childProcess.waitUntilExit()
+            }
+        }
         let pidFile = dir.appendingPathComponent("pid")
-        let waitDeadline = Date().addingTimeInterval(2.0)
+        let waitDeadline = Date().addingTimeInterval(10.0)
         while !FileManager.default.fileExists(atPath: pidFile.path) && Date() < waitDeadline { Thread.sleep(forTimeInterval: 0.01) }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: pidFile.path), "stubborn child did not finish installing SIGTERM trap")
         let pid = try XCTUnwrap(Int32(try String(contentsOf: pidFile, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)))
-        defer { if pid > 1 { _ = kill(pid, SIGKILL) } }
+        XCTAssertEqual(pid, transport.childProcess.processIdentifier)
         XCTAssertEqual(kill(pid, 0), 0)
         StdioTVBridgeTransport.terminateAllImmediately(gracePeriod: 0.05)
-        let exitDeadline = Date().addingTimeInterval(2.0)
-        while kill(pid, 0) == 0 && Date() < exitDeadline { Thread.sleep(forTimeInterval: 0.01) }
-        XCTAssertNotEqual(kill(pid, 0), 0, "SIGTERM-ignoring child must be escalated to SIGKILL")
-        _ = transport
+        XCTAssertFalse(transport.childProcess.isRunning, "child must be reaped before terminateAllImmediately returns")
+        XCTAssertEqual(transport.childProcess.terminationReason, .uncaughtSignal)
+        XCTAssertEqual(transport.childProcess.terminationStatus, SIGKILL)
+        XCTAssertNotEqual(kill(pid, 0), 0, "SIGTERM-ignoring child must be escalated to SIGKILL and reaped")
+    }
+
+    func testCloseEscalatesToSigkillAfterExecReplacesChildImage() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("tv-bridge-exec-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let script = dir.appendingPathComponent("exec-wrapper.sh")
+        let body = """
+        #!/bin/sh
+        while [ ! -f "$MBH_DATA_DIR/go" ]; do sleep 0.01; done
+        if [ -x /bin/zsh ]; then NEXT=/bin/zsh; else NEXT=/bin/bash; fi
+        exec "$NEXT" -c 'trap "" TERM; printf "%s\\n" "$$" > "$1.tmp" && mv "$1.tmp" "$1"; while true; do sleep 0.2; done' bridge "$MBH_DATA_DIR/pid"
+        """
+        try Data((body + "\n").utf8).write(to: script)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
+        let transport = try StdioTVBridgeTransport.launch(binaryPath: script.path, dataDir: dir, manifestPath: dir.appendingPathComponent("adapter-manifest.json"))
+        defer {
+            let childPID = transport.childProcess.processIdentifier
+            if childPID > 1, transport.childProcess.isRunning {
+                _ = kill(childPID, SIGKILL)
+                transport.childProcess.waitUntilExit()
+            }
+        }
+        try Data().write(to: dir.appendingPathComponent("go"))
+        let pidFile = dir.appendingPathComponent("pid")
+        let waitDeadline = Date().addingTimeInterval(10.0)
+        while !FileManager.default.fileExists(atPath: pidFile.path) && Date() < waitDeadline {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: pidFile.path), "exec-replaced child did not finish installing SIGTERM trap")
+        let pid = try XCTUnwrap(Int32(try String(contentsOf: pidFile, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)))
+        XCTAssertEqual(pid, transport.childProcess.processIdentifier)
+        XCTAssertEqual(kill(pid, 0), 0)
+        await transport.close()
+        XCTAssertFalse(transport.childProcess.isRunning, "exec-replaced child must be reaped before close returns")
+        XCTAssertEqual(transport.childProcess.terminationReason, .uncaughtSignal)
+        XCTAssertEqual(transport.childProcess.terminationStatus, SIGKILL)
+        XCTAssertNotEqual(kill(pid, 0), 0, "exec-replaced SIGTERM-ignoring child must be escalated to SIGKILL and reaped")
     }
 }

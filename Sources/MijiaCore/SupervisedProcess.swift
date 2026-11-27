@@ -16,6 +16,34 @@ struct SupervisedProcessIdentity: Codable, Equatable {
         let parentPID: Int32
     }
 
+    /// Immutable process-birth identity (`pid`, start timestamp, parent PID, effective UID) that
+    /// survives `execve()` image replacement (e.g. macOS `/bin/sh` exec'ing `/bin/bash` via
+    /// `/private/var/select/sh` or `#!/usr/bin/env` wrappers) while still rejecting PID reuse.
+    struct Birth: Equatable, Sendable {
+        let pid: Int32
+        let startSeconds: UInt64
+        let startMicroseconds: UInt64
+        let parentPID: Int32
+
+        static func capture(pid: Int32) -> Self? {
+            #if canImport(Darwin)
+            guard pid > 1 else { return nil }
+            let size = Int32(MemoryLayout<proc_bsdinfo>.size)
+            var info = proc_bsdinfo()
+            guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size) == size,
+                  info.pbi_uid == geteuid() else { return nil }
+            return Self(
+                pid: pid,
+                startSeconds: info.pbi_start_tvsec,
+                startMicroseconds: info.pbi_start_tvusec,
+                parentPID: Int32(info.pbi_ppid)
+            )
+            #else
+            return nil
+            #endif
+        }
+    }
+
     static func snapshot(pid: Int32) -> Snapshot? {
         #if canImport(Darwin)
         guard pid > 1 else { return nil }

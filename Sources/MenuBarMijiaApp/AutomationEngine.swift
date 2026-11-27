@@ -980,9 +980,10 @@ final class AutomationEngine {
             .filter { ruleIDs.contains($0.ruleID) }
             .sorted { $0.enteredAt > $1.enteredAt }
         var skippedHighRiskIDs = Set<String>()
+        var failedRestoreIDs = Set<String>()
+        var failedRestoreFallbackMessage: String?
         func requiresRestoreConfirmation(_ intent: DeviceIntent) -> Bool {
-            guard case .power(true) = intent.operation else { return false }
-            return ManualControlPolicy.requiresConfirmation(intent, devices: store.devices)
+            ManualControlPolicy.requiresConfirmation(intent, devices: store.devices)
         }
         for frame in frames {
             guard let plan = contextStack.prepareRestore(frame: frame, liveValues: live, at: time) else { continue }
@@ -993,7 +994,7 @@ final class AutomationEngine {
                 return true
             }
             let executableIntents = plan.intents.filter { !skipHighRiskIntent($0) }
-            // Consume skipped power-ons so a later exit cannot retry them unattended.
+            // Consume skipped high-risk restores so a later exit cannot retry them unattended.
             if !blockedIDs.isEmpty {
                 contextStack.commitRestore(plan, restoredDeviceIDs: blockedIDs)
             }
@@ -1020,19 +1021,51 @@ final class AutomationEngine {
                     live[intent.targetId] = AutomationContextValue(field: .power, boolValue: value)
                 }
             }
-            if outcome.succeededCount == 0, outcome.attemptedCount > 0 {
-                store.showToast(
-                    L10n.tr("上下文还原被安全策略跳过", "Context restore skipped by safety policy"),
-                    isError: true
-                )
+            if outcome.failedCount > 0 || (outcome.succeededCount == 0 && outcome.attemptedCount > 0) {
+                let failedIDs = Set(executableIntents.map(\.targetId))
+                    .subtracting(restoredIDs)
+                    .subtracting(blockedIDs)
+                failedRestoreIDs.formUnion(failedIDs)
+            } else if outcome.attemptedCount == 0, outcome.skipReason == .writeGateDenied,
+                      let message = outcome.errorMessage {
+                failedRestoreFallbackMessage = message
             }
         }
-        if !skippedHighRiskIDs.isEmpty {
+        if !skippedHighRiskIDs.isEmpty, !failedRestoreIDs.isEmpty {
             store.showToast(
                 L10n.format(
-                    "还原时已跳过 %@ 台需要重新开启的高风险设备",
-                    "Restore skipped %@ high-risk device(s) that would have been turned back on",
+                    "还原未完全完成：已跳过 %@ 台需要确认的高风险设备，另有 %@ 台设备还原失败",
+                    "Restore incomplete: skipped %@ high-risk device(s) requiring confirmation, and %@ device(s) failed to restore",
+                    String(skippedHighRiskIDs.count),
+                    String(failedRestoreIDs.count)
+                ),
+                isError: true
+            )
+        } else if !skippedHighRiskIDs.isEmpty, let detail = failedRestoreFallbackMessage {
+            store.showToast(
+                L10n.format(
+                    "已跳过 %@ 台需要确认的高风险设备；%@",
+                    "Skipped %@ high-risk device(s) requiring confirmation; %@",
+                    String(skippedHighRiskIDs.count),
+                    detail
+                ),
+                isError: true
+            )
+        } else if !skippedHighRiskIDs.isEmpty {
+            store.showToast(
+                L10n.format(
+                    "还原时已跳过 %@ 台需要确认的高风险设备",
+                    "Restore skipped %@ high-risk device(s) requiring confirmation",
                     String(skippedHighRiskIDs.count)
+                ),
+                isError: true
+            )
+        } else if !failedRestoreIDs.isEmpty {
+            store.showToast(
+                L10n.format(
+                    "上下文还原失败（%@ 台设备未完成）",
+                    "Context restore failed (%@ device(s) did not complete)",
+                    String(failedRestoreIDs.count)
                 ),
                 isError: true
             )

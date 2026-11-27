@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import PreferencesTestSupport
 import Testing
 #if canImport(Darwin)
 import Darwin
@@ -4684,6 +4685,133 @@ struct HybridProviderAndDoorbellTests {
         for item in corpus.malformedJsonCases {
             #expect(cleanMalformedFirmwareJSON(item.input) == item.expected, "\(item.name)")
         }
+    }
+
+    @Test("Legacy pre-MIoT Wi-Fi air purifiers (-32601 / -5001 command error) skip broadcast recovery and fall back to cloud for polls, writes, and external power controls (#570)")
+    func legacyNonMiotAirPurifiersFallBackToCloudForPollsAndExternalWrites() async throws {
+        let tokenData = try #require(MiIOPacket.validateToken(tokenHex))
+        let clock = MutableClock(Date(timeIntervalSince1970: 1_700_000_000))
+        let ma2Spec = MiotDeviceSpec(
+            type: "urn:miot-spec-v2:device:air-purifier:0000A007:zhimi-ma2:1",
+            services: [MiotService(
+                iid: 2, type: "urn:miot-spec-v2:service:air-purifier:00007811:zhimi-ma2:1",
+                properties: [
+                    MiotProperty(iid: 1, type: "urn:miot-spec-v2:property:on:00000006:zhimi-ma2:1", format: "bool", access: ["read", "write", "notify"]),
+                    MiotProperty(iid: 2, type: "urn:miot-spec-v2:property:fan-level:00000016:zhimi-ma2:1", format: "uint8", access: ["read", "write", "notify"], valueRange: [1, 3, 1]),
+                    MiotProperty(iid: 3, type: "urn:miot-spec-v2:property:mode:00000008:zhimi-ma2:1", format: "uint8", access: ["read", "write", "notify"],
+                                 valueList: [MiotValueListItem(value: 0, description: "Auto"), MiotValueListItem(value: 1, description: "Sleep"), MiotValueListItem(value: 2, description: "Favorite")]),
+                ]
+            )]
+        )
+        let rejectMiotRpc = LockedBox(true), perPropError = LockedBox(false)
+        let udpTransport = MockUDPTransport { packet, host, _ in
+            if packet == MiIOPacket.helloPacket {
+                let id: UInt32 = host == "192.168.1.70" ? 357_621_783 : host == "192.168.1.71" ? 70_849_337 : 101
+                return makeHelloResponse(deviceId: id, stamp: 10)
+            }
+            let (header, plaintext) = try MiIOPacket.decode(packet, token: tokenData)
+            let req = try JSONDecoder().decode(JSONValue.self, from: plaintext)
+            let reqId = req["id"]?.intValue ?? 0, method = req["method"]?.stringValue ?? ""
+            let reply: String
+            if host == "192.168.1.70", rejectMiotRpc.withValue({ $0 }) {
+                reply = #"{"id":\#(reqId),"error":{"code":-32601,"message":"Method not found"}}"#
+            } else if host == "192.168.1.71", rejectMiotRpc.withValue({ $0 }) {
+                reply = #"{"id":\#(reqId),"error":{"code":-5001,"message":"command error"}}"#
+            } else if host == "192.168.1.72", method == "set_properties", perPropError.withValue({ $0 }) {
+                reply = #"{"id":\#(reqId),"result":[{"did":"101","siid":2,"piid":1,"code":-704002000}]}"#
+            } else if method == "get_properties" {
+                let did = host == "192.168.1.70" ? "357621783" : host == "192.168.1.71" ? "70849337" : "101"
+                reply = #"{"id":\#(reqId),"result":[{"did":"\#(did)","siid":2,"piid":1,"value":true,"code":0},{"did":"\#(did)","siid":2,"piid":2,"value":1,"code":0},{"did":"\#(did)","siid":2,"piid":3,"value":0,"code":0}]}"#
+            } else {
+                reply = #"{"id":\#(reqId),"result":[{"did":"101","siid":2,"piid":1,"code":0}]}"#
+            }
+            return try MiIOPacket.encode(deviceId: header.deviceId, stamp: header.stamp, token: tokenData, payload: Data(reply.utf8))
+        }
+        await udpTransport.setBroadcastHandler { _, _, _ in
+            [
+                MiIOBroadcastReply(sourceIP: "192.168.1.70", packet: makeHelloResponse(deviceId: 357_621_783, stamp: 10)),
+                MiIOBroadcastReply(sourceIP: "192.168.1.71", packet: makeHelloResponse(deviceId: 70_849_337, stamp: 10)),
+            ]
+        }
+
+        // Broadcast discovery must reject legacy -32601 / -5001 command-error replies instead of wiping LAN health.
+        let discoveryClient = LocalMiIOClient(transport: udpTransport, maxRetries: 0, now: { clock.now() })
+        let frozenNow = ContinuousClock.now
+        let frozenClock = LocalMiIOClient.DiscoveryClock(
+            now: { frozenNow },
+            sleep: { _ in
+                let (stream, continuation) = AsyncStream<Void>.makeStream()
+                defer { continuation.finish() }
+                for await _ in stream {}
+            }
+        )
+        let discovered = try await discoveryClient.discoverEndpoints(
+            for: [MiIODeviceCandidate(did: "357621783", token: tokenHex), MiIODeviceCandidate(did: "70849337", token: tokenHex)],
+            discoveryClock: frozenClock
+        )
+        #expect(discovered.isEmpty)
+        await discoveryClient.shutdown()
+
+        let ma2 = MiDeviceRecord(did: "357621783", name: "空气净化器2", model: "zhimi.airpurifier.ma2", isOnline: true, localIp: "192.168.1.70", token: tokenHex, isShared: false, pid: 0)
+        let v6 = MiDeviceRecord(did: "70849337", name: "空气净化器", model: "zhimi.airpurifier.v6", isOnline: true, localIp: "192.168.1.71", token: tokenHex, isShared: false, pid: 0)
+        let modernLight = MiDeviceRecord(did: "101", name: "Modern Light", model: "yeelink.light.color4", isOnline: true, localIp: "192.168.1.72", token: tokenHex, isShared: false, pid: 0)
+        let api = HybridMockCloudAPI(
+            devices: [ma2, v6, modernLight],
+            rooms: [MiRoom(id: "r1", name: "Living", dids: ["357621783", "70849337", "101"])],
+            props: [
+                MiotPropKey(did: "357621783", siid: 2, piid: 1): .bool(true), MiotPropKey(did: "357621783", siid: 2, piid: 2): .number(1), MiotPropKey(did: "357621783", siid: 2, piid: 3): .number(0),
+                MiotPropKey(did: "70849337", siid: 2, piid: 1): .bool(true), MiotPropKey(did: "70849337", siid: 2, piid: 2): .number(1), MiotPropKey(did: "70849337", siid: 2, piid: 3): .number(0),
+                MiotPropKey(did: "101", siid: 2, piid: 1): .bool(true), MiotPropKey(did: "101", siid: 2, piid: 2): .number(50),
+            ]
+        )
+        let provider = MiCloudProvider(
+            sessionLoader: { self.stubSession }, apiFactory: { _ in api },
+            specSource: HybridMockSpecSource(specs: ["zhimi.airpurifier.ma2": ma2Spec, "zhimi.airpurifier.v6": ma2Spec, "yeelink.light.color4": lightSpec()]),
+            localClient: LocalMiIOClient(transport: udpTransport, maxRetries: 0, now: { clock.now() }),
+            lanFailureThreshold: 1, lanCooldownDuration: 30, now: { clock.now() },
+            pollInterval: .seconds(3600), closedPollInterval: .seconds(3600), selectedHomeLoader: { nil }
+        )
+        let store = await MainActor.run { HomeStore(provider: provider, defaults: InMemoryUserDefaults()) }
+        try await store.waitForTestSnapshot()
+
+        // Both legacy air purifiers report `.cloud` (not `.cooldown`) without triggering a broadcast sweep.
+        #expect(await MainActor.run { store.deviceTransportDiagnostics["357621783"]?.route } == .cloud)
+        #expect(await MainActor.run { store.deviceTransportDiagnostics["70849337"]?.route } == .cloud)
+        #expect(await provider.lanTransportState(for: "357621783").isCoolingDown == false)
+        #expect(await provider.lanTransportState(for: "70849337").isCoolingDown == false)
+        #expect(await udpTransport.broadcastCalls == 1)
+
+        // External Raycast/URL power off + preset mode commands succeed via Xiaomi Cloud with 0 extra LAN packets.
+        let udpSendsBeforeCommands = await udpTransport.sends.count
+        let powerResult = await store.executeRaycastPower(deviceId: "357621783", isOn: false)
+        #expect(powerResult.handled == true && powerResult.isError == false)
+        try await provider.execute(.setFanPresetMode(entityId: "miot:70849337:2", presetMode: "Sleep"))
+        #expect(await udpTransport.sends.count == udpSendsBeforeCommands)
+        let cloudWrites = await api.setPropsCalls
+        #expect(cloudWrites.contains([MiotPropWrite(did: "357621783", siid: 2, piid: 1, value: .bool(false))]))
+        #expect(cloudWrites.contains([MiotPropWrite(did: "70849337", siid: 2, piid: 3, value: .number(1))]))
+
+        // Genuine MIoT per-property rejection still throws deviceError without cloud replay.
+        perPropError.withValue { $0 = true }
+        let cloudWritesBeforePerPropError = await api.setPropsCalls.count
+        await #expect(throws: MiCloudError.self) {
+            try await provider.execute(.setLightPower(entityId: "miot:101:2", isOn: false))
+        }
+        #expect(await api.setPropsCalls.count == cloudWritesBeforePerPropError)
+
+        // Direct cold write hitting -32601 BEFORE a failed poll also falls back immediately to cloud.
+        rejectMiotRpc.withValue { $0 = false }
+        await provider.retryLAN(deviceId: "357621783")
+        #expect(await provider.lanTransportState(for: "357621783").transportSucceeded == true)
+        rejectMiotRpc.withValue { $0 = true }
+        let cloudWritesBeforeColdWrite = await api.setPropsCalls.count
+        try await provider.execute(.setFanPower(entityId: "miot:357621783:2", isOn: true))
+        #expect(await api.setPropsCalls.count == cloudWritesBeforeColdWrite + 1)
+        let sendsAfterColdWrite = await udpTransport.sends.count
+        try await provider.execute(.setFanPower(entityId: "miot:357621783:2", isOn: false))
+        #expect(await udpTransport.sends.count == sendsAfterColdWrite)
+
+        await store.shutdown()
     }
 }
 

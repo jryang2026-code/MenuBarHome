@@ -195,7 +195,10 @@ def validate_manifest(manifest: Any, schema: dict[str, Any]) -> list[str]:
             config_schema = ui.get("configSchema")
             if isinstance(config_schema, dict) and isinstance(config_schema.get("properties"), dict):
                 config_props = config_schema["properties"]
-        for key in sorted(secret_prompt_keys & set(config_props)):
+        for key in sorted(secret_prompt_keys):
+            if key not in config_props:
+                errs.append(f"$.ui.configSchema.properties.{key}: 声明了 inputType=secret 的 prompt，但 ui.configSchema.properties 缺少同名属性")
+                continue
             prop = config_props[key]
             if not isinstance(prop, dict) or prop.get("writeOnly") is not True:
                 errs.append(f"$.ui.configSchema.properties.{key}: 对应 inputType=secret 的配置项必须 writeOnly: true")
@@ -272,9 +275,12 @@ def validate_rpc_pair(fixture: Any, schema: dict[str, Any], name: str) -> list[s
             for req_field in ("protocolVersion", "supportedProtocolVersions", "hostVersion", "adapterId", "dataDir"):
                 if req_field not in params:
                     errs.append(f"{name}: initialize.params 缺少 {req_field!r}")
+            for str_field in ("protocolVersion", "hostVersion", "adapterId", "dataDir"):
+                if str_field in params and (not isinstance(params[str_field], str) or not params[str_field].strip()):
+                    errs.append(f"{name}: initialize.params.{str_field} 必须是非空字符串")
             supported = params.get("supportedProtocolVersions")
             if (not isinstance(supported, list) or not supported
-                    or not all(isinstance(v, str) for v in supported)):
+                    or not all(isinstance(v, str) and v.strip() for v in supported)):
                 errs.append(f"{name}: initialize.params.supportedProtocolVersions 必须是非空字符串数组")
             leases = params.get("leases", [])
             if not isinstance(leases, list):
@@ -518,6 +524,16 @@ def run_self_test() -> None:
     assert any("lanKey" in e for e in validate_manifest(secret_config_bad, schema)), (
         "config property for secret prompt must be writeOnly"
     )
+    secret_config_missing = copy.deepcopy(valid)
+    del secret_config_missing["ui"]["configSchema"]["properties"]["lanKey"]
+    assert any("lanKey" in e for e in validate_manifest(secret_config_missing, schema)), (
+        "secret prompt missing matching ui.configSchema property must fail"
+    )
+    secret_ui_missing = copy.deepcopy(valid)
+    del secret_ui_missing["ui"]
+    assert any("lanKey" in e for e in validate_manifest(secret_ui_missing, schema)), (
+        "secret prompt with omitted ui.configSchema must fail"
+    )
     invalid_secret = load_strict_json(
         (FIXTURES_DIR / "manifest-invalid-secret-readback.json").read_text(encoding="utf-8")
     )
@@ -585,6 +601,19 @@ def run_self_test() -> None:
     assert any("dataDir" in e for e in validate_rpc_pair(missing_req_field, schema, "self-test-init-error-missing-field")), (
         "missing initialize request field must fail on error path"
     )
+    for field_name, bad_values in (
+        ("protocolVersion", (10, "", "   ", None)),
+        ("adapterId", (42, "", True)),
+        ("hostVersion", (["1.5.0"], "")),
+        ("dataDir", ({}, "")),
+    ):
+        for bad_val in bad_values:
+            bad_req_type = copy.deepcopy(init_error)
+            bad_req_type["request"]["params"][field_name] = bad_val
+            assert any(
+                field_name in e
+                for e in validate_rpc_pair(bad_req_type, schema, f"self-test-init-error-bad-{field_name}")
+            ), f"invalid {field_name}={bad_val!r} must fail on initialize error path"
     invalid_leases_shape = copy.deepcopy(init_error)
     invalid_leases_shape["request"]["params"]["leases"] = "oauthAccess"
     assert any("leases" in e for e in validate_rpc_pair(invalid_leases_shape, schema, "self-test-init-error-bad-leases")), (

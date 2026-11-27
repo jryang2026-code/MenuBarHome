@@ -44,6 +44,7 @@ pub(crate) enum MiIOError {
     AmbiguousWriteOutcome,
     WriteNotSent(Box<MiIOError>),
     DeviceError { code: i64, message: String },
+    UnsupportedLocalMiot { code: i64, message: String },
 }
 
 impl MiIOError {
@@ -67,6 +68,7 @@ impl MiIOError {
             Self::AmbiguousWriteOutcome => "ambiguous_write_outcome",
             Self::WriteNotSent(_) => "write_not_sent",
             Self::DeviceError { .. } => "device_error",
+            Self::UnsupportedLocalMiot { .. } => "unsupported_local_miot",
         }
     }
 
@@ -87,12 +89,13 @@ impl MiIOError {
                 | Self::DecryptionFailed
                 | Self::UnsupportedNonNumericDeviceId
                 | Self::DeviceError { .. }
+                | Self::UnsupportedLocalMiot { .. }
         )
     }
 
     pub(crate) fn to_command_error(&self) -> MiIOCommandError {
         let device_code = match self {
-            Self::DeviceError { code, .. } => Some(*code),
+            Self::DeviceError { code, .. } | Self::UnsupportedLocalMiot { code, .. } => Some(*code),
             _ => None,
         };
         MiIOCommandError {
@@ -133,6 +136,9 @@ impl fmt::Display for MiIOError {
             Self::WriteNotSent(_) => write!(f, "Local write could not be sent"),
             Self::DeviceError { code, message } => {
                 write!(f, "Local device error ({code}): {message}")
+            }
+            Self::UnsupportedLocalMiot { code, message } => {
+                write!(f, "Device does not support local MIoT RPC ({code}): {message}")
             }
         }
     }

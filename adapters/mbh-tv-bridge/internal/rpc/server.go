@@ -98,6 +98,15 @@ func (s *Server) Write(v any) error {
 	_, e = fmt.Fprintf(s.out, "%s\n", b)
 	return e
 }
+var legacyDriverAliases = map[string]string{"xiaomi_6095": "xiaomi_mitv_6095", "tcl_tnscreen": "tcl_ffalcon_tnscreen", "android_adb": "android_adb_lan", "lg_webos": "lg_webos_ssap", "sony_bravia": "sony_bravia_psk", "samsung_tizen": "samsung_tizen_ws"}
+
+func canonicalDriverID(raw string) string {
+	if mapped, ok := legacyDriverAliases[raw]; ok {
+		return mapped
+	}
+	return raw
+}
+
 func errResp(id any, c int, m string) Response {
 	return Response{JSONRPC: "2.0", ID: id, Error: &RPCError{Code: c, Message: m}}
 }
@@ -139,7 +148,7 @@ func (s *Server) Handle(r Request) Response {
 			if d.Port > 0 {
 				addr = net.JoinHostPort(d.Host, fmt.Sprint(d.Port))
 			}
-			if drv := driver.ForConfig(d.Driver, addr, d.Credential); drv != nil {
+			if drv := driver.ForConfig(canonicalDriverID(d.Driver), addr, d.Credential); drv != nil {
 				s.devices[d.NativeID] = drv
 				name := d.Name
 				if name == "" {
@@ -156,14 +165,14 @@ func (s *Server) Handle(r Request) Response {
 				break
 			}
 		}
-		commands := []string{"tv.power", "tv.wake", "tv.screenOff", "media.setVolume", "media.stepVolume", "media.setMute", "media.selectSource", "media.launchApp", "media.playPause", "media.play", "media.pause", "media.stop", "media.next", "media.previous", "media.seek", "remote.key"}
+		commands := append([]string(nil), driver.ClosedCommandVerbs...)
 		s.readOnly = readOnly
 		if readOnly {
 			commands = []string{}
 		}
 		return Response{JSONRPC: "2.0", ID: r.ID, Result: map[string]any{"protocolVersion": version, "adapterId": "com.menubarhome.tv-bridge", "adapterVersion": "1.0.0", "manifestDigest": s.manifestDigest, "capabilities": map[string]any{"readOnly": readOnly, "deviceKinds": []string{"tv", "speaker"}, "commands": commands, "pushEvents": false}}}
 	case "capabilities":
-		cmds := []string{"tv.power", "tv.wake", "tv.screenOff", "media.setVolume", "media.stepVolume", "media.setMute", "media.selectSource", "media.launchApp", "media.playPause", "media.play", "media.pause", "media.stop", "media.next", "media.previous", "media.seek", "remote.key"}
+		cmds := append([]string(nil), driver.ClosedCommandVerbs...)
 		if s.readOnly {
 			cmds = []string{}
 		}
@@ -250,8 +259,7 @@ func (s *Server) Handle(r Request) Response {
 		if p.CapabilityGeneration != s.generation {
 			return errResp(r.ID, -32004, "unknown capabilityGeneration")
 		}
-		allowed := map[string]bool{"tv.power": true, "tv.wake": true, "tv.screenOff": true, "media.setVolume": true, "media.stepVolume": true, "media.setMute": true, "media.selectSource": true, "media.launchApp": true, "media.playPause": true, "media.play": true, "media.pause": true, "media.stop": true, "media.next": true, "media.previous": true, "media.seek": true, "remote.key": true}
-		if !allowed[p.Verb] {
+		if !driver.IsAllowedVerb(p.Verb) {
 			return errResp(r.ID, -32004, "unsupported verb")
 		}
 		s.mu.Lock()

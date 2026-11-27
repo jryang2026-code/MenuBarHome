@@ -116,14 +116,40 @@ describe("TV bridge section", () => {
     assert.match(renderTVBridgeSettingsSection(ctrl, esc), /data-tvbridge-toggle (?!checked)/);
   });
 
-  it("renders the settings card with all eight drivers and default port hints", () => {
+  it("renders only the three primary brands by default and reveals experimental drivers behind the toggle", () => {
     const ctrl = new TVBridgeController({ storage: memoryStorage(), secrets: memorySecrets(), invoke: null });
     ctrl.setEnabled(true);
-    const html = renderTVBridgeSettingsSection(ctrl, esc);
-    assert.equal((html.match(/<option /g) ?? []).length, 8);
-    assert.match(html, /data-port="6095"/);
-    assert.match(html, /data-port="3001"/);
-    assert.match(html, /data-tvbridge-status="missingBinary"/);
+    const defaultHtml = renderTVBridgeSettingsSection(ctrl, esc);
+    assert.equal((defaultHtml.match(/<option /g) ?? []).length, 3);
+    assert.match(defaultHtml, /value="lg_webos_ssap"/);
+    assert.match(defaultHtml, /value="xiaomi_mitv_6095"/);
+    assert.match(defaultHtml, /value="hisense_vidaa_mqtt"/);
+    assert.match(defaultHtml, /data-port="3001"/);
+    assert.match(defaultHtml, /data-port="6095"/);
+    assert.match(defaultHtml, /data-port="36669"/);
+    assert.match(defaultHtml, /data-tvbridge-experimental/);
+    assert.match(defaultHtml, /data-tvbridge-status="missingBinary"/);
+
+    ctrl.setShowExperimentalDrivers(true);
+    const expandedHtml = renderTVBridgeSettingsSection(ctrl, esc);
+    assert.equal((expandedHtml.match(/<option /g) ?? []).length, 9);
+    assert.match(expandedHtml, /value="sony_bravia_psk"/);
+    assert.match(expandedHtml, /value="kodi_jsonrpc"/);
+  });
+
+  it("upgrades legacy short driver names from persisted config to canonical catalog IDs", () => {
+    const storage = memoryStorage({
+      [TV_BRIDGE_STORAGE_KEY]: JSON.stringify({
+        isEnabled: true,
+        idleShutdownSeconds: 900,
+        devices: [
+          { nativeId: "a", driver: "lg_webos", host: "192.168.1.2", name: "LG", roomName: "" },
+          { nativeId: "b", driver: "xiaomi_6095", host: "192.168.1.3", name: "Mi", roomName: "" },
+        ],
+      }),
+    });
+    const ctrl = new TVBridgeController({ storage, secrets: memorySecrets(), invoke: null });
+    assert.deepEqual(ctrl.config.devices.map((d) => d.driver), ["lg_webos_ssap", "xiaomi_mitv_6095"]);
   });
 
   it("stores pairing secrets in their own slot and never in the saved config", async () => {
@@ -131,7 +157,7 @@ describe("TV bridge section", () => {
     const secrets = memorySecrets();
     const ctrl = new TVBridgeController({ storage, secrets, invoke: null });
     ctrl.setEnabled(true);
-    assert.equal(await ctrl.addDevice({ name: "Sony", roomName: "", driver: "sony_bravia", host: "192.168.1.2", secret: "psk-sony-1234" }), true);
+    assert.equal(await ctrl.addDevice({ name: "Sony", roomName: "", driver: "sony_bravia_psk", host: "192.168.1.2", secret: "psk-sony-1234" }), true);
     assert.equal(await ctrl.addDevice({ name: "Kodi", roomName: "", driver: "kodi_jsonrpc", host: "192.168.1.3", secret: "ignored" }), true);
     const saved = storage.data[TV_BRIDGE_STORAGE_KEY] ?? "";
     assert.doesNotMatch(saved, /psk-sony-1234/);
@@ -155,14 +181,14 @@ describe("TV bridge section", () => {
     (form.elements.namedItem("name") as HTMLInputElement).value = "LG";
     (form.elements.namedItem("host") as HTMLInputElement).value = "192.168.1.5";
     const driver = form.elements.namedItem("driver") as HTMLSelectElement;
-    driver.value = "lg_webos";
+    driver.value = "lg_webos_ssap";
     driver.dispatchEvent(new win.Event("change", { bubbles: true }) as unknown as Event);
     const secret = form.elements.namedItem("secret") as HTMLInputElement;
     assert.equal(secret.hidden, false);
     secret.value = "lg-client-key";
     form.dispatchEvent(new win.Event("submit", { bubbles: true, cancelable: true }) as unknown as Event);
     await new Promise((resolve) => setTimeout(resolve, 0));
-    assert.equal(ctrl.config.devices[0]?.driver, "lg_webos");
+    assert.equal(ctrl.config.devices[0]?.driver, "lg_webos_ssap");
     assert.doesNotMatch(storage.data[TV_BRIDGE_STORAGE_KEY] ?? "", /lg-client-key/);
   });
 
@@ -188,10 +214,10 @@ describe("TV bridge section", () => {
     await ctrl.execute({ kind: "mediaSeek", entityId: ID, positionSec: 42 });
     await ctrl.settle();
     const exec = rec.calls.find((c) => c.frame?.method === "control.execute")!;
-    const params = exec.frame!.params as { nativeId: string; verb: string; args: { position: number } };
+    const params = exec.frame!.params as { nativeId: string; verb: string; args: { positionSec: number } };
     assert.equal(params.nativeId, "tv-a");
     assert.equal(params.verb, "media.seek");
-    assert.equal(params.args.position, 42);
+    assert.equal(params.args.positionSec, 42);
   });
 
   it("sleeps on hide, shuts down on dispose and on switch-off", async () => {

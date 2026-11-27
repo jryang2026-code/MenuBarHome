@@ -47,6 +47,17 @@ function makeHighRiskPlug(id: string, isOn: boolean, name = "电暖器插座"): 
   };
 }
 
+function makeCover(id: string, subtype: "garage-door" | "curtain", positionPercent: number, name: string): SmartDevice {
+  return {
+    id, name, roomId: "room-garage", roomName: "车库", model: `test.cover.${subtype}`, isOnline: true,
+    kind: {
+      kind: "cover", entityId: `cover.${id}`, subtype, positionPercent,
+      positionWritable: true, openDescription: "Open", closeDescription: "Close", pauseDescription: "Pause",
+      batteryPercent: null, faultText: null, motion: "stopped",
+    },
+  };
+}
+
 const snap = (deviceId: string, baseline: boolean, applied: boolean): AutomationContextSnapshot => ({
   deviceId, baseline: { field: "power", boolValue: baseline }, applied: { field: "power", boolValue: applied },
 });
@@ -64,6 +75,11 @@ function makeHost(devices: SmartDevice[], onCommand?: (cmd: DeviceCommand) => bo
       } else if (cmd.kind === "setSwitch") {
         const dev = host.devices.find((d) => d.kind.kind === "plug" && d.kind.switchEntityId === cmd.entityId);
         if (dev?.kind.kind === "plug") dev.kind = { ...dev.kind, isOn: cmd.isOn };
+      } else if (cmd.kind === "setSelectOption") {
+        const dev = host.devices.find((d) => d.kind.kind === "cover" && d.kind.entityId === cmd.entityId);
+        if (dev?.kind.kind === "cover") {
+          dev.kind = { ...dev.kind, positionPercent: cmd.option === dev.kind.openDescription ? 100 : 0 };
+        }
       }
       return true;
     },
@@ -199,8 +215,84 @@ describe("AutomationEngine context restore parity", () => {
     await engine.dispatchEvent(host, { kind: "focusModeChanged", enabled: false }, { nowMs: 1_800_000_010_000 });
     assert.equal(commands.length, 1);
     assert.equal(host.replyBanner?.isError, true);
-    assert.match(host.replyBanner?.text ?? "", /跳过 1 台需要重新开启的高风险设备/);
+    assert.match(host.replyBanner?.text ?? "", /跳过 1 台需要确认的高风险设备/);
+    assert.doesNotMatch(host.replyBanner?.text ?? "", /需要重新开启/);
     assert.equal(engine.contextStack.isEmpty, true);
+  });
+
+  it("blocks garage-door close on restore while still closing safe curtains (#558)", async () => {
+    const engine = new AutomationEngine(new MemoryStorage());
+    engine.primeFocusModeBaseline(false);
+    engine.store.save([createAutomationRule({
+      id: "garage-rule", trigger: "focusModeEnabled", action: { kind: "devices", deviceIds: ["garage", "curtain"], isOn: true },
+      highRiskApproved: true, restoreWhenContextEnds: true,
+    })]);
+    const { host, commands } = makeHost([
+      makeCover("garage", "garage-door", 0, "车库门"),
+      makeCover("curtain", "curtain", 0, "客厅窗帘"),
+    ]);
+    const t0 = 1_800_000_000_000;
+    await engine.dispatchEvent(host, { kind: "focusModeChanged", enabled: true }, { nowMs: t0 });
+    assert.deepEqual(commands, [
+      { kind: "setSelectOption", entityId: "cover.garage", option: "Open" },
+      { kind: "setSelectOption", entityId: "cover.curtain", option: "Open" },
+    ]);
+
+    await engine.dispatchEvent(host, { kind: "focusModeChanged", enabled: false }, { nowMs: t0 + 10_000 });
+    assert.deepEqual(commands, [
+      { kind: "setSelectOption", entityId: "cover.garage", option: "Open" },
+      { kind: "setSelectOption", entityId: "cover.curtain", option: "Open" },
+      { kind: "setSelectOption", entityId: "cover.curtain", option: "Close" },
+    ]);
+    assert.equal(host.replyBanner?.isError, true);
+    assert.match(host.replyBanner?.text ?? "", /跳过 1 台需要确认的高风险设备/);
+    assert.doesNotMatch(host.replyBanner?.text ?? "", /需要重新开启/);
+    assert.equal(engine.contextStack.isEmpty, true);
+  });
+
+  it("commits blocked high-risk restores before host.applyCommand so an exception cannot leave them pending (#558)", async () => {
+    const storage = new MemoryStorage();
+    const engine = new AutomationEngine(storage);
+    engine.store.save([createAutomationRule({
+      id: "throw-rule", trigger: "focusModeEnabled", action: { kind: "devices", deviceIds: ["heater", "lamp"], isOn: false },
+      highRiskApproved: true, restoreWhenContextEnds: true,
+    })]);
+    const t0 = 1_800_000_000_000;
+    engine.contextStack.push("throw-rule", [snap("heater", true, false), snap("lamp", true, false)], t0);
+    const { host } = makeHost([makeHighRiskPlug("heater", false), makeLight("lamp", false)], () => {
+      throw new Error("transport crashed");
+    });
+
+    await assert.rejects(
+      engine.restoreContextsIfNeeded("focusModeDisabled", host, t0 + 10_000),
+      /transport crashed/,
+    );
+    // Blocked heater was already committed and persisted before applyCommand threw; only lamp remains.
+    assert.equal(engine.contextStack.count, 1);
+    assert.deepEqual(engine.contextStack.allFrames[0]!.snapshots.map((s) => s.deviceId), ["lamp"]);
+    const persisted = new AutomationContextStack(storage, t0 + 10_000);
+    assert.deepEqual(persisted.allFrames[0]!.snapshots.map((s) => s.deviceId), ["lamp"]);
+  });
+
+  it("merges skipped high-risk notice and failed safe-device notice in the same restore batch (#558)", async () => {
+    const engine = new AutomationEngine(new MemoryStorage());
+    engine.primeFocusModeBaseline(false);
+    engine.store.save([createAutomationRule({
+      id: "merge-rule", trigger: "focusModeEnabled", action: { kind: "devices", deviceIds: ["heater", "lamp"], isOn: false },
+      highRiskApproved: true, restoreWhenContextEnds: true,
+    })]);
+    const { host } = makeHost(
+      [makeHighRiskPlug("heater", true), makeLight("lamp", true)],
+      (cmd) => !(cmd.kind === "setLightPower" && cmd.isOn),
+    );
+    const t0 = 1_800_000_000_000;
+    await engine.dispatchEvent(host, { kind: "focusModeChanged", enabled: true }, { nowMs: t0 });
+    await engine.dispatchEvent(host, { kind: "focusModeChanged", enabled: false }, { nowMs: t0 + 10_000 });
+
+    assert.equal(host.replyBanner?.isError, true);
+    assert.match(host.replyBanner?.text ?? "", /1 台需要确认的高风险设备/);
+    assert.match(host.replyBanner?.text ?? "", /1 台设备还原失败/);
+    assert.deepEqual(engine.contextStack.allFrames[0]!.snapshots.map((s) => s.deviceId), ["lamp"]);
   });
 
   it("restores a light even when the same frame contains a blocked heater write", async () => {
