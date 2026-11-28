@@ -1183,6 +1183,13 @@ interface RefreshMiAccountsOptions {
   readonly clientFactory?: (session: MiSession, transport: HttpTransport) => MiCloudClient;
   /** Device-type pruning inputs; absent means every card is synthesized and read as before. */
   readonly prune?: MiotAccountPruneOptions;
+  /** Called as soon as a Stage-1 device list (topology + specs) is ready, before property reads finish. */
+  readonly onDeviceListReady?: (snapshot: {
+    readonly merged: MergedMiAccountsSnapshot;
+    readonly children: Record<string, AccountChildSnapshot>;
+  }) => void;
+  /** Optional staleness probe so a superseded home switch skips property/scene fetches. */
+  readonly isStale?: () => boolean;
 }
 
 export interface MiotAccountPruneOptions {
@@ -1235,6 +1242,8 @@ export async function refreshMiAccountsConcurrently(options: RefreshMiAccountsOp
     }
   }
 
+  const stage1Children: Record<string, AccountChildSnapshot> = {};
+
   const refreshOne = async (account: MiAccount,
     index: number,
   ): Promise<AccountChildSnapshot> => { const isPrimary = index === 0;
@@ -1264,13 +1273,31 @@ export async function refreshMiAccountsConcurrently(options: RefreshMiAccountsOp
       if (readPaused && previous && !previous.propValues) {
         return { ...previous, account, tokenStatus: preTokenStatus };
       }
-      const discovered = readPaused
-        ? { devices: previous?.allDevices ?? [], rooms: previous?.allRooms ?? [] }
-        : await discoverMiAccountDevicesAndRooms(client);
       const rawSelection = MiAccountScope.scopedSelectionForAccount(effectiveSelectedHomeId,
         account.id,
         allAccountIds,
       );
+      const skipDiscoveryForOtherAccount =
+        rawSelection === MiAccountScope.OTHER_ACCOUNT_HOME_SENTINEL &&
+        previous !== undefined &&
+        previous.allRooms.length > 0;
+      const discovered = readPaused || skipDiscoveryForOtherAccount
+        ? { devices: previous?.allDevices ?? [], rooms: previous?.allRooms ?? [] }
+        : await discoverMiAccountDevicesAndRooms(client);
+      if (options.isStale?.()) {
+        return {
+          account,
+          home: { rooms: [], devices: [], environmentReadings: [], scenes: [] },
+          homes: previous?.homes ?? [],
+          rawDevices: [],
+          allDevices: discovered.devices,
+          allRooms: discovered.rooms,
+          specs: previous?.specs ?? {},
+          lightGroupOwners: new Map(),
+          status: { kind: "connecting" },
+          tokenStatus: preTokenStatus,
+        };
+      }
       const filtered = filterDevicesByRawHomeSelection(discovered.devices,
         discovered.rooms,
         rawSelection,
@@ -1305,11 +1332,68 @@ export async function refreshMiAccountsConcurrently(options: RefreshMiAccountsOp
       // One plan per round: the same keys feed LAN/cloud batching, single source, dual source and
       // every account, and a closed category's alert-only devices keep just the reads they need.
       const propKeys = prune ? [...prune.readKeys] : collectAccountMiotPropKeys(filtered.devices, specs);
+      const rawHomes = buildHomeOptionsFromMiRooms(discovered.rooms);
+      if (options.onDeviceListReady && !options.isStale?.()) {
+        const stage1RawHome = MiotSynthesizer.synthesize(
+          prune ? prune.visibleRecords : filtered.devices,
+          filtered.rooms,
+          specs,
+          new Map<string, unknown>(),
+        );
+        const stage1Stamped = stampAccountSnapshot(stage1RawHome, rawHomes, account, namespaceIds);
+        const stage1Child: AccountChildSnapshot = {
+          account,
+          home: stage1Stamped.home,
+          homes: stage1Stamped.homes,
+          rawDevices: filtered.devices,
+          allDevices: discovered.devices,
+          allRooms: discovered.rooms,
+          specs,
+          lightGroupOwners,
+          status: { kind: "connected" },
+          tokenStatus: preTokenStatus,
+        };
+        stage1Children[account.id] = stage1Child;
+        if (stage1Stamped.home.devices.length > 0) {
+          options.onDeviceListReady({
+            merged: mergeMiAccountSnapshots(accounts, stage1Children, resetSelectedHome),
+            children: { ...stage1Children },
+          });
+        }
+      }
+      if (options.isStale?.()) {
+        return stage1Children[account.id] ?? {
+          account,
+          home: { rooms: [], devices: [], environmentReadings: [], scenes: [] },
+          homes: previous?.homes ?? [],
+          rawDevices: filtered.devices,
+          allDevices: discovered.devices,
+          allRooms: discovered.rooms,
+          specs,
+          lightGroupOwners,
+          status: { kind: "connecting" },
+          tokenStatus: preTokenStatus,
+        };
+      }
       if (!options.clientFactory) client.withLAN(filtered.devices, discovered.rooms);
       const values = new Map(readPaused ? previous?.propValues : undefined);
       if (propKeys.length > 0) {
         const observed = await client.getProps(propKeys, { lanOnly: readPaused });
         for (const [key, value] of observed) values.set(key, value);
+      }
+      if (options.isStale?.()) {
+        return stage1Children[account.id] ?? {
+          account,
+          home: { rooms: [], devices: [], environmentReadings: [], scenes: [] },
+          homes: previous?.homes ?? [],
+          rawDevices: filtered.devices,
+          allDevices: discovered.devices,
+          allRooms: discovered.rooms,
+          specs,
+          lightGroupOwners,
+          status: { kind: "connecting" },
+          tokenStatus: preTokenStatus,
+        };
       }
 
       const sceneSnapshot = readPaused ? previous?.sceneSnapshot : await refreshMiScenes(
@@ -1324,7 +1408,6 @@ export async function refreshMiAccountsConcurrently(options: RefreshMiAccountsOp
         ? MiotSynthesizer.synthesize(prune.safetyRecords, filtered.rooms, specs, values)
         : null;
       rawHome.scenes.push(...miSceneRows(sceneSnapshot, filtered.rooms, account.id));
-      const rawHomes = buildHomeOptionsFromMiRooms(discovered.rooms);
       const stamped = stampAccountSnapshot(rawHome, rawHomes, account, namespaceIds);
       const stampedSafety = safetyHome ? stampAccountSnapshot(safetyHome, [], account, namespaceIds) : null;
 

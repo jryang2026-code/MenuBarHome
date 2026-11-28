@@ -189,6 +189,10 @@ extension HomeStore {
     public func startListening() {
         refreshGenericCameraCards()
         hasReceivedInitialSnapshot = false
+        isSwitchingMiHome = false
+        homeSwitchTask?.cancel()
+        homeSwitchTask = nil
+        cachedMiHomeSnapshots.removeAll()
         connectedBackends = []
         deviceBackends = [:]
         deviceTransportDiagnostics = [:]
@@ -381,6 +385,9 @@ extension HomeStore {
             if connectionStatus != status { connectionStatus = status }
             if case .disconnected = status {
                 connectedBackends = []
+                if isSwitchingMiHome, devices.isEmpty {
+                    isSwitchingMiHome = false
+                }
             } else if case .connected = status {
                 if connectedBackends.isEmpty {
                     if homeBackend == .demo {
@@ -450,6 +457,9 @@ extension HomeStore {
             applyMiotTypePruneReport(report)
 
         case .snapshotUpdated(let rawSnapshot):
+            if let snapGen = rawSnapshot.miHomeGeneration, snapGen < miHomeGeneration {
+                return
+            }
             var snapshot = rawSnapshot
             let snapshotEpoch = rawSnapshot.miAccountsEpoch
             _ = recordMiotDidAccountScopes(from: rawSnapshot.devices, facetsByDeviceId: rawSnapshot.deviceFacets)
@@ -576,6 +586,7 @@ extension HomeStore {
             if selectedMiHomeId != nil, userDefaults.string(forKey: MiCloudProvider.selectedHomeKey) == nil {
                 invalidateUndoContext()
                 selectedMiHomeId = nil
+                isSwitchingMiHome = false
                 selectRoom(nil)
             }
             if !hasReceivedInitialSnapshot, snapshot.isInitialLoadComplete { hasReceivedInitialSnapshot = true }
@@ -803,6 +814,19 @@ extension HomeStore {
                 devices = nextDevices
             } else if backendsChanged || pairedChanged || facetsChanged {
                 syncIndexedDevices(from: devices)
+            }
+            if isSwitchingMiHome,
+               rawSnapshot.hasXiaomiSnapshotForGeneration,
+               (rawSnapshot.isInitialLoadComplete || !nextDevices.isEmpty) {
+                isSwitchingMiHome = false
+            }
+            if !isSwitchingMiHome,
+               rawSnapshot.isInitialLoadComplete,
+               rawSnapshot.closesAwayGap,
+               rawSnapshot.hasXiaomiSnapshotForGeneration,
+               hasLiveMiHomeContext,
+               !hasEnabledHASource {
+                cacheCurrentMiHomeSnapshot(forKey: Self.miHomeCacheKey(for: selectedMiHomeId))
             }
             adoptPairedDevicePreferences(snapshot.preferenceAdoptions)
             if let expandedId = expandedDeviceId,
@@ -1129,7 +1153,8 @@ extension HomeStore {
             homeAssistant: ha,
             xiaomiCloud: mi,
             defaults: userDefaults,
-            pinBox: pinnedDeviceSourcesBox
+            pinBox: pinnedDeviceSourcesBox,
+            initialMiHomeGeneration: miHomeGeneration
         )
         activeDualProvider = composite
         syncMiotTypePrunePolicy()
@@ -1140,7 +1165,8 @@ extension HomeStore {
         homeAssistant: (any HomeProvider)?,
         xiaomiCloud: (any HomeProvider)?,
         defaults: UserDefaults,
-        pinBox: DeviceSourcePinBox? = nil
+        pinBox: DeviceSourcePinBox? = nil,
+        initialMiHomeGeneration: UInt64 = 0
     ) -> DualSourceHomeProvider {
         let box = UncheckedUserDefaults(defaults)
         let stored = defaults.dictionary(forKey: ViewPreferenceKeys.canonicalDeviceIds) as? [String: String] ?? [:]
@@ -1177,7 +1203,8 @@ extension HomeStore {
             },
             persistCanonicalIDs: save,
             graceNow: { SuspendingClock.now },
-            fallbackRecheckTimer: DispatchFallbackRecheckTimer()
+            fallbackRecheckTimer: DispatchFallbackRecheckTimer(),
+            initialMiHomeGeneration: initialMiHomeGeneration
         )
     }
 
@@ -1297,6 +1324,8 @@ extension HomeStore {
         }
         if haCredentialUpdate != nil || nextHAReplacement.shouldReplace || nextMiReplacement.shouldReplace || miAccountsChanged {
             hasReceivedInitialSnapshot = false
+            isSwitchingMiHome = false
+            cachedMiHomeSnapshots.removeAll()
             listeningSnapshotGeneration = snapshotGeneration
         }
         syncScheduledCommandScopeIfNeeded()
@@ -1371,6 +1400,10 @@ extension HomeStore {
         if backend == .demo, homeBackend == .demo, provider is DemoHomeProvider { return }
         if backend != .demo, homeBackend == backend, provider is DualSourceHomeProvider { return }
         invalidateUndoContext()
+        isSwitchingMiHome = false
+        homeSwitchTask?.cancel()
+        homeSwitchTask = nil
+        cachedMiHomeSnapshots.removeAll()
 
         let previousBackend = homeBackend
         if backend == .demo, previousBackend != .demo {
@@ -1531,6 +1564,10 @@ extension HomeStore {
         self.miSessionScopeIdentifier = nil
         self.homes = []
         self.selectedMiHomeId = nil
+        self.isSwitchingMiHome = false
+        self.homeSwitchTask?.cancel()
+        self.homeSwitchTask = nil
+        self.cachedMiHomeSnapshots.removeAll()
         userDefaults.removeObject(forKey: MiCloudProvider.selectedHomeKey)
         if homeBackend == .xiaomiCloud || provider is DualSourceHomeProvider {
             invalidateUndoContext()
@@ -1677,6 +1714,8 @@ extension HomeStore {
             selectedMiHomeId = nil
             userDefaults.removeObject(forKey: MiCloudProvider.selectedHomeKey)
         }
+        isSwitchingMiHome = false
+        cachedMiHomeSnapshots.removeAll()
         if homeBackend == .xiaomiCloud || provider is DualSourceHomeProvider {
             // Home Assistant keeps driving its paired cards: their copied `accountId` must not take
             // them off the panel with the account they were paired with (ADR-0008), but the signed-out
@@ -2135,10 +2174,108 @@ extension HomeStore {
         return await LGWebOSClient.discoverOnLAN(hostHint: effectiveHint)
     }
 
+    private static func miHomeCacheKey(for homeId: String?) -> String {
+        homeId ?? "__all__"
+    }
+
+    private var hasLiveMiHomeContext: Bool {
+        guard homeBackend != .demo else { return false }
+        if !homes.isEmpty { return true }
+        if activeMiAccountsProvider != nil { return true }
+        if provider is MiCloudProvider || provider is MiAccountsProvider { return true }
+        if provider is DualSourceHomeProvider, hasMiSource || !miAccounts.isEmpty { return true }
+        return false
+    }
+
+    private func cacheCurrentMiHomeSnapshot(forKey key: String) {
+        let genericIds = Set(genericCameraCards.map(\.id))
+        let adapterIds = Set(adapterDevices.map(\.id))
+        let lgId = latestLGDevice?.id
+        let miDevices = devices.filter { dev in
+            !genericIds.contains(dev.id) && !adapterIds.contains(dev.id) && dev.id != lgId
+        }
+        let miIds = Set(miDevices.map(\.id))
+        cachedMiHomeSnapshots[key] = CachedMiHomeSnapshot(
+            rooms: rooms,
+            devices: miDevices,
+            deviceFacets: deviceFacets.filter { miIds.contains($0.key) },
+            deviceTransportDiagnostics: deviceTransportDiagnostics.filter { miIds.contains($0.key) },
+            lightGroupOwners: lightGroupOwners,
+            environmentReadings: environmentReadings.filter { miIds.contains($0.id) },
+            scenes: scenes
+        )
+    }
+
+    private func applyCachedMiHomeSnapshot(_ cached: CachedMiHomeSnapshot) {
+        var nextRooms = cached.rooms
+        var baseDevices = cached.devices
+        if var lgDev = latestLGDevice, lgConfig.isEnabled, capabilitySelection.enabledCategories.contains(.tv) {
+            if let matchedRoom = nextRooms.first(where: { $0.id == lgDev.roomId || $0.name == lgDev.roomName }) {
+                lgDev.roomId = matchedRoom.id
+                latestLGDevice = lgDev
+            } else {
+                nextRooms.append(RoomArea(id: lgDev.roomId, name: lgDev.roomName, sortOrder: 1))
+            }
+            if !baseDevices.contains(where: { $0.id == lgDev.id }) {
+                baseDevices.insert(lgDev, at: 0)
+            }
+        }
+        rooms = nextRooms
+        deviceFacets = cached.deviceFacets
+        deviceTransportDiagnostics = cached.deviceTransportDiagnostics
+        lightGroupOwners = cached.lightGroupOwners
+        environmentReadings = cached.environmentReadings
+        scenes = cached.scenes
+        devices = devicesWithAliases(baseDevices + genericCameraCards + adapterCards(excluding: baseDevices))
+        expandedDeviceId = nil
+        focusedDeviceId = nil
+    }
+
+    private func clearMiDevicesForHomeSwitch() {
+        expandedDeviceId = nil
+        focusedDeviceId = nil
+        if hasEnabledHASource {
+            let keptDeviceIds = Set(devices.compactMap { dev -> String? in
+                if deviceBackends[dev.id] == .homeAssistant { return dev.id }
+                if dev.id == latestLGDevice?.id { return dev.id }
+                if genericCameraCards.contains(where: { $0.id == dev.id }) { return dev.id }
+                if adapterDevices.contains(where: { $0.id == dev.id }) { return dev.id }
+                return nil
+            })
+            devices.removeAll { !keptDeviceIds.contains($0.id) }
+            deviceFacets = deviceFacets.filter { keptDeviceIds.contains($0.key) }
+            deviceTransportDiagnostics = deviceTransportDiagnostics.filter { keptDeviceIds.contains($0.key) }
+            environmentReadings.removeAll { !keptDeviceIds.contains($0.id) }
+            lightGroupOwners = [:]
+            rooms.removeAll { MiAccountScope.owner(of: $0.id) != nil }
+            scenes.removeAll { MiCloudScene.accountID(for: $0.entityId) != nil }
+        } else {
+            var baseDevices: [SmartDevice] = []
+            var nextRooms: [RoomArea] = []
+            if let lgDev = latestLGDevice, lgConfig.isEnabled, capabilitySelection.enabledCategories.contains(.tv) {
+                baseDevices.append(lgDev)
+                nextRooms.append(RoomArea(id: lgDev.roomId, name: lgDev.roomName, sortOrder: 1))
+            }
+            rooms = nextRooms
+            deviceFacets = [:]
+            deviceTransportDiagnostics = [:]
+            lightGroupOwners = [:]
+            environmentReadings = []
+            scenes = []
+            devices = devicesWithAliases(baseDevices + genericCameraCards + adapterCards(excluding: baseDevices))
+        }
+    }
+
     /// Switches the visible Mi Home; nil shows every home's devices.
     public func selectMiHome(_ id: String?) {
         guard selectedMiHomeId != id else { return }
+        let liveMiContext = hasLiveMiHomeContext
+        if liveMiContext, !hasEnabledHASource, hasReceivedInitialSnapshot, !isSwitchingMiHome {
+            cacheCurrentMiHomeSnapshot(forKey: Self.miHomeCacheKey(for: selectedMiHomeId))
+        }
         invalidateUndoContext()
+        miHomeGeneration &+= 1
+        let targetGeneration = miHomeGeneration
         if let id {
             userDefaults.set(id, forKey: MiCloudProvider.selectedHomeKey)
         } else {
@@ -2146,7 +2283,28 @@ extension HomeStore {
         }
         selectedMiHomeId = id
         selectRoom(nil)
-        refreshNow()
+
+        if liveMiContext {
+            if !hasEnabledHASource, let cached = cachedMiHomeSnapshots[Self.miHomeCacheKey(for: id)] {
+                applyCachedMiHomeSnapshot(cached)
+                isSwitchingMiHome = false
+            } else {
+                clearMiDevicesForHomeSwitch()
+                isSwitchingMiHome = true
+            }
+        }
+
+        homeSwitchTask?.cancel()
+        guard !allConfiguredSourcesTurnedOff, !isIdentityUncertain else { return }
+        let targetProvider = provider
+        homeSwitchTask = Task { [weak self] in
+            await targetProvider.switchMiHome(generation: targetGeneration)
+            guard !Task.isCancelled, let self else { return }
+            if self.homeBackend != .demo, self.lgConfig.isEnabled, self.lgConfig.hasConfiguredHost,
+               let lgClient = self.lgWebOSClient {
+                await lgClient.start()
+            }
+        }
     }
 
     public func refreshNow() {

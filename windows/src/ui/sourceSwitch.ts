@@ -78,6 +78,8 @@ export function switchSource(host: SourceSwitchHost, reason: string): void {
   clearUndoHoverPause(app);
   host.timerSnapshot = null;
   host.isSyncingCloud = false;
+  app.isSwitchingHome = false;
+  app.clearCachedMiHomeSnapshots?.();
   host.isPollingQR = false;
   host.qrTicket = null;
   host.isResolvingIntent = false;

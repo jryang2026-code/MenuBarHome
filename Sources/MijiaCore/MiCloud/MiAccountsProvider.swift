@@ -137,6 +137,7 @@ public actor MiAccountsProvider: HomeProvider {
     private var children: [(account: MiAccount, provider: MiCloudProvider)] = []
     private var forwardTasks: [String: Task<Void, Never>] = [:]
     private var snapshots: [String: SynthesizedHome] = [:]
+    private var cachedHomesByAccount: [String: [HomeOption]] = [:]
     private var statuses: [String: ConnectionStatus] = [:]
     private var disconnectedStatuses: [String: ConnectionStatus] = [:]
     /// Accounts that delivered a post-poll snapshot (`closesAwayGap == true`) in the current wake cycle.
@@ -149,6 +150,7 @@ public actor MiAccountsProvider: HomeProvider {
     private var lastStatus: ConnectionStatus?
     private var pollingContext = PollingContext()
     private var configEpoch: Int = 0
+    private var homeGeneration: UInt64
     private var isShutDown = false
 
     func setConfigEpoch(_ epoch: Int) {
@@ -185,7 +187,8 @@ public actor MiAccountsProvider: HomeProvider {
         clearSelectedHome: @escaping @Sendable () -> Void = {
             UserDefaults.standard.removeObject(forKey: MiCloudProvider.selectedHomeKey)
         },
-        typePrunePolicyLoader: @escaping @Sendable () -> MiotTypePrunePolicy = { .unpruned() }
+        typePrunePolicyLoader: @escaping @Sendable () -> MiotTypePrunePolicy = { .unpruned() },
+        initialHomeGeneration: UInt64 = 0
     ) {
         self.accounts = accounts
         self.scopeBox = AccountScopeBox(accounts: accounts)
@@ -203,6 +206,7 @@ public actor MiAccountsProvider: HomeProvider {
         self.selectedHomeLoader = selectedHomeLoader
         self.clearSelectedHome = clearSelectedHome
         self.typePrunePolicyLoader = typePrunePolicyLoader
+        self.homeGeneration = initialHomeGeneration
     }
 
     public nonisolated func events() -> AsyncStream<HomeProviderEvent> {
@@ -263,7 +267,8 @@ public actor MiAccountsProvider: HomeProvider {
             followUpDelay: followUpDelay,
             cameraSessionReleaseDelay: cameraSessionReleaseDelay,
             selectedHomeLoader: scopedSelection(for: account),
-            typePrunePolicyLoader: typePrunePolicyLoader
+            typePrunePolicyLoader: typePrunePolicyLoader,
+            initialHomeGeneration: homeGeneration
         )
         children.append((account: account, provider: provider))
         let stream = provider.events()
@@ -309,6 +314,7 @@ public actor MiAccountsProvider: HomeProvider {
             } else {
                 forwardTasks.removeValue(forKey: entry.account.id)?.cancel()
                 snapshots.removeValue(forKey: entry.account.id)
+                cachedHomesByAccount.removeValue(forKey: entry.account.id)
                 statuses.removeValue(forKey: entry.account.id)
                 disconnectedStatuses.removeValue(forKey: entry.account.id)
                 localNetworkBlocksByAccount.removeValue(forKey: entry.account.id)
@@ -407,6 +413,23 @@ public actor MiAccountsProvider: HomeProvider {
         for child in currentChildren { await child.provider.shutdown() }
         continuation?.finish()
         continuation = nil
+    }
+
+    public func switchMiHome(generation: UInt64) async {
+        guard !isShutDown else { return }
+        if generation < homeGeneration { return }
+        homeGeneration = generation
+        for (accountId, snap) in snapshots where (snap.miHomeGeneration ?? 0) < generation {
+            snapshots.removeValue(forKey: accountId)
+            freshAccounts.remove(accountId)
+        }
+        rebuildDeviceOwners()
+        let providers = children.map(\.provider)
+        await withTaskGroup(of: Void.self) { group in
+            for provider in providers {
+                group.addTask { await provider.switchMiHome(generation: generation) }
+            }
+        }
     }
 
     public func refreshNow() async {
@@ -519,7 +542,13 @@ public actor MiAccountsProvider: HomeProvider {
         case .haTypePruneChanged:
             break
         case .snapshotUpdated(let home):
+            if let snapGen = home.miHomeGeneration, snapGen < homeGeneration {
+                return
+            }
             snapshots[accountId] = home
+            if !home.homes.isEmpty || cachedHomesByAccount[accountId] == nil {
+                cachedHomesByAccount[accountId] = home.homes
+            }
             localNetworkBlocksByAccount[accountId] = home.localNetworkBlockedFeatures
             publishLocalNetworkPermission()
             if !expiredAccounts.contains(accountId), !home.devices.isEmpty {
@@ -748,12 +777,15 @@ public actor MiAccountsProvider: HomeProvider {
             for scene in home.scenes where sceneIds.insert(scene.id).inserted { scenes.append(scene) }
         }
         for account in accounts {
-            guard let home = snapshots[account.id] else { continue }
-            for room in home.rooms where roomIds.insert(room.id).inserted { rooms.append(room) }
-            for option in home.homes where homeIds.insert(option.id).inserted { homes.append(option) }
+            if let home = snapshots[account.id] {
+                for room in home.rooms where roomIds.insert(room.id).inserted { rooms.append(room) }
+            }
+            let accountHomes = snapshots[account.id]?.homes ?? cachedHomesByAccount[account.id] ?? []
+            for option in accountHomes where homeIds.insert(option.id).inserted { homes.append(option) }
         }
         var merged = SynthesizedHome(rooms: rooms, devices: devices, environmentReadings: readings, scenes: scenes)
         merged.homes = homes
+        merged.miHomeGeneration = homeGeneration
         var effectiveStatuses = statuses
         for (id, disconnectedStatus) in disconnectedStatuses {
             effectiveStatuses[id] = disconnectedStatus

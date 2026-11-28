@@ -146,6 +146,10 @@ public protocol HomeProvider: Sendable {
     func events() -> AsyncStream<HomeProviderEvent>
     func execute(_ command: DeviceCommand) async throws
     func refreshNow() async
+    /// Cancels in-flight work for the previous Mi Home, stamps `generation` on subsequent snapshots,
+    /// and fetches the newly selected home immediately (publishing its device list before slower
+    /// property/status reads finish).
+    func switchMiHome(generation: UInt64) async
     /// Clears LAN failure cooldowns (for `deviceId`, or all devices when `nil`) and polls right away.
     func retryLAN(deviceId: String?) async
     /// Tells a polling provider whether the panel is open and the Mac is awake, so it can slow down or pause (#26).
@@ -177,6 +181,10 @@ public protocol HomeProvider: Sendable {
 }
 
 extension HomeProvider {
+    public func switchMiHome(generation: UInt64) async {
+        await refreshNow()
+    }
+
     public func retryLAN(deviceId: String?) async {
         await refreshNow()
     }
@@ -561,6 +569,8 @@ public actor HAWebSocketProvider: HomeProvider {
         finishEvents = { continuation.finish() }
         restartLoop()
     }
+
+    public func switchMiHome(generation: UInt64) async {}
 
     public func refreshNow() async {
         guard !isShutDown, !pollingContext.haTransportSuspended else { return }

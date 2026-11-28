@@ -237,6 +237,13 @@ public struct SynthesizedHome: Equatable, Sendable {
     public var freshAccountIds: Set<String> = []
     /// Monotonic configuration epoch stamped by `MiAccountsProvider` so `HomeStore` ignores buffered pre-rebuild snapshots.
     public var miAccountsEpoch: Int?
+    /// Monotonic Mi Home switch generation stamped by Mi providers so `HomeStore` and composite
+    /// providers discard stale snapshots from a previously selected home.
+    public var miHomeGeneration: UInt64?
+    /// False on dual-source snapshots emitted while a Mi Home switch is still waiting for the new
+    /// home's first Mi snapshot (so Home Assistant updates can keep rendering without ending the
+    /// Mi home-switch loading state prematurely).
+    public var hasXiaomiSnapshotForGeneration: Bool = true
     var devicePollCapturedEpochs: [String: ContinuousClock.Instant] = [:]
     var facetPollCapturedEpochs: [String: ContinuousClock.Instant] = [:]
     /// A Mi Cloud refresh emits the last values before the poll returns. That snapshot must not

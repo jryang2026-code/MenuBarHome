@@ -165,12 +165,28 @@ public actor MiCloudProvider: HomeProvider {
     private var pendingLANRetry: PendingLANRetry?
     private var isPolling = false
     private var isShutDown = false
+    private var homeGeneration: UInt64
+    private var pollEpoch: UInt64 = 0
+    private var activePollTask: Task<Void, any Error>?
+    private var isInErrorBackoff = false
     private static let wakeRefreshCooldown: Duration = .seconds(1)
     /// The loop's current wait; cancelling it makes the loop re-check `pollingContext` right away.
     private var waitTask: Task<Void, Never>?
     private var pollsSinceContextChange = 0
     /// Set on wake or unlock: poll once right away, however recent the last poll was.
     private var pollRequested = false
+
+    private enum PollAbort: Error {
+        case superseded
+    }
+
+    private enum PollOperation: Sendable {
+        case initialDiscoverAndPoll
+        case periodicPoll(refreshedTopology: Bool, shouldRefreshDeviceList: Bool)
+        case immediateRefresh
+        case homeSwitch
+        case lanRetry(PendingLANRetry)
+    }
 
     var isShutDownForTesting: Bool { isShutDown }
 
@@ -205,7 +221,8 @@ public actor MiCloudProvider: HomeProvider {
         followUpDelay: Duration = .milliseconds(800),
         cameraSessionReleaseDelay: Duration = .milliseconds(2500),
         selectedHomeLoader: @escaping @Sendable () -> String? = { UserDefaults.standard.string(forKey: MiCloudProvider.selectedHomeKey) },
-        typePrunePolicyLoader: @escaping @Sendable () -> MiotTypePrunePolicy = { .unpruned() }
+        typePrunePolicyLoader: @escaping @Sendable () -> MiotTypePrunePolicy = { .unpruned() },
+        initialHomeGeneration: UInt64 = 0
     ) {
         self.account = account
         self.sessionLoader = sessionLoader
@@ -225,6 +242,7 @@ public actor MiCloudProvider: HomeProvider {
         self.cameraSessionReleaseDelay = cameraSessionReleaseDelay
         self.selectedHomeLoader = selectedHomeLoader
         self.typePrunePolicyLoader = typePrunePolicyLoader
+        self.homeGeneration = initialHomeGeneration
         self.lastPolledSelection = selectedHomeLoader()
     }
 
@@ -252,6 +270,9 @@ public actor MiCloudProvider: HomeProvider {
     public func shutdown() async {
         guard !isShutDown else { return }
         isShutDown = true
+        pollEpoch &+= 1
+        activePollTask?.cancel()
+        activePollTask = nil
         clearReachability()
         for task in channelWriteTasks.values { task.cancel() }
         for entry in pendingChannelWrites.values.joined() { entry.reply.resume(throwing: MiIOError.shutDown) }
@@ -284,6 +305,67 @@ public actor MiCloudProvider: HomeProvider {
         }
     }
 
+    public func switchMiHome(generation: UInt64) async {
+        guard !isShutDown else { return }
+        if generation < homeGeneration { return }
+        homeGeneration = generation
+        pollEpoch &+= 1
+        let epoch = pollEpoch
+
+        // Cancel in-flight work for the previous home immediately so the new home never queues behind it.
+        activePollTask?.cancel()
+        activePollTask = nil
+        isPolling = false
+        if isInErrorBackoff {
+            waitTask?.cancel()
+        }
+        clearReachability()
+        syncReachabilitySelection()
+        pendingRefreshAfterPoll = false
+        pendingLANRetry = nil
+        wakePollPending = false
+        lastWakePollAt = nil
+        for task in followUpTasks.values { task.cancel() }
+        followUpTasks.removeAll()
+
+        if let rejected = rejectedSession {
+            guard let current = currentSession(), !current.sharesCredentials(with: rejected) else {
+                emitSnapshot(closesAwayGap: false)
+                return
+            }
+            restartLoop()
+            return
+        }
+
+        let selected = selectedHomeLoader()
+        if selected == Self.otherAccountHomeSentinel {
+            lastPolledSelection = selected
+            emitSnapshot(closesAwayGap: false)
+            return
+        }
+
+        guard let api else {
+            restartLoop()
+            return
+        }
+
+        // If we already have topology + polled values for this home, publish them immediately
+        // while refreshing in the background.
+        let hasKnownScopeTopology = !devices.isEmpty && (
+            selected == nil || Self.homeOptions(from: rooms).contains(where: { $0.id == selected })
+        )
+        if hasKnownScopeTopology, lastReportedConnected, hasValuesForScope() {
+            emitSnapshot(closesAwayGap: false)
+        }
+
+        if let lastCloudError, !MiCloudClient.isRateLimitError(lastCloudError) {
+            cloudRetryNotBefore = nil
+        }
+        prepareLocalNetworkRetryOnRefresh()
+        lastFullPollAt = .now
+        await runAdHocPoll(api, epoch: epoch, operation: .homeSwitch)
+    }
+
     public func refreshNow() async {
         guard !isShutDown else { return }
         syncReachabilitySelection()
@@ -294,21 +376,25 @@ public actor MiCloudProvider: HomeProvider {
             restartLoop()
             return
         }
+        let selectionChanged = selectedHomeLoader() != lastPolledSelection
+        if selectionChanged {
+            await switchMiHome(generation: homeGeneration)
+            return
+        }
         guard let api else {
             restartLoop()
             return
         }
         let withinWakeCooldown = wakePollPending
             || (lastWakePollAt.map { ContinuousClock.now - $0 < Self.wakeRefreshCooldown } ?? false)
-        let selectionChanged = selectedHomeLoader() != lastPolledSelection
         if isPolling {
-            if selectionChanged || !withinWakeCooldown {
+            if !withinWakeCooldown {
                 pendingRefreshAfterPoll = true
                 refreshSweepPending = true
             }
             return
         }
-        if withinWakeCooldown, !selectionChanged, !devices.isEmpty, lastReportedConnected {
+        if withinWakeCooldown, !devices.isEmpty, lastReportedConnected {
             return
         }
         // After switching homes, devices of a home never polled would flash as off; wait for their values.
@@ -317,7 +403,10 @@ public actor MiCloudProvider: HomeProvider {
         }
         refreshSweepPending = true
         prepareLocalNetworkRetryOnRefresh()
-        await performImmediatePoll(api)
+        if let lastCloudError, !MiCloudClient.isRateLimitError(lastCloudError) {
+            cloudRetryNotBefore = nil
+        }
+        await runAdHocPoll(api, epoch: pollEpoch, operation: .immediateRefresh)
     }
 
     public func retryLAN(deviceId: String?) async {
@@ -348,7 +437,7 @@ public actor MiCloudProvider: HomeProvider {
             }
             return
         }
-        await performImmediateLANRetry(api, retry: request)
+        await runAdHocPoll(api, epoch: pollEpoch, operation: .lanRetry(request))
     }
 
     private func resolvedTargetDids(for retry: PendingLANRetry) -> Set<String>? {
@@ -405,7 +494,19 @@ public actor MiCloudProvider: HomeProvider {
         }
     }
 
-    private func executeLANRetry(_ api: any MiCloudAPI, retry: PendingLANRetry) async throws {
+    private func ensurePollCurrent(_ expectedEpoch: UInt64?) throws {
+        if let expectedEpoch, pollEpoch != expectedEpoch {
+            throw PollAbort.superseded
+        }
+        if isShutDown { throw CancellationError() }
+        try Task.checkCancellation()
+    }
+
+    private func executeLANRetry(
+        _ api: any MiCloudAPI,
+        retry: PendingLANRetry,
+        expectedEpoch: UInt64? = nil
+    ) async throws {
         let targetDids = resolvedTargetDids(for: retry)
         clearLANCooldownForRetry(targetDids: targetDids)
         lastBroadcastSweepAt = nil
@@ -415,51 +516,42 @@ public actor MiCloudProvider: HomeProvider {
         let scopedDevices = scopedDevicesAndRooms().devices
         let targetKeys = propKeys(of: scopedDevices, dids: targetDids)
         if !targetKeys.isEmpty, hasActiveLANEndpointInScope(dids: targetDids) {
-            try await poll(api, dids: targetDids, allowBroadcastSweepOnFailure: true)
+            try await poll(api, dids: targetDids, allowBroadcastSweepOnFailure: true, expectedEpoch: expectedEpoch)
             return
         }
 
         if let lastCloudError, !MiCloudClient.isRateLimitError(lastCloudError) {
             cloudRetryNotBefore = nil
         }
-        try await discover(api)
-        try await poll(api, dids: nil, allowBroadcastSweepOnFailure: true)
+        try await discover(api, expectedEpoch: expectedEpoch)
+        try await poll(api, dids: nil, allowBroadcastSweepOnFailure: true, expectedEpoch: expectedEpoch)
     }
 
-    private func performImmediateLANRetry(_ api: any MiCloudAPI, retry: PendingLANRetry) async {
+    private func runAdHocPoll(_ api: any MiCloudAPI, epoch: UInt64, operation: PollOperation) async {
         do {
-            try await performTrackedPoll(api) {
-                try await executeLANRetry(api, retry: retry)
-            }
+            try await runTrackedPoll(api, epoch: epoch, operation: operation)
+            guard pollEpoch == epoch, !isShutDown else { return }
             reportConnected()
+        } catch PollAbort.superseded {
+            return
+        } catch is CancellationError {
+            return
         } catch MiCloudError.sessionExpired {
+            guard pollEpoch == epoch, !isShutDown else { return }
             clearExpiredSnapshot()
             report(MiCloudError.sessionExpired)
         } catch {
-            report(error)
-        }
-    }
-
-    private func performImmediatePoll(_ api: any MiCloudAPI) async {
-        if let lastCloudError, !MiCloudClient.isRateLimitError(lastCloudError) {
-            cloudRetryNotBefore = nil
-        }
-        do {
-            try await performTrackedPoll(api) {
-                try await discover(api)
-                try await poll(api, dids: nil)
-            }
-            reportConnected()
-        } catch MiCloudError.sessionExpired {
-            clearExpiredSnapshot()
-            report(MiCloudError.sessionExpired)
-        } catch {
+            guard pollEpoch == epoch, !isShutDown else { return }
             report(error)
         }
     }
 
     private func restartLoop() {
         guard !isShutDown else { return }
+        pollEpoch &+= 1
+        activePollTask?.cancel()
+        activePollTask = nil
+        isPolling = false
         clearReachability()
         loopTask?.cancel()
         loopTask = Task { await self.runLoop() }
@@ -506,41 +598,36 @@ public actor MiCloudProvider: HomeProvider {
             continuation?.yield(.statusChanged(.connecting))
             lastReportedConnected = false
             do {
-                try await performTrackedPoll(api) {
-                    try await discover(api)
-                    try await poll(api, dids: nil)
+                do {
+                    let initialEpoch = pollEpoch
+                    try await runTrackedPoll(api, epoch: initialEpoch, operation: .initialDiscoverAndPoll)
+                    reportConnected()
+                } catch PollAbort.superseded {
+                    // A home switch took over the initial fetch; wait for it and continue steady polling.
                 }
-                reportConnected()
                 backoff = 2
                 var polls = 1
                 while !Task.isCancelled && !isShutDown {
                     try await waitForNextPoll()
                     guard !Task.isCancelled && !isShutDown else { return }
-                    try await performTrackedPoll(api) {
-                        let refreshedTopologyInPoll = isCloudAllowed && (!hasLiveTopologyRefresh || cloudRetryNotBefore != nil)
-                        if refreshedTopologyInPoll {
-                            try await discover(api)
-                        }
-                        try await poll(api, dids: nil)
-                        polls += 1
-                        if !refreshedTopologyInPoll, isCloudAllowed, polls % deviceRefreshEveryPolls == 0 {
-                            do {
-                                try await refreshDeviceList(api)
-                                clearCloudBackoff()
-                            } catch is CancellationError {
-                                throw CancellationError()
-                            } catch MiCloudError.sessionExpired {
-                                throw MiCloudError.sessionExpired
-                            } catch {
-                                scheduleCloudBackoff(for: error)
-                                if lanSucceededDids.isEmpty {
-                                    throw error
-                                }
-                                emitSnapshot(closesAwayGap: false)
-                            }
-                        }
+                    let cycleEpoch = pollEpoch
+                    let refreshedTopologyInPoll = isCloudAllowed && (!hasLiveTopologyRefresh || cloudRetryNotBefore != nil)
+                    let nextPolls = polls + 1
+                    let shouldRefreshDeviceList = !refreshedTopologyInPoll && isCloudAllowed && (nextPolls % deviceRefreshEveryPolls == 0)
+                    do {
+                        try await runTrackedPoll(
+                            api,
+                            epoch: cycleEpoch,
+                            operation: .periodicPoll(
+                                refreshedTopology: refreshedTopologyInPoll,
+                                shouldRefreshDeviceList: shouldRefreshDeviceList
+                            )
+                        )
+                        polls = nextPolls
+                        reportConnected()
+                    } catch PollAbort.superseded {
+                        continue
                     }
-                    reportConnected()
                 }
             } catch is CancellationError {
                 return
@@ -562,32 +649,116 @@ public actor MiCloudProvider: HomeProvider {
                     delay = backoff
                     backoff = min(backoff * 2, throttled ? 900 : 60)
                 }
-                try? await Task.sleep(for: .seconds(delay))
+                isInErrorBackoff = true
+                await sleepUntilWoken(for: .seconds(delay))
+                isInErrorBackoff = false
                 await waitWhilePaused()
             }
         }
     }
 
-    private func performTrackedPoll(_ api: any MiCloudAPI, _ body: () async throws -> Void) async throws {
+    private func executePollBody(_ api: any MiCloudAPI, epoch: UInt64, operation: PollOperation) async throws {
+        try ensurePollCurrent(epoch)
+        switch operation {
+        case .initialDiscoverAndPoll:
+            try await discover(api, expectedEpoch: epoch)
+            try await poll(api, dids: nil, expectedEpoch: epoch)
+        case .periodicPoll(let refreshedTopology, let shouldRefreshDeviceList):
+            if refreshedTopology {
+                try await discover(api, expectedEpoch: epoch)
+            }
+            try await poll(api, dids: nil, expectedEpoch: epoch)
+            if shouldRefreshDeviceList {
+                do {
+                    try await refreshDeviceList(api, expectedEpoch: epoch)
+                    try ensurePollCurrent(epoch)
+                    clearCloudBackoff()
+                } catch PollAbort.superseded {
+                    throw PollAbort.superseded
+                } catch is CancellationError {
+                    if pollEpoch != epoch { throw PollAbort.superseded }
+                    throw CancellationError()
+                } catch MiCloudError.sessionExpired {
+                    throw MiCloudError.sessionExpired
+                } catch {
+                    try ensurePollCurrent(epoch)
+                    scheduleCloudBackoff(for: error)
+                    if lanSucceededDids.isEmpty {
+                        throw error
+                    }
+                    emitSnapshot(closesAwayGap: false)
+                }
+            }
+        case .immediateRefresh:
+            try await discover(api, expectedEpoch: epoch)
+            try await poll(api, dids: nil, expectedEpoch: epoch)
+        case .homeSwitch:
+            try await discover(api, expectedEpoch: epoch)
+            try ensurePollCurrent(epoch)
+            lastPolledSelection = selectedHomeLoader()
+            // Publish the newly discovered device list immediately before slower property/status reads.
+            emitSnapshot(closesAwayGap: false)
+            try await poll(api, dids: nil, expectedEpoch: epoch)
+        case .lanRetry(let retry):
+            try await executeLANRetry(api, retry: retry, expectedEpoch: epoch)
+        }
+        try ensurePollCurrent(epoch)
+        await probeOfflineReachability()
+        try ensurePollCurrent(epoch)
+        reportConnected()
+    }
+
+    private func runTrackedPoll(
+        _ api: any MiCloudAPI,
+        epoch: UInt64,
+        operation: PollOperation
+    ) async throws {
+        guard pollEpoch == epoch, !isShutDown else { throw PollAbort.superseded }
         isPolling = true
+        let task = Task<Void, any Error> {
+            defer {
+                if self.pollEpoch == epoch {
+                    self.activePollTask = nil
+                }
+            }
+            try await self.executePollBody(api, epoch: epoch, operation: operation)
+        }
+        activePollTask = task
         defer {
-            isPolling = false
-            pendingRefreshAfterPoll = false
-            pendingLANRetry = nil
+            if activePollTask == task {
+                activePollTask = nil
+            }
+            if activePollTask == nil && pollEpoch == epoch {
+                isPolling = false
+                pendingRefreshAfterPoll = false
+                pendingLANRetry = nil
+            }
         }
         var pendingError: (any Error)?
         do {
-            try await body()
-            await probeOfflineReachability()
+            try await withTaskCancellationHandler {
+                try await task.value
+            } onCancel: {
+                task.cancel()
+            }
+            if activePollTask == task {
+                activePollTask = nil
+            }
+            try ensurePollCurrent(epoch)
+        } catch PollAbort.superseded {
+            throw PollAbort.superseded
         } catch is CancellationError {
+            if pollEpoch != epoch { throw PollAbort.superseded }
             throw CancellationError()
         } catch MiCloudError.sessionExpired {
+            guard pollEpoch == epoch, !isShutDown else { throw PollAbort.superseded }
             throw MiCloudError.sessionExpired
         } catch {
+            guard pollEpoch == epoch, !isShutDown else { throw PollAbort.superseded }
             pendingError = error
         }
 
-        while !Task.isCancelled && !isShutDown {
+        while !Task.isCancelled && !isShutDown && pollEpoch == epoch {
             if let retry = pendingLANRetry {
                 pendingLANRetry = nil
                 pendingError = nil
@@ -595,8 +766,11 @@ public actor MiCloudProvider: HomeProvider {
                     pendingRefreshAfterPoll = false
                 }
                 do {
-                    try await executeLANRetry(api, retry: retry)
+                    try await executeLANRetry(api, retry: retry, expectedEpoch: epoch)
+                } catch PollAbort.superseded {
+                    throw PollAbort.superseded
                 } catch is CancellationError {
+                    if pollEpoch != epoch { throw PollAbort.superseded }
                     throw CancellationError()
                 } catch MiCloudError.sessionExpired {
                     throw MiCloudError.sessionExpired
@@ -608,8 +782,11 @@ public actor MiCloudProvider: HomeProvider {
             if pendingError == nil, pendingRefreshAfterPoll {
                 pendingRefreshAfterPoll = false
                 do {
-                    try await poll(api, dids: nil)
+                    try await poll(api, dids: nil, expectedEpoch: epoch)
+                } catch PollAbort.superseded {
+                    throw PollAbort.superseded
                 } catch is CancellationError {
+                    if pollEpoch != epoch { throw PollAbort.superseded }
                     throw CancellationError()
                 } catch MiCloudError.sessionExpired {
                     throw MiCloudError.sessionExpired
@@ -621,6 +798,7 @@ public actor MiCloudProvider: HomeProvider {
             break
         }
 
+        guard pollEpoch == epoch, !isShutDown else { throw PollAbort.superseded }
         if let pendingError {
             throw pendingError
         }
@@ -712,6 +890,13 @@ public actor MiCloudProvider: HomeProvider {
     private func waitForNextPoll() async throws {
         while true {
             try Task.checkCancellation()
+            if let running = activePollTask {
+                _ = try? await running.value
+                if activePollTask == running {
+                    await Task.yield()
+                }
+                continue
+            }
             guard let interval = currentInterval else {
                 await sleepUntilWoken(for: nil)
                 continue
@@ -821,13 +1006,15 @@ public actor MiCloudProvider: HomeProvider {
 
     // MARK: Discovery & Polling
 
-    private func discover(_ api: any MiCloudAPI) async throws {
+    private func discover(_ api: any MiCloudAPI, expectedEpoch: UInt64? = nil) async throws {
+        try ensurePollCurrent(expectedEpoch)
         if !devices.isEmpty && !isCloudAllowed {
             return
         }
         do {
             // Rooms first: they name the shared-home devices the unfiltered device list leaves out (#134).
             let outcome = try await performCloudCall { try await MiCloudDiscovery.rooms(api) }
+            try ensurePollCurrent(expectedEpoch)
             if outcome.error == nil {
                 if outcome.rooms != rooms { unresolvedRoomDids = [] }
                 rooms = outcome.rooms
@@ -835,9 +1022,11 @@ public actor MiCloudProvider: HomeProvider {
             let roomsError = outcome.error
             if (roomsError as? MiCloudError) == .http(429) { throttleReachability() }
             logger.info("Mi cloud rooms: \(self.rooms.count, privacy: .public), homes: \(Self.homeOptions(from: self.rooms).count, privacy: .public)")
-            try await refreshDeviceList(api, retryUnresolved: true, refreshScenes: false)
+            try await refreshDeviceList(api, retryUnresolved: true, refreshScenes: false, expectedEpoch: expectedEpoch)
+            try ensurePollCurrent(expectedEpoch)
             if roomsError == nil {
                 try await refreshManualScenes(api)
+                try ensurePollCurrent(expectedEpoch)
                 persistTopologyIfNeeded()
             }
             // An account whose only devices live in a home shared with it has an empty device list until
@@ -845,11 +1034,15 @@ public actor MiCloudProvider: HomeProvider {
             // room list surfaces as the error it is (#76, #67). An account with direct devices still
             // degrades to 全屋, which is what the room-less snapshot is for.
             if devices.isEmpty, let roomsError { throw roomsError }
+        } catch PollAbort.superseded {
+            throw PollAbort.superseded
         } catch is CancellationError {
+            if let expectedEpoch, pollEpoch != expectedEpoch { throw PollAbort.superseded }
             throw CancellationError()
         } catch MiCloudError.sessionExpired {
             throw MiCloudError.sessionExpired
         } catch {
+            try ensurePollCurrent(expectedEpoch)
             if devices.isEmpty,
                localClient != nil,
                let session,
@@ -862,6 +1055,7 @@ public actor MiCloudProvider: HomeProvider {
                 didSeedLANBindingsFromCache = true
                 reconcileLANEndpoints(devices, seededDiscoveredIPs: cached.discoveredLANIPsByDid)
                 await loadMissingSpecs()
+                try ensurePollCurrent(expectedEpoch)
                 scheduleCloudBackoff(for: error)
                 return
             }
@@ -905,8 +1099,12 @@ public actor MiCloudProvider: HomeProvider {
     }
 
     private func refreshDeviceList(
-        _ api: any MiCloudAPI, retryUnresolved: Bool = false, refreshScenes: Bool = true
+        _ api: any MiCloudAPI,
+        retryUnresolved: Bool = false,
+        refreshScenes: Bool = true,
+        expectedEpoch: UInt64? = nil
     ) async throws {
+        try ensurePollCurrent(expectedEpoch)
         let currentRooms = rooms
         let previousUnresolved = unresolvedRoomDids
         let outcome = try await performCloudCall {
@@ -917,6 +1115,7 @@ public actor MiCloudProvider: HomeProvider {
                 previousUnresolved: previousUnresolved
             )
         }
+        try ensurePollCurrent(expectedEpoch)
         unresolvedRoomDids = outcome.unresolvedRoomDids
         rooms = outcome.rooms
         devices = outcome.devices
@@ -935,10 +1134,15 @@ public actor MiCloudProvider: HomeProvider {
             }
         }
         try await refreshGroupMembers(api)
-        if refreshScenes { try await refreshManualScenes(api) }
+        try ensurePollCurrent(expectedEpoch)
+        if refreshScenes {
+            try await refreshManualScenes(api)
+            try ensurePollCurrent(expectedEpoch)
+        }
         persistTopologyIfNeeded()
         hasLiveTopologyRefresh = true
         await loadMissingSpecs()
+        try ensurePollCurrent(expectedEpoch)
 
         var unsupported: Set<String> = []
         var supported = 0
@@ -1084,12 +1288,14 @@ public actor MiCloudProvider: HomeProvider {
     private func poll(
         _ api: any MiCloudAPI,
         dids: Set<String>?,
-        allowBroadcastSweepOnFailure: Bool = false
+        allowBroadcastSweepOnFailure: Bool = false,
+        expectedEpoch: UInt64? = nil
     ) async throws -> Set<MiotPropKey> {
         let outcome = try await pollOutcome(
             api,
             dids: dids,
-            allowBroadcastSweepOnFailure: allowBroadcastSweepOnFailure
+            allowBroadcastSweepOnFailure: allowBroadcastSweepOnFailure,
+            expectedEpoch: expectedEpoch
         )
         if let cloudError = outcome.cloudError {
             throw cloudError
@@ -1100,8 +1306,10 @@ public actor MiCloudProvider: HomeProvider {
     private func pollOutcome(
         _ api: any MiCloudAPI,
         dids: Set<String>?,
-        allowBroadcastSweepOnFailure: Bool = false
+        allowBroadcastSweepOnFailure: Bool = false,
+        expectedEpoch: UInt64? = nil
     ) async throws -> (freshKeys: Set<MiotPropKey>, cloudError: (any Error)?) {
+        try ensurePollCurrent(expectedEpoch)
         let allowCooldownSweep: Bool
         if dids == nil {
             lastPolledSelection = selectedHomeLoader()
@@ -1124,6 +1332,7 @@ public actor MiCloudProvider: HomeProvider {
                 allowCooldownSweep: allowCooldownSweep,
                 allowBroadcastSweepOnFailure: allowBroadcastSweepOnFailure
             )
+            try ensurePollCurrent(expectedEpoch)
             if dids == nil {
                 lanSucceededDids = outcome.lanSucceededDids
                 lanTransportSucceededDids = outcome.lanTransportSucceededDids
@@ -1182,6 +1391,7 @@ public actor MiCloudProvider: HomeProvider {
                 clearCloudBackoff()
                 // A hidden doorbell still rings: its record is in the safety-retained set.
                 try await pollDoorbellEvents(api, scopedDevices: plan.visibleRecords + plan.safetyRecords)
+                try ensurePollCurrent(expectedEpoch)
             }
             lastFullPollAt = .now
             if wakePollPending {
@@ -1191,6 +1401,7 @@ public actor MiCloudProvider: HomeProvider {
             pollRequested = false
             pollsSinceContextChange += 1
         }
+        try ensurePollCurrent(expectedEpoch)
         emitSnapshot(closesAwayGap: dids == nil && cloudRetryNotBefore == nil)
         return (freshKeys, nil)
     }
@@ -1982,6 +2193,7 @@ public actor MiCloudProvider: HomeProvider {
             }
         }
         home.closesAwayGap = closesAwayGap
+        home.miHomeGeneration = homeGeneration
         home.homes = Self.homeOptions(from: rooms)
         home.lightGroupOwners = Self.deviceGroupOwners(membersByGroup: groupMembersByGroup, devices: plan.visibleRecords)
         home.localNetworkBlockedFeatures = isLocalNetworkDenied ? [.xiaomiLAN] : []
@@ -2463,16 +2675,18 @@ public actor MiCloudProvider: HomeProvider {
         // Split cards address `100.s2`; property reads are keyed by the parent `100`.
         let followUpDid = record.miotDid
         let followUpId = UUID()
+        let epoch = pollEpoch
         let followUpTask = Task { [weak self] in
             try? await Task.sleep(for: delay)
             guard !Task.isCancelled else { return }
-            await self?.followUpPoll(did: followUpDid, taskId: followUpId)
+            await self?.followUpPoll(did: followUpDid, taskId: followUpId, expectedEpoch: epoch)
         }
         followUpTasks[followUpId] = followUpTask
     }
 
     public func readBack(deviceId: String) async -> ControlReadBack {
         guard !isShutDown, !isSessionRejected, let api else { return .failed }
+        let epoch = pollEpoch
         // Split wall-switch cards report `100.s2` while property reads are keyed by `100`.
         guard let record = devices.first(where: { $0.did == deviceId }),
               let spec = specsByModel[record.model],
@@ -2480,7 +2694,7 @@ public actor MiCloudProvider: HomeProvider {
         let did = record.miotDid
         do {
             // Only a full poll may clear home-wide staleness; this read refreshes one device.
-            let outcome = try await pollOutcome(api, dids: [did])
+            let outcome = try await pollOutcome(api, dids: [did], expectedEpoch: epoch)
             if let cloudError = outcome.cloudError {
                 report(cloudError)
             }
@@ -2489,16 +2703,18 @@ public actor MiCloudProvider: HomeProvider {
             }
             guard powerKeys.contains(where: { outcome.freshKeys.contains($0) }) else { return .failed }
             return .published
+        } catch PollAbort.superseded {
+            return .failed
         } catch {
             report(error)
             return .failed
         }
     }
 
-    private func followUpPoll(did: String, taskId: UUID) async {
+    private func followUpPoll(did: String, taskId: UUID, expectedEpoch: UInt64) async {
         followUpTasks.removeValue(forKey: taskId)
-        guard !isShutDown, !isSessionRejected, let api else { return }
-        _ = try? await poll(api, dids: [did])
+        guard !isShutDown, !isSessionRejected, pollEpoch == expectedEpoch, let api else { return }
+        _ = try? await poll(api, dids: [did], expectedEpoch: expectedEpoch)
     }
 
     public func fetchSensorHistory(

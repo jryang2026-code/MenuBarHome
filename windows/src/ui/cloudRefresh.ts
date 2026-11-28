@@ -657,6 +657,8 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false, 
       let allDevicesForCache: readonly MiDeviceRecord[] | null = null;
       let allRoomsForCache: readonly MiRoom[] | null = null;
 
+      let scenePromise: Promise<typeof sceneSnapshot> = Promise.resolve(sceneSnapshot);
+
       if (cachedTopology) {
         rawDevices = cachedTopology.rawDevices;
         rooms = cachedTopology.rooms;
@@ -711,18 +713,23 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false, 
           stage1Specs,
           new Map<string, unknown>(),
         );
-        if (stage1Home.devices.length > 0 && host.devices.length === 0) {
+        if (stage1Home.devices.length > 0 && (host.devices.length === 0 || host.isSwitchingHome)) {
           host.devices = stage1Home.devices;
           host.deviceFacets = stage1Home.deviceFacets ?? {};
+          host.isSwitchingHome = false;
           presentationChanged = true;
           host.render();
         }
 
         if (homeRoomsError === null) {
-          sceneSnapshot = await refreshMiScenes(client, allRooms, session.userId, sceneSnapshot, Date.now());
+          scenePromise = refreshMiScenes(client, allRooms, session.userId, sceneSnapshot, Date.now()).catch(
+            () => sceneSnapshot,
+          );
         }
-        specs = await host.specResolver.resolveForDevices(rawDevices);
-        membersByGroup = await membershipPromise;
+        [specs, membersByGroup] = await Promise.all([
+          host.specResolver.resolveForDevices(rawDevices),
+          membershipPromise,
+        ]);
         if (cloudSnapshotIsStale(host, session, stateToken, syncRun, selectedHomeAtStart)) return;
       }
 
@@ -730,6 +737,23 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false, 
       // the keys of a turned-off device type that no consumer reads any more (architecture.md §D).
       const prunePlan = prunePlanFor(rawDevices, specs);
       const propKeys = prunePlan.readKeys;
+
+      if (host.devices.length === 0 || host.isSwitchingHome) {
+        const stage1Resolved = MiotSynthesizer.synthesize(
+          prunePlan.visibleRecords,
+          rooms,
+          specs,
+          new Map<string, unknown>(),
+        );
+        if (stage1Resolved.devices.length > 0) {
+          host.groupOwnerByMemberDid = memberGroupOwners(membersByGroup as Map<string, string[]>);
+          host.devices = stage1Resolved.devices;
+          host.deviceFacets = stage1Resolved.deviceFacets ?? {};
+          host.isSwitchingHome = false;
+          presentationChanged = true;
+          host.render();
+        }
+      }
 
       const { pollCapturedEpoch } = host.sourceEpoch.capture();
       let values: Map<string, unknown>;
@@ -744,6 +768,7 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false, 
         }
         throw error;
       }
+      sceneSnapshot = await scenePromise;
 
       const home = MiotSynthesizer.synthesize(prunePlan.visibleRecords, rooms, specs, values);
       // A closed category still evaluates its enabled alerts, but only as the minimal shape those
@@ -821,6 +846,13 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false, 
       if (completePendingMiRevalidation(host, [miAccountId(session)])) {
         presentationChanged = true;
       }
+      host.isSwitchingHome = false;
+      host.cacheMiHomeSnapshot(selectedHomeAtStart ?? null, {
+        devices: host.devices,
+        deviceFacets: host.deviceFacets,
+        environmentReadings: host.environmentReadings,
+        groupOwnerByMemberDid: host.groupOwnerByMemberDid,
+      });
       host.settings.cachedXiaomiDevices = host.devices;
       const knownModelTypes = host.specResolver.exportKnownModelTypes(
         rawDevices.map((d) => d.model),
@@ -863,18 +895,19 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false, 
           persistMiSessionExpired(session, true);
           clearCachedXiaomiTopology(host);
         }
-      }
-      if (!silent) {
-        const msg = err instanceof Error ? err.message : String(err);
-        host.replyBanner = {
-          text: t("米家云同步失败：{message}", { message: msg }),
-          source: t("连接异常"),
-          isError: true,
-        };
+        if (!silent) {
+          const msg = err instanceof Error ? err.message : String(err);
+          host.replyBanner = {
+            text: t("米家云同步失败：{message}", { message: msg }),
+            source: t("连接异常"),
+            isError: true,
+          };
+        }
       }
     } finally {
       if (syncRun.isCurrent()) {
         host.isSyncingCloud = false;
+        host.isSwitchingHome = false;
         if (isHostAttachedToActiveWindow(host)) {
           const staleChanged = staleBefore !== host.cloudValuesStale;
           const expiredChanged = expiredBefore !== host.miSessionExpired;
@@ -1582,6 +1615,7 @@ async function refreshMultiAccountXiaomiDevices(
   const enabledAccounts = resolveEnabledMiAccountsForHost(host, accounts);
   if (enabledAccounts.length === 0) return;
 
+  const selectedHomeAtStart = host.settings.selectedHomeId;
   const syncRun = host.sourceEpoch.claimSyncRun();
   const previousPresentation = cloudPresentationFingerprint(host);
   const previousStructure = cloudPanelStructureFingerprint(host);
@@ -1590,6 +1624,19 @@ async function refreshMultiAccountXiaomiDevices(
   let presentationChanged = false;
   host.isSyncingCloud = true;
   host.lastCloudRefreshAt = Date.now();
+  const isMultiAccountRefreshStale = (): boolean => {
+    const latestAccounts = host.miAccountsOverride ?? (store.getAccounts().length > 0 ? store.getAccounts() : accounts);
+    const latestEnabledIds = new Set(resolveEnabledMiAccountsForHost(host, latestAccounts).map((a) => a.id));
+    return (
+      !isHostAttachedToActiveWindow(host) ||
+      host.settings.connectionMode !== "xiaomiCloud" ||
+      !stateToken.isCurrent("home") ||
+      !syncRun.isCurrent() ||
+      host.settings.selectedHomeId !== selectedHomeAtStart ||
+      enabledAccounts.length !== latestEnabledIds.size ||
+      !enabledAccounts.every((a) => latestEnabledIds.has(a.id))
+    );
+  };
 
   try {
     const prevState = host.multiAccountState;
@@ -1600,21 +1647,27 @@ async function refreshMultiAccountXiaomiDevices(
         accounts.length > 1 || (host.miAccountsOverride == null && hasSecondaryMiAccountsInIndex()),
       transport: host.transport,
       specResolver: host.specResolver,
-      selectedHomeId: host.settings.selectedHomeId,
+      selectedHomeId: selectedHomeAtStart,
       silent,
       previousSnapshots: prevState?.children,
       prune: hostMiotTypePruneOptions(host),
+      isStale: isMultiAccountRefreshStale,
+      onDeviceListReady: ({ merged: stage1Merged }) => {
+        if (isMultiAccountRefreshStale()) return;
+        if (stage1Merged.homes.length > 0 || host.homes.length === 0) {
+          host.homes = applyOrder(host.homes.map((h) => h.id), stage1Merged.homes);
+        }
+        if (stage1Merged.home.devices.length > 0 && (host.devices.length === 0 || host.isSwitchingHome)) {
+          host.groupOwnerByMemberDid = stage1Merged.lightGroupOwners;
+          host.devices = stage1Merged.home.devices;
+          host.deviceFacets = stage1Merged.home.deviceFacets ?? {};
+          host.isSwitchingHome = false;
+          presentationChanged = true;
+          host.render();
+        }
+      },
     });
-    const latestAccounts = host.miAccountsOverride ?? (store.getAccounts().length > 0 ? store.getAccounts() : accounts);
-    const latestEnabledIds = new Set(resolveEnabledMiAccountsForHost(host, latestAccounts).map((a) => a.id));
-    if (
-      !isHostAttachedToActiveWindow(host) ||
-      host.settings.connectionMode !== "xiaomiCloud" ||
-      !stateToken.isCurrent("home") ||
-      !syncRun.isCurrent() ||
-      enabledAccounts.length !== latestEnabledIds.size ||
-      !enabledAccounts.every((a) => latestEnabledIds.has(a.id))
-    ) {
+    if (isMultiAccountRefreshStale()) {
       return;
     }
 
@@ -1691,6 +1744,13 @@ async function refreshMultiAccountXiaomiDevices(
       if (completePendingMiRevalidation(host, freshAccountIds, accounts)) {
         presentationChanged = true;
       }
+      host.isSwitchingHome = false;
+      host.cacheMiHomeSnapshot(merged.resetSelectedHome ? null : (selectedHomeAtStart ?? null), {
+        devices: host.devices,
+        deviceFacets: host.deviceFacets,
+        environmentReadings: host.environmentReadings,
+        groupOwnerByMemberDid: host.groupOwnerByMemberDid,
+      });
       host.settings.cachedXiaomiDevices = host.devices;
       if (presentationChanged || merged.resetSelectedHome) {
         host.saveSettings();
@@ -1716,6 +1776,7 @@ async function refreshMultiAccountXiaomiDevices(
   } finally {
     if (syncRun.isCurrent()) {
       host.isSyncingCloud = false;
+      host.isSwitchingHome = false;
       if (isHostAttachedToActiveWindow(host)) {
         const staleChanged = staleBefore !== host.cloudValuesStale;
         const expiredChanged = expiredBefore !== host.miSessionExpired;
@@ -1959,6 +2020,13 @@ async function refreshDualSourceDevices(
         if (enabledAccounts.length === 0) {
           return null;
         }
+        const selectedHomeAtStart = host.settings.selectedHomeId;
+        const isDualMiStale = (): boolean =>
+          !isHostAttachedToActiveWindow(host) ||
+          !isDualSourceEnabled(host) ||
+          !stateToken.isCurrent("home") ||
+          !syncRun.isCurrent() ||
+          host.settings.selectedHomeId !== selectedHomeAtStart;
         const { pollCapturedEpoch } = host.sourceEpoch.capture();
         const { merged, children } = await refreshMiAccountsConcurrently({
           accounts: enabledAccounts,
@@ -1966,10 +2034,44 @@ async function refreshDualSourceDevices(
             accounts.length > 1 || (host.miAccountsOverride == null && hasSecondaryMiAccountsInIndex()),
           transport: host.transport,
           specResolver: host.specResolver,
-          selectedHomeId: host.settings.selectedHomeId,
+          selectedHomeId: selectedHomeAtStart,
           silent,
           previousSnapshots: prevMiState?.children,
           prune: hostMiotTypePruneOptions(host),
+          isStale: isDualMiStale,
+          onDeviceListReady: ({ merged: stage1Merged }) => {
+            if (isDualMiStale() || !host.isSwitchingHome) return;
+            const stage1Records: MiDeviceRecord[] = [];
+            const seen = new Set<string>();
+            for (const acc of enabledAccounts) {
+              for (const rec of stage1Merged.rawDevicesByAccount[acc.id] ?? []) {
+                if (!seen.has(rec.did)) {
+                  seen.add(rec.did);
+                  stage1Records.push(rec);
+                }
+              }
+            }
+            const preview = coordinator.previewXiaomiSnapshot(
+              {
+                home: stage1Merged.home,
+                pollCapturedEpoch,
+                identities: extractMiDeviceIdentities(stage1Records, stage1Merged.home),
+                lightGroupOwners: stage1Merged.lightGroupOwners,
+                homes: stage1Merged.homes,
+                accountStatuses: stage1Merged.accountStatuses,
+              },
+              host.settings.interfaceLanguage,
+            );
+            if (preview.homes.length > 0 || host.homes.length === 0) {
+              host.homes = applyOrder(host.homes.map((h) => h.id), preview.homes);
+            }
+            host.groupOwnerByMemberDid = new Map<string, string>(preview.lightGroupOwners);
+            host.devices = preview.home.devices;
+            host.deviceFacets = preview.home.deviceFacets ?? {};
+            host.isSwitchingHome = false;
+            presentationChanged = true;
+            host.render();
+          },
         });
         nextMultiAccountState = { accounts, merged, children };
         if (merged.aggregateStatus.kind === "disconnected") {
@@ -2035,6 +2137,7 @@ async function refreshDualSourceDevices(
       });
     }
 
+    host.isSwitchingHome = false;
     host.haConnectionError = haEnabledAtStart ? outcome.haError : null;
     host.lastMiCloudSyncFailed = Boolean(outcome.miError);
     host.markCloudValuesFresh();
@@ -2110,6 +2213,7 @@ async function refreshDualSourceDevices(
   } finally {
     if (syncRun.isCurrent()) {
       host.isSyncingCloud = false;
+      host.isSwitchingHome = false;
       if (isHostAttachedToActiveWindow(host)) {
         if (!silent) {
           host.render();
