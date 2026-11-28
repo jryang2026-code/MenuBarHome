@@ -154,13 +154,14 @@ public enum TVBridgeDiscovery {
             return Classification(brand: "Kodi", model: resolvedModel, driver: .kodi_jsonrpc, defaultPort: 8080)
         }
         if has(["mediarenderer", "avtransport", "dlna"]) {
-            return Classification(brand: "DLNA", model: resolvedModel, driver: .dlna_dmr, defaultPort: 1900)
+            return Classification(brand: "DLNA", model: resolvedModel, driver: .dlna_dmr, defaultPort: nil)
         }
         if svc.contains("_androidtvremote2") || has(["android tv", "google tv"]) {
-            return Classification(brand: "Android TV", model: resolvedModel, driver: .android_adb_lan, defaultPort: 5555)
+            // Remote v2 is its own TLS protocol and does not imply an ADB listener on 5555.
+            return Classification(brand: "Android TV", model: resolvedModel, driver: nil, defaultPort: nil)
         }
         if svc.contains("_googlecast") || has(["chromecast"]) {
-            return Classification(brand: "Google Cast", model: resolvedModel, driver: .android_adb_lan, defaultPort: 5555)
+            return Classification(brand: "Google Cast", model: resolvedModel, driver: nil, defaultPort: nil)
         }
         if svc.contains("_airplay") || has(["appletv", "apple tv"]) {
             return Classification(brand: "AirPlay", model: resolvedModel, driver: nil, defaultPort: nil)
@@ -247,7 +248,7 @@ public enum TVBridgeDiscovery {
 
     /// Parses a UPnP/DIAL XML device description into a discovered TV candidate.
     public static func parseUPnPDeviceDescription(
-        _ xml: String, host: String, ssdpServer: String? = nil, ssdpST: String? = nil
+        _ xml: String, host: String, ssdpServer: String? = nil, ssdpST: String? = nil, locationPort: Int? = nil
     ) -> TVBridgeDiscoveredDevice? {
         guard let safeHost = validatedLANHost(host) else { return nil }
         let friendly = sanitizeDisplayText(xmlTagValue("friendlyName", in: xml) ?? "")
@@ -256,7 +257,7 @@ public enum TVBridgeDiscovery {
         let name = friendly.isEmpty ? (model.isEmpty ? safeHost : model) : friendly
         let cls = classify(name: name, manufacturer: manufacturer, model: model, server: ssdpServer, serviceType: ssdpST)
         return TVBridgeDiscoveredDevice(
-            name: name, host: safeHost, port: cls.defaultPort, brand: cls.brand,
+            name: name, host: safeHost, port: cls.defaultPort ?? locationPort, brand: cls.brand,
             model: cls.model, suggestedDriver: cls.driver, sources: ["SSDP"]
         )
     }
@@ -442,7 +443,9 @@ public enum TVBridgeDiscovery {
                         if let (data, httpResp) = try? await session.data(for: req),
                            let http = httpResp as? HTTPURLResponse, (200...299).contains(http.statusCode),
                            data.count <= maxXMLBytes, let xml = String(data: data, encoding: .utf8),
-                           let parsed = parseUPnPDeviceDescription(xml, host: resp.host, ssdpServer: resp.server, ssdpST: resp.st) {
+                           let parsed = parseUPnPDeviceDescription(
+                               xml, host: resp.host, ssdpServer: resp.server, ssdpST: resp.st, locationPort: resp.location?.port
+                           ) {
                             return parsed
                         }
                     }
@@ -450,7 +453,7 @@ public enum TVBridgeDiscovery {
                     guard cls.driver != nil else { return nil }
                     return TVBridgeDiscoveredDevice(
                         name: cls.brand == "Smart TV" ? resp.host : "\(cls.brand) (\(resp.host))",
-                        host: resp.host, port: cls.defaultPort, brand: cls.brand, model: cls.model,
+                        host: resp.host, port: cls.defaultPort ?? resp.location?.port, brand: cls.brand, model: cls.model,
                         suggestedDriver: cls.driver, sources: ["SSDP"]
                     )
                 }

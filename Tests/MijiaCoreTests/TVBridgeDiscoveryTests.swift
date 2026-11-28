@@ -49,6 +49,22 @@ struct TVBridgeDiscoveryTests {
         #expect(airplay[0].port == 3001)
     }
 
+    @Test("Cast and Android TV Remote v2 are not offered as ADB; DLNA keeps the LOCATION HTTP port")
+    func unsupportedProtocolsAndDLNAPort() {
+        let cast = TVBridgeDiscovery.classify(name: "Living Room", serviceType: "_googlecast._tcp")
+        #expect(cast.driver == nil)
+        #expect(cast.defaultPort == nil)
+        let remote = TVBridgeDiscovery.classify(name: "Bedroom TV", serviceType: "_androidtvremote2._tcp")
+        #expect(remote.driver == nil)
+
+        let xml = "<root><device><friendlyName>Renderer</friendlyName><deviceType>urn:schemas-upnp-org:device:MediaRenderer:1</deviceType></device></root>"
+        let dlna = TVBridgeDiscovery.parseUPnPDeviceDescription(
+            xml, host: "192.168.1.30", ssdpST: "urn:schemas-upnp-org:device:MediaRenderer:1", locationPort: 49152
+        )
+        #expect(dlna?.suggestedDriver == .dlna_dmr)
+        #expect(dlna?.port == 49152)
+    }
+
     @Test("Parses SSDP DIAL/MediaRenderer responses and UPnP device XML while enforcing private-LAN-only locations")
     func parsesSSDPAndUPnP() {
         let ssdp = """
