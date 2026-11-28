@@ -552,6 +552,10 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false, 
       host.isSyncingCloud ||
       !isHostMiSessionEnabled(host, host.settings.miSession)
     ) {
+      if (host.isSwitchingHome && !host.isSyncingCloud) {
+        host.isSwitchingHome = false;
+        host.render();
+      }
       return;
     }
     const session = host.settings.miSession;
@@ -1613,7 +1617,13 @@ async function refreshMultiAccountXiaomiDevices(
         ? [makeMiAccount(host.settings.miSession)]
         : [];
   const enabledAccounts = resolveEnabledMiAccountsForHost(host, accounts);
-  if (enabledAccounts.length === 0) return;
+  if (enabledAccounts.length === 0) {
+    if (host.isSwitchingHome) {
+      host.isSwitchingHome = false;
+      host.render();
+    }
+    return;
+  }
 
   const selectedHomeAtStart = host.settings.selectedHomeId;
   const syncRun = host.sourceEpoch.claimSyncRun();
@@ -1948,7 +1958,13 @@ async function refreshDualSourceDevices(
   if (accounts.length === 0) return;
   const enabledAccounts = resolveEnabledMiAccountsForHost(host, accounts);
   const haEnabledAtStart = isHostHaEnabled(host) && getHostHaLifecyclePhase(host) === "enabled";
-  if (!haEnabledAtStart && enabledAccounts.length === 0) return;
+  if (!haEnabledAtStart && enabledAccounts.length === 0) {
+    if (host.isSwitchingHome) {
+      host.isSwitchingHome = false;
+      host.render();
+    }
+    return;
+  }
   const currentDualAccounts = () =>
     host.miAccountsOverride ?? (store.getAccounts().length > 0 ? store.getAccounts() : accounts);
   const currentHaActive = () => isHostHaEnabled(host) && getHostHaLifecyclePhase(host) === "enabled";

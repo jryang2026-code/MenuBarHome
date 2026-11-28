@@ -2295,7 +2295,11 @@ extension HomeStore {
         }
 
         homeSwitchTask?.cancel()
-        guard !allConfiguredSourcesTurnedOff, !isIdentityUncertain else { return }
+        homeSwitchTask = nil
+        guard !allConfiguredSourcesTurnedOff, !isIdentityUncertain else {
+            isSwitchingMiHome = false
+            return
+        }
         let targetProvider = provider
         homeSwitchTask = Task { [weak self] in
             await targetProvider.switchMiHome(generation: targetGeneration)

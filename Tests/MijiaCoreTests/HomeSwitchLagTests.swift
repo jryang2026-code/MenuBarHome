@@ -371,6 +371,12 @@ struct HomeSwitchLagTests {
             store.devices.map(\.id) == ["dev-b"] && !store.isSwitchingMiHome
         })
         #expect(await provider.switchedGenerations == [1])
+
+        // If refresh is blocked (e.g. identity uncertain), switching must not stay stuck in loading state.
+        store.identityMigrationDiagnostic = "Keychain unavailable"
+        store.selectMiHome("home-a")
+        #expect(!store.isSwitchingMiHome)
+        #expect(await provider.switchedGenerations == [1])
         await provider.shutdown()
     }
 
