@@ -901,6 +901,7 @@ export const ZH_HANT_CATALOG: Readonly<Record<string, string>> = {
   "1 处门窗开着": "1 處門窗開著",
   "{count} 处门窗开着": "{count} 處門窗開著",
   "室内 {temp}°": "室內 {temp}°",
+  "室内均温 {temp}°": "室內均溫 {temp}°",
   "在局域网中查找": "在區域網路中尋找",
   "正在查找…": "正在尋找…",
   "未在局域网发现 Home Assistant，请手动填写地址": "未在區域網路發現 Home Assistant，請手動填寫位址",

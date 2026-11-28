@@ -151,6 +151,15 @@ struct HomeSummaryAndSlotBudgetTests {
             capsules.map { $0.title(temperatureUnit: .fahrenheit) }
         }
         #expect(enFahrenheit == ["1 alert", "3 lights on", "2 doors/windows open", "Indoor 75°"])
+
+        let average = HomeSummaryCapsule(kind: .indoorTemp, count: 3, temperatureCelsius: 25.8)
+        L10n.$overrideLanguage.withValue(.zhHans) {
+            #expect(average.title(temperatureUnit: .celsius) == "室内均温 25.8°")
+            #expect(average.title(temperatureUnit: .fahrenheit) == "室内均温 78°")
+        }
+        L10n.$overrideLanguage.withValue(.en) {
+            #expect(average.title(temperatureUnit: .celsius) == "Indoor avg 25.8°")
+        }
     }
 
     @Test("showHomeSummaryRow defaults to true and persists across HomeStore instances")

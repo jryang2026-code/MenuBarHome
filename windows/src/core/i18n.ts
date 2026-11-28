@@ -1108,6 +1108,7 @@ const CATALOG: Readonly<Record<string, readonly [string, string]>> = {
   "1 处门窗开着": ["1 处门窗开着", "1 door/window open"],
   "{count} 处门窗开着": ["{count} 处门窗开着", "{count} doors/windows open"],
   "室内 {temp}°": ["室内 {temp}°", "Indoor {temp}°"],
+  "室内均温 {temp}°": ["室内均温 {temp}°", "Indoor avg {temp}°"],
   "在局域网中查找": ["在局域网中查找", "Find on my network"],
   "正在查找…": ["正在查找…", "Searching…"],
   "未在局域网发现 Home Assistant，请手动填写地址": [

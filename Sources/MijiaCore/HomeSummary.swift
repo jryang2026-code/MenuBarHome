@@ -59,8 +59,14 @@ public struct HomeSummaryCapsule: Identifiable, Equatable, Sendable {
             case .celsius: celsius
             case .fahrenheit: celsius * 9.0 / 5.0 + 32.0
             }
-            let rounded = Int(displayValue.rounded(.toNearestOrAwayFromZero))
-            return L10n.format("室内 %@°", "Indoor %@°", "\(rounded)")
+            // Same precision as the header reading, so 25.8° up top never sits beside a rounded 26°.
+            let text = temperatureUnit == .celsius && abs(celsius - celsius.rounded()) >= 0.05
+                ? String(format: "%.1f", displayValue)
+                : "\(Int(displayValue.rounded(.toNearestOrAwayFromZero)))"
+            // Several sensors: say it is an average, so it does not read as contradicting the header's one room.
+            return count > 1
+                ? L10n.format("室内均温 %@°", "Indoor avg %@°", text)
+                : L10n.format("室内 %@°", "Indoor %@°", text)
         }
     }
 

@@ -2994,55 +2994,16 @@ private struct AboutSettingsTab: View {
         let errorTimestamps = errorLog.errorTimestamps
 
         SettingsSection(title: L10n.tr("诊断与排障工具", "Diagnostics & Troubleshooting"), anchor: .copyDiagnostics) {
-            Text(L10n.tr(
-                "不含账号、密钥与设备 ID",
-                "No accounts, keys or device IDs"
-            ))
-            .font(.system(size: DesignTokens.TypeSize.caption))
-            .foregroundStyle(DesignTokens.secondaryText)
-            .fixedSize(horizontal: false, vertical: true)
-
-            if let lastErrorAt = errorTimestamps.last {
-                Text(L10n.tr(
-                    "近期错误：\(errorTimestamps.count) 次（最近一次 \(lastErrorAt.formatted(date: .abbreviated, time: .shortened))）",
-                    "Recent errors: \(errorTimestamps.count), latest \(lastErrorAt.formatted(date: .abbreviated, time: .shortened))"
-                ))
-                .font(.system(size: DesignTokens.TypeSize.caption))
-                .foregroundStyle(DesignTokens.secondaryText)
-                .monospacedDigit()
-            }
-
-            HStack(spacing: 8) {
-                Button {
-                    copyDiagnostics()
-                } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: "doc.on.doc")
-                        Text(L10n.tr(
-                            "复制脱敏诊断报告",
-                            "Copy Diagnostics Report"
-                        ))
-                    }
+            // One action per row, explanation on the left, like every other settings row.
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(L10n.tr("反馈问题", "Report a Problem"))
+                    Text(L10n.tr("打开 GitHub 新建问题，并复制脱敏诊断", "Opens GitHub and copies redacted diagnostics"))
+                        .font(.system(size: DesignTokens.TypeSize.caption))
+                        .foregroundStyle(DesignTokens.secondaryText)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
-                .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .accentColor))
-
-                if didCopy {
-                    Label(L10n.tr("已复制", "Copied"), systemImage: "checkmark.circle.fill")
-                        .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
-                        .foregroundStyle(.green)
-                }
-
-                Spacer()
-
-                Button(L10n.tr("打开 GitHub Issues", "Open GitHub Issues")) {
-                    if let url = URL(string: "https://github.com/jryang2026-code/MenuBarHome/issues") {
-                        NSWorkspace.shared.open(url)
-                    }
-                }
-                .buttonStyle(PillActionButtonStyle())
-            }
-
-            HStack(alignment: .top, spacing: 8) {
+                Spacer(minLength: 8)
                 Button {
                     openFeedbackIssue()
                 } label: {
@@ -3052,11 +3013,43 @@ private struct AboutSettingsTab: View {
                     }
                 }
                 .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .accentColor))
+            }
 
-                Text(L10n.tr("打开 GitHub 并复制脱敏诊断", "Opens GitHub and copies redacted diagnostics"))
-                    .font(.system(size: DesignTokens.TypeSize.caption))
-                    .foregroundStyle(DesignTokens.secondaryText)
-                    .fixedSize(horizontal: false, vertical: true)
+            Divider().overlay(Color.primary.opacity(0.06))
+
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(L10n.tr("复制脱敏诊断报告", "Copy Diagnostics Report"))
+                    Text(L10n.tr("不含账号、密钥与设备 ID", "No accounts, keys or device IDs"))
+                        .font(.system(size: DesignTokens.TypeSize.caption))
+                        .foregroundStyle(DesignTokens.secondaryText)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if let lastErrorAt = errorTimestamps.last {
+                        Text(L10n.tr(
+                            "近期错误：\(errorTimestamps.count) 次（最近一次 \(lastErrorAt.formatted(date: .abbreviated, time: .shortened))）",
+                            "Recent errors: \(errorTimestamps.count), latest \(lastErrorAt.formatted(date: .abbreviated, time: .shortened))"
+                        ))
+                        .font(.system(size: DesignTokens.TypeSize.caption))
+                        .foregroundStyle(DesignTokens.secondaryText)
+                        .monospacedDigit()
+                    }
+                }
+                Spacer(minLength: 8)
+                if didCopy {
+                    Label(L10n.tr("已复制", "Copied"), systemImage: "checkmark.circle.fill")
+                        .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
+                        .foregroundStyle(.green)
+                        .transition(.opacity)
+                }
+                Button {
+                    copyDiagnostics()
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "doc.on.doc")
+                        Text(L10n.tr("复制", "Copy"))
+                    }
+                }
+                .buttonStyle(PillActionButtonStyle())
             }
 
             DisclosureGroup(isExpanded: $showsDiagnosticsPreview) {

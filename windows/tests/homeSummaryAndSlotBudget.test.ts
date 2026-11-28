@@ -206,6 +206,11 @@ test("formatHomeSummaryCapsuleTitle localizes in zh-Hans, zh-Hant, en and conver
       capsules.map((c) => formatHomeSummaryCapsuleTitle(c, "fahrenheit")),
       ["1 alert", "3 lights on", "2 doors/windows open", "Indoor 75°"],
     );
+    const average = { kind: "indoorTemp" as const, count: 3, temperatureCelsius: 25.8, alertSeverity: null, targetDeviceIds: [], filterTag: "sensor" as const };
+    assert.equal(formatHomeSummaryCapsuleTitle(average, "celsius"), "Indoor avg 25.8°");
+    setLanguage("zh-Hans");
+    assert.equal(formatHomeSummaryCapsuleTitle(average, "celsius"), "室内均温 25.8°");
+    assert.equal(formatHomeSummaryCapsuleTitle(average, "fahrenheit"), "室内均温 78°");
   } finally {
     setLanguage("zh-Hans");
   }
