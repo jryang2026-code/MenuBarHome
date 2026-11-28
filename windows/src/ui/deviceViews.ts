@@ -230,7 +230,7 @@ export {
           ${nameArea}
           ${steps}
         </div>
-        ${readout === "possiblyStale" ? "" : `<div class="cc-climate-gauge" role="progressbar" aria-label="${t("目标温度进度")}" aria-valuemin="${k.minTemp}" aria-valuemax="${k.maxTemp}" aria-valuenow="${k.targetTemperature}"><span style="width:${progress}%;--fill-scale:${(progress / 100).toFixed(3)}"></span></div>`}
+        ${readout === "possiblyStale" || !running ? "" : `<div class="cc-climate-gauge" role="progressbar" aria-label="${t("目标温度进度")}" aria-valuemin="${k.minTemp}" aria-valuemax="${k.maxTemp}" aria-valuenow="${k.targetTemperature}"><span style="width:${progress}%;--fill-scale:${(progress / 100).toFixed(3)}"></span></div>`}
         ${!canExpand ? renderPendingHighRiskRow(dev.id, pendingHighRisk, escapeHtml) : ""}
         ${
           open
