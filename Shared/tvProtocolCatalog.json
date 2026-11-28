@@ -29,7 +29,7 @@
       "kind": "display",
       "tier": "experimental",
       "vendors": ["Redmi", "Xiaomi"],
-      "models": ["Redmi G27U", "Redmi A27U", "Redmi G27"],
+      "models": ["Redmi G27U", "Redmi A27U", "Redmi G27", "Redmi G Pro 27U"],
       "transport": {
         "family": "ddcCi",
         "channels": ["iokitI2c"],
@@ -89,7 +89,7 @@
         "family": "xiaomiMitv",
         "channels": ["lanHttp", "miotCloudFallback"],
         "ports": [{ "number": 6095, "protocol": "tcp" }],
-        "discovery": ["lanHttpProbe", "miotDeviceList"]
+        "discovery": ["lanHttpProbe", "lanSsdp", "mdns", "miotDeviceList"]
       },
       "pairing": {
         "required": false,
@@ -256,7 +256,7 @@
       },
       "kind": "tv",
       "tier": "experimental",
-      "vendors": ["Google", "Sony", "TCL", "Philips", "Generic Android TV"],
+      "vendors": ["Google", "Sony", "TCL", "Philips", "Xiaomi", "Redmi", "Generic Android TV"],
       "models": ["Android TV", "Google TV"],
       "transport": {
         "family": "androidTvRemoteV2",

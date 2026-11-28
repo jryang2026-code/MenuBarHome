@@ -8,6 +8,7 @@ struct TVBridgeSettingsSection: View {
     @State private var binaryPath = ""
     @State private var expectedSHA = ""
     @State private var isAdding = false
+    @State private var prefillDevice: TVBridgeDiscoveredDevice?
     @State private var removing: TVBridgeDeviceConfig?
 
     var body: some View {
@@ -19,22 +20,30 @@ struct TVBridgeSettingsSection: View {
             .accessibilityIdentifier("settings-tv-bridge")
 
             caption(L10n.tr(
-                "首发支持 LG webOS、小米 / Redmi 与海信（海外 VIDAA）；其他品牌可在添加电视时展开实验性协议（未真机验证）。插件在独立进程中运行，未开启时零后台开销；已由 Home Assistant 或米家接入的同一台电视始终由内置来源控制。",
-                "Primary support for LG webOS, Xiaomi / Redmi, and Hisense (overseas VIDAA); other protocols are behind the experimental toggle when adding a TV. The plugin runs in its own process and nothing runs while this is off; a TV already connected through Home Assistant or Xiaomi Home stays on the built-in source."
+                "首发支持 LG webOS、小米 / Redmi 与海信（海外 VIDAA）；开启后自动扫描家庭网络中的电视，一键添加无需手填 IP。插件在独立进程中运行，未开启时零后台开销；已由 Home Assistant 或米家接入的同一台电视始终由内置来源控制。",
+                "Primary support for LG webOS, Xiaomi / Redmi, and Hisense (overseas VIDAA). Automatically scans your home network for TVs when enabled so you can add them in one click. Nothing runs while this is off; a TV already connected through Home Assistant or Xiaomi Home stays on the built-in source."
             ))
 
             if bridge.isEnabled {
                 Divider().overlay(Color.primary.opacity(0.06))
-                binarySettings
+                discoveredSection
                 Divider().overlay(Color.primary.opacity(0.06))
                 deviceList
+                Divider().overlay(Color.primary.opacity(0.06))
+                binarySettings
             }
         }
         .onAppear {
             binaryPath = bridge.config.binaryPath ?? ""
             expectedSHA = bridge.config.expectedBinarySHA256 ?? ""
+            if bridge.isEnabled && !bridge.hasDiscovered { bridge.discoverLAN() }
         }
-        .sheet(isPresented: $isAdding) { TVBridgeDeviceEditor(bridge: bridge) }
+        .onChange(of: bridge.isEnabled) { _, enabled in
+            if enabled && !bridge.hasDiscovered { bridge.discoverLAN() }
+        }
+        .sheet(isPresented: $isAdding, onDismiss: { prefillDevice = nil }) {
+            TVBridgeDeviceEditor(bridge: bridge, prefill: prefillDevice)
+        }
         .alert(L10n.tr("移除电视？", "Remove TV?"), isPresented: Binding(
             get: { removing != nil }, set: { if !$0 { removing = nil } }
         ), presenting: removing) { device in
@@ -43,6 +52,82 @@ struct TVBridgeSettingsSection: View {
         } message: { device in
             Text(device.name)
         }
+    }
+
+    private var discoveredSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Text(L10n.tr("局域网发现的电视", "TVs Found on Your Network"))
+                    .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
+                Spacer()
+                Button(bridge.isDiscovering
+                       ? L10n.tr("正在扫描…", "Scanning…")
+                       : L10n.tr("重新扫描", "Scan Again")) {
+                    bridge.discoverLAN(force: true)
+                }
+                .buttonStyle(PillActionButtonStyle())
+                .disabled(bridge.isDiscovering)
+                .accessibilityIdentifier("settings-tv-bridge-scan")
+            }
+
+            if bridge.isDiscovering && bridge.discoveredDevices.isEmpty {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    caption(L10n.tr("正在通过 mDNS、SSDP 与小米 6095 探测局域网电视…", "Scanning LAN TVs via mDNS, SSDP, and Xiaomi 6095…"))
+                }
+            } else if bridge.discoveredDevices.isEmpty {
+                caption(bridge.hasDiscovered
+                        ? L10n.tr("未在局域网中发现开机电视，请确认电视已连同一 Wi-Fi 或使用下方手动添加", "No powered-on TVs found on your LAN. Make sure the TV is on the same Wi-Fi, or add it manually below.")
+                        : L10n.tr("点击「重新扫描」自动发现局域网电视", "Click Scan Again to find TVs on your home network"))
+            } else {
+                ForEach(bridge.discoveredDevices) { item in
+                    HStack(spacing: 8) {
+                        Image(systemName: "tv.and.mediabox")
+                            .foregroundStyle(DesignTokens.secondaryText)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(item.name).lineLimit(1)
+                            caption(discoverySubtitle(for: item))
+                        }
+                        Spacer(minLength: 8)
+                        if bridge.isConfiguredHost(item.host) {
+                            Text(L10n.tr("已添加", "Added"))
+                                .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
+                                .foregroundStyle(.green)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(Capsule().fill(Color.green.opacity(0.12)))
+                        } else if let driver = item.suggestedDriver {
+                            Button(driver.requiresSecretOnAdd
+                                   ? L10n.tr("配对添加", "Pair & Add")
+                                   : L10n.tr("添加", "Add")) {
+                                if driver.requiresSecretOnAdd {
+                                    prefillDevice = item
+                                    isAdding = true
+                                } else {
+                                    bridge.addDiscoveredDevice(item)
+                                }
+                            }
+                            .buttonStyle(PillActionButtonStyle())
+                        } else {
+                            caption(L10n.tr("暂不支持", "Unsupported"))
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func discoverySubtitle(for item: TVBridgeDiscoveredDevice) -> String {
+        var parts = [item.brand]
+        if let model = item.model, !model.isEmpty,
+           !item.name.localizedCaseInsensitiveContains(model) {
+            parts.append(model)
+        }
+        if let driver = item.suggestedDriver {
+            parts.append(driver.displayTitle)
+        }
+        parts.append(item.host)
+        return parts.joined(separator: " · ")
     }
 
     private var binarySettings: some View {
@@ -93,8 +178,11 @@ struct TVBridgeSettingsSection: View {
             }
             HStack {
                 Spacer()
-                Button(L10n.tr("添加电视", "Add TV"), systemImage: "plus") { isAdding = true }
-                    .buttonStyle(PillActionButtonStyle())
+                Button(L10n.tr("手动添加…", "Add Manually…"), systemImage: "plus") {
+                    prefillDevice = nil
+                    isAdding = true
+                }
+                .buttonStyle(PillActionButtonStyle())
             }
         }
     }
@@ -135,16 +223,33 @@ struct TVBridgeSettingsSection: View {
 
 private struct TVBridgeDeviceEditor: View {
     let bridge: TVBridgeStore
+    let prefill: TVBridgeDiscoveredDevice?
     @Environment(\.dismiss) private var dismiss
     @State private var name = ""
     @State private var roomName = ""
-    @State private var driver: TVBridgeDeviceConfig.Driver = .lg_webos_ssap
+    @State private var driver: TVBridgeDeviceConfig.Driver = .xiaomi_mitv_6095
     @State private var showExperimental = false
     @State private var host = ""
     @State private var port = ""
     @State private var macAddress = ""
     @State private var secret = ""
     @State private var failed = false
+    @State private var invalidHost = false
+
+    init(bridge: TVBridgeStore, prefill: TVBridgeDiscoveredDevice? = nil) {
+        self.bridge = bridge
+        self.prefill = prefill
+        if let prefill {
+            _name = State(initialValue: prefill.name)
+            _host = State(initialValue: prefill.host)
+            if let suggested = prefill.suggestedDriver {
+                _driver = State(initialValue: suggested)
+                _showExperimental = State(initialValue: !suggested.isPrimary)
+            }
+            if let p = prefill.port { _port = State(initialValue: String(p)) }
+            if let mac = prefill.macAddress { _macAddress = State(initialValue: mac) }
+        }
+    }
 
     private var visibleDrivers: [TVBridgeDeviceConfig.Driver] {
         TVBridgeStore.visibleDrivers(includeExperimental: showExperimental)
@@ -159,7 +264,7 @@ private struct TVBridgeDeviceEditor: View {
 
     private var canSave: Bool {
         !name.trimmingCharacters(in: .whitespaces).isEmpty
-            && !host.trimmingCharacters(in: .whitespaces).isEmpty && parsedPort != nil
+            && TVBridgeDiscovery.validatedConfiguredHost(host) != nil && parsedPort != nil
     }
 
     var body: some View {
@@ -176,15 +281,19 @@ private struct TVBridgeDeviceEditor: View {
                 )
                 .onChange(of: showExperimental) { _, shown in
                     if !shown && !driver.isPrimary {
-                        driver = .lg_webos_ssap
+                        driver = .xiaomi_mitv_6095
                     }
                 }
-                TextField(L10n.tr("IP 地址", "IP address"), text: $host, prompt: Text("192.168.1.20"))
+                TextField(L10n.tr("IP 地址（仅限局域网）", "IP address (LAN only)"), text: $host, prompt: Text("192.168.1.20"))
                 TextField(L10n.tr("端口", "Port"), text: $port, prompt: Text(L10n.format("默认 %@", "Default %@", "\(driver.defaultPort)")))
                 TextField(L10n.tr("MAC 地址（可选，用于网络唤醒）", "MAC address (optional, for Wake-on-LAN)"), text: $macAddress)
                 if let title = driver.credentialTitle {
                     SecureField(title, text: $secret)
                 }
+            }
+            if invalidHost {
+                Text(L10n.tr("仅允许局域网私网 IP 或 .local 主机名", "Only private LAN IP addresses or .local hostnames are allowed"))
+                    .foregroundStyle(.red)
             }
             if failed {
                 Text(L10n.tr("无法保存：密钥未能写入钥匙串", "Couldn't save: the key could not be stored in Keychain"))
@@ -195,6 +304,11 @@ private struct TVBridgeDeviceEditor: View {
                 Button(L10n.tr("取消", "Cancel")) { dismiss() }.keyboardShortcut(.cancelAction)
                 Button(L10n.tr("添加", "Add")) {
                     guard let port = parsedPort else { return }
+                    guard TVBridgeDiscovery.validatedConfiguredHost(host) != nil else {
+                        invalidHost = true
+                        return
+                    }
+                    invalidHost = false
                     if bridge.addDevice(
                         name: name, roomName: roomName, driver: driver, host: host,
                         port: port, macAddress: macAddress, secret: secret
