@@ -666,7 +666,7 @@ public struct ClassicControlCenterPanel: View {
                         }
                     }
                     .padding(.horizontal, 13)
-                    .padding(.top, showsScrollPreface ? 0 : 10)
+                    .padding(.top, 10)
                     .padding(.bottom, max(12, transientStackHeight + 8))
                 }
                 .onChange(of: pendingScrollToDeviceId) { _, targetId in

@@ -131,6 +131,14 @@ struct ClassicGlassTileBackground: ViewModifier {
                 shape.fill(surface.fill)
             }
             .classicSpecularRim(shape)
+            // The rim's white top and bottom vanish against the light panel; a hairline keeps the
+            // whole outline readable there.
+            .overlay {
+                if colorScheme == .light {
+                    shape.strokeBorder(Color.black.opacity(0.07), lineWidth: 1)
+                        .allowsHitTesting(false)
+                }
+            }
             // One shadow carries the depth: a lit module sits above the panel, a quiet one lies flat.
             .shadowIf(
                 isActive,
