@@ -1404,6 +1404,8 @@ export class MenuMijiaWindowsApp {
       this.deviceFacets = keptFacets;
       this.environmentReadings = this.environmentReadings.filter((reading) => keptIds.has(reading.id));
       this.groupOwnerByMemberDid = new Map();
+      // Scenes of the home just left must not stay runnable while the new home loads.
+      this.scenes = this.scenes.filter((scene) => !isXiaomiScene(scene));
       if (this.expandedDeviceId !== null && !keptIds.has(this.expandedDeviceId)) {
         this.expandedDeviceId = null;
       }
@@ -1415,6 +1417,8 @@ export class MenuMijiaWindowsApp {
         this.deviceFacets = { ...cached.deviceFacets };
         this.environmentReadings = [...cached.environmentReadings];
         this.groupOwnerByMemberDid = new Map(cached.groupOwnerByMemberDid);
+        // Scenes are not cached: a cached row could resurrect one deleted in the cloud.
+        this.scenes = this.scenes.filter((scene) => !isXiaomiScene(scene));
         this.expandedDeviceId = null;
         this.isSwitchingHome = false;
       } else {
@@ -1422,6 +1426,7 @@ export class MenuMijiaWindowsApp {
         this.deviceFacets = {};
         this.environmentReadings = [];
         this.groupOwnerByMemberDid = new Map();
+        this.scenes = this.scenes.filter((scene) => !isXiaomiScene(scene));
         this.expandedDeviceId = null;
         this.isSwitchingHome = true;
       }
@@ -3065,4 +3070,9 @@ if (typeof document !== "undefined") {
       }
     }
   });
+}
+
+/** Same ownership rule the single-account refresh uses for Xiaomi scene rows. */
+function isXiaomiScene(scene: HomeScene): boolean {
+  return scene.sourceBackend === "xiaomiCloud" || scene.accountId !== undefined;
 }

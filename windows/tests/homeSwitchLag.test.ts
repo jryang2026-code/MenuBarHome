@@ -296,8 +296,14 @@ describe("Windows Mi home switch fast path", () => {
     // Park the next refresh for home-a and toggle dev-a off in the cloud.
     powerA = false;
     homeRoomsGate = makeDeferred();
+    app.scenes = [
+      { id: "scene-b", name: "Home B scene", entityId: "scene-b", sourceBackend: "xiaomiCloud" },
+      { id: "scene-ha", name: "HA scene", entityId: "scene.ha", sourceBackend: "homeAssistant" },
+    ];
     app.selectHome("home-a");
 
+    // The home just left must not leave its scenes runnable; non-Xiaomi scenes stay.
+    assert.deepEqual(app.scenes.map((scene) => scene.id), ["scene-ha"]);
     // Cached snapshot appears synchronously without flashing empty/loading.
     assert.deepEqual(app.devices.map((d) => d.id), ["dev-a"]);
     assert.equal(app.isSwitchingHome, false);
