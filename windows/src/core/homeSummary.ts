@@ -221,8 +221,16 @@ export function formatHomeSummaryCapsuleTitle(
         temperatureUnit === "fahrenheit"
           ? (capsule.temperatureCelsius * 9) / 5 + 32
           : capsule.temperatureCelsius;
-      const rounded = roundHalfAwayFromZero(displayValue);
-      return t("室内 {temp}°", { temp: rounded });
+      // Same precision as the header reading, so 25.8° up top never sits beside a rounded 26°.
+      const celsius = capsule.temperatureCelsius;
+      const text =
+        temperatureUnit === "celsius" && Math.abs(celsius - Math.round(celsius)) >= 0.05
+          ? displayValue.toFixed(1)
+          : String(roundHalfAwayFromZero(displayValue));
+      // Several sensors: say it is an average, so it does not read as contradicting the header's one room.
+      return capsule.count > 1
+        ? t("室内均温 {temp}°", { temp: text })
+        : t("室内 {temp}°", { temp: text });
     }
   }
 }
