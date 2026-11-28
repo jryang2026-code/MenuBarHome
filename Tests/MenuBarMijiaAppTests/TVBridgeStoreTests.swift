@@ -27,7 +27,10 @@ struct TVBridgeStoreTests {
             }
         }
 
-        func makeStore(idleDelay: Duration? = nil) -> TVBridgeStore {
+        func makeStore(
+            idleDelay: Duration? = nil,
+            discoverOnLAN: @escaping @Sendable () async -> [TVBridgeDiscoveredDevice] = { [] }
+        ) -> TVBridgeStore {
             TVBridgeStore(
                 defaults: defaults,
                 secrets: .init(
@@ -39,6 +42,7 @@ struct TVBridgeStoreTests {
                 ),
                 binaryCandidates: { [] },
                 idleDelay: idleDelay,
+                discoverOnLAN: discoverOnLAN,
                 makeManager: { [unowned self] config, credentials in
                     self.managersMade += 1
                     return TVBridgePluginManager(
@@ -324,6 +328,39 @@ struct TVBridgeStoreTests {
         let execReq = try #require(await harness.transport.requests.last { $0.method == "control.execute" })
         let execParams = try #require(try JSONSerialization.jsonObject(with: execReq.params ?? Data()) as? [String: Any])
         #expect(execParams["capabilityGeneration"] as? Int == nextGen)
+    }
+
+    @Test("LAN TV discovery is silent while disabled, discovers Redmi 6095, and adds in one click while blocking public hosts")
+    func lanDiscoveryAndOneClickAdd() async {
+        let harness = Harness()
+        let discovered = TVBridgeDiscoveredDevice(
+            name: "Redmi G Pro 27U", host: "192.168.1.42", port: 6095,
+            brand: "Xiaomi / Redmi", model: "Redmi G Pro 27U",
+            suggestedDriver: .xiaomi_mitv_6095, macAddress: "AA:BB:CC:DD:EE:FF",
+            sources: ["HTTP 6095"]
+        )
+        let store = harness.makeStore(discoverOnLAN: { [discovered] })
+        // Off by default: zero LAN discovery.
+        #expect(store.discoverLAN() == nil)
+        #expect(store.discoveredDevices.isEmpty)
+
+        store.setEnabled(true)
+        await store.discoverLAN()?.value
+        #expect(store.hasDiscovered)
+        #expect(store.discoveredDevices.count == 1)
+        #expect(store.discoveredDevices[0].suggestedDriver == .xiaomi_mitv_6095)
+
+        // One-click add persists without manual IP typing, and blocks duplicates / public hosts.
+        #expect(store.addDiscoveredDevice(store.discoveredDevices[0]))
+        #expect(store.isConfiguredHost("192.168.1.42"))
+        #expect(!store.addDiscoveredDevice(store.discoveredDevices[0]))
+        #expect(!store.addDevice(name: "Public", roomName: "", driver: .xiaomi_mitv_6095, host: "8.8.8.8", port: 6095, macAddress: nil, secret: nil))
+        #expect(!store.addDevice(name: "IMDS", roomName: "", driver: .xiaomi_mitv_6095, host: "169.254.169.254", port: 6095, macAddress: nil, secret: nil))
+
+        // Disabling clears discovered list.
+        store.setEnabled(false)
+        #expect(store.discoveredDevices.isEmpty)
+        #expect(!store.hasDiscovered)
     }
 }
 

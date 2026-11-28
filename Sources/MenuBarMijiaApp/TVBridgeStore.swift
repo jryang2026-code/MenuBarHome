@@ -42,6 +42,14 @@ extension TVBridgeDeviceConfig.Driver {
         default: nil
         }
     }
+
+    /// True when adding the TV normally requires typing a pairing secret upfront.
+    var requiresSecretOnAdd: Bool {
+        switch self {
+        case .sony_bravia_psk, .samsung_tizen_ws: true
+        default: false
+        }
+    }
 }
 
 /// Optional multi-brand TV bridge (ADR-0026): an out-of-process `mbh-tv-bridge` that drives TVs the
@@ -89,8 +97,10 @@ final class TVBridgeStore {
     @ObservationIgnored private let secrets: Secrets
     @ObservationIgnored private let makeManager: ManagerFactory
     @ObservationIgnored private let binaryCandidates: () -> [String]
+    @ObservationIgnored private let discoverer: @Sendable () async -> [TVBridgeDiscoveredDevice]
     @ObservationIgnored private var manager: TVBridgePluginManager?
     @ObservationIgnored private var refreshTask: Task<Void, Never>?
+    @ObservationIgnored private var discoveryTask: Task<Void, Never>?
     @ObservationIgnored private var backgroundTasks: [UUID: Task<Void, Never>] = [:]
     @ObservationIgnored private var panelVisible = false
     /// One-shot stop after the panel closes; cancelled when it reopens. Never set while off or stopped.
@@ -103,8 +113,11 @@ final class TVBridgeStore {
 
     private(set) var config: TVBridgeConfig
     private(set) var devices: [SmartDevice] = []
+    private(set) var discoveredDevices: [TVBridgeDiscoveredDevice] = []
     private(set) var status: Status = .disabled
     private(set) var isRefreshing = false
+    private(set) var isDiscovering = false
+    private(set) var hasDiscovered = false
     private(set) var detectedBinaryPath: String?
 
     var isEnabled: Bool { config.isEnabled }
@@ -116,12 +129,14 @@ final class TVBridgeStore {
         secrets: Secrets = .keychain,
         binaryCandidates: @escaping () -> [String] = TVBridgeStore.defaultBinaryCandidates,
         idleDelay: Duration? = nil,
+        discoverOnLAN: @escaping @Sendable () async -> [TVBridgeDiscoveredDevice] = { await TVBridgeDiscovery.discoverOnLAN() },
         makeManager: @escaping ManagerFactory = TVBridgeStore.liveManager
     ) {
         self.idleDelay = idleDelay
         self.defaults = defaults
         self.secrets = secrets
         self.binaryCandidates = binaryCandidates
+        self.discoverer = discoverOnLAN
         self.makeManager = makeManager
         config = TVBridgeConfig.load(from: defaults)
         if config.isEnabled { detectBinary() }
@@ -187,15 +202,15 @@ final class TVBridgeStore {
         apply(config)
     }
 
-    /// Adds a TV. A secret goes to the Keychain first; a refused write adds nothing.
+    /// Adds a TV. Enforces private-LAN-only host validation; a secret goes to the Keychain first.
     @discardableResult
     func addDevice(
         name: String, roomName: String, driver: TVBridgeDeviceConfig.Driver,
         host: String, port: Int?, macAddress: String?, secret: String?
     ) -> Bool {
         let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        let host = host.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty, !host.isEmpty, port.map({ (1...65_535).contains($0) }) ?? true else { return false }
+        guard let safeHost = TVBridgeDiscovery.validatedConfiguredHost(host),
+              !name.isEmpty, port.map({ (1...65_535).contains($0) }) ?? true else { return false }
         let nativeId = "tv-" + UUID().uuidString.prefix(8).lowercased()
         var slot: String?
         if driver.credentialTitle != nil, let secret = secret?.trimmingCharacters(in: .whitespacesAndNewlines), !secret.isEmpty {
@@ -205,13 +220,62 @@ final class TVBridgeStore {
         }
         let mac = macAddress?.trimmingCharacters(in: .whitespacesAndNewlines)
         config.devices.append(TVBridgeDeviceConfig(
-            nativeId: nativeId, driver: driver, host: host, port: port, name: name,
+            nativeId: nativeId, driver: driver, host: safeHost, port: port, name: name,
             roomName: roomName.trimmingCharacters(in: .whitespacesAndNewlines),
             macAddress: mac?.isEmpty == false ? mac : nil, credentialSlot: slot
         ))
         apply(config)
         if panelVisible { refresh() }
         return true
+    }
+
+    func isConfiguredHost(_ host: String) -> Bool {
+        let needle = host.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !needle.isEmpty else { return false }
+        return config.devices.contains { $0.host.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == needle }
+    }
+
+    /// Scans the local private network for TVs (mDNS/DNS-SD, SSDP/DIAL, Xiaomi HTTP 6095).
+    /// Always a no-op while the TV bridge is disabled (`architecture.md` §A/§B zero-overhead invariant).
+    @discardableResult
+    func discoverLAN(force: Bool = false) -> Task<Void, Never>? {
+        guard config.isEnabled else { return nil }
+        if !force, let discoveryTask { return discoveryTask }
+        discoveryTask?.cancel()
+        isDiscovering = true
+        let token = generation
+        let runDiscover = discoverer
+        let task = Task { [weak self] in
+            let found = await runDiscover()
+            guard !Task.isCancelled, let self, self.config.isEnabled, self.generation == token else { return }
+            self.discoveredDevices = TVBridgeDiscovery.mergeDiscovered(found)
+            self.isDiscovering = false
+            self.hasDiscovered = true
+            self.discoveryTask = nil
+        }
+        discoveryTask = task
+        return task
+    }
+
+    /// One-click add for a LAN-discovered TV. Enforces private-LAN validation and driver support.
+    @discardableResult
+    func addDiscoveredDevice(
+        _ device: TVBridgeDiscoveredDevice,
+        roomName: String = "",
+        secret: String? = nil
+    ) -> Bool {
+        guard let driver = device.suggestedDriver,
+              let safeHost = TVBridgeDiscovery.validatedLANHost(device.host),
+              !isConfiguredHost(safeHost) else { return false }
+        return addDevice(
+            name: device.name,
+            roomName: roomName,
+            driver: driver,
+            host: safeHost,
+            port: device.port,
+            macAddress: device.macAddress,
+            secret: secret
+        )
     }
 
     func removeDevice(nativeId: String) {
@@ -369,6 +433,7 @@ final class TVBridgeStore {
     /// Lets tests (and teardown) wait for queued bridge work.
     func waitForPendingWork() async {
         await refreshTask?.value
+        await discoveryTask?.value
         while let task = backgroundTasks.values.first ?? idleTask { await task.value }
     }
 
@@ -379,6 +444,9 @@ final class TVBridgeStore {
         cancelIdleShutdown()
         refreshTask?.cancel()
         refreshTask = nil
+        discoveryTask?.cancel()
+        discoveryTask = nil
+        isDiscovering = false
         if let manager {
             self.manager = nil
             let done = DispatchSemaphore(value: 0)
@@ -445,7 +513,14 @@ final class TVBridgeStore {
             retired.isEnabled = false
             track { await old.updateConfig(retired) }
         }
-        if !next.isEnabled { publish([]) }
+        if !next.isEnabled {
+            discoveryTask?.cancel()
+            discoveryTask = nil
+            isDiscovering = false
+            hasDiscovered = false
+            discoveredDevices = []
+            publish([])
+        }
         status = idleStatus
     }
 

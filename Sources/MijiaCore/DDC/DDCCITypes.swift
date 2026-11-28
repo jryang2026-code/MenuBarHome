@@ -10,7 +10,7 @@ public struct DDCCIDisplayDescriptor: Identifiable, Equatable, Sendable {
     public let supportsMCDP29XXBridge: Bool
 
     public var isRedmiOrXiaomiMonitor: Bool {
-        let models = ["REDMIG27U", "G27U", "A27U", "G27"]
+        let models = ["REDMIG27U", "REDMIGPRO27U", "G27U", "GPRO27U", "A27U", "G27"]
         return ["XMI", "RED"].contains(manufacturer.uppercased()) || [name, model].contains {
             let normalized = $0.uppercased().filter { $0.isLetter || $0.isNumber }
             return models.contains(normalized) || normalized.hasPrefix("RMMNT")
