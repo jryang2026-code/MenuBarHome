@@ -69,7 +69,10 @@ struct ClimatePanelModule: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
             strip
-            gauge
+            // Off, the bar only repeats the number beside it and reads like a disabled slider.
+            if isRunning {
+                gauge.transition(.opacity)
+            }
             if isExpanded, hasAuxiliaryControls {
                 VStack(alignment: .leading, spacing: 8) {
                     if !modes.isEmpty { modeChips }

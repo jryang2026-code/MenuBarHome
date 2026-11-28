@@ -63,8 +63,6 @@ struct UpdateSection: View {
                 .controlSize(.regular)
             }
         }
-        .padding(12)
-        .glassTile(isActive: badgeRelease != nil, cornerRadius: DesignTokens.Radius.card)
         .settingsRow(anchor: .softwareUpdate)
         .onAppear { isVisible = true }
         .onDisappear { isVisible = false }

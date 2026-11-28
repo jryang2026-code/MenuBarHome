@@ -649,8 +649,12 @@ public struct MiAccountSection: View {
     private var loggedOutView: some View {
         VStack(alignment: .leading, spacing: 8) {
 
-            HStack {
-                Spacer()
+            HStack(spacing: 12) {
+                Text(L10n.tr("用手机「米家」App 扫码，同步账号下的设备", "Scan with the Mi Home app to sync your devices"))
+                    .font(.system(size: DesignTokens.TypeSize.caption))
+                    .foregroundStyle(DesignTokens.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 8)
                 Button(L10n.tr("扫码登录米家账号", "Sign In with QR Code")) {
                     startQRLogin()
                 }

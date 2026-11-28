@@ -48,7 +48,7 @@ public enum AppAppearance: String, CaseIterable, Identifiable, Sendable {
 
     public var title: String {
         switch self {
-        case .system: return L10n.tr("跟随系统", "Follow System")
+        case .system: return L10n.tr("自动", "Auto")
         case .light: return L10n.tr("浅色", "Light")
         case .dark: return L10n.tr("深色", "Dark")
         }

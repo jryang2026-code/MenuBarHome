@@ -2207,19 +2207,19 @@ private struct ConnectionSettingsTab: View {
         case .blocked:
             return L10n.tr("● 未连接", "● Disconnected")
         case .notConfigured:
-            return L10n.tr("未配置数据源", "No data source configured")
+            return L10n.tr("○ 待连接", "○ Not connected")
         }
     }
 
     private var connectionBadgeColor: Color {
         switch store.panelHealth {
-        case .ok where store.homeBackend == .demo:
+        case .ok where store.homeBackend == .demo, .notConfigured:
             return .secondary
         case .ok:
             return .green
         case .connecting, .degraded:
             return .orange
-        case .blocked, .notConfigured:
+        case .blocked:
             return .red
         }
     }
@@ -2889,7 +2889,9 @@ private struct AboutSettingsTab: View {
         VStack(alignment: .leading, spacing: 16) {
             aboutHeader
 
-            UpdateSection(store: store)
+            SettingsSection(title: L10n.tr("软件更新", "Software Update")) {
+                UpdateSection(store: store)
+            }
 
             if store.hasCompletedOnboarding {
                 aboutSetupGuide
@@ -2954,6 +2956,9 @@ private struct AboutSettingsTab: View {
     private var aboutSetupGuide: some View {
         SettingsSection(title: L10n.tr("初始设置引导", "Setup Guide"), anchor: .setupGuide) {
             HStack(spacing: 12) {
+                Text(L10n.tr("再走一遍连接平台和挑选设备", "Walk through connecting and picking devices again"))
+                    .font(.system(size: DesignTokens.TypeSize.caption))
+                    .foregroundStyle(DesignTokens.secondaryText)
 
                 Spacer(minLength: 8)
 
@@ -3435,7 +3440,9 @@ struct LGWebOSSettingsSection: View {
         let isPaired = !store.lgConfig.clientKey.isEmpty
         let hasHost = !hostDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         SettingsSection(title: L10n.tr("LG 电视", "LG TV"), anchor: .lgTV) {
-            HStack {
+            HStack(spacing: 10) {
+                Text(L10n.tr("启用 LG 电视局域网控制", "Enable LG TV LAN Control"))
+                    .font(.system(size: DesignTokens.TypeSize.body))
                 Spacer()
                 Text(isPaired
                      ? L10n.tr("● 已配对密钥", "● Paired")
@@ -3444,12 +3451,6 @@ struct LGWebOSSettingsSection: View {
                         : L10n.tr("● 已停用", "● Disabled")))
                     .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
                     .foregroundStyle(isPaired ? .green : (isEnabled ? .orange : .secondary))
-            }
-
-            HStack {
-                Text(L10n.tr("启用 LG 电视局域网控制", "Enable LG TV LAN Control"))
-                    .font(.system(size: DesignTokens.TypeSize.body))
-                Spacer()
                 Toggle(L10n.tr("启用 LG 电视局域网控制", "Enable LG TV LAN Control"), isOn: $isEnabled)
                     .labelsHidden()
                     .glassLabelHidden()
