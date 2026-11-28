@@ -339,6 +339,7 @@ public enum HADiscovery {
     private static let maxSubnetSweeps: Int = 4
     private static let tcpSweepBatchSize: Int = 48
     private static let tcpSweepTimeoutMs: Int = 450
+    private static let tcpSweepTotalBudgetMs: Int = 4000
     private static let httpProbeMaxConcurrency: Int = 16
     private static let httpProbeRequestTimeout: TimeInterval = 1.2
     private static let httpProbeResourceTimeout: TimeInterval = 2.0
@@ -559,7 +560,7 @@ public enum HADiscovery {
         // NAS whose IP is not cached in ARP), actively sweep active private /24 subnets on :8123.
         if merged.isEmpty && !Task.isCancelled {
             let excluded = probedDefaultPortIPs
-            let openHosts = await Task.detached(priority: .utility) {
+            let sweepTask = Task.detached(priority: .utility) {
                 let interfaces = activeInterfaces()
                 let sweepHosts = Self.subnetCandidateHosts(
                     for: interfaces,
@@ -568,7 +569,12 @@ public enum HADiscovery {
                 )
                 guard !sweepHosts.isEmpty else { return [String]() }
                 return scanOpenPort(sweepHosts)
-            }.value
+            }
+            let openHosts = await withTaskCancellationHandler {
+                await sweepTask.value
+            } onCancel: {
+                sweepTask.cancel()
+            }
 
             var sweepCandidates: [String] = []
             for ip in openHosts {
@@ -720,7 +726,8 @@ public enum HADiscovery {
         let waitMs = max(50, timeoutMs)
         var openHosts: [String] = []
         var offset = 0
-        while offset < safeHosts.count && !Task.isCancelled {
+        let sweepDeadline = ContinuousClock.now + .milliseconds(tcpSweepTotalBudgetMs)
+        while offset < safeHosts.count && !Task.isCancelled && ContinuousClock.now < sweepDeadline {
             let end = min(offset + step, safeHosts.count)
             openHosts.append(contentsOf: scanTCPBatch(Array(safeHosts[offset..<end]), port: port, timeoutMs: waitMs))
             offset = end
