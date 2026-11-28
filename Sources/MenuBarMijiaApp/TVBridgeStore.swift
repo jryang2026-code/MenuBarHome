@@ -243,11 +243,12 @@ final class TVBridgeStore {
         if !force, let discoveryTask { return discoveryTask }
         discoveryTask?.cancel()
         isDiscovering = true
-        let token = generation
         let runDiscover = discoverer
         let task = Task { [weak self] in
             let found = await runDiscover()
-            guard !Task.isCancelled, let self, self.config.isEnabled, self.generation == token else { return }
+            // LAN results do not depend on bridge config, so a config change while still enabled
+            // must not strand the UI on "Scanning…"; cancel/disable paths reset state themselves.
+            guard !Task.isCancelled, let self, self.config.isEnabled else { return }
             self.discoveredDevices = TVBridgeDiscovery.mergeDiscovered(found)
             self.isDiscovering = false
             self.hasDiscovered = true

@@ -362,6 +362,21 @@ struct TVBridgeStoreTests {
         #expect(store.discoveredDevices.isEmpty)
         #expect(!store.hasDiscovered)
     }
+
+    @Test("A config change during a LAN scan still finishes the scan instead of sticking on Scanning")
+    func configChangeDuringScanFinishes() async {
+        let harness = Harness()
+        let store = harness.makeStore(discoverOnLAN: {
+            try? await Task.sleep(for: .milliseconds(50))
+            return []
+        })
+        store.setEnabled(true)
+        let scan = store.discoverLAN()
+        store.setBinaryPath("/tmp/other-bridge")
+        await scan?.value
+        #expect(!store.isDiscovering)
+        #expect(store.hasDiscovered)
+    }
 }
 
 /// Holds `initialize` open until released, so a test can switch the bridge off mid-start.
