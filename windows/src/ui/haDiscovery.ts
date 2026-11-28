@@ -10,7 +10,7 @@ export interface HaDiscoveredInstance {
   readonly uuid?: string;
 }
 
-export const DEFAULT_HA_DISCOVERY_TIMEOUT_MS = 3000;
+export const DEFAULT_HA_DISCOVERY_TIMEOUT_MS = 5000;
 
 export function normalizeDiscoveredInstances(raw: unknown): HaDiscoveredInstance[] {
   if (!Array.isArray(raw)) return [];

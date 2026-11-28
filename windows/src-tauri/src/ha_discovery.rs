@@ -1,9 +1,12 @@
-//! Bounded, read-only LAN mDNS discovery for Home Assistant (`_home-assistant._tcp.local.`).
+//! Bounded, read-only LAN discovery for Home Assistant (`_home-assistant._tcp.local.` mDNS with
+//! active RFC1918 `/24` port-8123 fallback when mDNS finds nothing).
 //!
 //! Sends a one-shot mDNS PTR query over UDP 5353 (with the QU bit set for unicast replies and an
 //! optional multicast listener on port 5353 when bindable), parses responses with strict bounds
-//! against malformed/looping DNS packets, and returns de-duplicated LAN candidates without
-//! mutating `EXTRA_ALLOWED_ORIGINS` or reading/sending any user credentials (#294).
+//! against malformed/looping DNS packets, and when mDNS yields nothing (for example Docker bridge
+//! deployments on a NAS), falls back to resolving common `.local` HA hostnames and sweeping the
+//! active private LAN `/24` subnet(s) on port 8123 with bounded concurrency. Returns de-duplicated
+//! LAN candidates without mutating `EXTRA_ALLOWED_ORIGINS` or reading/sending any user credentials (#294).
 
 use crate::miio_crypto::is_private_rfc1918_ipv4;
 use crate::network::{normalize_host, parse_ha_endpoint_parts};
@@ -16,7 +19,7 @@ use std::pin::pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
-use tokio::net::UdpSocket;
+use tokio::net::{TcpStream, UdpSocket};
 use tokio::sync::Semaphore;
 use tokio::time::{timeout_at, Instant};
 use tokio_util::sync::CancellationToken;
@@ -25,16 +28,32 @@ pub(crate) const MDNS_MULTICAST_V4: Ipv4Addr = Ipv4Addr::new(224, 0, 0, 251);
 pub(crate) const MDNS_PORT: u16 = 5353;
 pub(crate) const HA_SERVICE_TYPE: &str = "_home-assistant._tcp.local";
 const HA_SERVICE_SUFFIX: &str = "._home-assistant._tcp.local";
+pub(crate) const HA_DEFAULT_PORT: u16 = 8123;
+const COMMON_LAN_HOSTNAMES: &[&str] = &["homeassistant.local", "hassio.local", "hass.local"];
 
-const DEFAULT_DISCOVERY_TIMEOUT_MS: u64 = 3000;
+const DEFAULT_DISCOVERY_TIMEOUT_MS: u64 = 5000;
 const MIN_DISCOVERY_TIMEOUT_MS: u64 = 200;
-const MAX_DISCOVERY_TIMEOUT_MS: u64 = 5000;
+const MAX_DISCOVERY_TIMEOUT_MS: u64 = 8000;
+const MDNS_PHASE_CAP: Duration = Duration::from_millis(1800);
 const SETTLE_AFTER_FIRST_CANDIDATE: Duration = Duration::from_millis(600);
 const RETRY_QUERY_DELAY: Duration = Duration::from_millis(750);
 const LOOKUP_HOST_TIMEOUT: Duration = Duration::from_millis(250);
+const TCP_PROBE_TIMEOUT: Duration = Duration::from_millis(450);
+const HTTP_PROBE_TIMEOUT: Duration = Duration::from_millis(1200);
+const MAX_TCP_SWEEP_CONCURRENCY: usize = 64;
+const MAX_HTTP_PROBE_CONCURRENCY: usize = 16;
+const MAX_SUBNET_SWEEPS: usize = 4;
+const MAX_PROBE_BODY_BYTES: usize = 64 * 1024;
 const MAX_FALLBACK_LOOKUPS: usize = 4;
 static FALLBACK_LOOKUP_SLOTS: LazyLock<Arc<Semaphore>> =
     LazyLock::new(|| Arc::new(Semaphore::new(MAX_FALLBACK_LOOKUPS)));
+static PROBE_HTTP_CLIENT: LazyLock<Result<reqwest::Client, String>> = LazyLock::new(|| {
+    reqwest::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|e| e.to_string())
+});
 
 const MAX_DNS_PACKET_BYTES: usize = 8192;
 const MAX_QUESTIONS_PER_PACKET: usize = 64;
@@ -675,6 +694,212 @@ where
     .collect()
 }
 
+pub(crate) fn subnet_candidate_ips(interfaces: &[(Ipv4Addr, u8)], max_subnets: usize) -> Vec<Ipv4Addr> {
+    if max_subnets == 0 { return Vec::new(); }
+    let (mut seen_subnets, mut seen_ips, mut out) = (HashSet::new(), HashSet::new(), Vec::new());
+    for &(ip, prefix_len) in interfaces {
+        if !is_private_rfc1918_ipv4(&ip.to_string()) { continue; }
+        let effective_prefix = if prefix_len == 0 || prefix_len > 32 { 24 } else { prefix_len.max(24) };
+        if effective_prefix >= 31 { continue; }
+        let mask = !0u32 << (32 - effective_prefix);
+        let network = u32::from(ip) & mask;
+        let broadcast = network | !mask;
+        if broadcast <= network.saturating_add(1) || seen_subnets.contains(&(network, mask)) { continue; }
+        if seen_subnets.len() >= max_subnets { break; }
+        seen_subnets.insert((network, mask));
+        for host_u32 in (network + 1)..broadcast {
+            let candidate = Ipv4Addr::from(host_u32);
+            let octets = candidate.octets();
+            if octets[3] != 0 && octets[3] != 255
+                && is_private_rfc1918_ipv4(&candidate.to_string())
+                && seen_ips.insert(candidate)
+            {
+                out.push(candidate);
+            }
+        }
+    }
+    out
+}
+
+#[cfg(windows)]
+fn active_lan_ipv4_interfaces() -> Vec<(Ipv4Addr, u8)> {
+    use windows_sys::Win32::Foundation::NO_ERROR;
+    use windows_sys::Win32::NetworkManagement::IpHelper::{
+        FreeMibTable, GetIpForwardTable2, GetUnicastIpAddressTable, MIB_IPFORWARD_TABLE2,
+        MIB_UNICASTIPADDRESS_TABLE,
+    };
+    use windows_sys::Win32::Networking::WinSock::AF_INET;
+    const IP_DAD_STATE_PREFERRED: i32 = 4;
+
+    let mut default_luid: Option<(u32, u64)> = None;
+    let mut route_table: *mut MIB_IPFORWARD_TABLE2 = std::ptr::null_mut();
+    if unsafe { GetIpForwardTable2(AF_INET, &mut route_table) } == NO_ERROR && !route_table.is_null() {
+        unsafe {
+            for row in std::slice::from_raw_parts((*route_table).Table.as_ptr(), (*route_table).NumEntries as usize) {
+                if row.DestinationPrefix.PrefixLength == 0 && row.InterfaceLuid.Value != 0 {
+                    let cand = (row.Metric, row.InterfaceLuid.Value);
+                    if default_luid.is_none_or(|best| cand < best) { default_luid = Some(cand); }
+                }
+            }
+            FreeMibTable(route_table.cast());
+        }
+    }
+    let preferred_luid = default_luid.map(|(_, luid)| luid);
+    let mut unicast_table: *mut MIB_UNICASTIPADDRESS_TABLE = std::ptr::null_mut();
+    if unsafe { GetUnicastIpAddressTable(AF_INET, &mut unicast_table) } != NO_ERROR || unicast_table.is_null() {
+        return Vec::new();
+    }
+    let mut entries: Vec<(u8, u64, Ipv4Addr, u8)> = Vec::new();
+    unsafe {
+        for row in std::slice::from_raw_parts((*unicast_table).Table.as_ptr(), (*unicast_table).NumEntries as usize) {
+            if row.DadState != IP_DAD_STATE_PREFERRED || row.Address.si_family != AF_INET { continue; }
+            let ip = Ipv4Addr::from(row.Address.Ipv4.sin_addr.S_un.S_addr.to_ne_bytes());
+            if ip.is_loopback() || ip.is_link_local() || ip.is_multicast() || !is_private_rfc1918_ipv4(&ip.to_string()) { continue; }
+            let luid = row.InterfaceLuid.Value;
+            entries.push((u8::from(preferred_luid != Some(luid)), luid, ip, row.OnLinkPrefixLength));
+        }
+        FreeMibTable(unicast_table.cast());
+    }
+    entries.sort_by_key(|(priority, luid, ip, _)| (*priority, *luid, *ip));
+    entries.into_iter().map(|(_, _, ip, prefix)| (ip, prefix)).collect()
+}
+
+#[cfg(not(windows))]
+fn active_lan_ipv4_interfaces() -> Vec<(Ipv4Addr, u8)> { Vec::new() }
+
+pub(crate) fn is_home_assistant_manifest(body: &[u8]) -> bool {
+    if body.is_empty() { return false; }
+    if let Ok(serde_json::Value::Object(map)) = serde_json::from_slice::<serde_json::Value>(body) {
+        let has_ha = |k: &str| map.get(k).and_then(|v| v.as_str()).is_some_and(|s| s.to_ascii_lowercase().contains("home assistant"));
+        if has_ha("name") || has_ha("short_name") { return true; }
+        if map.get("start_url").and_then(|v| v.as_str()) == Some("/?homescreen=1")
+            && map.get("icons").and_then(|v| v.as_array()).is_some_and(|icons| {
+                icons.iter().any(|item| item.get("src").and_then(|s| s.as_str()).is_some_and(|s| s.contains("/static/icons/")))
+            })
+        {
+            return true;
+        }
+    }
+    std::str::from_utf8(body).is_ok_and(|t| t.contains("io.homeassistant") || t.contains("\"Home Assistant\""))
+}
+
+pub(crate) fn is_home_assistant_auth_providers(status: u16, body: &[u8]) -> bool {
+    if !(200..300).contains(&status) || body.is_empty() { return false; }
+    let Ok(serde_json::Value::Array(items)) = serde_json::from_slice::<serde_json::Value>(body) else { return false; };
+    items.iter().any(|item| {
+        let Some(obj) = item.as_object() else { return false };
+        match obj.get("type").and_then(|v| v.as_str()).map(|s| s.trim().to_ascii_lowercase()).as_deref() {
+            Some("homeassistant") => true,
+            Some("trusted_networks") => obj.get("name").and_then(|v| v.as_str()).is_some_and(|s| s.to_ascii_lowercase().contains("home assistant")),
+            _ => false,
+        }
+    })
+}
+
+pub(crate) fn is_home_assistant_api_response(status: u16, headers: &HashMap<String, String>, body: &[u8]) -> bool {
+    if (200..300).contains(&status) {
+        if let Ok(serde_json::Value::Object(map)) = serde_json::from_slice::<serde_json::Value>(body) {
+            if map.get("message").and_then(|v| v.as_str()).is_some_and(|m| m.trim() == "API running.") { return true; }
+        }
+    }
+    if status != 401 { return false; }
+    let body_text = std::str::from_utf8(body).unwrap_or("").trim();
+    let body_lower = body_text.to_ascii_lowercase();
+    if body_text != "401: Unauthorized" && !body_lower.contains("home assistant") { return false; }
+    if body_lower.contains("home assistant") { return true; }
+    headers.iter().any(|(k, v)| {
+        let (lk, lv) = (k.to_ascii_lowercase(), v.to_ascii_lowercase());
+        (lk == "server" && (lv.contains("aiohttp") || lv.contains("home assistant")))
+            || (lk == "www-authenticate" && lv.contains("home assistant"))
+            || lk.starts_with("x-ha-") || lk.contains("home-assistant")
+    })
+}
+
+async fn fetch_probe_response(
+    client: &reqwest::Client, url: &str, deadline: Instant,
+) -> Option<(u16, HashMap<String, String>, Vec<u8>)> {
+    let now = Instant::now();
+    let remaining = deadline.saturating_duration_since(now);
+    if remaining.is_zero() { return None; }
+    let req_timeout = remaining.min(HTTP_PROBE_TIMEOUT);
+    let mut resp = timeout_at(now + req_timeout, client.get(url).timeout(req_timeout).send()).await.ok()?.ok()?;
+    let status = resp.status().as_u16();
+    let headers = resp.headers().iter()
+        .filter_map(|(n, v)| v.to_str().ok().map(|s| (n.as_str().to_ascii_lowercase(), s.to_string())))
+        .collect();
+    let mut body = Vec::new();
+    while let Ok(Ok(Some(chunk))) = timeout_at(deadline, resp.chunk()).await {
+        let take = MAX_PROBE_BODY_BYTES.saturating_sub(body.len()).min(chunk.len());
+        body.extend_from_slice(&chunk[..take]);
+        if body.len() >= MAX_PROBE_BODY_BYTES { break; }
+    }
+    Some((status, headers, body))
+}
+
+pub(crate) async fn probe_ha_http_on_addr(client: &reqwest::Client, addr: SocketAddr, deadline: Instant) -> bool {
+    let base = format!("http://{addr}");
+    let Some((ms, _, mb)) = fetch_probe_response(client, &format!("{base}/manifest.json"), deadline).await else { return false; };
+    if (200..300).contains(&ms) && is_home_assistant_manifest(&mb) { return true; }
+    if let Some((s, _, b)) = fetch_probe_response(client, &format!("{base}/auth/providers"), deadline).await {
+        if is_home_assistant_auth_providers(s, &b) { return true; }
+    }
+    if let Some((s, h, b)) = fetch_probe_response(client, &format!("{base}/api/"), deadline).await {
+        if is_home_assistant_api_response(s, &h, &b) { return true; }
+    }
+    false
+}
+
+async fn sweep_open_tcp_port(ips: Vec<Ipv4Addr>, port: u16, deadline: Instant) -> Vec<Ipv4Addr> {
+    if ips.is_empty() || Instant::now() >= deadline { return Vec::new(); }
+    let sem = Arc::new(Semaphore::new(MAX_TCP_SWEEP_CONCURRENCY));
+    join_all(ips.into_iter().map(|ip| {
+        let sem = Arc::clone(&sem);
+        async move {
+            let Ok(Ok(_permit)) = timeout_at(deadline, sem.acquire_owned()).await else { return None; };
+            let now = Instant::now();
+            let remaining = deadline.saturating_duration_since(now);
+            if remaining.is_zero() { return None; }
+            let addr = SocketAddr::V4(SocketAddrV4::new(ip, port));
+            matches!(timeout_at(now + remaining.min(TCP_PROBE_TIMEOUT), TcpStream::connect(addr)).await, Ok(Ok(_))).then_some(ip)
+        }
+    })).await.into_iter().flatten().collect()
+}
+
+async fn run_http_fallback_discovery(deadline: Instant) -> Vec<HaDiscoveredInstance> {
+    if Instant::now() >= deadline { return Vec::new(); }
+    let Ok(client) = PROBE_HTTP_CLIENT.as_ref() else { return Vec::new(); };
+    let common_targets = COMMON_LAN_HOSTNAMES.iter().map(|h| ((*h).to_string(), HA_DEFAULT_PORT)).collect();
+    let resolved_common = fallback_addresses(common_targets, deadline, resolve_lan_ipv4_fallback).await;
+    let interfaces = timeout_at(deadline, tokio::task::spawn_blocking(active_lan_ipv4_interfaces))
+        .await.ok().and_then(|r| r.ok()).unwrap_or_default();
+
+    let (mut seen_ips, mut candidates) = (HashSet::new(), Vec::new());
+    for host in COMMON_LAN_HOSTNAMES {
+        if let Some(&ip) = resolved_common.get(*host) {
+            if is_private_rfc1918_ipv4(&ip.to_string()) && seen_ips.insert(ip) { candidates.push(ip); }
+        }
+    }
+    for ip in subnet_candidate_ips(&interfaces, MAX_SUBNET_SWEEPS) {
+        if seen_ips.insert(ip) { candidates.push(ip); }
+    }
+    let open_ips = sweep_open_tcp_port(candidates, HA_DEFAULT_PORT, deadline).await;
+    if open_ips.is_empty() || Instant::now() >= deadline { return Vec::new(); }
+
+    let sem = Arc::new(Semaphore::new(MAX_HTTP_PROBE_CONCURRENCY));
+    join_all(open_ips.into_iter().take(MAX_DISCOVERED_INSTANCES).map(|ip| {
+        let sem = Arc::clone(&sem);
+        async move {
+            let Ok(Ok(_permit)) = timeout_at(deadline, sem.acquire_owned()).await else { return None; };
+            let host = ip.to_string();
+            let base_url = valid_lan_ha_url(&format!("http://{host}:{HA_DEFAULT_PORT}"))?;
+            let addr = SocketAddr::V4(SocketAddrV4::new(ip, HA_DEFAULT_PORT));
+            probe_ha_http_on_addr(client, addr, deadline).await.then(|| HaDiscoveredInstance {
+                name: "Home Assistant".to_string(), host, port: HA_DEFAULT_PORT, base_url, version: None, uuid: None,
+            })
+        }
+    })).await.into_iter().flatten().collect()
+}
+
 async fn run_mdns_discovery(timeout: Duration, cancel: CancellationToken) -> Result<Vec<HaDiscoveredInstance>, String> {
     cancel
         .run_until_cancelled(run_mdns_discovery_inner(timeout))
@@ -685,12 +910,13 @@ async fn run_mdns_discovery(timeout: Duration, cancel: CancellationToken) -> Res
 async fn run_mdns_discovery_inner(timeout: Duration) -> Result<Vec<HaDiscoveredInstance>, String> {
     let start = Instant::now();
     let overall_deadline = start + timeout;
+    let mdns_deadline = if timeout > MDNS_PHASE_CAP { start + MDNS_PHASE_CAP } else { overall_deadline };
     let query = build_mdns_query(HA_SERVICE_TYPE, DNS_TYPE_PTR, true)
         .ok_or_else(|| "Failed to build mDNS discovery query".to_string())?;
     let mcast_dest = SocketAddr::V4(SocketAddrV4::new(MDNS_MULTICAST_V4, MDNS_PORT));
 
     let ephemeral = timeout_at(
-        overall_deadline,
+        mdns_deadline,
         UdpSocket::bind(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0))),
     )
         .await
@@ -699,11 +925,11 @@ async fn run_mdns_discovery_inner(timeout: Duration) -> Result<Vec<HaDiscoveredI
     let _ = ephemeral.set_multicast_loop_v4(true);
     let mcast_listener = try_bind_multicast_5353();
 
-    if !matches!(timeout_at(overall_deadline, ephemeral.send_to(&query, mcast_dest)).await, Ok(Ok(_))) {
-        return Ok(Vec::new());
+    if !matches!(timeout_at(mdns_deadline, ephemeral.send_to(&query, mcast_dest)).await, Ok(Ok(_))) {
+        return Ok(run_http_fallback_discovery(overall_deadline).await);
     }
 
-    let mut active_deadline = overall_deadline;
+    let mut active_deadline = mdns_deadline;
     let mut retry_deadline = Some(start + RETRY_QUERY_DELAY.min(timeout));
     let mut settled_once = false;
     let mut queried_targets: HashSet<String> = HashSet::new();
@@ -747,7 +973,7 @@ async fn run_mdns_discovery_inner(timeout: Duration) -> Result<Vec<HaDiscoveredI
         let unresolved = acc.unresolved_local_targets();
         if !unresolved.is_empty() {
             let fallback_budget = LOOKUP_HOST_TIMEOUT.min(timeout / 2);
-            active_deadline = active_deadline.min(overall_deadline - fallback_budget);
+            active_deadline = active_deadline.min(mdns_deadline - fallback_budget);
         }
         for (target, _) in unresolved {
             if queried_targets.len() >= MAX_DISCOVERED_INSTANCES {
@@ -767,8 +993,12 @@ async fn run_mdns_discovery_inner(timeout: Duration) -> Result<Vec<HaDiscoveredI
     }
 
     let fallback_ips =
-        fallback_addresses(acc.unresolved_local_targets(), overall_deadline, resolve_lan_ipv4_fallback).await;
-    Ok(acc.build_instances(|host, _| fallback_ips.get(host).copied()))
+        fallback_addresses(acc.unresolved_local_targets(), mdns_deadline, resolve_lan_ipv4_fallback).await;
+    let mdns_instances = acc.build_instances(|host, _| fallback_ips.get(host).copied());
+    if !mdns_instances.is_empty() {
+        return Ok(mdns_instances);
+    }
+    Ok(run_http_fallback_discovery(overall_deadline).await)
 }
 
 #[tauri::command]
@@ -1012,5 +1242,77 @@ mod tests {
         let res = tauri::async_runtime::block_on(run_mdns_discovery(Duration::from_millis(2000), cancel));
         assert_eq!(res, Err("Home Assistant discovery cancelled".to_string()));
         state.clear_if_matches(id);
+    }
+
+    #[test]
+    fn subnet_candidates_clamp_deduplicate_and_filter_non_rfc1918() {
+        let interfaces = vec![
+            (Ipv4Addr::new(169, 254, 72, 197), 16), // link-local -> ignored
+            (Ipv4Addr::new(127, 0, 0, 1), 8),       // loopback -> ignored
+            (Ipv4Addr::new(203, 0, 113, 10), 24),   // public -> ignored
+            (Ipv4Addr::new(192, 168, 1, 181), 16),  // /16 clamped to 192.168.1.0/24
+            (Ipv4Addr::new(192, 168, 1, 107), 24),  // duplicate /24 -> deduplicated
+            (Ipv4Addr::new(192, 168, 64, 1), 29),   // narrower /29 -> .1..=.6
+        ];
+        let hosts = subnet_candidate_ips(&interfaces, 4);
+        assert_eq!(hosts.len(), 254 + 6);
+        assert_eq!(hosts.first(), Some(&Ipv4Addr::new(192, 168, 1, 1)));
+        assert!(hosts.contains(&Ipv4Addr::new(192, 168, 1, 4)));
+        assert!(!hosts.contains(&Ipv4Addr::new(192, 168, 1, 0)));
+        assert!(!hosts.contains(&Ipv4Addr::new(192, 168, 1, 255)));
+        assert_eq!(&hosts[hosts.len() - 6..], &(1..=6).map(|i| Ipv4Addr::new(192, 168, 64, i)).collect::<Vec<_>>()[..]);
+
+        let capped = subnet_candidate_ips(
+            &[(Ipv4Addr::new(172, 16, 1, 5), 30), (Ipv4Addr::new(172, 16, 2, 5), 30), (Ipv4Addr::new(172, 16, 3, 5), 30)],
+            2,
+        );
+        assert_eq!(capped, vec![Ipv4Addr::new(172, 16, 1, 5), Ipv4Addr::new(172, 16, 1, 6), Ipv4Addr::new(172, 16, 2, 5), Ipv4Addr::new(172, 16, 2, 6)]);
+    }
+
+    #[test]
+    fn recognizes_ha_manifest_auth_providers_and_api_signatures() {
+        assert!(is_home_assistant_manifest(br#"{"name":"Home Assistant","short_name":"Home Assistant"}"#));
+        assert!(is_home_assistant_manifest(br#"{"name":"My Smart Home","start_url":"/?homescreen=1","icons":[{"src":"/static/icons/favicon-192x192.png"}]}"#));
+        assert!(!is_home_assistant_manifest(br#"{"name":"Synology DiskStation"}"#));
+        assert!(is_home_assistant_auth_providers(200, br#"[{"name":"Home Assistant Local","id":null,"type":"homeassistant"}]"#));
+        assert!(!is_home_assistant_auth_providers(200, br#"[{"name":"OIDC","type":"oidc"}]"#));
+        assert!(!is_home_assistant_auth_providers(404, br#"[{"name":"Home Assistant Local","type":"homeassistant"}]"#));
+
+        let aiohttp_headers = HashMap::from([("server".to_string(), "Python/3.13 aiohttp/3.11.11".to_string())]);
+        let nginx_headers = HashMap::from([("server".to_string(), "nginx/1.26.0".to_string())]);
+        assert!(is_home_assistant_api_response(401, &aiohttp_headers, b"401: Unauthorized"));
+        assert!(is_home_assistant_api_response(200, &HashMap::new(), br#"{"message":"API running."}"#));
+        assert!(!is_home_assistant_api_response(401, &nginx_headers, b"401: Unauthorized"));
+        assert!(!is_home_assistant_api_response(401, &aiohttp_headers, b"Forbidden"));
+    }
+
+    #[test]
+    fn http_probe_recognizes_fallback_api_and_rejects_non_ha_server() {
+        use std::io::{Read, Write};
+        fn spawn_mock_server(handler: fn(&str) -> &'static str, count: usize) -> (SocketAddr, std::thread::JoinHandle<()>) {
+            let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+            let addr = listener.local_addr().unwrap();
+            let handle = std::thread::spawn(move || {
+                for _ in 0..count {
+                    let Ok((mut stream, _)) = listener.accept() else { break };
+                    let mut buf = [0u8; 1024];
+                    let n = stream.read(&mut buf).unwrap_or(0);
+                    let path = std::str::from_utf8(&buf[..n]).unwrap_or("").split_whitespace().nth(1).unwrap_or("/");
+                    let _ = stream.write_all(handler(path).as_bytes());
+                }
+            });
+            (addr, handle)
+        }
+        let client = reqwest::Client::builder().no_proxy().redirect(reqwest::redirect::Policy::none()).build().unwrap();
+        let (ha_addr, ha_handle) = spawn_mock_server(|path| match path {
+            "/api/" => "HTTP/1.1 401 Unauthorized\r\nServer: Python/3.13 aiohttp/3.11\r\nContent-Length: 17\r\nConnection: close\r\n\r\n401: Unauthorized",
+            _ => "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        }, 3);
+        assert!(tauri::async_runtime::block_on(probe_ha_http_on_addr(&client, ha_addr, Instant::now() + Duration::from_secs(3))));
+        let _ = ha_handle.join();
+
+        let (other_addr, other_handle) = spawn_mock_server(|_| "HTTP/1.1 401 Unauthorized\r\nServer: nginx/1.26.0\r\nContent-Length: 17\r\nConnection: close\r\n\r\n401: Unauthorized", 3);
+        assert!(!tauri::async_runtime::block_on(probe_ha_http_on_addr(&client, other_addr, Instant::now() + Duration::from_secs(3))));
+        let _ = other_handle.join();
     }
 }
