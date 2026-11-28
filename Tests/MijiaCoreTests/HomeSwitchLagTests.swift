@@ -179,6 +179,7 @@ struct HomeSwitchLagTests {
         initialHomeId: String = "home-a"
     ) -> (HomeStore, MiCloudProvider, InMemoryUserDefaults) {
         let defaults = InMemoryUserDefaults()
+        let defaultsBox = UncheckedUserDefaults(defaults)
         let provider = MiCloudProvider(
             sessionLoader: { Self.sessionA },
             apiFactory: { _ in api },
@@ -186,7 +187,7 @@ struct HomeSwitchLagTests {
             localClient: nil,
             pollInterval: .seconds(300),
             closedPollInterval: .seconds(300),
-            selectedHomeLoader: { defaults.string(forKey: MiCloudProvider.selectedHomeKey) }
+            selectedHomeLoader: { defaultsBox.defaults.string(forKey: MiCloudProvider.selectedHomeKey) }
         )
         let store = HomeStore(provider: provider, defaults: defaults)
         store.homeBackend = .xiaomiCloud
@@ -402,6 +403,7 @@ struct HomeSwitchLagTests {
             ]
         )
         let defaults = InMemoryUserDefaults()
+        let defaultsBox = UncheckedUserDefaults(defaults)
         defaults.set(MiAccountScope.id("home-a", account: accA.id), forKey: MiCloudProvider.selectedHomeKey)
 
         let provider = MiAccountsProvider(
@@ -411,8 +413,8 @@ struct HomeSwitchLagTests {
             localClientFactory: { nil },
             pollInterval: .seconds(300),
             closedPollInterval: .seconds(300),
-            selectedHomeLoader: { defaults.string(forKey: MiCloudProvider.selectedHomeKey) },
-            clearSelectedHome: { defaults.removeObject(forKey: MiCloudProvider.selectedHomeKey) }
+            selectedHomeLoader: { defaultsBox.defaults.string(forKey: MiCloudProvider.selectedHomeKey) },
+            clearSelectedHome: { defaultsBox.defaults.removeObject(forKey: MiCloudProvider.selectedHomeKey) }
         )
         let store = HomeStore(provider: provider, defaults: defaults)
         store.homeBackend = .xiaomiCloud
