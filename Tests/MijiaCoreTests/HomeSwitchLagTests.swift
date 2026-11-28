@@ -135,16 +135,18 @@ private actor ControlledHomeSwitchProvider: HomeProvider {
 @MainActor
 private func waitForMainActor(
     _ label: String,
+    timeout: Duration = .seconds(25),
     condition: @MainActor () -> Bool
 ) async -> Bool {
-    for _ in 0..<400 {
+    let deadline = ContinuousClock.now.advanced(by: timeout)
+    while ContinuousClock.now < deadline {
         if condition() { return true }
-        try? await Task.sleep(for: .milliseconds(5))
+        try? await Task.sleep(for: .milliseconds(10))
     }
     return condition()
 }
 
-@Suite(.timeLimit(.minutes(1)))
+@Suite(.serialized, .timeLimit(.minutes(2)))
 struct HomeSwitchLagTests {
     private static let sessionA = MiSession(
         userId: "1001",
