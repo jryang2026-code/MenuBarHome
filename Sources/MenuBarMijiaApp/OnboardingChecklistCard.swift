@@ -49,7 +49,7 @@ struct OnboardingChecklistCard: View {
             } label: {
                 Image(systemName: "xmark")
                     .font(.system(
-                        size: theme == .classic ? 9.5 : DesignTokens.TypeSize.micro,
+                        size: DesignTokens.TypeSize.micro,
                         weight: .bold
                     ))
                     .foregroundStyle(.secondary)
@@ -63,7 +63,7 @@ struct OnboardingChecklistCard: View {
                 "Close the checklist; reopen it by searching Settings for “Setup Guide”"
             ))
         }
-        .padding(.horizontal, theme == .classic ? 10 : 12)
+        .padding(.horizontal, 12)
         .frame(height: 44)
         .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -79,12 +79,8 @@ struct OnboardingChecklistCard: View {
             content
                 .glassTile(isActive: false, cornerRadius: DesignTokens.Radius.panel, isCapsule: true)
         case .classic:
-            content
-                .background(Color.accentColor.opacity(0.07), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .strokeBorder(Color.accentColor.opacity(0.20), lineWidth: DesignTokens.hairline)
-                }
+            // A neutral card like every other classic tile; the accent stays on the one action.
+            content.classicTile(isActive: false, cornerRadius: ClassicDesign.Radius.card)
         }
     }
 

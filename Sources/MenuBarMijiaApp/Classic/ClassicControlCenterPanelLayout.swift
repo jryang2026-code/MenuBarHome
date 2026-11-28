@@ -429,7 +429,6 @@ extension ClassicControlCenterPanel {
 
     func groupHeader(_ section: PageSection) -> some View {
         let collapsed = collapsedGroups.contains(collapseKey(section))
-        let accent = Color.accentColor
         return Button {
             withAnimation(AppleMotion.resolve(.surface, reduceMotion: reduceMotion)) {
                 var set = collapsedGroups
@@ -437,29 +436,24 @@ extension ClassicControlCenterPanel {
                 collapsedRaw = GroupPrefs.encode(set)
             }
         } label: {
-            HStack(spacing: 6) {
-                Image(systemName: "chevron.down")
-                    .font(.system(size: DesignTokens.TypeSize.caption, weight: .bold))
-                    .rotationEffect(.degrees(collapsed ? -90 : 0))
-                    .foregroundStyle(hoveredHeader == section.id ? accent : Color.secondary)
+            HStack(spacing: ClassicDesign.Space.xs) {
                 Text(section.title ?? "")
                     .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
-                    .foregroundStyle(hoveredHeader == section.id ? accent : Color.secondary)
+                    .foregroundStyle(hoveredHeader == section.id ? Color.primary : ClassicDesign.secondaryInk)
                 Text("\(section.devices.count)")
-                    .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold, design: .rounded))
+                    .font(.system(size: DesignTokens.TypeSize.caption, design: .rounded))
                     .monospacedDigit()
                     .contentTransition(.numericText(value: Double(section.devices.count)))
-                    .foregroundStyle(.secondary.opacity(0.8))
-                if section.groupId != nil {
-                    Capsule(style: .continuous)
-                        .fill(accent.opacity(hoveredHeader == section.id ? 0.35 : 0.18))
-                        .frame(height: 1)
-                        .frame(maxWidth: .infinity)
-                } else {
-                    Spacer()
-                }
+                    .foregroundStyle(ClassicDesign.tertiaryInk)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: DesignTokens.TypeSize.micro, weight: .semibold))
+                    .rotationEffect(.degrees(collapsed ? -90 : 0))
+                    .foregroundStyle(ClassicDesign.tertiaryInk)
+                    // The fold control shows by intent: on hover, or while the group is folded.
+                    .opacity(collapsed || hoveredHeader == section.id ? 1 : 0)
+                Spacer()
             }
-            .padding(.horizontal, 3)
+            .padding(.horizontal, ClassicDesign.Space.xs)
             .frame(minHeight: DesignTokens.minHitTarget)
             .tahoeHoverHitTarget()
             .contentShape(Rectangle())
@@ -480,8 +474,7 @@ extension ClassicControlCenterPanel {
                 Button(role: .destructive) { deleteGroup(gid) } label: { Label(L10n.tr("删除分组", "Delete Group"), systemImage: "trash") }
             }
         }
-        .padding(.top, -7)
-        .padding(.bottom, -10)
+        .padding(.bottom, -ClassicDesign.Space.s)
     }
 
     func moveGroup(_ id: String, by delta: Int) {
@@ -919,7 +912,7 @@ extension ClassicControlCenterPanel {
         }
         let spanMap = spans(for: ordered)
         // Every card is its own child keyed by device id, so a reorder slides cards instead of rebuilding rows.
-        ClassicTileFlowLayout(spacing: 7) {
+        ClassicTileFlowLayout(spacing: ClassicDesign.Space.s) {
             ForEach(Array(ordered.enumerated()), id: \.element.id) { index, dev in
                 let span = spanMap[dev.id] ?? 6
                 ClassicDeviceCardView(
@@ -940,7 +933,7 @@ extension ClassicControlCenterPanel {
                 .overlay {
                     if highlightId == dev.id {
                         RoundedRectangle(
-                            cornerRadius: DesignTokens.Radius.module,
+                            cornerRadius: ClassicDesign.Radius.card,
                             style: .continuous
                         )
                         .strokeBorder(

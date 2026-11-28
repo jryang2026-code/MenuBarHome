@@ -148,27 +148,23 @@ public struct ClassicDeviceCardView: View {
         VStack(alignment: .leading, spacing: 0) {
             if isCompactTile {
                 compactHeaderRow
-                    .frame(minHeight: 50, maxHeight: isExpanded ? nil : .infinity)
+                    .frame(minHeight: 56, maxHeight: isExpanded ? nil : .infinity)
             } else {
                 headerRow
                     .frame(maxHeight: isExpanded ? nil : .infinity)
             }
 
             if isExpanded && store.hasDetailDrawer(for: device) {
-                Rectangle()
-                    .fill(Color.primary.opacity(0.08))
-                    .frame(height: 1)
-                    .padding(.horizontal, 12)
-
                 detailDrawer
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 10)
+                    .padding(.horizontal, ClassicDesign.Space.m)
+                    .padding(.top, ClassicDesign.Space.xs)
+                    .padding(.bottom, ClassicDesign.Space.m)
                     .transition(AppleMotion.drawerTransition(reduceMotion: reduceMotion))
             }
         }
-        .classicTile(isActive: isLit, cornerRadius: DesignTokens.Radius.module, tint: tileTint)
+        .classicTile(isActive: isLit, cornerRadius: ClassicDesign.Radius.card, tint: tileTint)
         .overlay(
-            RoundedRectangle(cornerRadius: DesignTokens.Radius.module, style: .continuous)
+            RoundedRectangle(cornerRadius: ClassicDesign.Radius.card, style: .continuous)
                 .strokeBorder(isKeyboardFocused ? accent.opacity(0.85) : Color.clear, lineWidth: 1.6)
         )
         .opacity(device.isOnline ? 1.0 : 0.58)
@@ -200,9 +196,10 @@ public struct ClassicDeviceCardView: View {
             accessibilitySummary: accessibilitySummary,
             isExpanded: isExpanded,
             isHeroTile: false,
-            leadingPadding: 9,
-            trailingPadding: 9,
-            verticalPadding: 8,
+            leadingPadding: ClassicDesign.Space.m,
+            trailingPadding: ClassicDesign.Space.m,
+            verticalPadding: ClassicDesign.Space.s,
+            chevronOnHoverOnly: true,
             orb: { iconBadge },
             readOnlyBadge: { genericReadOnlyBadge },
             quickBadge: {
@@ -220,14 +217,8 @@ public struct ClassicDeviceCardView: View {
     private var genericReadOnlyBadge: some View {
         if case .generic(let spec) = device.kind, spec.isReadOnly {
             Text(L10n.tr("只读", "Read only"))
-                .font(.system(size: DesignTokens.TypeSize.footnote, weight: .semibold))
-                .foregroundStyle(nameColor.opacity(0.72))
-                .padding(.horizontal, 5.5)
-                .padding(.vertical, 1.5)
-                .background(
-                    Capsule(style: .continuous)
-                        .fill(nameColor.opacity(colorScheme == .dark ? 0.12 : 0.075))
-                )
+                .font(.system(size: DesignTokens.TypeSize.footnote))
+                .foregroundStyle(ClassicDesign.secondaryInk)
                 .fixedSize()
         }
     }
@@ -236,7 +227,7 @@ public struct ClassicDeviceCardView: View {
 
     private var headerRow: some View {
         let canAdjust = device.isOnline && store.hasDetailDrawer(for: device)
-        return HStack(spacing: 6) {
+        return HStack(spacing: ClassicDesign.Space.xs) {
             Button {
                 guard !isEditingLayout else { return }
                 withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) {
@@ -247,11 +238,11 @@ public struct ClassicDeviceCardView: View {
                     }
                 }
             } label: {
-                HStack(spacing: 10) {
+                HStack(spacing: ClassicDesign.Space.m) {
                     iconBadge
 
-                    VStack(alignment: .leading, spacing: 2.5) {
-                        HStack(spacing: 5) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: ClassicDesign.Space.xs) {
                             Text(device.name)
                                 .font(.system(size: DesignTokens.TypeSize.body, weight: .semibold))
                                 .foregroundStyle(nameColor)
@@ -259,31 +250,22 @@ public struct ClassicDeviceCardView: View {
 
                             if let roomLabel = DeviceRoomBadge.label(roomName: device.roomName, title: device.name, showRoomBadge: showRoomBadge) {
                                 Text(roomLabel)
-                                    .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
-                                    .foregroundStyle(nameColor.opacity(0.68))
-                                    .padding(.horizontal, 5.5)
-                                    .padding(.vertical, 1.5)
-                                    .background(
-                                        Capsule(style: .continuous)
-                                            .fill(nameColor.opacity(colorScheme == .dark ? 0.12 : 0.075))
-                                            .overlay(
-                                                Capsule(style: .continuous)
-                                                    .strokeBorder(Color.white.opacity(colorScheme == .dark ? 0.14 : 0.36), lineWidth: DesignTokens.hairline)
-                                            )
-                                    )
+                                    .font(.system(size: DesignTokens.TypeSize.caption))
+                                    .foregroundStyle(ClassicDesign.secondaryInk)
+                                    .lineLimit(1)
                             }
 
                             genericReadOnlyBadge
                         }
 
                         Text(shownStatus.replacingOccurrences(of: " · ", with: L10n.tr("，", ", ")))
-                            .font(.system(size: DesignTokens.TypeSize.caption, weight: device.isActiveOn ? .semibold : .regular))
+                            .font(.system(size: DesignTokens.TypeSize.caption, weight: device.isActiveOn ? .medium : .regular))
                             .monospacedDigit()
                             .foregroundStyle(statusColor)
                             .lineLimit(1)
                     }
 
-                    Spacer(minLength: 2)
+                    Spacer(minLength: ClassicDesign.Space.xs)
                 }
                 .frame(minHeight: DesignTokens.minHitTarget)
                 .contentShape(Rectangle())
@@ -309,7 +291,7 @@ public struct ClassicDeviceCardView: View {
                                  opensCameraLive: true, label: device.name)
 
             // Quick Index Pill + Favorite Star + Drawer Chevron
-            HStack(spacing: 2) {
+            HStack(spacing: 0) {
                 if let quickIndex, shouldShowQuickBadge {
                     quickIndexPill(quickIndex)
                 }
@@ -319,10 +301,9 @@ public struct ClassicDeviceCardView: View {
                         store.openCameraLiveView(device.id)
                     } label: {
                         Image(systemName: "pip.enter")
-                            .font(.system(size: DesignTokens.TypeSize.control, weight: .semibold))
-                            .foregroundStyle(accent)
-                            .frame(width: DesignTokens.minHitTarget, height: DesignTokens.minHitTarget)
-                            .background(Circle().fill(accent.opacity(0.12)))
+                            .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
+                            .foregroundStyle(ClassicDesign.secondaryInk)
+                            .frame(width: ClassicDesign.iconButton, height: ClassicDesign.iconButton)
                             .contentShape(Circle())
                     }
                     .buttonStyle(.plain)
@@ -339,7 +320,7 @@ public struct ClassicDeviceCardView: View {
                     } label: {
                         Image(systemName: isFavorite ? "star.fill" : "star")
                             .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
-                            .foregroundStyle(isFavorite ? favoriteStarColor : statusColor.opacity(0.75))
+                            .foregroundStyle(isFavorite ? favoriteStarColor : ClassicDesign.tertiaryInk)
                             .frame(width: DesignTokens.minHitTarget, height: DesignTokens.minHitTarget)
                             .contentShape(Rectangle())
                     }
@@ -358,16 +339,13 @@ public struct ClassicDeviceCardView: View {
                         }
                     } label: {
                         Image(systemName: "chevron.right")
-                            .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
-                            .foregroundStyle(nameColor.opacity(0.68))
+                            .font(.system(size: DesignTokens.TypeSize.footnote, weight: .semibold))
+                            .foregroundStyle(isExpanded ? ClassicDesign.secondaryInk : ClassicDesign.tertiaryInk)
                             .rotationEffect(.degrees(isExpanded ? 90 : 0))
-                            .frame(width: DesignTokens.minHitTarget, height: DesignTokens.minHitTarget)
-                            .background {
-                                if isExpanded {
-                                    Circle()
-                                        .fill(nameColor.opacity(0.08))
-                                }
-                            }
+                            .frame(width: ClassicDesign.iconButton, height: ClassicDesign.iconButton)
+                            // Shown by intent; kept in the layout so the row never shifts and the
+                            // button stays reachable by keyboard and VoiceOver.
+                            .opacity(isHovered || isExpanded || isKeyboardFocused ? 1 : 0)
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
@@ -376,8 +354,8 @@ public struct ClassicDeviceCardView: View {
                 }
             }
         }
-        .padding(.horizontal, 11)
-        .padding(.vertical, 9.5)
+        .padding(.horizontal, ClassicDesign.Space.m)
+        .padding(.vertical, ClassicDesign.Space.m)
     }
 
     private func quickIndexPill(_ index: Int) -> some View {
@@ -385,24 +363,23 @@ public struct ClassicDeviceCardView: View {
             .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold, design: .rounded))
             .monospacedDigit()
             .foregroundStyle(statusColor)
-            .padding(.horizontal, 4.5)
-            .padding(.vertical, 1.5)
+            .padding(.horizontal, ClassicDesign.Space.xs)
             .background(
                 RoundedRectangle(cornerRadius: DesignTokens.Radius.label, style: .continuous)
-                    .fill(Color.primary.opacity(0.08))
+                    .fill(ClassicDesign.controlFill(colorScheme))
             )
     }
 
     private var iconBadge: some View {
+        // 90:10 — a running device spends the family colour; an idle one stays neutral.
         let on = device.isActiveOn && device.isOnline
         return ZStack {
             Circle()
-                .fill(on ? AnyShapeStyle(accent) : AnyShapeStyle(accent.opacity(0.16)))
-                .frame(width: 34, height: 34)
-                .shadowIf(on, color: accent.opacity(0.4), radius: 8, y: 2)
+                .fill(on ? accent.opacity(colorScheme == .dark ? 0.24 : 0.16) : ClassicDesign.controlFill(colorScheme))
+                .frame(width: ClassicDesign.orbSize, height: ClassicDesign.orbSize)
             Image(systemName: resolvedSymbolName)
                 .font(.system(size: DesignTokens.TypeSize.body, weight: .semibold))
-                .foregroundStyle(on ? Color.white : accent)
+                .foregroundStyle(on ? accent : ClassicDesign.secondaryInk)
                 .symbolEffect(.bounce, value: reduceMotion ? false : on)
         }
         .animation(AppleMotion.resolve(.stack, reduceMotion: reduceMotion), value: on)
@@ -507,11 +484,7 @@ public struct ClassicDeviceCardView: View {
                     step: Double(spec.step),
                     iconName: "humidity.fill",
                     iconColor: statusColor,
-                    trackFill: LinearGradient(
-                        colors: [accent.opacity(0.55), accent.opacity(0.92)],
-                        startPoint: .leading,
-                        endPoint: .trailing
-                    ),
+                    trackFill: accent.opacity(0.85),
                     formattedValue: "\(target)%"
                 )
                 .disabled(!device.isOnline)
@@ -571,14 +544,7 @@ public struct ClassicDeviceCardView: View {
                 step: 1,
                 iconName: "sun.max.fill",
                 iconColor: statusColor,
-                trackFill: LinearGradient(
-                    colors: [
-                        DesignTokens.active.opacity(0.62),
-                        DesignTokens.active.opacity(0.92)
-                    ],
-                    startPoint: .leading,
-                    endPoint: .trailing
-                ),
+                trackFill: DesignTokens.active.opacity(0.85),
                 formattedValue: "\(Int(brightnessVal))%"
             )
             .disabled(!device.isOnline)
@@ -781,14 +747,7 @@ public struct ClassicDeviceCardView: View {
                     step: 1,
                     iconName: "wind",
                     iconColor: statusColor,
-                    trackFill: LinearGradient(
-                        colors: [
-                            DesignTokens.Purifier.speedTrackTop.opacity(0.62),
-                            DesignTokens.Purifier.speedTrackBottom.opacity(0.92)
-                        ],
-                        startPoint: .leading,
-                        endPoint: .trailing
-                    ),
+                    trackFill: DesignTokens.Purifier.speedTrackBottom.opacity(0.85),
                     formattedValue: "\(Int(speedVal))%"
                 )
                 .disabled(!device.isOnline)
@@ -1064,14 +1023,7 @@ public struct ClassicDeviceCardView: View {
                     step: 1,
                     iconName: "waveform",
                     iconColor: statusColor,
-                    trackFill: LinearGradient(
-                        colors: [
-                            accent.opacity(0.60),
-                            accent.opacity(0.92)
-                        ],
-                        startPoint: .leading,
-                        endPoint: .trailing
-                    ),
+                    trackFill: accent.opacity(0.85),
                     formattedValue: "\(spec.volumePercent)%"
                 )
             }
@@ -1192,14 +1144,7 @@ public struct ClassicDeviceCardView: View {
                             step: 1,
                             iconName: "waveform",
                             iconColor: statusColor,
-                            trackFill: LinearGradient(
-                                colors: [
-                                    accent.opacity(0.60),
-                                    accent.opacity(0.92)
-                                ],
-                                startPoint: .leading,
-                                endPoint: .trailing
-                            ),
+                            trackFill: accent.opacity(0.85),
                             formattedValue: "\(spec.volumePercent)%"
                         )
                     }

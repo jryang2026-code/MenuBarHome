@@ -32,6 +32,7 @@ macOS 菜单栏（Swift / AppKit + SwiftUI）与 Windows 托盘（Tauri + TypeSc
 
 - 领域术语对齐 [`GLOSSARY.md`](GLOSSARY.md)；模块与文件路径速查先看 [`docs/feature-map.md`](docs/feature-map.md)（避免跨工作树盲猜路径）；改动架构边界先查 [`docs/adr/INDEX.md`](docs/adr/INDEX.md)，与已接受 ADR 冲突时须显式声明。
 - 非机械编码/并发/UI/测试规范见 [`CODING_STANDARDS.md`](CODING_STANDARDS.md)。
+- macOS 经典面板（classic 主题）的视觉规范见 [`DESIGN.md`](DESIGN.md)：4pt 栅格、90:10 用色、不套框；改 `Classic/` 下视图前先读。
 - 专项 Runbook（仅命中对应任务时读取）：
   - Issue/PR 编号、老号映射与协同脚本：[`docs/agents/issue-tracker.md`](docs/agents/issue-tracker.md)
   - 派活给其他模型时的固定说明行：[`docs/agents/delegation-brief.md`](docs/agents/delegation-brief.md)

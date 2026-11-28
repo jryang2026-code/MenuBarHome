@@ -2,61 +2,27 @@ import SwiftUI
 import AppKit
 import MijiaCore
 
-// MARK: - Classic Specular Rim
+// MARK: - Classic Edge
 
-/// The classic panel's one edge treatment (contract §1.3): a bright band on the top and bottom, a
-/// dark one on the left and right, both squeezed into a 1 pt border so the rounded corners blend
-/// them without special-casing. The gradient stop fractions are what keep each side band from
-/// reaching the middle of the edge, which is why the corners read lit and the sides read shaded.
+/// The classic panel's one edge treatment (DESIGN.md §2): a single even hairline. The former
+/// lit-top / shaded-side rim vanished against the light panel, so only the sides read as an edge.
 struct ClassicSpecularRim<S: InsettableShape>: ViewModifier {
     @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.effectiveReduceTransparency) private var reduceTransparency
     @Environment(\.colorSchemeContrast) private var contrast
 
     let shape: S
     let strength: Double
 
-    private var litEdge: Color {
-        Color.white.opacity((colorScheme == .dark ? 0.22 : 0.65) * strength)
-    }
-
-    private var shadedEdge: Color {
-        Color.black.opacity(colorScheme == .dark ? 0.25 : 0.08)
-    }
-
-    @ViewBuilder
     func body(content: Content) -> some View {
         content.overlay {
-            if reduceTransparency || contrast == .increased {
-                // A translucent edge is the first thing those modes erase; one solid hairline keeps
-                // the shape's boundary visible instead.
-                shape.strokeBorder(Color.primary.opacity(0.25), lineWidth: 1)
-            } else {
-                ZStack {
-                    LinearGradient(
-                        stops: [
-                            .init(color: litEdge, location: 0),
-                            .init(color: .clear, location: 0.14),
-                            .init(color: .clear, location: 0.86),
-                            .init(color: litEdge, location: 1)
-                        ],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                    LinearGradient(
-                        stops: [
-                            .init(color: shadedEdge, location: 0),
-                            .init(color: .clear, location: 0.06),
-                            .init(color: .clear, location: 0.94),
-                            .init(color: shadedEdge, location: 1)
-                        ],
-                        startPoint: .leading,
-                        endPoint: .trailing
-                    )
-                }
-                .mask { shape.strokeBorder(Color.white, lineWidth: 1) }
+            shape
+                .strokeBorder(
+                    contrast == .increased
+                        ? Color.primary.opacity(0.25)
+                        : ClassicDesign.hairline(colorScheme).opacity(min(strength, 1.5)),
+                    lineWidth: 1
+                )
                 .allowsHitTesting(false)
-            }
         }
     }
 }
@@ -70,8 +36,8 @@ extension View {
 
 // MARK: - Classic Pill Button Style
 
-/// The classic pill: a quiet glass chip with one specular edge. A selected pill swaps the chip for
-/// a tinted well so the row reads as one control rather than a stack of floating capsules.
+/// The classic pill: a flat neutral chip. A selected pill (the row's primary action) swaps it for a
+/// soft well in its tint with tinted ink.
 public struct ClassicPillActionButtonStyle: ButtonStyle {
     @Environment(\.effectiveReduceMotion) private var reduceMotion
     @Environment(\.colorScheme) private var colorScheme
@@ -87,12 +53,13 @@ public struct ClassicPillActionButtonStyle: ButtonStyle {
         let capsule = Capsule(style: .continuous)
         return configuration.label
             .font(.system(size: DesignTokens.TypeSize.caption, weight: isSelected ? .semibold : .medium))
-            .foregroundStyle(Color.primary.opacity(0.88))
-            .padding(.horizontal, 10.5)
-            .padding(.vertical, 5)
+            // A selected pill is the row's primary action: the one place its accent is spent.
+            .foregroundStyle(isSelected ? tintColor : Color.primary.opacity(0.88))
+            .padding(.horizontal, ClassicDesign.Space.m)
+            .padding(.vertical, ClassicDesign.Space.xs)
             .background {
                 if isSelected {
-                    capsule.fill(Color.primary.opacity(colorScheme == .dark ? 0.18 : 0.09))
+                    capsule.fill(tintColor.opacity(colorScheme == .dark ? 0.24 : 0.14))
                 }
             }
             .modifier(
@@ -104,7 +71,6 @@ public struct ClassicPillActionButtonStyle: ButtonStyle {
                     isHidden: isSelected
                 )
             )
-            .classicSpecularRim(capsule)
             .scaleEffect(configuration.isPressed && !reduceMotion ? 0.97 : 1.0)
             .animation(AppleMotion.resolve(.pressFeedback, reduceMotion: reduceMotion), value: configuration.isPressed)
     }
@@ -113,8 +79,7 @@ public struct ClassicPillActionButtonStyle: ButtonStyle {
 // MARK: - Classic Panel Tile Surface
 
 /// Classic tile surface: a flat well when the device is off, one step lighter when it is on, plus
-/// the classic specular edge. The family colour, the orb and the weight carry the state; the
-/// surface itself never turns opaque and never asks the system for a glass slab.
+/// the one hairline edge. The orb and the weight carry the state; there is no shadow.
 struct ClassicGlassTileBackground: ViewModifier {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.effectiveReduceMotion) private var reduceMotion
@@ -131,19 +96,12 @@ struct ClassicGlassTileBackground: ViewModifier {
                 shape.fill(surface.fill)
             }
             .classicSpecularRim(shape)
-            // One shadow carries the depth: a lit module sits above the panel, a quiet one lies flat.
-            .shadowIf(
-                isActive,
-                color: .black.opacity(colorScheme == .dark ? 0.28 : 0.10),
-                radius: 10,
-                y: 3
-            )
             .animation(AppleMotion.resolve(.valueChange, reduceMotion: reduceMotion), value: isActive)
     }
 }
 
 extension View {
-    /// The classic card well: flat fill, one specular edge, a shadow only when the device is lit.
+    /// The classic card well: flat fill and one hairline edge.
     func classicTile(isActive: Bool, cornerRadius: CGFloat, tint: Color? = nil) -> some View {
         modifier(ClassicGlassTileBackground(isActive: isActive, cornerRadius: cornerRadius, tint: tint))
     }
@@ -151,13 +109,10 @@ extension View {
 
 // MARK: - Classic Chip Surface
 
-/// The classic panel's small glass chip. macOS 26 keeps the system glass (the native branch goes
-/// through the shared `adaptiveGlass` wrapper); Reduce Transparency and macOS 14/15 paint the
-/// historical material stack with `shape.fill` and the classic rim, so a capsule keeps the edge and
-/// geometry the classic snapshots recorded instead of the liquid-glass revision.
+/// The classic panel's small chip: one flat neutral fill (or the caller's tint), no glass, no rim
+/// and no shadow (DESIGN.md §2). The fill has no see-through material, so Reduce Transparency keeps it.
 struct ClassicChipSurface<S: InsettableShape>: ViewModifier {
     @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.effectiveReduceTransparency) private var reduceTransparency
     let shape: S
     let tint: Color?
     let interactive: Bool
@@ -168,36 +123,20 @@ struct ClassicChipSurface<S: InsettableShape>: ViewModifier {
     func body(content: Content) -> some View {
         if isHidden {
             content
-        } else if #available(macOS 26.0, *), !reduceTransparency {
-            // The classic chip asked for regular glass on 26 even when it passed `clear`; the
-            // shared wrapper is what keeps the native API out of this folder.
-            content.adaptiveGlass(in: shape, tint: tint, interactive: interactive)
         } else {
-            content
-                .background {
-                    if clear {
-                        shape.fill(reduceTransparency ? AnyShapeStyle(Color(nsColor: .controlBackgroundColor)) : AnyShapeStyle(.thinMaterial))
-                    } else {
-                        ZStack {
-                            shape.fill(reduceTransparency ? AnyShapeStyle(Color(nsColor: .controlBackgroundColor)) : AnyShapeStyle(.ultraThinMaterial))
-                            shape.fill(
-                                colorScheme == .dark
-                                    ? Color.white.opacity(0.06)
-                                    : Color.white.opacity(0.45)
-                            )
-                            if let tint {
-                                shape.fill(tint)
-                            }
-                        }
-                    }
+            content.background {
+                if let tint {
+                    shape.fill(tint)
+                } else {
+                    shape.fill(ClassicDesign.controlFill(colorScheme))
                 }
-                .classicSpecularRim(shape)
+            }
         }
     }
 }
 
 extension View {
-    /// The classic chip: system glass on macOS 26, the historical material stack before it.
+    /// The classic chip: one flat neutral fill.
     func classicAdaptiveGlass<S: InsettableShape>(
         in shape: S,
         tint: Color? = nil,
@@ -353,30 +292,12 @@ public struct ClassicLiquidGlassSlider: View {
                             }
                             .clipShape(Capsule(style: .continuous))
                         }
-                        .classicAdaptiveGlass(in: Capsule(style: .continuous))
-                        .classicSpecularRim(Capsule(style: .continuous))
 
-                    // 2. Refractive thumb lens
+                    // 2. Thumb
                     Capsule(style: .continuous)
-                        .fill(
-                            LinearGradient(
-                                colors: [
-                                    Color.white.opacity(isDragging ? 0.30 : (colorScheme == .dark ? 0.78 : 0.84)),
-                                    Color.white.opacity(isDragging ? 0.10 : (colorScheme == .dark ? 0.42 : 0.52))
-                                ],
-                                startPoint: .top,
-                                endPoint: .bottom
-                            )
-                        )
+                        .fill(colorScheme == .dark ? Color(white: 0.92) : Color.white)
                         .frame(width: thumbWidth, height: thumbHeight)
-                        .classicAdaptiveGlass(in: Capsule(style: .continuous), interactive: true, clear: true)
-                        .classicSpecularRim(Capsule(style: .continuous), strength: 1.4)
-                        .shadow(
-                            color: Color.black.opacity(isDragging ? 0.26 : 0.18),
-                            radius: isDragging ? 5 : 2.5,
-                            x: 0,
-                            y: isDragging ? 2 : 1
-                        )
+                        .shadow(color: Color.black.opacity(isDragging ? 0.22 : 0.16), radius: isDragging ? 3 : 1.5, y: 1)
                         .position(x: thumbCenterX, y: geo.size.height / 2)
                         .animation(progressAnimation, value: normalizedProgress)
                 }
