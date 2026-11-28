@@ -63,7 +63,7 @@ struct ClassicSensorCardView: View {
     private var isKeyboardFocused: Bool { store?.focusedDeviceId == device.id }
 
     private var fg: Color { .primary }
-    private var muted: Color { .secondary }
+    private var muted: Color { ClassicDesign.secondaryInk }
     private var track: Color { Color.primary.opacity(0.08) }
 
     var body: some View {
@@ -78,7 +78,7 @@ struct ClassicSensorCardView: View {
                 wide
             }
         }
-        .frame(minHeight: (isCompact && !isExpanded) ? 50 : nil, maxHeight: isExpanded ? nil : .infinity)
+        .frame(minHeight: (isCompact && !isExpanded) ? 56 : nil, maxHeight: isExpanded ? nil : .infinity)
         .contentShape(Rectangle())
         .onTapGesture {
             guard !isEditingLayout, !forceExpanded, device.isOnline, let store else { return }
@@ -86,9 +86,9 @@ struct ClassicSensorCardView: View {
                 store.toggleExpanded(device.id)
             }
         }
-        .classicTile(isActive: false, cornerRadius: DesignTokens.Radius.module)
+        .classicTile(isActive: false, cornerRadius: ClassicDesign.Radius.card)
         .overlay(
-            RoundedRectangle(cornerRadius: DesignTokens.Radius.module, style: .continuous)
+            RoundedRectangle(cornerRadius: ClassicDesign.Radius.card, style: .continuous)
                 .strokeBorder(isKeyboardFocused ? accent.opacity(0.85) : Color.clear, lineWidth: 1.6)
         )
         .opacity(device.isOnline ? 1 : 0.58)
@@ -136,19 +136,19 @@ struct ClassicSensorCardView: View {
     // MARK: Layouts
 
     private var compact: some View {
-        VStack(alignment: .leading, spacing: 2.5) {
-            HStack(spacing: 4) {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: ClassicDesign.Space.xs) {
                 Image(systemName: "thermometer.medium")
                     .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
-                    .foregroundStyle(tempColor)
+                    .foregroundStyle(muted)
                 Text(displayName)
                     .font(.system(size: DesignTokens.TypeSize.body, weight: .semibold))
                     .foregroundStyle(fg)
                     .lineLimit(1)
-                Spacer(minLength: 2)
+                Spacer(minLength: ClassicDesign.Space.xs)
                 comfortChip
             }
-            HStack(alignment: .firstTextBaseline, spacing: 5) {
+            HStack(alignment: .firstTextBaseline, spacing: ClassicDesign.Space.xs) {
                 temperatureText(size: DesignTokens.TypeSize.reading)
                     .tahoeHoverHitTarget()
                     .onHover { hovering in
@@ -171,8 +171,8 @@ struct ClassicSensorCardView: View {
             }
             humidityBar
         }
-        .padding(.horizontal, 9)
-        .padding(.vertical, 6)
+        .padding(.horizontal, ClassicDesign.Space.m)
+        .padding(.vertical, ClassicDesign.Space.s)
     }
 
     private var wide: some View {
@@ -180,9 +180,9 @@ struct ClassicSensorCardView: View {
     }
 
     private func wideContent(showCollapseChevron: Bool) -> some View {
-        HStack(spacing: 14) {
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 5) {
+        HStack(spacing: ClassicDesign.Space.l) {
+            VStack(alignment: .leading, spacing: ClassicDesign.Space.xs) {
+                HStack(spacing: ClassicDesign.Space.xs) {
                     Text(displayName)
                         .font(.system(size: DesignTokens.TypeSize.body, weight: .semibold))
                         .foregroundStyle(fg)
@@ -190,14 +190,13 @@ struct ClassicSensorCardView: View {
                     let roomLabel = L10n.displayRoomName(device.roomName).trimmingCharacters(in: .whitespacesAndNewlines)
                     if showRoomBadge, !roomLabel.isEmpty {
                         Text(roomLabel)
-                            .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
+                            .font(.system(size: DesignTokens.TypeSize.caption))
                             .foregroundStyle(muted)
                     }
                     if showCollapseChevron {
                         Image(systemName: "chevron.up")
                             .font(.system(size: DesignTokens.TypeSize.caption, weight: .bold))
                             .foregroundStyle(muted)
-                            .padding(.leading, 1)
                     }
                 }
                 if isStale {
@@ -210,7 +209,7 @@ struct ClassicSensorCardView: View {
                         .onHover { hovering in
                             updateReadingHover(metric: .temperature, hovering: hovering)
                         }
-                    HStack(spacing: 6) {
+                    HStack(spacing: ClassicDesign.Space.s) {
                         comfortChip
                         if let b = spec.battery {
                             Label("\(b)%", systemImage: batterySymbol(b))
@@ -230,8 +229,8 @@ struct ClassicSensorCardView: View {
                     }
             }
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 12)
+        .padding(.horizontal, ClassicDesign.Space.m)
+        .padding(.vertical, ClassicDesign.Space.m)
     }
 
     // MARK: Expanded Chart Container
@@ -247,15 +246,10 @@ struct ClassicSensorCardView: View {
                     }
                 }
 
-            Rectangle()
-                .fill(Color.primary.opacity(0.08))
-                .frame(height: 1)
-                .padding(.horizontal, 14)
-
             historyDrawer
-                .padding(.horizontal, 14)
-                .padding(.top, 10)
-                .padding(.bottom, 12)
+                .padding(.horizontal, ClassicDesign.Space.m)
+                .padding(.top, ClassicDesign.Space.xs)
+                .padding(.bottom, ClassicDesign.Space.m)
                 .transition(AppleMotion.drawerTransition(reduceMotion: reduceMotion))
                 // Absorb taps inside the chart controls so switching 24h/7d or metric never collapses the card.
                 .onTapGesture {}
@@ -522,13 +516,7 @@ struct ClassicSensorCardView: View {
 
                     // Smooth area fill under the line
                     smoothAreaPath(coords: coords, baselineY: topPad + plotHeight)
-                        .fill(
-                            LinearGradient(
-                                colors: [activeMetricColor.opacity(0.28), activeMetricColor.opacity(0.02)],
-                                startPoint: .top,
-                                endPoint: .bottom
-                            )
-                        )
+                        .fill(activeMetricColor.opacity(0.10))
 
                     // Smooth trend line
                     smoothLinePath(coords: coords)
@@ -766,7 +754,7 @@ struct ClassicSensorCardView: View {
             ZStack(alignment: .leading) {
                 Capsule(style: .continuous).fill(track)
                 Capsule(style: .continuous)
-                    .fill(LinearGradient(colors: [humidityColor.opacity(0.6), humidityColor], startPoint: .leading, endPoint: .trailing))
+                    .fill(humidityColor)
                     .frame(width: geo.size.width * CGFloat(min(max((spec.humidity ?? 0) / 100, 0), 1)))
             }
         }
@@ -785,7 +773,7 @@ struct ClassicSensorCardView: View {
             Circle()
                 .trim(from: 0, to: CGFloat(min(max(h / 100, 0), 1)))
                 .stroke(
-                    AngularGradient(colors: [humidityColor.opacity(0.55), humidityColor], center: .center),
+                    humidityColor,
                     style: StrokeStyle(lineWidth: 6, lineCap: .round)
                 )
                 .rotationEffect(.degrees(-90))
@@ -805,12 +793,10 @@ struct ClassicSensorCardView: View {
 
     private var comfortChip: some View {
         let descriptor = comfortDescriptor
+        // Plain text, no badge: comfortable stays neutral, only an out-of-band reading takes colour.
         return Text(descriptor.label)
-            .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
-            .foregroundStyle(descriptor.color)
-            .padding(.horizontal, isCompact ? 5.5 : 6)
-            .padding(.vertical, isCompact ? 1.5 : 2)
-            .background(Capsule(style: .continuous).fill(descriptor.color.opacity(0.16)))
+            .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
+            .foregroundStyle(comfort == .comfy ? muted : descriptor.color)
     }
 
     // MARK: Semantics

@@ -127,11 +127,14 @@ struct SplitDeviceTileHeader<Orb: View, Badge: View, QuickBadge: View>: View {
     let leadingPadding: CGFloat
     let trailingPadding: CGFloat
     let verticalPadding: CGFloat
+    /// The classic theme shows the chevron only while the name area is hovered or the tile is open.
+    var chevronOnHoverOnly = false
     @ViewBuilder let orb: () -> Orb
     @ViewBuilder let readOnlyBadge: () -> Badge
     @ViewBuilder let quickBadge: () -> QuickBadge
 
     @State private var isAdjustHovered = false
+    @State private var isSingleHovered = false
 
     private var actionLayout: DeviceTileActionLayout {
         DeviceTileActionLayout.resolve(for: device, store: store)
@@ -211,6 +214,7 @@ struct SplitDeviceTileHeader<Orb: View, Badge: View, QuickBadge: View>: View {
                         .animation(AppleMotion.resolve(.control, reduceMotion: reduceMotion)) {
                             $0.rotationEffect(.degrees(isExpanded ? 90 : 0))
                         }
+                        .opacity(chevronOnHoverOnly && !isAdjustHovered && !isExpanded ? 0 : 1)
                 }
                 .padding(.trailing, max(8, trailingPadding - 2))
                 .padding(.vertical, verticalPadding)
@@ -247,6 +251,7 @@ struct SplitDeviceTileHeader<Orb: View, Badge: View, QuickBadge: View>: View {
                         .font(.system(size: DesignTokens.TypeSize.footnote, weight: .semibold))
                         .foregroundStyle(isExpanded ? nameColor.opacity(0.88) : statusColor)
                         .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                        .opacity(chevronOnHoverOnly && !isSingleHovered && !isExpanded ? 0 : 1)
                 }
             }
             .padding(.leading, leadingPadding)
@@ -256,6 +261,7 @@ struct SplitDeviceTileHeader<Orb: View, Badge: View, QuickBadge: View>: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(PressableCardButtonStyle())
+        .onHover { isSingleHovered = $0 }
         .accessibilityLabel(Text(accessibilitySummary))
         .accessibilityHint(Text(hint))
         .panelHelp(tooltip)

@@ -2,11 +2,53 @@ import SwiftUI
 import AppKit
 import MijiaCore
 
+// MARK: - Classic Design Tokens
+
+/// The classic panel's design tokens (DESIGN.md). Spacing sits on a 4 pt grid, ink has three
+/// levels, and every surface is one flat neutral layer: colour is kept for selection, lit devices
+/// and alerts.
+enum ClassicDesign {
+    enum Space {
+        static let xs: CGFloat = 4
+        static let s: CGFloat = 8
+        static let m: CGFloat = 12
+        static let l: CGFloat = 16
+        static let xl: CGFloat = 24
+        /// The panel's side gutter for the header, filters, list and footer.
+        static let gutter: CGFloat = 16
+    }
+
+    enum Radius {
+        static let small: CGFloat = 8
+        static let card: CGFloat = 16
+    }
+
+    /// Device icon circle and toolbar button frames, shared so a row of icons keeps one centre line.
+    static let orbSize: CGFloat = 32
+    static let iconButton: CGFloat = 28
+
+    static let secondaryInk = Color.primary.opacity(0.6)
+    static let tertiaryInk = Color.primary.opacity(0.35)
+
+    /// Neutral fill for chips, buttons and the selected filter pill.
+    static func controlFill(_ scheme: ColorScheme) -> Color {
+        scheme == .dark ? Color.white.opacity(0.10) : Color.black.opacity(0.06)
+    }
+
+    static func selectedFill(_ scheme: ColorScheme) -> Color {
+        scheme == .dark ? Color.white.opacity(0.16) : Color.black.opacity(0.08)
+    }
+
+    /// The one even outline every classic surface wears.
+    static func hairline(_ scheme: ColorScheme) -> Color {
+        scheme == .dark ? Color.white.opacity(0.08) : Color.black.opacity(0.08)
+    }
+}
+
 // MARK: - Classic Tile Surface
 
-/// The classic panel's tile surface: a quiet well when the device is off, one step lighter when it
-/// is on, and a family-colour wash when an active device carries a tint. The classic look keeps a
-/// flat fill plus the one specular edge, so it never asks the system for liquid glass.
+/// The classic panel's tile surface: a quiet well when the device is off and one step lighter when
+/// it is on. The family colour lives on the icon circle, never on the well.
 public struct ClassicTileSurface: Equatable, Sendable {
     public var isActive: Bool
     public var tint: Color?
@@ -18,24 +60,15 @@ public struct ClassicTileSurface: Equatable, Sendable {
         self.scheme = scheme
     }
 
-    /// Text ink follows the window scheme in every state. An active tile earns its emphasis from
-    /// the orb, a heavier weight and the fill — never from inverting the ink.
     public var ink: Color { .primary }
 
-    public var secondaryInk: Color { .secondary }
+    public var secondaryInk: Color { ClassicDesign.secondaryInk }
 
-    /// The well: translucent white over the panel glass in both appearances, or a family-colour
-    /// wash when the device is on and carries a tint (contract §1.2).
     public var fill: AnyShapeStyle {
-        if isActive, let tint {
-            return scheme == .dark
-                ? AnyShapeStyle(LinearGradient(colors: [tint.opacity(0.20), Color.white.opacity(0.08)], startPoint: .topLeading, endPoint: .bottomTrailing))
-                : AnyShapeStyle(LinearGradient(colors: [tint.opacity(0.14), Color.white.opacity(0.70)], startPoint: .topLeading, endPoint: .bottomTrailing))
-        }
         if scheme == .dark {
-            return AnyShapeStyle(Color.white.opacity(isActive ? 0.13 : 0.07))
+            return AnyShapeStyle(Color.white.opacity(isActive ? 0.11 : 0.06))
         }
-        return AnyShapeStyle(Color.white.opacity(isActive ? 0.72 : 0.42))
+        return AnyShapeStyle(Color.white.opacity(isActive ? 0.85 : 0.55))
     }
 }
 
@@ -62,7 +95,7 @@ struct ClassicHoldToConfirmButton: View {
 
     var body: some View {
         let capsule = Capsule(style: .continuous)
-        HStack(spacing: 4) {
+        HStack(spacing: ClassicDesign.Space.xs) {
             Image(systemName: "power").font(.system(size: DesignTokens.TypeSize.micro, weight: .bold))
             Text(title)
                 .font(.system(size: DesignTokens.TypeSize.control, weight: .semibold))
@@ -71,8 +104,9 @@ struct ClassicHoldToConfirmButton: View {
         .lineLimit(1)
         .fixedSize(horizontal: true, vertical: false)
         .foregroundStyle(Color.primary.opacity(0.88))
-        .padding(.horizontal, 11)
-        .padding(.vertical, 5)
+        .padding(.horizontal, ClassicDesign.Space.m)
+        .padding(.vertical, ClassicDesign.Space.xs)
+        .frame(minHeight: ClassicDesign.iconButton)
         .background {
             // Scaling (not resizing) the fill keeps the 0.6 s sweep on the compositor.
             Rectangle()
@@ -162,7 +196,7 @@ public struct ClassicPanelRoot: ViewModifier {
                     // same `.regular` glass the classic panel asked for before the two themes split,
                     // and new files never touch the macOS 26 API directly.
                     Color.clear
-                        .classicAdaptiveGlass(in: Rectangle())
+                        .adaptiveGlass(in: Rectangle())
                     Rectangle().fill(scheme == .dark ? Color.black.opacity(0.30) : Color.white.opacity(0.18))
                 } else {
                     Rectangle().fill(.ultraThinMaterial)

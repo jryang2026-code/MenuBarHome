@@ -51,7 +51,7 @@ struct ClassicClimatePanelModule: View {
     private var canExpand: Bool { device.isOnline && (spec.powerWritable || hasAuxiliaryControls) }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 9) {
+        VStack(alignment: .leading, spacing: ClassicDesign.Space.s) {
             strip
             gauge
             if isExpanded, hasAuxiliaryControls {
@@ -80,9 +80,8 @@ struct ClassicClimatePanelModule: View {
                 .transition(AppleMotion.drawerTransition(reduceMotion: reduceMotion))
             }
         }
-        .padding(.horizontal, 11)
-        .padding(.vertical, 10)
-        .classicTile(isActive: isRunning, cornerRadius: DesignTokens.Radius.module, tint: DesignTokens.Orb.climate)
+        .padding(ClassicDesign.Space.m)
+        .classicTile(isActive: isRunning, cornerRadius: ClassicDesign.Radius.card, tint: DesignTokens.Orb.climate)
         .opacity(device.isOnline ? 1 : 0.58)
         .disabled(!device.isOnline)
         .animation(AppleMotion.resolve(.reveal, reduceMotion: reduceMotion), value: isRunning)
@@ -99,13 +98,8 @@ struct ClassicClimatePanelModule: View {
                 if device.isOnline { SoundFeedback.playSuccess() }
             } label: {
                 ZStack {
-                    Circle()
-                        .fill(isRunning ? AnyShapeStyle(accent) : AnyShapeStyle(Color.primary.opacity(0.08)))
-                        .frame(width: 32, height: 32)
-                        .shadowIf(isRunning, color: accent.opacity(0.4), radius: 6)
-                    Image(systemName: spec.hvacMode == "heat" ? "flame.fill" : "snowflake")
-                        .font(.system(size: DesignTokens.TypeSize.body, weight: .semibold))
-                        .foregroundStyle(isRunning ? Color.white : muted)
+                    orbCircle
+                    orbGlyph
 
                 }
             }
@@ -132,7 +126,7 @@ struct ClassicClimatePanelModule: View {
                             .lineLimit(1)
 
                     }
-                    .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
+                    .font(.system(size: DesignTokens.TypeSize.caption))
                     .foregroundStyle(muted)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -167,14 +161,23 @@ struct ClassicClimatePanelModule: View {
 
     private var iconBadge: some View {
         ZStack {
-            Circle()
-                .fill(isRunning ? AnyShapeStyle(accent) : AnyShapeStyle(Color.primary.opacity(0.08)))
-                .frame(width: 32, height: 32)
-            Image(systemName: spec.hvacMode == "heat" ? "flame.fill" : "snowflake")
-                .font(.system(size: DesignTokens.TypeSize.body, weight: .semibold))
-                .foregroundStyle(isRunning ? Color.white : muted)
+            orbCircle
+            orbGlyph
         }
         .accessibilityHidden(true)
+    }
+
+    /// Same orb as every classic tile: soft family tint while running, neutral when off.
+    private var orbCircle: some View {
+        Circle()
+            .fill(isRunning ? accent.opacity(colorScheme == .dark ? 0.24 : 0.16) : ClassicDesign.controlFill(colorScheme))
+            .frame(width: ClassicDesign.orbSize, height: ClassicDesign.orbSize)
+    }
+
+    private var orbGlyph: some View {
+        Image(systemName: spec.hvacMode == "heat" ? "flame.fill" : "snowflake")
+            .font(.system(size: DesignTokens.TypeSize.body, weight: .semibold))
+            .foregroundStyle(isRunning ? accent : muted)
     }
 
     private var statusLine: String {
@@ -244,13 +247,13 @@ struct ClassicClimatePanelModule: View {
                         Image(systemName: symbol(for: mode)).font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
                         Text(SmartDevice.localizeHVACMode(mode)).font(.system(size: DesignTokens.TypeSize.caption, weight: selected ? .semibold : .medium))
                     }
-                    .foregroundStyle(selected ? Color.white : muted)
+                    .foregroundStyle(selected ? accent : muted)
                     .frame(maxWidth: .infinity)
-                    .padding(.vertical, 5)
+                    .padding(.vertical, ClassicDesign.Space.xs)
                     .background {
                         if selected {
                             Capsule(style: .continuous)
-                                .fill(accent)
+                                .fill(accent.opacity(colorScheme == .dark ? 0.24 : 0.14))
                                 .matchedGeometryEffect(id: "mode", in: modeNamespace)
                         }
                     }

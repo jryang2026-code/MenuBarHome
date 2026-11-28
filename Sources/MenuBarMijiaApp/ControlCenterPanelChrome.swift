@@ -1401,7 +1401,10 @@ struct PanelConnectionFooterBar: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            BreathingDot(color: status.color)
+            // Classic: the status glyph already carries the colour; a second dot repeats it.
+            if theme != .classic {
+                BreathingDot(color: status.color)
+            }
             PanelConnectionStatusControl(store: store, theme: theme)
             Spacer(minLength: 4)
 

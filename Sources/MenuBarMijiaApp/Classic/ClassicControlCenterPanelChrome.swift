@@ -80,29 +80,16 @@ extension ClassicControlCenterPanel {
     // MARK: - 1. Hero Header & Live Environment Chips
 
     var topHeroHeader: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            HStack(alignment: .center, spacing: 9) {
-                Image(systemName: "house.fill")
-                    .font(.system(size: DesignTokens.TypeSize.title, weight: .bold))
-                    .foregroundStyle(.white)
-                    .frame(width: 34, height: 34)
-                    .background(
-                        LinearGradient(colors: [.orange, DesignTokens.active],
-                                       startPoint: .topLeading, endPoint: .bottomTrailing),
-                        in: Circle()
-                    )
-
-                VStack(alignment: .leading, spacing: 1) {
-                    HStack(spacing: 6) {
+        VStack(alignment: .leading, spacing: ClassicDesign.Space.s) {
+            HStack(alignment: .center, spacing: ClassicDesign.Space.s) {
+                VStack(alignment: .leading, spacing: 0) {
+                    HStack(spacing: ClassicDesign.Space.s) {
                         homeTitle
 
                         if store.homeBackend == .demo {
                             Text(L10n.tr("演示预览", "Demo"))
                                 .font(.system(size: DesignTokens.TypeSize.footnote, weight: .semibold))
-                                .foregroundStyle(.secondary)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 1.5)
-                                .background(Color.primary.opacity(0.07), in: Capsule(style: .continuous))
+                                .foregroundStyle(ClassicDesign.secondaryInk)
                                 .panelHelp(L10n.tr(
                                     "正在使用内置虚拟设备，完全离线，不联网。可在设置里切回真实账号。",
                                     "Using built-in virtual devices, fully offline. Switch back to a real account in Settings."
@@ -113,7 +100,7 @@ extension ClassicControlCenterPanel {
                     statusSubtitle
                 }
 
-                Spacer(minLength: 6)
+                Spacer(minLength: ClassicDesign.Space.s)
 
                 if isEditing {
                     if isRoomOrdering {
@@ -125,7 +112,7 @@ extension ClassicControlCenterPanel {
                 } else if !store.allOffTargets.isEmpty {
                     // The label says what will be switched off (#23); a hold confirms.
                     let copy = store.allOffHeaderCopy(scopeName: allOffScopeDisplayName)
-                    VStack(alignment: .trailing, spacing: 1) {
+                    VStack(alignment: .trailing, spacing: 2) {
                         ClassicHoldToConfirmButton(
                             title: copy.title,
                             count: store.allOffTargets.count,
@@ -145,7 +132,7 @@ extension ClassicControlCenterPanel {
                         if let helper = copy.helper {
                             Text(helper)
                                 .font(.system(size: DesignTokens.TypeSize.footnote))
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(ClassicDesign.secondaryInk)
                                 .lineLimit(1)
                         }
                     }
@@ -288,8 +275,8 @@ extension ClassicControlCenterPanel {
                 }
             }
         }
-        .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
-        .foregroundStyle(.secondary)
+        .font(.system(size: DesignTokens.TypeSize.caption))
+        .foregroundStyle(ClassicDesign.secondaryInk)
         .monospacedDigit()
         .lineLimit(1)
     }
@@ -383,7 +370,7 @@ extension ClassicControlCenterPanel {
 
     /// Only real rooms live in the scrolling part; `全部` is pinned by `roomFilterBar` (§5.1).
     var roomPillsRow: some View {
-        HStack(spacing: 2) {
+        HStack(spacing: 0) {
             Color.clear.frame(width: 0, height: 1).id("roomsStart")
             ForEach(displayRooms) { room in
                 roomPill(title: roomDisplayTitle(room), roomId: room.id)
@@ -418,14 +405,12 @@ extension ClassicControlCenterPanel {
     var kindFilterBar: some View {
         ScrollViewReader { proxy in
             ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 2) {
+                HStack(spacing: 0) {
                     ForEach(displayKinds, id: \.self) { tag in
                         kindPill(tag)
                             .id(tag)
                     }
                 }
-                .padding(.vertical, 3)
-                .padding(.horizontal, 4)
                 .horizontalWheelScroll()
             }
             .defaultScrollAnchor(.leading)
@@ -450,12 +435,6 @@ extension ClassicControlCenterPanel {
                 )
             )
         }
-        .background(segmentedTrack, in: Capsule(style: .continuous))
-        .overlay {
-            Capsule(style: .continuous)
-                .strokeBorder(segmentedTrackRim, lineWidth: DesignTokens.hairline)
-        }
-        .clipShape(Capsule(style: .continuous))
     }
 
     @ViewBuilder
@@ -520,17 +499,16 @@ extension ClassicControlCenterPanel {
     }
 
     func kindPillLabel(_ tag: DeviceKindTag, isSelected: Bool) -> some View {
-        let surface = ClassicTileSurface(isActive: true, scheme: effectiveScheme)
-        return Text(tag.chipTitle)
-            .font(.system(size: DesignTokens.TypeSize.caption, weight: isSelected ? .semibold : .medium))
-            .foregroundStyle(isSelected ? Color.primary : Color.secondary)
-            .padding(.horizontal, 11)
-            .padding(.vertical, 5)
+        Text(tag.chipTitle)
+            .font(.system(size: DesignTokens.TypeSize.caption, weight: isSelected ? .semibold : .regular))
+            .foregroundStyle(isSelected ? Color.primary : ClassicDesign.secondaryInk)
+            .padding(.horizontal, ClassicDesign.Space.m)
+            .padding(.vertical, ClassicDesign.Space.xs)
+            .frame(minHeight: ClassicDesign.iconButton)
             .background {
                 if isSelected {
                     Capsule(style: .continuous)
-                        .fill(surface.fill)
-                        .shadow(color: .black.opacity(effectiveScheme == .dark ? 0.28 : 0.10), radius: 2, y: 1)
+                        .fill(ClassicDesign.selectedFill(effectiveScheme))
                         .matchedGeometryEffect(id: "kindLens", in: filterLens)
                 }
             }
@@ -542,17 +520,13 @@ extension ClassicControlCenterPanel {
     /// 全部 sits outside the scroll view so the most-used filter can never be scrolled out of view
     /// while a room is selected (§2.2 audit item 5).
     var roomFilterBar: some View {
-        HStack(spacing: 5) {
+        HStack(spacing: ClassicDesign.Space.xs) {
             ScrollViewReader { proxy in
                 HStack(spacing: 0) {
                     roomPill(title: L10n.tr("全部", "All"), roomId: nil)
-                        .padding(.vertical, 3)
-                        .padding(.leading, 4)
 
                     ScrollView(.horizontal, showsIndicators: false) {
                         roomPillsRow
-                            .padding(.vertical, 3)
-                            .padding(.trailing, 4)
                             .horizontalWheelScroll()
                     }
                     .defaultScrollAnchor(.leading)
@@ -585,12 +559,6 @@ extension ClassicControlCenterPanel {
                         )
                     )
                 }
-                .background(segmentedTrack, in: Capsule(style: .continuous))
-                .overlay {
-                    Capsule(style: .continuous)
-                        .strokeBorder(segmentedTrackRim, lineWidth: DesignTokens.hairline)
-                }
-                .clipShape(Capsule(style: .continuous))
             }
 
             sortRoomsButton
@@ -613,24 +581,7 @@ extension ClassicControlCenterPanel {
                     beginRoomOrder()
                 }
             } label: {
-                Image(systemName: "arrow.up.arrow.down")
-                    .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
-                    .foregroundStyle(isRoomOrdering ? Color.white : Color.primary.opacity(0.78))
-                    .frame(width: DesignTokens.minHitTarget, height: DesignTokens.minHitTarget)
-                    .background {
-                        if isRoomOrdering {
-                            Capsule(style: .continuous).fill(Color.accentColor)
-                        }
-                    }
-                    .modifier(
-                        ClassicChipSurface(
-                            shape: Capsule(style: .continuous),
-                            tint: nil,
-                            interactive: true,
-                            clear: false,
-                            isHidden: isRoomOrdering
-                        )
-                    )
+                classicToolbarGlyph("arrow.up.arrow.down", isOn: isRoomOrdering)
             }
             .buttonStyle(.plain)
             .accessibilityLabel(Text(L10n.tr("排序", "Reorder")))
@@ -642,16 +593,8 @@ extension ClassicControlCenterPanel {
         }
     }
 
-    var segmentedTrack: Color {
-        effectiveScheme == .dark ? Color.white.opacity(0.08) : Color.black.opacity(0.055)
-    }
-
-    var segmentedTrackRim: Color {
-        effectiveScheme == .dark ? Color.white.opacity(0.09) : Color.black.opacity(0.04)
-    }
-
     var gridToggleButtons: some View {
-        HStack(spacing: 5) {
+        HStack(spacing: 0) {
             toggleChip(
                 isOn: store.isCompactGridMode,
                 onSymbol: "rectangle.grid.2x2.fill",
@@ -689,30 +632,27 @@ extension ClassicControlCenterPanel {
         Button {
             withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) { action() }
         } label: {
-            Image(systemName: isOn ? onSymbol : offSymbol)
-                .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
-                .foregroundStyle(isOn ? Color.white : Color.primary.opacity(0.78))
-                .frame(width: DesignTokens.minHitTarget, height: DesignTokens.minHitTarget)
-                .background {
-                    if isOn {
-                        Capsule(style: .continuous)
-                            .fill(Color.accentColor)
-                    }
-                }
-                .modifier(
-                    ClassicChipSurface(
-                        shape: Capsule(style: .continuous),
-                        tint: nil,
-                        interactive: true,
-                        clear: false,
-                        isHidden: isOn
-                    )
-                )
+            classicToolbarGlyph(isOn ? onSymbol : offSymbol, isOn: isOn)
         }
         .buttonStyle(.plain)
         .accessibilityLabel(Text(onLabel))
         .accessibilityAddTraits(isOn ? AccessibilityTraits.isSelected : [])
         .panelHelp(help)
+    }
+
+    /// A borderless 28 pt toolbar glyph (DESIGN.md §4): neutral at rest, accent ink on a 12 % accent
+    /// well while its mode is on.
+    func classicToolbarGlyph(_ symbol: String, isOn: Bool) -> some View {
+        Image(systemName: symbol)
+            .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
+            .foregroundStyle(isOn ? Color.accentColor : ClassicDesign.secondaryInk)
+            .frame(width: ClassicDesign.iconButton, height: ClassicDesign.iconButton)
+            .background {
+                if isOn {
+                    Circle().fill(Color.accentColor.opacity(0.12))
+                }
+            }
+            .contentShape(Circle())
     }
 
     func selectRoom(_ roomId: String?, animation: Animation?) {
@@ -728,18 +668,17 @@ extension ClassicControlCenterPanel {
             : store.selectedRoomId == roomId
         // While the order list is open the strip is a live preview: pills neither select nor drag.
         let isPreview = isRoomOrdering
-        let surface = ClassicTileSurface(isActive: true, scheme: effectiveScheme)
         let content = Text(title)
-            .font(.system(size: DesignTokens.TypeSize.caption, weight: isSelected ? .semibold : .medium))
-            .foregroundStyle(isSelected ? Color.primary : Color.secondary)
+            .font(.system(size: DesignTokens.TypeSize.caption, weight: isSelected ? .semibold : .regular))
+            .foregroundStyle(isSelected ? Color.primary : ClassicDesign.secondaryInk)
             .lineLimit(1)
-            .padding(.horizontal, 11)
-            .padding(.vertical, 5)
+            .padding(.horizontal, ClassicDesign.Space.m)
+            .padding(.vertical, ClassicDesign.Space.xs)
+            .frame(minHeight: ClassicDesign.iconButton)
             .background {
                 if isSelected {
                     Capsule(style: .continuous)
-                        .fill(surface.fill)
-                        .shadow(color: .black.opacity(effectiveScheme == .dark ? 0.28 : 0.10), radius: 2, y: 1)
+                        .fill(ClassicDesign.selectedFill(effectiveScheme))
                 }
             }
             .contentShape(Capsule(style: .continuous))

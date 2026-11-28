@@ -377,20 +377,20 @@ public struct ClassicControlCenterPanel: View {
     private var mainDashboard: some View {
         VStack(alignment: .leading, spacing: 0) {
             topHeroHeader
-                .padding(.horizontal, 14)
-                .padding(.top, 12)
-                .padding(.bottom, 8)
+                .padding(.horizontal, ClassicDesign.Space.gutter)
+                .padding(.top, ClassicDesign.Space.m)
+                .padding(.bottom, ClassicDesign.Space.m)
 
             if !store.panelActivities.isEmpty || !store.missedScheduledCommands.isEmpty {
                 activityStack
                     .layoutPriority(activitiesExpanded ? 1 : 0)
                     .accessibilityIdentifier("panel-system-notice")
-                    .padding(.horizontal, 14)
+                    .padding(.horizontal, ClassicDesign.Space.gutter)
                     .padding(.bottom, 8)
             }
 
             if !isRoomOrdering {
-                HStack(spacing: 6) {
+                HStack(spacing: ClassicDesign.Space.s) {
                     omnibar
                     if hasQuickDrawerContent, !search.isSearching, !isEditing {
                         PanelQuickDrawerToggleButton(
@@ -400,19 +400,19 @@ public struct ClassicControlCenterPanel: View {
                         )
                     }
                 }
-                .padding(.horizontal, 14)
-                .padding(.bottom, 4)
+                .padding(.horizontal, ClassicDesign.Space.gutter)
+                .padding(.bottom, ClassicDesign.Space.s)
 
                 if showsQuickDrawer {
                     quickDrawer
-                        .padding(.horizontal, 14)
+                        .padding(.horizontal, ClassicDesign.Space.gutter)
                         .padding(.bottom, 8)
                         .transition(AppleMotion.drawerTransition(reduceMotion: reduceMotion))
                 }
 
                 if store.isShowingAssistantBar || speech.errorMessage != nil {
                     AssistantResponseArea(store: store)
-                        .padding(.horizontal, 14)
+                        .padding(.horizontal, ClassicDesign.Space.gutter)
                         .padding(.bottom, 8)
                         .transition(AppleMotion.drawerTransition(reduceMotion: reduceMotion))
                 }
@@ -429,13 +429,13 @@ public struct ClassicControlCenterPanel: View {
                             // Ordering kinds previews the chip row under the strip instead.
                             if layoutUI.orderTarget == .kinds { kindFilterBar }
                         }
-                        .padding(.horizontal, 14)
+                        .padding(.horizontal, ClassicDesign.Space.gutter)
                         .padding(.bottom, 8)
                     }
                 } else {
                     browsingFilters
-                        .padding(.horizontal, 14)
-                        .padding(.bottom, 4)
+                        .padding(.horizontal, ClassicDesign.Space.gutter)
+                        .padding(.bottom, ClassicDesign.Space.s)
                 }
             }
 
@@ -454,8 +454,8 @@ public struct ClassicControlCenterPanel: View {
                 .overlay(Color.primary.opacity(0.07))
 
             footerBar
-                .padding(.horizontal, 14)
-                .padding(.vertical, 6)
+                .padding(.horizontal, ClassicDesign.Space.gutter)
+                .padding(.vertical, ClassicDesign.Space.s)
         }
         .animation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion), value: store.isShowingAssistantBar)
         .animation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion), value: layoutUI.editMode)
@@ -518,7 +518,7 @@ public struct ClassicControlCenterPanel: View {
     }
 
     private var browsingFilters: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: ClassicDesign.Space.xs) {
             roomFilterBar
             if showsKindChips {
                 kindFilterBar
@@ -528,7 +528,7 @@ public struct ClassicControlCenterPanel: View {
 
     @ViewBuilder
     private var scrollPreface: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: ClassicDesign.Space.s) {
             if showsLessonRow {
                 OnboardingChecklistCard(store: store, onBeginSearch: { search.focus() }, theme: .classic)
             }
@@ -545,9 +545,9 @@ public struct ClassicControlCenterPanel: View {
                         scrollToDevice: { pendingScrollToDeviceId = $0 }
                     )
                 }
-                .padding(.bottom, 4)
             }
         }
+        .padding(.bottom, ClassicDesign.Space.m)
     }
 
 
@@ -565,7 +565,7 @@ public struct ClassicControlCenterPanel: View {
                         if showsScrollPreface {
                             scrollPreface
                         }
-                        VStack(alignment: .leading, spacing: 11) {
+                        VStack(alignment: .leading, spacing: ClassicDesign.Space.m) {
                             if search.isSearching {
                                 searchResultsList(results: searchResults)
                             } else if store.visibleDevices.isEmpty {
@@ -613,7 +613,7 @@ public struct ClassicControlCenterPanel: View {
                                 }
 
                                 if !layoutState.offlineDevices.isEmpty {
-                                    VStack(alignment: .leading, spacing: 7) {
+                                    VStack(alignment: .leading, spacing: ClassicDesign.Space.s) {
                                         ClassicOfflineDrawerHeader(
                                             count: layoutState.offlineDevices.count,
                                             summary: PanelDeviceOrganizer.offlineStackSummary(
@@ -665,9 +665,9 @@ public struct ClassicControlCenterPanel: View {
                             if frames != tileFrames { tileFrames = frames }
                         }
                     }
-                    .padding(.horizontal, 13)
-                    .padding(.top, 10)
-                    .padding(.bottom, max(12, transientStackHeight + 8))
+                    .padding(.horizontal, ClassicDesign.Space.gutter)
+                    .padding(.top, ClassicDesign.Space.m)
+                    .padding(.bottom, max(ClassicDesign.Space.m, transientStackHeight + ClassicDesign.Space.s))
                 }
                 .onChange(of: pendingScrollToDeviceId) { _, targetId in
                     guard let targetId else { return }

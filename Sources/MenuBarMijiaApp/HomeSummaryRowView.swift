@@ -15,7 +15,7 @@ struct HomeSummaryRowView: View {
     var body: some View {
         if !summary.isEmpty {
             ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 6) {
+                HStack(spacing: theme == .classic ? ClassicDesign.Space.s : 6) {
                     ForEach(summary.capsules) { capsule in
                         capsuleButton(capsule)
                     }
@@ -69,9 +69,9 @@ struct HomeSummaryRowView: View {
                     .foregroundStyle(selected ? .primary : (isCriticalAlert ? tint : .primary.opacity(0.88)))
                     .lineLimit(1)
             }
-            .padding(.horizontal, 9)
+            .padding(.horizontal, theme == .classic ? ClassicDesign.Space.m : 9)
             .padding(.vertical, 4)
-            .frame(minHeight: 26)
+            .frame(minHeight: theme == .classic ? ClassicDesign.iconButton : 26)
             .background(
                 Capsule(style: .continuous)
                     .fill(tint.opacity(
