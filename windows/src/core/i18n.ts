@@ -396,6 +396,7 @@ const CATALOG: Readonly<Record<string, readonly [string, string]>> = {
   "请先扫码登录米家": ["请先扫码登录米家", "Sign in to Mi Home first"],
 
   // Empty states
+  "正在切换家庭…": ["正在切换家庭…", "Switching home…"],
   "正在同步你的真实米家设备…": ["正在同步你的真实米家设备…", "Syncing your devices…"],
   "正在从小米云端拉取房间、MIoT 规格与实时状态": ["正在从小米云端拉取房间、MIoT 规格与实时状态", "Fetching rooms, MIoT specs and live state from Xiaomi Cloud"],
   "尚未同步到米家设备": ["尚未同步到米家设备", "No Mi Home devices synced yet"],

@@ -87,6 +87,8 @@ extension HAHomeAdapter: HomeProvider {
         await provider.refreshNow()
     }
 
+    func switchMiHome(generation: UInt64) async {}
+
     func setPollingContext(_ context: PollingContext) async {
         await provider.setPollingContext(context)
     }

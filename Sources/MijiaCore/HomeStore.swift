@@ -135,6 +135,24 @@ public final class HomeStore {
     /// Mi Home 家庭 list from the cloud backend; empty elsewhere.
     public internal(set) var homes: [HomeOption] = []
     public internal(set) var selectedMiHomeId: String? = UserDefaults.standard.string(forKey: MiCloudProvider.selectedHomeKey)
+    /// True after `selectMiHome` cleared the old home's devices and before the newly selected
+    /// home's first snapshot arrives (when no cached snapshot for that home was available).
+    public internal(set) var isSwitchingMiHome: Bool = false
+    /// Monotonic generation bumped on every `selectMiHome`; snapshots stamped with an older
+    /// generation are discarded so late old-home responses never overwrite the new home.
+    @ObservationIgnored var miHomeGeneration: UInt64 = 0
+    @ObservationIgnored var homeSwitchTask: Task<Void, Never>?
+
+    struct CachedMiHomeSnapshot {
+        var rooms: [RoomArea]
+        var devices: [SmartDevice]
+        var deviceFacets: [String: [FacetControl]]
+        var deviceTransportDiagnostics: [String: DeviceTransportDiagnostics]
+        var lightGroupOwners: [String: String]
+        var environmentReadings: [EnvironmentReading]
+        var scenes: [HomeScene]
+    }
+    @ObservationIgnored var cachedMiHomeSnapshots: [String: CachedMiHomeSnapshot] = [:]
 
     /// Devices held by the other Mi Homes while the selected home shows none, or nil when the
     /// panel is not in that state.
@@ -143,7 +161,7 @@ public final class HomeStore {
     /// no supported devices comes back to an empty panel with no hint that anything is there. This
     /// is the number the empty state offers to reveal (#76, #67).
     public var otherMiHomesDeviceCountWhenSelectedEmpty: Int? {
-        guard hasReceivedInitialSnapshot, devices.isEmpty, let selected = selectedMiHomeId else {
+        guard hasReceivedInitialSnapshot, !isSwitchingMiHome, devices.isEmpty, let selected = selectedMiHomeId else {
             return nil
         }
         let total = homes.reduce(0) { sum, home in
@@ -171,7 +189,7 @@ public final class HomeStore {
             lastSyncOutcome = .authFailed
         } else if case .disconnected = miStatus {
             lastSyncOutcome = .failed
-        } else if hasReceivedInitialSnapshot {
+        } else if hasReceivedInitialSnapshot && !isSwitchingMiHome {
             lastSyncOutcome = .succeeded
         } else {
             lastSyncOutcome = .pending
@@ -1660,7 +1678,8 @@ public final class HomeStore {
         accounts: [MiAccount],
         defaults: UserDefaults,
         topologyCache: MiTopologyCache?,
-        typePrunePolicyLoader: @escaping @Sendable () -> MiotTypePrunePolicy
+        typePrunePolicyLoader: @escaping @Sendable () -> MiotTypePrunePolicy,
+        initialHomeGeneration: UInt64 = 0
     ) -> MiAccountsProvider {
         nonisolated(unsafe) let ud = defaults
         return MiAccountsProvider(
@@ -1668,7 +1687,8 @@ public final class HomeStore {
             topologyCache: topologyCache,
             selectedHomeLoader: { ud.string(forKey: MiCloudProvider.selectedHomeKey) },
             clearSelectedHome: { ud.removeObject(forKey: MiCloudProvider.selectedHomeKey) },
-            typePrunePolicyLoader: typePrunePolicyLoader
+            typePrunePolicyLoader: typePrunePolicyLoader,
+            initialHomeGeneration: initialHomeGeneration
         )
     }
 
@@ -1686,7 +1706,8 @@ public final class HomeStore {
             accounts: enabled,
             defaults: userDefaults,
             topologyCache: topologyCache,
-            typePrunePolicyLoader: { box.get() }
+            typePrunePolicyLoader: { box.get() },
+            initialHomeGeneration: miHomeGeneration
         )
     }
 

@@ -458,13 +458,15 @@ extension ControlCenterPanel {
             EmptyPanelDiagnosisPresenter.copy(for: $0, region: store.miCloudRegion)
         }
         return VStack(spacing: 8) {
-            Image(systemName: store.identityMigrationDiagnostic != nil
-                ? "exclamationmark.triangle"
-                : (store.allConfiguredSourcesTurnedOff
-                    ? "pause.circle"
-                    : (diagnosisCopy?.iconName ?? "sparkles")))
-                .font(.system(size: DesignTokens.TypeSize.reading))
-                .foregroundStyle((store.identityMigrationDiagnostic != nil || diagnosisCopy?.isWarning == true) ? .orange : .secondary)
+            if !store.isSwitchingMiHome {
+                Image(systemName: store.identityMigrationDiagnostic != nil
+                    ? "exclamationmark.triangle"
+                    : (store.allConfiguredSourcesTurnedOff
+                        ? "pause.circle"
+                        : (diagnosisCopy?.iconName ?? "sparkles")))
+                    .font(.system(size: DesignTokens.TypeSize.reading))
+                    .foregroundStyle((store.identityMigrationDiagnostic != nil || diagnosisCopy?.isWarning == true) ? .orange : .secondary)
+            }
             if store.identityMigrationDiagnostic != nil {
                 Text(L10n.tr("配置或凭据读取受阻", "Could not read settings or credentials"))
                     .font(.system(size: DesignTokens.TypeSize.body, weight: .semibold))
@@ -499,6 +501,12 @@ extension ControlCenterPanel {
                     .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .accentColor))
                 }
                 .padding(.top, 2)
+            } else if store.isSwitchingMiHome {
+                ProgressView()
+                    .controlSize(.small)
+                Text(L10n.tr("正在切换家庭…", "Switching home…"))
+                    .font(.system(size: DesignTokens.TypeSize.body, weight: .medium))
+                    .foregroundStyle(.secondary)
             } else if let diagnosisCopy {
                 Text(diagnosisCopy.title)
                     .font(.system(size: DesignTokens.TypeSize.body, weight: .semibold))

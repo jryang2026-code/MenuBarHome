@@ -223,11 +223,11 @@ describe("Mi cloud scenes stay scoped to the selected home", () => {
     assert.deepEqual(sceneNames(app), ["回家"]);
 
     app.selectHome("home-b");
-    // The refresh has not landed yet, so the old scene row is still in `host.scenes`; the home
-    // gate must refuse it anyway.
-    assert.ok(
+    // The switch drops the old home's scene rows at once; the home gate must refuse the id anyway.
+    assert.equal(
       app.scenes.some((scene) => scene.entityId === sceneEntityId("home-a", "11")),
-      "the stale row is still present at this point, making the gate assertion meaningful",
+      false,
+      "the previous home's scene rows are cleared synchronously on switch",
     );
     const staleRun = app.applyCommand({ kind: "activateScene", entityId: sceneEntityId("home-a", "11") });
     await flushAsync(2);

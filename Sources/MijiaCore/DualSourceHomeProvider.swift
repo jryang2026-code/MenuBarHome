@@ -369,6 +369,8 @@ public actor DualSourceHomeProvider: HomeProvider {
     private(set) var discardedFallbackWakeCountForTesting = 0
     private var haSnapshot: SynthesizedHome?
     private var miSnapshot: SynthesizedHome?
+    private var miHomeGeneration: UInt64
+    private var cachedMiHomes: [HomeOption] = []
     private var haLocalNetworkBlocks: Set<LocalNetworkBlockedFeature> = []
     private var miLocalNetworkBlocks: Set<LocalNetworkBlockedFeature> = []
     private var lastEmittedLocalNetworkBlocks: Set<LocalNetworkBlockedFeature> = []
@@ -440,10 +442,12 @@ public actor DualSourceHomeProvider: HomeProvider {
         pinnedBackends: @escaping @Sendable () -> [String: HomeBackend] = { [:] },
         persistCanonicalIDs: @escaping CanonicalIDPersistence = { _ in },
         graceNow: @escaping @Sendable () -> SuspendingClock.Instant,
-        fallbackRecheckTimer: any FallbackRecheckTimer
+        fallbackRecheckTimer: any FallbackRecheckTimer,
+        initialMiHomeGeneration: UInt64 = 0
     ) {
         self.homeAssistant = homeAssistant
         self.xiaomiCloud = xiaomiCloud
+        self.miHomeGeneration = initialMiHomeGeneration
         self.canonical = initialRegistry ?? CanonicalDeviceRegistry(assignments: initialCanonicalIDs)
         self.canonicalSourceIDs = CanonicalSourceIDBox(initialAssignments: canonical.assignments)
         self.knownPreferenceIDs = knownPreferenceIDs
@@ -525,6 +529,7 @@ public actor DualSourceHomeProvider: HomeProvider {
             haLocalNetworkBlocks = []
         } else if backend == .xiaomiCloud, xiaomiCloud != nil {
             miSnapshot = nil
+            cachedMiHomes = []
             miStatus = .connecting
             miOfflineSince = nil
             miGraceActiveInLastRecompute = false
@@ -659,6 +664,7 @@ public actor DualSourceHomeProvider: HomeProvider {
             previous = xiaomiCloud
             xiaomiCloud = nil
             miSnapshot = nil
+            cachedMiHomes = []
             miStatus = .connecting
             miOfflineSince = nil
             miGraceActiveInLastRecompute = false
@@ -833,6 +839,12 @@ public actor DualSourceHomeProvider: HomeProvider {
                 haSnapshot = home
                 haLocalNetworkBlocks = home.localNetworkBlockedFeatures
             } else if backend == .xiaomiCloud {
+                if let snapGen = home.miHomeGeneration, snapGen < miHomeGeneration {
+                    return
+                }
+                if !home.homes.isEmpty {
+                    cachedMiHomes = home.homes
+                }
                 sourceStatusesChanged = applyXiaomiSnapshot(home)
             }
             emitStatus()
@@ -1821,6 +1833,20 @@ public actor DualSourceHomeProvider: HomeProvider {
             home.expiredAccountIDs = miExpiredAccountIDs
                 .union((miSnapshot?.expiredAccountIDs ?? []).filter { !$0.isEmpty })
                 .subtracting(disabledAccountIDs)
+            if let effectiveMi {
+                if let miGen = effectiveMi.miHomeGeneration {
+                    home.miHomeGeneration = max(miGen, miHomeGeneration)
+                } else if miHomeGeneration > 0 {
+                    home.miHomeGeneration = miHomeGeneration
+                }
+                home.hasXiaomiSnapshotForGeneration = true
+            } else if miHomeGeneration > 0 {
+                home.miHomeGeneration = miHomeGeneration
+                home.hasXiaomiSnapshotForGeneration = false
+                if home.homes.isEmpty, !cachedMiHomes.isEmpty {
+                    home.homes = cachedMiHomes
+                }
+            }
         } else {
             home.accountStatuses = [:]
             home.expiredAccountIDs = []
@@ -1884,6 +1910,24 @@ public actor DualSourceHomeProvider: HomeProvider {
     }
 
     // MARK: - Polling
+
+    public func switchMiHome(generation: UInt64) async {
+        guard !isShutDown else { return }
+        if generation < miHomeGeneration { return }
+        miHomeGeneration = generation
+        let disabled = disabledBackendsGate.snapshot()
+        guard !disabled.contains(.xiaomiCloud), let mi = xiaomiCloud else { return }
+        if let snap = miSnapshot, (snap.miHomeGeneration ?? 0) < generation {
+            miSnapshot = nil
+            miAccountPreDropDevices.removeAll()
+            miAccountOfflineSince.removeAll()
+            miGracedAccountsInLastRecompute.removeAll()
+        }
+        if started, haSnapshot != nil {
+            recompute()
+        }
+        await mi.switchMiHome(generation: generation)
+    }
 
     public func refreshNow() async {
         guard !isShutDown else { return }

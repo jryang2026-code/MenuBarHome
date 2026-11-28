@@ -562,6 +562,38 @@ export class MenuMijiaWindowsApp {
   public proactiveRetryAfterMs: number | null = null;
   public isResolvingIntent = false;
   public isSyncingCloud = false;
+  public isSwitchingHome = false;
+  private cachedMiHomeSnapshots = new Map<
+    string,
+    {
+      readonly devices: SmartDevice[];
+      readonly deviceFacets: Readonly<Record<string, readonly FacetControl[]>>;
+      readonly environmentReadings: EnvironmentReading[];
+      readonly groupOwnerByMemberDid: Map<string, string>;
+    }
+  >();
+
+  public cacheMiHomeSnapshot(
+    homeId: string | null,
+    snapshot: {
+      readonly devices: readonly SmartDevice[];
+      readonly deviceFacets: Readonly<Record<string, readonly FacetControl[]>>;
+      readonly environmentReadings: readonly EnvironmentReading[];
+      readonly groupOwnerByMemberDid: ReadonlyMap<string, string>;
+    },
+  ): void {
+    const key = homeId ?? "__all__";
+    this.cachedMiHomeSnapshots.set(key, {
+      devices: [...snapshot.devices],
+      deviceFacets: { ...snapshot.deviceFacets },
+      environmentReadings: [...snapshot.environmentReadings],
+      groupOwnerByMemberDid: new Map(snapshot.groupOwnerByMemberDid),
+    });
+  }
+
+  public clearCachedMiHomeSnapshots(): void {
+    this.cachedMiHomeSnapshots.clear();
+  }
   /** Connection-source epoch; the single owner of the source/home/local-write invalidation counters. */
   public readonly sourceEpoch = new SourceEpoch();
   /**
@@ -1182,6 +1214,7 @@ export class MenuMijiaWindowsApp {
       this.cameraLive.closeCameraLiveView();
     }
     this.cameraLive.discardRetainedCloudSessions();
+    this.clearCachedMiHomeSnapshots();
     disposeTvMediaEvents(this);
   }
 
@@ -1321,6 +1354,21 @@ export class MenuMijiaWindowsApp {
 
 
   public selectHome(id: string | null): void {
+    const previousHomeId = this.settings.selectedHomeId;
+    const dualSource = isDualSourceEnabled(this);
+    if (
+      this.settings.connectionMode === "xiaomiCloud" &&
+      !dualSource &&
+      !this.isSwitchingHome &&
+      this._devices.length > 0
+    ) {
+      this.cacheMiHomeSnapshot(previousHomeId, {
+        devices: this._devices,
+        deviceFacets: this.deviceFacets,
+        environmentReadings: this.environmentReadings,
+        groupOwnerByMemberDid: this.groupOwnerByMemberDid,
+      });
+    }
     this.settings.selectedHomeId = id;
     this.isHomeMenuOpen = false;
     resetPanelSplitTransientState(this);
@@ -1328,6 +1376,61 @@ export class MenuMijiaWindowsApp {
     this.lastUndoAction = null;
     clearUndoHoverPause(this);
     switchHome(this);
+    if (this.multiAccountState) {
+      const clearedChildren: Record<string, (typeof this.multiAccountState.children)[string]> = {};
+      for (const [accountId, child] of Object.entries(this.multiAccountState.children)) {
+        clearedChildren[accountId] = {
+          ...child,
+          home: { rooms: [], devices: [], environmentReadings: [], scenes: [] },
+          rawDevices: [],
+          lightGroupOwners: new Map(),
+        };
+      }
+      this.multiAccountState = {
+        accounts: this.multiAccountState.accounts,
+        merged: null,
+        children: clearedChildren,
+      };
+    }
+    if (dualSource) {
+      this.dualSourceCoordinator?.invalidateXiaomiForHomeSwitch();
+      const keptDevices = this._devices.filter((device) => device.sourceBackend === "homeAssistant");
+      const keptIds = new Set(keptDevices.map((device) => device.id));
+      const keptFacets: Record<string, readonly FacetControl[]> = {};
+      for (const [devId, controls] of Object.entries(this.deviceFacets)) {
+        if (keptIds.has(devId)) keptFacets[devId] = controls;
+      }
+      this.devices = keptDevices;
+      this.deviceFacets = keptFacets;
+      this.environmentReadings = this.environmentReadings.filter((reading) => keptIds.has(reading.id));
+      this.groupOwnerByMemberDid = new Map();
+      // Scenes of the home just left must not stay runnable while the new home loads.
+      this.scenes = this.scenes.filter((scene) => !isXiaomiScene(scene));
+      if (this.expandedDeviceId !== null && !keptIds.has(this.expandedDeviceId)) {
+        this.expandedDeviceId = null;
+      }
+      this.isSwitchingHome = true;
+    } else if (this.settings.connectionMode === "xiaomiCloud") {
+      const cached = this.cachedMiHomeSnapshots.get(id ?? "__all__");
+      if (cached) {
+        this.devices = [...cached.devices];
+        this.deviceFacets = { ...cached.deviceFacets };
+        this.environmentReadings = [...cached.environmentReadings];
+        this.groupOwnerByMemberDid = new Map(cached.groupOwnerByMemberDid);
+        // Scenes are not cached: a cached row could resurrect one deleted in the cloud.
+        this.scenes = this.scenes.filter((scene) => !isXiaomiScene(scene));
+        this.expandedDeviceId = null;
+        this.isSwitchingHome = false;
+      } else {
+        this.devices = [];
+        this.deviceFacets = {};
+        this.environmentReadings = [];
+        this.groupOwnerByMemberDid = new Map();
+        this.scenes = this.scenes.filter((scene) => !isXiaomiScene(scene));
+        this.expandedDeviceId = null;
+        this.isSwitchingHome = true;
+      }
+    }
     this.applyPanelHeight();
     this.saveSettings();
     this.render();
@@ -2182,6 +2285,29 @@ export class MenuMijiaWindowsApp {
       }
       return `<div class="cc-empty-state"><div class="cc-empty-title">Home Assistant</div><div class="cc-empty-subtitle">${this.isSyncingCloud ? "Connecting…" : "No connected devices. Check the saved URL, token and endpoint permission."}</div><button class="cc-btn-secondary" id="btn-empty-settings">Settings</button></div>`;
     }
+    if (this.isSwitchingHome && this.devices.length === 0 && !this.miSessionExpired) {
+      return `
+        <div class="cc-empty-state" id="switching-home-loading">
+          <div class="cc-empty-icon is-pulsing">${SF_ICONS.sparkles}</div>
+          <div class="cc-empty-title">${t("正在切换家庭…")}</div>
+          <div class="cc-empty-subtitle">${t("正在从小米云端拉取房间、MIoT 规格与实时状态")}</div>
+        </div>
+      `;
+    }
+    if (
+      this.settings.connectionMode === "xiaomiCloud" &&
+      this.devices.length === 0 &&
+      this.isSyncingCloud &&
+      !this.miSessionExpired
+    ) {
+      return `
+        <div class="cc-empty-state">
+          <div class="cc-empty-icon is-pulsing">${SF_ICONS.sparkles}</div>
+          <div class="cc-empty-title">${t("正在同步你的真实米家设备…")}</div>
+          <div class="cc-empty-subtitle">${t("正在从小米云端拉取房间、MIoT 规格与实时状态")}</div>
+        </div>
+      `;
+    }
     // A selected home the cloud no longer returns devices for is not an empty account (#67):
     // other homes still have devices, so offer the way back to all of them.
     if (
@@ -2200,15 +2326,6 @@ export class MenuMijiaWindowsApp {
       `;
     }
     if (this.settings.connectionMode === "xiaomiCloud" && this.devices.length === 0) {
-      if (this.isSyncingCloud && !this.miSessionExpired) {
-        return `
-          <div class="cc-empty-state">
-            <div class="cc-empty-icon is-pulsing">${SF_ICONS.sparkles}</div>
-            <div class="cc-empty-title">${t("正在同步你的真实米家设备…")}</div>
-            <div class="cc-empty-subtitle">${t("正在从小米云端拉取房间、MIoT 规格与实时状态")}</div>
-          </div>
-        `;
-      }
       const diagnosis = this.emptyPanelDiagnosis();
       if (diagnosis !== null) {
         return this.renderDiagnosedEmptyState(diagnosis);
@@ -2953,4 +3070,9 @@ if (typeof document !== "undefined") {
       }
     }
   });
+}
+
+/** Same ownership rule the single-account refresh uses for Xiaomi scene rows. */
+function isXiaomiScene(scene: HomeScene): boolean {
+  return scene.sourceBackend === "xiaomiCloud" || scene.accountId !== undefined;
 }

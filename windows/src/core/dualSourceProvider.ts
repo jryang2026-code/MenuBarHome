@@ -1390,6 +1390,39 @@ export class DualSourceCoordinator { public canonical: CanonicalDeviceRegistry;
     }
   }
 
+  /**
+   * Invalidates the cached Xiaomi snapshot when the user switches Mi homes so a failing or
+   * delayed refresh cannot resurrect the previous home's devices via fallback grace, while
+   * keeping Home Assistant devices and canonical pairings intact until the new home lands.
+   */
+  invalidateXiaomiForHomeSwitch(): void {
+    this.mutationEpoch += 1;
+    this.lastMi = null;
+    delete this.dropDeadlines.xiaomiCloud;
+    this.sourceStatuses.xiaomiCloud = { kind: "connecting" };
+  }
+
+  /**
+   * Non-mutating Stage-1 preview merge for a newly discovered Mi home device list before slow
+   * property reads finish. Preserves `DeviceDeduplicator.merge` semantics without persisting
+   * canonical or room registry mutations prematurely.
+   */
+  previewXiaomiSnapshot(
+    mi: DualSourceInputSnapshot,
+    languagePreference?: LanguagePreference,
+  ): DeviceMergeResult {
+    const state = this.canonical.state();
+    return DeviceDeduplicator.merge({
+      homeAssistant: this.lastHA,
+      xiaomiCloud: mi,
+      canonical: new CanonicalDeviceRegistry(state.assignments, state.orphanedAt, state.explicitlyDeleted),
+      rooms: this.rooms.clone(),
+      knownPreferenceIds: this.lastKnownPrefIds,
+      pinnedBackends: this.pinStorage.getAll(),
+      languagePreference,
+    });
+  }
+
   removeXiaomiAccount(
     accountId: string,
     languagePreference?: LanguagePreference,
